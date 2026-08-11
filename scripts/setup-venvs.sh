@@ -31,7 +31,7 @@
 # something a venv bootstrap script should do on its own.
 #
 # Usage:
-#   scripts/setup-venvs.sh [--prefix PATH] [--force] [--skip-runner]
+#   scripts/setup-venvs.sh [--prefix PATH] [--force] [--skip-runner] [--strict]
 #
 #   --prefix PATH   Where to create venv-ui/ and venv-runner/. Default:
 #                    <repo>/.venvs (gitignored). The Debian postinst passes
@@ -43,6 +43,25 @@
 #                    tt-bio` pulls torch + ttnn and can be multiple GB and
 #                    slow (see docs/venv-bootstrap-notes.md) — useful while
 #                    iterating on the UI side.
+#   --strict        Treat a venv-runner whose torch/ttnn/tt_bio stack fails
+#                    to import as a hard failure (die, exit 1) instead of a
+#                    reported-but-nonfatal degraded state. See "Exit codes"
+#                    below — without --strict this situation exits 2, which
+#                    is expected pre-Phase-3 on a box with no Tenstorrent
+#                    system libraries installed.
+#
+# Exit codes:
+#   0   everything requested was built/verified and works.
+#   1   a hard failure: bad preconditions, missing apt packages, venv-ui
+#       failed verification, venv-runner's `pip install` itself failed, or
+#       (with --strict) venv-runner's stack failed to import.
+#   2   soft/degraded: venv-runner was created (or already existed) with the
+#       pinned tt-bio version installed, but torch/ttnn/tt_bio does not
+#       import. Without --strict this is reported, not fatal — see
+#       docs/venv-bootstrap-notes.md for why that's the expected state on a
+#       box without `tt-bio install-deps` run. Automation that needs to
+#       distinguish "fully working" from "installed but unusable" should
+#       check for exactly this code (or pass --strict to fold it into exit 1).
 #
 set -euo pipefail
 
@@ -61,13 +80,17 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PREFIX="${REPO_ROOT}/.venvs"
 FORCE=0
 SKIP_RUNNER=0
+STRICT=0
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [--prefix PATH] [--force] [--skip-runner]
+Usage: $(basename "$0") [--prefix PATH] [--force] [--skip-runner] [--strict]
 
 Creates <prefix>/venv-ui and <prefix>/venv-runner. Default prefix:
 ${REPO_ROOT}/.venvs
+
+Exit codes: 0 fully working, 1 hard failure, 2 venv-runner installed but its
+torch/ttnn/tt_bio stack does not import (folded into 1 by --strict).
 EOF
 }
 
@@ -88,6 +111,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --skip-runner)
       SKIP_RUNNER=1
+      shift
+      ;;
+    --strict)
+      STRICT=1
       shift
       ;;
     -h|--help)
@@ -114,6 +141,36 @@ VENV_RUNNER="${PREFIX}/venv-runner"
 log() { printf '==> %s\n' "$*"; }
 warn() { printf 'WARNING: %s\n' "$*" >&2; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
+# Scratch files, cleaned up on any exit path via one trap. mktemp rather than
+# a $$-based name: predictable temp paths are worth avoiding even for a
+# low-stakes case like this.
+#   VERIFY_TMP     buffers a verification check's output so it can be
+#                  replayed after the fact (success -> stdout, failure ->
+#                  stderr).
+#   RM_ERR_TMP     buffers rm -rf's stderr so safe_rm_rf can quote it in die().
+#   VERIFY_RUNDIR  cwd for verify_runner_venv's python subprocess. `import
+#                  ttnn` writes debug/inspector artifacts (a `generated/`
+#                  tree) relative to the process's cwd, not to an absolute
+#                  cache dir — discovered by this script itself littering the
+#                  repo root with one. Running the check from a scratch dir
+#                  instead means it litters something we throw away anyway.
+VERIFY_TMP="$(mktemp)"
+RM_ERR_TMP="$(mktemp)"
+VERIFY_RUNDIR="$(mktemp -d)"
+trap 'rm -f "$VERIFY_TMP" "$RM_ERR_TMP"; rm -rf "$VERIFY_RUNDIR"' EXIT
+
+# rm -rf wrapped so a permissions failure (e.g. re-running as a non-root user
+# against a root-owned /opt/tt-bio-demo the Debian postinst created) dies with
+# a remedy instead of bash's raw "Permission denied" under set -e.
+safe_rm_rf() {
+  local target="$1"
+  rm -rf "$target" 2>"$RM_ERR_TMP" || {
+    local err
+    err="$(cat "$RM_ERR_TMP" 2>/dev/null || true)"
+    die "could not remove $target: ${err:-permission denied}. If this belongs to another user (e.g. root, from a prior Debian install), rerun as that user or with sudo."
+  }
+}
 
 # ---------------------------------------------------------------------------
 # 1. Preconditions — fail with an exact remedy, not partway through a build.
@@ -158,14 +215,6 @@ log "all required apt packages present (${#REQUIRED_APT_PKGS[@]} checked)"
 
 mkdir -p "$PREFIX" || die "could not create prefix directory: $PREFIX (permissions?)"
 
-# Scratch file for buffering a verification check's output so it can be
-# replayed after the fact (success -> stdout, failure -> stderr). mktemp
-# instead of a $$-based name: predictable temp paths are worth avoiding even
-# for a low-stakes case like this, and a trap means it's cleaned up on any
-# exit path, not just the happy one.
-VERIFY_TMP="$(mktemp)"
-trap 'rm -f "$VERIFY_TMP"' EXIT
-
 # ---------------------------------------------------------------------------
 # 2. Verification helpers — run standalone so idempotency checks and
 #    post-create checks share exactly one definition of "works".
@@ -207,17 +256,72 @@ print(
 PY
 }
 
+# Checks torch, ttnn, tt_bio, and tt_bio.tenstorrent individually — NOT just
+# `import tt_bio` — because `import tt_bio` alone does not exercise them.
+# Verified empirically (not assumed) by diffing sys.modules before/after a
+# bare `import tt_bio` in this exact venv: it pulls in nothing but stdlib.
+# tt_bio's own top-level __init__.py is deliberately lazy (just reads its own
+# installed version via importlib.metadata); the real work — and the real
+# `import torch, ttnn` — lives one level down, in modules like tenstorrent.py,
+# protenix.py, boltz2.py, worker.py. So a bare `import tt_bio` reports success
+# even in a venv where torch has been wiped out by an interrupted install:
+# confirmed by copying venv-runner, deleting its torch/ tree and dist-info,
+# and re-running this check against the copy (see docs/venv-bootstrap-notes.md).
+#
+# torch and ttnn are checked directly, by name, so a failure names the actual
+# missing/broken piece. tt_bio.tenstorrent — the shared Tenstorrent-compute
+# primitives module every model family (boltz2, protenix, opendde, ...) is
+# built on, per its own docstrings — is then imported as a real smoke test
+# that tt_bio's own code loads against the torch/ttnn actually present, not
+# just that the lazy top-level package does nothing and reports success.
+#
+# What this deliberately does NOT do: open a Tenstorrent device or call
+# anything that needs `tt-bio install-deps`'s system libraries/kernel
+# modules. `import ttnn` alone does not touch hardware (verified: it imports
+# cleanly on this box with no device opened, just noisy debug/nanobind
+# logging, which LOGURU_LEVEL/TT_METAL_LOGGER_LEVEL below suppress). Whether
+# tt-bio can actually drive hardware is a Phase-3 question, not this one.
 verify_runner_venv() {
   local venv="$1"
-  "${venv}/bin/python3" - <<'PY'
-import sys
+  # Run from VERIFY_RUNDIR, not the caller's cwd: `import ttnn` writes a
+  # `generated/` debug-artifact tree relative to the process's working
+  # directory (see VERIFY_RUNDIR's definition above for how that was found).
+  (cd "$VERIFY_RUNDIR" && "${venv}/bin/python3" - <<'PY'
+import os, sys
+
+# Match tt_bio's own suppression (see its main.py) so a plain import doesn't
+# dump ttnn/tt-metal debug logging and nanobind leak-tracker noise into what
+# is meant to be a one-line health check.
+os.environ.setdefault("LOGURU_LEVEL", "WARNING")
+os.environ.setdefault("TT_METAL_LOGGER_LEVEL", "FATAL")
+
+try:
+    import torch
+except Exception as e:
+    print(f"VERIFY-FAIL: torch import failed: {type(e).__name__}: {e}", file=sys.stderr)
+    sys.exit(1)
+try:
+    import ttnn
+except Exception as e:
+    print(f"VERIFY-FAIL: ttnn import failed: {type(e).__name__}: {e}", file=sys.stderr)
+    sys.exit(1)
 try:
     import tt_bio
 except Exception as e:
     print(f"VERIFY-FAIL: tt_bio import failed: {type(e).__name__}: {e}", file=sys.stderr)
     sys.exit(1)
-print(f"tt_bio ok (version={getattr(tt_bio, '__version__', 'unknown')})")
+try:
+    import tt_bio.tenstorrent
+except Exception as e:
+    print(f"VERIFY-FAIL: tt_bio.tenstorrent import failed: {type(e).__name__}: {e}", file=sys.stderr)
+    sys.exit(1)
+
+print(
+    f"torch {torch.__version__} ok, ttnn ok, "
+    f"tt_bio {getattr(tt_bio, '__version__', 'unknown')} ok, tt_bio.tenstorrent ok"
+)
 PY
+  )
 }
 
 # Version of tt-bio actually installed in a venv, or empty if none/unreadable.
@@ -255,7 +359,7 @@ create_ui_venv() {
   if [[ -d "$VENV_UI" ]]; then
     if [[ "$FORCE" -eq 1 ]]; then
       log "venv-ui: --force given, removing existing venv at $VENV_UI"
-      rm -rf "$VENV_UI"
+      safe_rm_rf "$VENV_UI"
     elif verify_ui_venv "$VENV_UI" >"$VERIFY_TMP" 2>&1; then
       log "venv-ui: already present and verified at $VENV_UI — skipping (use --force to rebuild)"
       cat "$VERIFY_TMP"; rm -f "$VERIFY_TMP"
@@ -264,7 +368,7 @@ create_ui_venv() {
     else
       warn "venv-ui: existing venv at $VENV_UI failed verification — rebuilding"
       cat "$VERIFY_TMP" >&2; rm -f "$VERIFY_TMP"
-      rm -rf "$VENV_UI"
+      safe_rm_rf "$VENV_UI"
     fi
   fi
 
@@ -286,6 +390,7 @@ create_ui_venv() {
 RUNNER_STATUS="skipped"
 RUNNER_INSTALL_SECONDS=""
 RUNNER_SIZE=""
+RUNNER_DEGRADED=0   # 1 iff venv-runner has tt-bio installed but its stack won't import (see exit code 2 below)
 
 create_runner_venv() {
   if [[ "$SKIP_RUNNER" -eq 1 ]]; then
@@ -297,31 +402,37 @@ create_runner_venv() {
   if [[ -d "$VENV_RUNNER" ]]; then
     if [[ "$FORCE" -eq 1 ]]; then
       log "venv-runner: --force given, removing existing venv at $VENV_RUNNER"
-      rm -rf "$VENV_RUNNER"
+      safe_rm_rf "$VENV_RUNNER"
     else
       local installed
       installed="$(installed_tt_bio_version "$VENV_RUNNER")"
       if [[ "$installed" == "$TT_BIO_VERSION" ]]; then
         if verify_runner_venv "$VENV_RUNNER" >"$VERIFY_TMP" 2>&1; then
-          log "venv-runner: already has tt-bio==$TT_BIO_VERSION and imports cleanly — skipping (use --force to rebuild)"
+          log "venv-runner: already has tt-bio==$TT_BIO_VERSION and its torch/ttnn/tt_bio stack imports cleanly — skipping (use --force to rebuild)"
           cat "$VERIFY_TMP"; rm -f "$VERIFY_TMP"
           RUNNER_STATUS="already valid (skipped)"
-          RUNNER_SIZE="$(du -sh "$VENV_RUNNER" 2>/dev/null | cut -f1)"
+          RUNNER_SIZE="$(du -sh "$VENV_RUNNER" 2>/dev/null | cut -f1)" || true
           return 0
         else
-          # pip already reports the pinned version installed but the import
-          # fails. Re-running pip would not fix a missing system library, and
-          # would re-pay the multi-GB download for nothing — so don't.
-          warn "venv-runner: tt-bio==$TT_BIO_VERSION is installed but 'import tt_bio' fails:"
+          # pip already reports the pinned version installed but the deep
+          # import check fails. Re-running pip would not fix a missing system
+          # library or a partially-deleted package, and would re-pay the
+          # multi-GB download for nothing — so don't, unless --force says to.
+          RUNNER_SIZE="$(du -sh "$VENV_RUNNER" 2>/dev/null | cut -f1)" || true
+          if [[ "$STRICT" -eq 1 ]]; then
+            cat "$VERIFY_TMP" >&2; rm -f "$VERIFY_TMP"
+            die "venv-runner: tt-bio==$TT_BIO_VERSION is installed but its torch/ttnn/tt_bio stack fails to import (--strict). Rerun with --force to rebuild, or without --strict to treat this as a reported-but-nonfatal degraded state."
+          fi
+          warn "venv-runner: tt-bio==$TT_BIO_VERSION is installed but its torch/ttnn/tt_bio stack fails to import:"
           cat "$VERIFY_TMP" >&2; rm -f "$VERIFY_TMP"
-          warn "venv-runner: leaving the venv as-is (see docs/venv-bootstrap-notes.md for what this usually means). Use --force to rebuild anyway."
-          RUNNER_STATUS="pinned version installed, import FAILS (left as-is)"
-          RUNNER_SIZE="$(du -sh "$VENV_RUNNER" 2>/dev/null | cut -f1)"
+          warn "venv-runner: leaving the venv as-is (see docs/venv-bootstrap-notes.md for what this usually means). Use --force to rebuild anyway, or --strict to make this fatal."
+          RUNNER_STATUS="pinned version installed, import stack FAILS (left as-is)"
+          RUNNER_DEGRADED=1
           return 0
         fi
       else
         log "venv-runner: found tt-bio version '${installed:-none}', want $TT_BIO_VERSION — rebuilding"
-        rm -rf "$VENV_RUNNER"
+        safe_rm_rf "$VENV_RUNNER"
       fi
     fi
   fi
@@ -336,16 +447,16 @@ create_runner_venv() {
   if "${VENV_RUNNER}/bin/python3" -m pip install "tt-bio==${TT_BIO_VERSION}"; then
     t1=$(date +%s)
     RUNNER_INSTALL_SECONDS=$((t1 - t0))
-    RUNNER_SIZE="$(du -sh "$VENV_RUNNER" 2>/dev/null | cut -f1)"
+    RUNNER_SIZE="$(du -sh "$VENV_RUNNER" 2>/dev/null | cut -f1)" || true
     log "venv-runner: pip install finished in ${RUNNER_INSTALL_SECONDS}s, venv is now ${RUNNER_SIZE}"
   else
     t1=$(date +%s)
     RUNNER_INSTALL_SECONDS=$((t1 - t0))
-    RUNNER_SIZE="$(du -sh "$VENV_RUNNER" 2>/dev/null | cut -f1)"
+    RUNNER_SIZE="$(du -sh "$VENV_RUNNER" 2>/dev/null | cut -f1)" || true
     die "venv-runner: 'pip install tt-bio==${TT_BIO_VERSION}' FAILED after ${RUNNER_INSTALL_SECONDS}s (venv left at $VENV_RUNNER, ${RUNNER_SIZE}, for inspection). Not retrying automatically — see pip's own error above."
   fi
 
-  log "venv-runner: verifying 'import tt_bio'"
+  log "venv-runner: verifying torch/ttnn/tt_bio import cleanly"
   if verify_runner_venv "$VENV_RUNNER"; then
     RUNNER_STATUS="created and verified"
   else
@@ -353,7 +464,11 @@ create_runner_venv() {
     # system libraries/kernel modules are absent on this box. That is
     # expected here: this script deliberately never installs them (see
     # header comment). Report precisely; do not paper over it.
-    RUNNER_STATUS="created; pip install OK but 'import tt_bio' FAILS (see above)"
+    if [[ "$STRICT" -eq 1 ]]; then
+      die "venv-runner: pip install succeeded but its torch/ttnn/tt_bio stack fails to import (--strict, see VERIFY-FAIL line above)."
+    fi
+    RUNNER_STATUS="created; pip install OK but import stack FAILS (see above)"
+    RUNNER_DEGRADED=1
   fi
 }
 
@@ -391,6 +506,19 @@ echo "  pinned:      tt-bio==${TT_BIO_VERSION}"
 echo
 echo "NOT run by this script (deliberately, needs explicit consent — Debian"
 echo "packaging phase owns this): 'tt-bio install-deps' / any Tenstorrent"
-echo "system package or kernel module install. If 'import tt_bio' failed above,"
-echo "that is almost certainly why — see docs/venv-bootstrap-notes.md."
+echo "system package or kernel module install. If the torch/ttnn/tt_bio import"
+echo "check failed above, that is almost certainly why — see"
+echo "docs/venv-bootstrap-notes.md."
+if [[ "$RUNNER_DEGRADED" -eq 1 ]]; then
+  echo
+  echo "exit code: 2 (venv-runner installed but degraded — see 'status' above)"
+fi
 echo "==============================================================================="
+
+# See the "Exit codes" block in the header comment. --strict already turned
+# a degraded runner into a die() (exit 1) earlier; this only fires when
+# --strict was NOT given, so exit 2 is reachable exactly when the summary
+# above reports a degraded (but non-fatal) venv-runner.
+if [[ "$RUNNER_DEGRADED" -eq 1 ]]; then
+  exit 2
+fi

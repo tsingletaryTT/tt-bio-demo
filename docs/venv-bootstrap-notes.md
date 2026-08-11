@@ -59,14 +59,33 @@ on a fresh QB2" requires.
 scripts/setup-venvs.sh                    # builds .venvs/venv-ui and .venvs/venv-runner
 scripts/setup-venvs.sh --skip-runner       # UI only — skips the slow pip install
 scripts/setup-venvs.sh --force             # rebuild both from scratch
+scripts/setup-venvs.sh --strict            # a degraded venv-runner (see below) becomes fatal
 scripts/setup-venvs.sh --prefix /opt/tt-bio-demo   # what the Debian postinst will pass, later
 ```
 
 The script is idempotent: re-running it with both venvs already valid is a
-sub-second no-op (it re-verifies both, then exits). `--force` throws away and
-rebuilds; without it, a venv with the wrong (or missing) tt-bio version is
-rebuilt automatically, but a venv with the *right* version already installed
-is left alone even if nothing else changed.
+close-to-free no-op (it re-verifies both by actually importing, then exits).
+`--force` throws away and rebuilds; without it, a venv with the wrong (or
+missing) tt-bio version is rebuilt automatically, but a venv with the *right*
+version already installed is left alone even if nothing else changed.
+
+### Exit codes
+
+Automation (a Debian postinst, CI, a person's shell script) needs to tell
+"fully working" apart from "installed but unusable" without parsing this
+script's text output, so the exit code carries that distinction:
+
+| Code | Meaning |
+|---|---|
+| `0` | Everything requested was built/verified and works. |
+| `1` | A hard failure: bad preconditions, missing apt packages, `venv-ui` failed verification, `venv-runner`'s `pip install` itself failed, an `rm -rf` couldn't remove an existing venv (see "permissions" below), or — with `--strict` — `venv-runner`'s stack failed to import. |
+| `2` | Soft/degraded: `venv-runner` has the pinned `tt-bio` version installed, but its `torch`/`ttnn`/`tt_bio` stack does not import. Reported, not fatal, unless `--strict` is given. |
+
+Exit `2` is expected, not a bug, on a box where `tt-bio install-deps` hasn't
+been run — see the "what actually happens on install" section below for why
+that's routine pre-Phase-3. `--strict` exists for a caller (a later,
+hardware-ready Phase 3 postinst, say) that needs a working runner and should
+treat "installed but degraded" the same as "failed outright."
 
 It also checks apt prerequisites up front — `python3-venv`, `python3-pip`,
 `python3-gi`, `python3-gi-cairo`, `gir1.2-gtk-4.0`, `python3-gemmi`,
@@ -144,27 +163,87 @@ slow. Expect this to vary a lot with the network at the actual provisioning
 site; budget for it being much slower on a fresh QB2 at a venue with worse
 connectivity, and for the on-disk size to stay roughly the same regardless.
 
-**`import tt_bio` succeeds after a plain `pip install`** on this box — no
-Tenstorrent system libraries or kernel modules were required just to import
-the package (`tt_bio.__version__` reports `0.6.2`). That's a meaningfully
-different outcome from "pip succeeds but the import fails without system
-deps," which was the failure mode this script was written to detect and report
-rather than paper over. It does **not** mean the runner is ready to do real
-work: `tt-bio install-deps` (Tenstorrent system packages, kernel modules,
-`tt-metal`/`tt-smi` userspace) has deliberately never been run by this script
-or anywhere else in this repo — that's an explicit-consent, Debian-packaging-
-phase decision, not a venv-bootstrap one. Whether `import tt_bio` continues to
-succeed *and* whether tt-bio can actually drive hardware without those system
-deps installed are two different questions; only the first has been verified
-here. Phase 3, which will actually invoke tt-bio against hardware, is where the
-second gets answered.
+### What "verified" actually checks — and a false-positive it used to miss
 
-If a future run of this script reports `pip install` succeeding but `import
-tt_bio` failing, that is the signal that this box's assumption (no system deps
-needed for the import) doesn't hold everywhere — treat it as exactly that
-signal, not as a bug in the script. The script's own verification step
-(`verify_runner_venv` in `scripts/setup-venvs.sh`) prints the precise
-`ExceptionType: message` from the failing import for this reason.
+The first version of this script verified `venv-runner` with a bare `import
+tt_bio` and called that "verified." That check is too shallow to trust:
+`tt_bio`'s top-level `__init__.py` is deliberately lazy — it does nothing but
+read its own installed version via `importlib.metadata` — so `import tt_bio`
+succeeds even in a venv where `torch` was never installed or got wiped out
+partway through. Confirmed empirically, not assumed: diffing `sys.modules`
+before/after a bare `import tt_bio` in this exact `venv-runner` shows it pulls
+in nothing but stdlib. The real work, and the real `import torch, ttnn`, lives
+one level down — in modules like `tenstorrent.py`, `protenix.py`, `boltz2.py`,
+`worker.py` — none of which a bare top-level import ever touches.
+
+This was caught by simulating an interrupted install: copy `venv-runner`,
+delete its `torch/` tree and `torch-*.dist-info`, and re-run the (old)
+verification against the copy. It printed "already valid, skipping" and
+exited `0`, while `import torch` in that same venv raised
+`ModuleNotFoundError`. That is the exact "half-built environment reports
+success" failure this script exists to prevent — it just wasn't checking
+deep enough to notice its own runner venv was in that state.
+
+`verify_runner_venv` (in `scripts/setup-venvs.sh`) now checks four things
+individually, so a failure names the actual missing/broken piece rather than
+just "tt_bio didn't import":
+
+1. `import torch`
+2. `import ttnn`
+3. `import tt_bio`
+4. `import tt_bio.tenstorrent` — the shared Tenstorrent-compute primitives
+   module every model family (`boltz2`, `protenix`, `opendde`, ...) is built
+   on, per their own docstrings. A clean import of it is a real smoke test
+   that tt_bio's own code loads against the `torch`/`ttnn` actually present,
+   not just that the lazy top-level package ran without complaint.
+
+Re-running the same torch-deletion scenario against the fixed check correctly
+reports the degraded venv (see "Verification performed" below) instead of a
+false "already valid."
+
+**What this deliberately does *not* check:** opening a Tenstorrent device, or
+anything that needs `tt-bio install-deps`'s system libraries/kernel modules.
+`import ttnn` alone does not touch hardware — verified: it imports cleanly on
+this box with no device opened, producing only noisy `ttnn`/tt-metal debug
+logging and some harmless nanobind reference-counting warnings at interpreter
+shutdown (`LOGURU_LEVEL`/`TT_METAL_LOGGER_LEVEL` are set before the import,
+matching tt-bio's own `main.py`, to keep that quiet). Whether tt-bio can
+actually *drive* hardware is a Phase-3 question; this script only answers
+whether its Python stack imports.
+
+Other tt-bio dependencies (`gemmi`, `rdkit`, `pandas`, `transformers`,
+`biotite`, ...) are declared requirements and pip did install them, but they
+are not individually checked here — they're much smaller downloads than
+`torch`/`ttnn` and dramatically less likely to be the specific casualty of an
+install interrupted partway through (pip installs the heaviest packages last
+in the dependency-resolved order on this box, so a truncated run leaves
+`torch`/`ttnn`/their `nvidia-*` wheels as the prime suspects, not e.g.
+`click`). If experience says otherwise on a different box or under a
+different failure mode, widen the check — it should track what actually goes
+missing, not a guess made once and left unrevisited.
+
+**`import tt_bio`, `torch`, `ttnn`, and `tt_bio.tenstorrent` all succeed after
+a plain `pip install`** on this box — no Tenstorrent system libraries or
+kernel modules were required just to import them. That's a meaningfully
+different outcome from "pip succeeds but the import fails without system
+deps," which is the other failure mode this script watches for. It does
+**not** mean the runner is ready to do real work: `tt-bio install-deps`
+(Tenstorrent system packages, kernel modules, `tt-metal`/`tt-smi` userspace)
+has deliberately never been run by this script or anywhere else in this repo
+— that's an explicit-consent, Debian-packaging-phase decision, not a
+venv-bootstrap one. Whether the import continues to succeed *and* whether
+tt-bio can actually drive hardware without those system deps installed are
+two different questions; only the first has been verified here. Phase 3,
+which will actually invoke tt-bio against hardware, is where the second gets
+answered.
+
+If a future run of this script reports `pip install` succeeding but the
+import check failing (exit `2`, or exit `1` with `--strict`), that is the
+signal that this box's assumption (no system deps needed for the import)
+doesn't hold everywhere — treat it as exactly that signal, not as a bug in
+the script. `verify_runner_venv` prints the precise `ExceptionType: message`
+from the failing import, naming which of the four checks failed, for this
+reason.
 
 ## Idempotency and the bug it caught
 
@@ -187,15 +266,45 @@ into a variable first and parse it with no live pipe underneath, avoiding the
 race entirely. Any `producer | consumer_with_early_exit` pipeline under
 `set -e -o pipefail` has this bug latent in it; it just happens not to fire on
 the first (cold) run, only once there's something for `pip show` to actually
-report — which is exactly when idempotency gets exercised for real.
+report — which is exactly when idempotency gets exercised for real. As a
+precaution, every `du -sh ... | cut -f1` size computation elsewhere in the
+script (same plain-assignment-with-live-pipe shape) got an `|| true` for the
+same reason, even though `du -s` producing exactly one line doesn't trigger
+the SIGPIPE race the way `awk`'s early `exit` did — cheap insurance against
+the same class of bug, not a fix for an observed second instance of it.
+
+**Permissions.** `rm -rf` on an existing venv (for `--force`, or an automatic
+rebuild on a version mismatch) goes through a `safe_rm_rf` helper that
+captures `rm`'s stderr and turns a failure into a named `die()` instead of
+bash's raw, context-free "Permission denied" under `set -e`. This matters in
+practice once `--prefix /opt/tt-bio-demo` is in play: a non-root user
+re-running this script against a venv a root-owned postinst created would
+otherwise get killed by `set -e` with no explanation of why or what to do
+about it.
 
 ## Verification performed
 
 - `scripts/setup-venvs.sh` from a clean `.venvs/`: both venvs created,
   `venv-ui` verifies `gi`+`Gtk 4.0`, `gemmi`, `OpenGL`, `numpy`; `venv-runner`
-  verifies `import tt_bio`. Exit 0.
+  verifies `torch`, `ttnn`, `tt_bio`, and `tt_bio.tenstorrent` individually.
+  Exit 0.
 - Re-run immediately after: both venvs detected as already valid, no rebuild,
-  exit 0, sub-second.
+  exit 0, close to a second (importing `torch`+`ttnn`+`tt_bio.tenstorrent`
+  every idempotent run costs a little more than the original bare-`tt_bio`
+  check did, in exchange for that check meaning something).
+- `--force`: both venvs discarded and rebuilt from scratch (pip's wheel cache
+  warm, so the reinstall was ~35s); exit 0.
+- The false-positive repro, against a scratch copy (not the real 6 GB
+  `venv-runner` — a copy, deleted afterward): copied `venv-runner`, removed
+  its `torch/` tree and `torch-*.dist-info`, ran the script with
+  `--prefix` pointed at the copy. Before the fix this reported "already
+  valid, skipping" and exited `0`. After the fix it reports `VERIFY-FAIL:
+  torch import failed: ModuleNotFoundError: No module named 'torch'`, sets
+  `venv-runner`'s status to the degraded state, and exits `2`. The same
+  scenario with `--strict` added dies outright with exit `1`.
+- `safe_rm_rf` against a directory made unwritable to simulate a permissions
+  failure: dies with a named remedy (exit `1`) instead of a raw, unexplained
+  `rm: Permission denied` under `set -e`.
 - `scripts/test.sh` (i.e. the 83-test suite through `venv-ui`): all pass.
 - `.venvs/venv-ui/bin/python3 -m ui.app` under `WAYLAND_DISPLAY=wayland-0
   DISPLAY=:0`: window opens, no stack trace, only a benign
