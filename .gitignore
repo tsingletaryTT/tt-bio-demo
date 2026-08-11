@@ -10,3 +10,4 @@ debian/tt-bio-demo*/
 *.deb
 *.buildinfo
 *.changes
+.superpowers/
