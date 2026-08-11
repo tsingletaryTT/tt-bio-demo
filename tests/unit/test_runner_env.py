@@ -40,7 +40,6 @@ def test_defaults_to_the_process_environment_when_no_base_given(monkeypatch):
     assert env["TTBIO_DEMO_MARKER"] == "present"
 
 
-import os
 import time
 
 from runner.env import log_root_size, prune_log_root
