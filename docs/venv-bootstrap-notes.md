@@ -77,13 +77,24 @@ script's text output, so the exit code carries that distinction:
 
 | Code | Meaning |
 |---|---|
-| `0` | Everything requested was built/verified and works — including, on a box with Tenstorrent cards attached, a real device open/close. |
-| `1` | A hard failure: bad preconditions, missing apt packages, `venv-ui` failed verification, `venv-runner`'s `pip install` or SFPI download/hash-verify itself failed, an `rm -rf` couldn't remove an existing venv (see "permissions" below), or — with `--strict` — `venv-runner`'s import/device check failed. |
-| `2` | Soft/degraded: `venv-runner` has the pinned `tt-bio` version and a matching SFPI installed, but its `torch`/`ttnn`/`tt_bio` stack doesn't import, or a device probe on hardware that's actually present fails. Reported, not fatal, unless `--strict` is given. |
+| `0` | Everything requested was built/verified and works — including, on a box with Tenstorrent cards physically present, a real device open/close. Also `0` when no Tenstorrent PCI hardware is present at all (see "the device probe" below for why that's a distinct, deliberately checked case, not just "`ttnn` reported zero"). |
+| `1` | A hard failure: bad preconditions, missing apt packages, `venv-ui` failed verification, `venv-runner`'s `pip install`/SFPI download/hash-verify/extraction itself failed, an `rm -rf` couldn't remove an existing venv (see "permissions" below), or — with `--strict` — `venv-runner`'s import/device check failed. |
+| `2` | Soft/degraded: `venv-runner` has the pinned `tt-bio` version and a matching SFPI installed, but its `torch`/`ttnn`/`tt_bio` stack doesn't import, **or** Tenstorrent PCI hardware is physically present but not usable — driver not loaded/bound, a failed `open_device()`, or the probe timing out (a possible wedged card). Reported, not fatal, unless `--strict` is given. |
 
-Exit `2` is expected, not a bug, on a box with no Tenstorrent cards attached
-at all (a packaging/CI machine, say) or one still missing the Tenstorrent
-driver/kernel module — see "the SFPI toolchain" and "the device probe" below.
+**Important correction from an earlier draft of this doc:** exit `2` on "the
+driver/kernel module is missing" is something this script had to be *made*
+true — it was not true by construction, and is exactly the kind of claim this
+note says elsewhere not to make without testing it. The first version of the
+device probe used `ttnn.get_num_devices() == 0` as its only signal for "no
+hardware, skip the probe" — but that call returns an empty list with no
+exception whenever `/dev/tenstorrent` doesn't exist, which is exactly the
+state of a box with cards installed but no driver loaded. A card-less
+packaging machine and a QB2 with an unloaded `tt-kmd` reported the *identical*
+zero, and the script reported the identical exit `0` for both — silently
+promoting "driver absent" to "no hardware, that's fine" instead of catching
+it. See "the device probe" below for the fix and how it was verified without
+touching this box's actual driver.
+
 `--strict` exists for a caller (a later, hardware-ready Phase 3 postinst,
 say) that needs a working runner and should treat "installed but degraded"
 the same as "failed outright."
@@ -281,25 +292,52 @@ of relying on (or mutating) the system one:
   `uname -m`; distro is `/etc/os-release`'s `ID` unless `ID_LIKE` names a
   `debian` or `fedora` ancestor — Ubuntu's `ID=ubuntu, ID_LIKE=debian`
   resolves to `debian`, matching the manifest's binary matrix).
-- **Downloaded from `${sfpi_repo}/releases/download/${version}/...` and
-  sha256-verified against the manifest before anything is extracted.** A
-  mismatch is a hard failure (`die`, script exits 1) — this is a compiler
-  toolchain arriving over the network, and refusing a corrupted or tampered
-  download is not optional. Measured on this box: ~80 MB download, a few
-  seconds; ~435 MB extracted.
-- **Extracted to `<ttnn>/runtime/sfpi`.** The tarball's own top-level entry
-  is already `sfpi/`, so it's extracted into `runtime/` (not `runtime/sfpi/`)
-  — landing at `runtime/sfpi/...` directly rather than the doubly-nested
-  `runtime/sfpi/sfpi/...` a naive `mkdir sfpi && extract into it` would
-  produce.
+- **Downloaded (with a connect/max-time timeout — see "the device probe"'s
+  timeout reasoning, the same logic applies to a stalled download) from
+  `${sfpi_repo}/releases/download/${version}/...` and sha256-verified
+  against the manifest before anything is extracted.** A mismatch is a hard
+  failure (`die`, script exits 1) — this is a compiler toolchain arriving
+  over the network, and refusing a corrupted or tampered download is not
+  optional. Measured on this box: ~80 MB download, a few seconds; ~435 MB
+  extracted.
+- **Extracted to a staging directory first, never straight into
+  `<ttnn>/runtime/sfpi`.** The tarball's own top-level entry is already
+  `sfpi/`, so within staging it lands at `staging/sfpi/...` — checked for
+  explicitly, to catch a differently-laid-out tarball rather than silently
+  producing the doubly-nested `.../sfpi/sfpi/...` a blind extract would.
+  Extraction itself is guarded (`if ! tar ...; then die ...; fi`), not left
+  to `set -e`'s raw propagation — a partial/failed extraction gets a named
+  remedy message, consistent with everything else in this script, rather
+  than `tar`'s own exit status and no context.
+- **The old directory, if any, is never removed until the replacement is
+  fully downloaded, hash-verified, and extracted.** A review round caught
+  the original ordering — remove the untrusted old copy, *then* fetch the
+  replacement — turning a transient network blip during a routine
+  re-verification into `runtime/sfpi` being completely empty, worse than
+  the wrong-version state it started in. The fix downloads and verifies to
+  a scratch location and a staging extraction directory under
+  `runtime/.sfpi-staging.XXXXXX` first; only once that staging copy is
+  known-good does the swap happen — the old directory (if present) is
+  renamed aside (`runtime/sfpi.old.<pid>`, an O(1) rename, not a recursive
+  copy), the staging copy is renamed into `runtime/sfpi`, and only then is
+  the `.old` one actually deleted. That shrinks the window in which
+  `runtime/sfpi` doesn't exist from "as long as the network takes" to "the
+  time between two renames," and even a crash in that narrow window leaves
+  the old copy recoverable at its `.old` name rather than gone. Verified
+  directly: corrupting the download URL, then the expected hash, then the
+  tarball itself (via a local `file://` fixture) all confirmed the
+  pre-existing untrusted directory — including a marker file planted in
+  it — survived completely untouched, with no leftover staging directory
+  either. A successful run afterward confirmed the marker was gone and a
+  correct receipt was in place, with no `.old`/`.staging` litter left over.
 - **Idempotent via a receipt this function writes itself**, not by trusting
   that a `runtime/sfpi` directory existing means it's correct.
-  `ensure_sfpi_installed` writes `runtime/sfpi/.tt-bio-demo-sfpi-receipt`
-  (`version=... sha256=...`) immediately after a hash-verified install, and
-  only trusts an existing directory if that exact receipt is present and
-  matches the *current* manifest's version/hash. Anything else — no receipt,
-  a stale receipt from a different `ttnn` version, or a directory someone
-  placed there by hand — is treated as untrusted and replaced, never assumed
+  `ensure_sfpi_installed` writes a receipt (`version=... sha256=...`) inside
+  the staging copy before it's ever swapped into place, and only trusts an
+  existing directory if that exact receipt is present and matches the
+  *current* manifest's version/hash. Anything else — no receipt, a stale
+  receipt from a different `ttnn` version, or a directory someone placed
+  there by hand — is treated as untrusted and replaced, never assumed
   correct on the strength of merely existing. (This was tested directly: a
   real SFPI 7.35.3 was hand-placed at `runtime/sfpi` during development to
   unblock other testing before this logic existed; once it did, the script
@@ -325,35 +363,132 @@ script doesn't touch — see "the device probe" below.
 
 Every import check above — `torch`, `ttnn`, `tt_bio`, `tt_bio.tenstorrent` —
 passed throughout the SFPI investigation. None of them open a device, so
-none of them could have caught it. `verify_runner_venv` now ends with an
-actual probe:
+none of them could have caught it. `verify_runner_venv` ends with an actual
+probe — which itself went through a review round that found the first
+version of this probe had exactly the "half-built environment reports
+success" problem this whole script exists to prevent, just one layer deeper
+than the import checks did.
 
-1. `ttnn.get_num_devices()` — how many Tenstorrent cards does this process
-   see at all.
-2. If **zero**, stop there and report success anyway: `device probe SKIPPED
-   (0 Tenstorrent devices detected)`. A packaging or CI machine legitimately
-   has no cards; that is not an install failure, and treating it as one
-   would make this script unusable anywhere but a fully wired QB2.
-3. If **one or more**, actually call `ttnn.open_device(device_id=0)` then
-   `ttnn.close_device(...)`. A clean pair is the only thing that counts as
-   `device probe OK (N device(s) detected, opened+closed device 0)`. Any
-   exception, *or the subprocess dying outright* (the segfault case above),
-   is a real failure — this box has cards, so "the toolchain can't actually
-   compile for them" is exactly the failure this step exists to catch.
+### Why `ttnn.get_num_devices() == 0` cannot mean "no cards"
 
-That third case is why the probe runs inside the same subprocess-isolated
-`verify_runner_venv` every other check already used (a fresh `python3 -`
-per call, not the calling shell): a segfault there is just a nonzero exit
-status to bash, handled by the same `if verify_runner_venv ...; then` this
-script already had — no special crash handling needed, because the process
-boundary already provides it. Confirmed directly, not assumed: one of the
-sabotage runs during development (SFPI's `compiler/` directory renamed away,
-leaving a stale-but-present receipt) triggered the real segfault rather than
-a clean exception, and the script still reported the correct degraded state
-and exit code.
+The first version of the probe used `ttnn.get_num_devices()` as its only
+signal for hardware presence: zero meant "skip the probe, report success."
+That's wrong, traced all the way through tt-metal's own source:
+`ttnn.get_num_devices()` calls `GetNumAvailableDevices()`, which calls
+`Cluster::number_of_user_devices()`, which goes through UMD's
+`PCIDevice::enumerate_devices()` — and that function's very first move is
+`if (!std::filesystem::exists("/dev/tenstorrent/")) return device_ids;`,
+handing back an **empty list, with no exception**. `/dev/tenstorrent/*` is
+created by the `tt-kmd` kernel module. So a box with four physical cards
+whose driver is unloaded, missing, or failed to bind reports the exact same
+`0` as a card-less packaging machine — `get_num_devices()` alone cannot tell
+those two states apart, and only one of them is a real failure. That is a
+plausible state for this project specifically: a conference-eve QB2 after a
+kernel update is exactly the kind of box that might have cards installed and
+no bound driver, and the old probe would have called that "no hardware,
+fine" and exited `0`.
 
-On this box, with real hardware and a correctly vendored SFPI, the probe
-reports `device probe OK (4 device(s) detected, opened+closed device 0)`.
+The fix establishes physical presence independently of the driver, by
+counting Tenstorrent PCI devices (vendor ID `0x1e52`) directly via
+`/sys/bus/pci/devices/*/vendor`. PCI enumeration happens in the kernel
+regardless of whether any driver is bound to a device, unlike
+`/dev/tenstorrent`, so it's the ground truth `get_num_devices()` can be
+checked against rather than trusted blindly. Combining the two signals gives
+three states instead of two:
+
+| PCI devices (vendor `0x1e52`) | `ttnn.get_num_devices()` | Verdict |
+|---|---|---|
+| 0 | (not checked) | No cards at all — pass, probe skipped |
+| >0 | >0 | Cards present and usable — try opening one |
+| >0 | 0 | **Cards present, driver absent/unbound — fail** |
+
+Reported, respectively: `device probe SKIPPED (0 Tenstorrent PCI devices
+detected)`; `device probe OK (N PCI device(s) present, M usable,
+opened+closed device 0)`; or a `VERIFY-FAIL` naming the mismatch explicitly
+("N Tenstorrent PCI device(s) present but ttnn.get_num_devices() reports 0
+-- the tt-kmd driver is most likely not loaded or not bound"). Only the third
+row is new behavior; the first two match what the old probe already did
+correctly when the two signals agreed (real cards present and a bound
+driver, or genuinely nothing installed).
+
+### If there's a card that's present but can't open
+
+Once cards are confirmed physically present and the driver reports at least
+one, the probe actually calls `ttnn.open_device(device_id=0)` then
+`ttnn.close_device(...)`. A clean pair is the only thing that counts as `M
+usable`. Any exception — or the subprocess dying outright, see the segfault
+below — is a real failure: cards are present and the driver sees them, so
+"the toolchain can't actually compile for them" (the SFPI story above) is
+exactly the failure this step exists to catch.
+
+### The whole probe runs under a timeout
+
+Both failure modes reproduced during this work — the `TT_THROW` and the
+segfault — failed fast. Neither exercised a hang. Tenstorrent hardware has a
+documented wedged-card state that needs a warm reset, and nothing rules out
+a mismatched toolchain triggering that as a hang instead of a crash. In an
+unattended postinst, a probe that can hang forever wedges the whole install
+with nobody present to notice. The entire probe — imports and device probe
+together, one `python3 -` subprocess — runs under
+`timeout --kill-after=10s ${DEVICE_PROBE_TIMEOUT_SECONDS}s` (120s by
+default: generous next to the couple of seconds the happy path takes, but
+bounded). A timeout is reported as `VERIFY-FAIL: device probe timed out
+after ${N}s`, exits `124` from `timeout`'s perspective, and is treated
+exactly like any other probe failure by the caller — exit `2`, or `1` with
+`--strict` — never as a hang.
+
+### Why a segfault there is still just "a failure," not a crash
+
+That the probe can crash outright, not just throw, is why it runs inside the
+same subprocess-isolated `verify_runner_venv` every other check already
+used (a fresh `python3 -` per call, not the calling shell): a segfault
+there is just a nonzero exit status to bash, handled by the same `if
+verify_runner_venv ...; then` this script already had — no special crash
+handling needed, because the process boundary already provides it. Confirmed
+directly, not assumed: one of the sabotage runs during development (SFPI's
+`compiler/` directory renamed away, leaving a stale-but-present receipt)
+triggered a real segfault rather than a clean exception, and the script
+still reported the correct degraded state and exit code.
+
+### What was actually tested, and how, without touching this shared box's driver
+
+The driver-absent branch could be reproduced live by unloading `tt-kmd` —
+and deliberately was not, on a box other Tenstorrent projects are actively
+using. Instead, the check's *inputs* were faked, in increasing order of
+fidelity:
+
+1. The PCI-counting function itself (`physical_tt_pci_device_count`, in the
+   real probe source, parameterized on its sysfs root specifically so it's
+   testable this way) was pointed at a hand-built fake `/sys/bus/pci/devices`
+   tree with two fabricated `0x1e52` vendor files and one unrelated vendor —
+   confirmed it counts exactly the two Tenstorrent ones, and separately that
+   an empty or nonexistent root counts zero rather than erroring.
+2. The exact probe source extracted verbatim from the script was run through
+   the real `venv-runner` interpreter with only `ttnn.get_num_devices` — one
+   line — monkeypatched to return `0` *after* a completely genuine `import
+   ttnn`. Real `torch`, real `tt_bio`, real `tt_bio.tenstorrent`, and real PCI
+   detection (this box's actual 4 cards, read from the real
+   `/sys/bus/pci/devices`) all stayed untouched; only the single value the
+   fix is designed to distrust was faked. Result: `VERIFY-FAIL: 4
+   Tenstorrent PCI device(s) present but ttnn.get_num_devices() reports 0 --
+   the tt-kmd driver is most likely not loaded or not bound`, exit `1` from
+   the probe (exit `2` from the full script without `--strict`, confirmed
+   separately through the normal idempotent-check code path). No `rmmod`, no
+   `/dev/tenstorrent` write, no driver state touched at any point.
+3. The genuine no-hardware case was verified the same way as before this
+   review round: a fully synthetic `ttnn` stub (`get_num_devices() -> 0`,
+   `open_device` raising if ever called) combined with an empty fake sysfs
+   root, confirming `device probe SKIPPED (0 Tenstorrent PCI devices
+   detected)` and exit `0`.
+4. The real happy path — genuine hardware, genuine driver, genuine SFPI —
+   reports `device probe OK (4 PCI device(s) present, 4 usable,
+   opened+closed device 0)`, unaffected by any of the above.
+5. The timeout mechanism (`timeout --kill-after=...`) was verified in
+   isolation against a Python process that sleeps forever, confirming it
+   returns exit `124` and that the wrapping shell code translates that into
+   the documented `VERIFY-FAIL: device probe timed out` message — not
+   against a real wedged card, since none was available (nor would
+   deliberately wedging one on shared hardware be reasonable).
 
 ## Idempotency and the bug it caught
 
@@ -404,16 +539,14 @@ about it.
   development): both venvs created, `venv-ui` verifies `gi`+`Gtk 4.0`,
   `gemmi`, `OpenGL`, `numpy`; `venv-runner` verifies `torch`, `ttnn`,
   `tt_bio`, `tt_bio.tenstorrent`, downloads+hash-verifies+installs SFPI
-  7.35.3, and probes a real device: `device probe OK (4 device(s) detected,
-  opened+closed device 0)`. Exit 0, ~57s total (SFPI download is small next
-  to the pip install).
+  7.35.3, and probes a real device: `device probe OK (4 PCI device(s)
+  present, 4 usable, opened+closed device 0)`. Exit 0.
 - Re-run immediately after: both venvs detected as already valid (SFPI via
-  its receipt, no re-download), no rebuild, exit 0, ~3s (the device probe
-  itself takes real wall-clock time now, unlike a bare import).
+  its receipt, no re-download), no rebuild, exit 0, ~3s.
 - `--force`: both venvs discarded and rebuilt from scratch, including a
-  fresh SFPI download+verify+install; exit 0, ~45-60s depending on pip cache
-  state, device probe OK again afterward.
-- The tt_bio-only false-positive repro (from the prior review round), against
+  fresh SFPI download+verify+install; exit 0, device probe OK again
+  afterward.
+- The tt_bio-only false-positive repro (from an earlier review round), against
   a scratch copy: copied `venv-runner`, removed its `torch/` tree and
   `torch-*.dist-info`, ran the script with `--prefix` pointed at the copy.
   Reports `VERIFY-FAIL: torch import failed: ModuleNotFoundError: No module
@@ -436,23 +569,47 @@ about it.
   than a nonzero exit status — no special handling needed, and the script
   still reported the correct degraded state and exit code (`2` without
   `--strict`, `1` with it).
-- **Hash mismatch refusal**: temporarily corrupted the expected sha256 in a
-  copy of `<ttnn>/tt_metal/sfpi-version`, ran the script. It downloaded the
-  (correct) tarball, computed its real hash, found it didn't match the
-  doctored manifest value, and died with a named mismatch error instead of
-  installing anything — restored the manifest afterward.
-- **Untrusted-directory replacement**: hand-placed a fake `runtime/sfpi`
-  (real subdirectory names, bogus contents, no receipt file). The script
-  logged it as untrusted and replaced it with a real, verified install
-  rather than assuming its mere presence meant it was fine.
-- **No-hardware branch**: `ttnn.get_num_devices() == 0` is not exercisable on
-  this box (it has 4 real cards), so the branch was verified by extracting
-  `verify_runner_venv`'s exact Python body and running it against a stub
-  `ttnn` module whose `get_num_devices()` returns `0` and whose
-  `open_device` raises if called at all (to prove the real one is never
-  invoked in this branch). Result: `device probe SKIPPED (0 Tenstorrent
-  devices detected)`, exit 0 — a no-hardware machine is reported as fully
-  working, not degraded.
+- **The PCI-vs-driver mismatch (the Critical fix from the second review
+  round)** — see "the device probe" above for the full write-up; summarized
+  here for the record: (1) `physical_tt_pci_device_count` against a
+  fabricated sysfs tree (two fake `0x1e52` devices, one unrelated vendor,
+  and separately an empty/nonexistent root) correctly counts 2, 0, and 0.
+  (2) The verbatim probe source, run through the real `venv-runner`
+  interpreter with only `ttnn.get_num_devices` monkeypatched to `0` after a
+  genuine `import ttnn` — real `torch`, `tt_bio`, `tt_bio.tenstorrent`, and
+  real PCI detection (this box's actual 4 cards) all untouched — correctly
+  reports `VERIFY-FAIL: 4 Tenstorrent PCI device(s) present but
+  ttnn.get_num_devices() reports 0` and fails, where the pre-fix code would
+  have reported success. (3) The genuine no-hardware case (fully synthetic
+  `ttnn` stub + empty fake sysfs root) still reports `device probe SKIPPED
+  (0 Tenstorrent PCI devices detected)` and exit `0`. No kernel module was
+  loaded, unloaded, or otherwise touched at any point; the real driver and
+  real hardware on this shared box were never disturbed.
+- **The device-probe timeout**: verified in isolation (`timeout
+  --kill-after=2s 2s python3 -c "time.sleep(999)"`, and the exact
+  `rc -eq 124` handling shape used in `verify_runner_venv`) — confirms
+  `timeout` reports exit `124` on expiry and that the wrapping code
+  translates that into the documented `VERIFY-FAIL: device probe timed
+  out...` message. Not exercised against a real wedged card, since none was
+  available and deliberately wedging one on shared hardware isn't
+  reasonable — the mechanism (a subprocess timeout, handled the same way any
+  other nonzero exit already was) doesn't depend on what caused the hang.
+- **SFPI's download-before-destroy ordering (the other Critical fix)**:
+  against three scratch copies of `venv-runner`, each with an untrusted
+  `runtime/sfpi` (receipt removed, a `MARKER` file planted to prove
+  survival) — (1) a broken download URL, (2) a corrupted expected hash, and
+  (3) a locally-served corrupt tarball (via a `file://` fixture, to make
+  `curl` succeed but `tar` fail) were each tried in turn. All three died
+  with a named error *and* left the untrusted directory, `MARKER` included,
+  completely untouched — no `.old`/`.staging` litter either. A subsequent
+  successful run against the same copy then confirmed the swap completes
+  cleanly: `MARKER` gone, a correct receipt in place, `device probe OK`,
+  exit `0`.
+- **Untrusted-directory replacement** (still holds after the reorder above):
+  hand-placed a fake `runtime/sfpi` (real subdirectory names, bogus
+  contents, no receipt file). The script logged it as untrusted and
+  replaced it with a real, verified install rather than assuming its mere
+  presence meant it was fine.
 - `safe_rm_rf` against a directory made unwritable to simulate a permissions
   failure: dies with a named remedy (exit `1`) instead of a raw, unexplained
   `rm: Permission denied` under `set -e`.

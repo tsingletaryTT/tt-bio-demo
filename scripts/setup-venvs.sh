@@ -43,25 +43,35 @@
 #                    tt-bio` pulls torch + ttnn and can be multiple GB and
 #                    slow (see docs/venv-bootstrap-notes.md) — useful while
 #                    iterating on the UI side.
-#   --strict        Treat a venv-runner whose torch/ttnn/tt_bio stack fails
-#                    to import as a hard failure (die, exit 1) instead of a
-#                    reported-but-nonfatal degraded state. See "Exit codes"
-#                    below — without --strict this situation exits 2, which
-#                    is expected pre-Phase-3 on a box with no Tenstorrent
-#                    system libraries installed.
+#   --strict        Treat a venv-runner whose torch/ttnn/tt_bio stack or
+#                    device probe fails as a hard failure (die, exit 1)
+#                    instead of a reported-but-nonfatal degraded state. See
+#                    "Exit codes" below — without --strict this situation
+#                    exits 2.
 #
 # Exit codes:
-#   0   everything requested was built/verified and works.
+#   0   everything requested was built/verified and works — including, on a
+#       box with Tenstorrent cards physically present, a real device
+#       open/close. Also 0 when no Tenstorrent PCI hardware is present at
+#       all (see verify_runner_venv's device probe below for why that is a
+#       distinct, deliberately checked case).
 #   1   a hard failure: bad preconditions, missing apt packages, venv-ui
-#       failed verification, venv-runner's `pip install` itself failed, or
-#       (with --strict) venv-runner's stack failed to import.
+#       failed verification, venv-runner's `pip install`/SFPI
+#       download/hash-verify/extraction itself failed, or (with --strict)
+#       venv-runner's stack or device probe failed.
 #   2   soft/degraded: venv-runner was created (or already existed) with the
-#       pinned tt-bio version installed, but torch/ttnn/tt_bio does not
-#       import. Without --strict this is reported, not fatal — see
-#       docs/venv-bootstrap-notes.md for why that's the expected state on a
-#       box without `tt-bio install-deps` run. Automation that needs to
-#       distinguish "fully working" from "installed but unusable" should
-#       check for exactly this code (or pass --strict to fold it into exit 1).
+#       pinned tt-bio version and a matching SFPI installed, but its
+#       torch/ttnn/tt_bio stack doesn't import, OR Tenstorrent PCI hardware
+#       is physically present but not usable (driver not loaded/bound, a
+#       failed open_device(), or the probe timed out — a possible wedged
+#       card). Without --strict this is reported, not fatal. Automation
+#       that needs to distinguish "fully working" from "installed but
+#       unusable" should check for exactly this code (or pass --strict to
+#       fold it into exit 1). See docs/venv-bootstrap-notes.md for what each
+#       cause actually looks like and how it was verified — an earlier draft
+#       of this comment claimed this code meant "no Tenstorrent system
+#       libraries," which turned out not to be reliably true; see that doc's
+#       "Exit codes" section for the correction.
 #
 set -euo pipefail
 
@@ -71,6 +81,17 @@ set -euo pipefail
 # tt-bio-demo will eventually shell out to).
 # ---------------------------------------------------------------------------
 TT_BIO_VERSION="0.6.2"
+
+# Bounds on the two network/hardware-adjacent operations that could otherwise
+# hang this script indefinitely in an unattended postinst with nobody present
+# to notice. Generous on purpose: SFPI is ~80MB (fine even on a slow venue
+# link) and the device probe's happy path (imports + open/close) is a couple
+# of seconds on this box, but a wedged Tenstorrent card — a documented
+# hardware state needing a warm reset — could plausibly hang rather than
+# fail fast, and imports alone don't rule that out.
+SFPI_DOWNLOAD_CONNECT_TIMEOUT_SECONDS=15
+SFPI_DOWNLOAD_MAX_TIME_SECONDS=300
+DEVICE_PROBE_TIMEOUT_SECONDS=120
 
 SYSTEM_PYTHON="/usr/bin/python3"
 
@@ -89,8 +110,9 @@ Usage: $(basename "$0") [--prefix PATH] [--force] [--skip-runner] [--strict]
 Creates <prefix>/venv-ui and <prefix>/venv-runner. Default prefix:
 ${REPO_ROOT}/.venvs
 
-Exit codes: 0 fully working, 1 hard failure, 2 venv-runner installed but its
-torch/ttnn/tt_bio stack does not import (folded into 1 by --strict).
+Exit codes: 0 fully working (including "no Tenstorrent hardware present"),
+1 hard failure, 2 venv-runner installed but its stack doesn't import or its
+device probe fails (folded into 1 by --strict). See the header comment.
 EOF
 }
 
@@ -282,29 +304,76 @@ PY
 # fine even when `ttnn.open_device()` cannot actually work — confirmed on
 # this box, where a version-skewed SFPI toolchain (see ensure_sfpi_installed
 # below) breaks JIT kernel compilation with a TT_THROW deep inside
-# open_device, well after every import above has already succeeded. Imports
-# alone cannot catch that class of failure because none of them open a
-# device. So this also does a real, best-effort device probe:
-# `ttnn.get_num_devices()` first distinguishes "no Tenstorrent hardware on
-# this box" (legitimate on a packaging/CI machine, not a failure) from
-# "hardware is present" — only when it's present does open_device(0) get
-# tried, and only a failure in that case counts as a real, reportable
-# problem. This deliberately still never calls anything that needs
-# `tt-bio install-deps`'s system libraries/kernel modules beyond what
-# opening a device already requires on this box.
+# open_device (and, on at least one run, an outright segfault instead of a
+# catchable exception for the identical cause), well after every import
+# above has already succeeded. Imports alone cannot catch that class of
+# failure because none of them open a device. So this also does a real,
+# best-effort device probe.
+#
+# That probe cannot simply trust `ttnn.get_num_devices() == 0` as "no
+# hardware", though — traced through tt-metal: it calls
+# GetNumAvailableDevices() -> Cluster::number_of_user_devices() -> UMD's
+# PCIDevice::enumerate_devices(), which does
+# `if (!std::filesystem::exists("/dev/tenstorrent/")) return {};` with no
+# exception. /dev/tenstorrent/* is created by the tt-kmd kernel module, so a
+# box with cards physically present whose driver is merely unloaded,
+# missing, or failed to bind reports the exact same 0 as a card-less
+# packaging machine — the two are indistinguishable from get_num_devices()
+# alone, and only one of them is a real failure. So this probe first
+# establishes physical presence independently, by counting Tenstorrent PCI
+# devices (vendor 0x1e52) via sysfs — PCI enumeration happens in the kernel
+# regardless of whether any driver is bound, unlike /dev/tenstorrent. Three
+# states fall out of combining the two signals:
+#   PCI count == 0                        -> no cards at all: pass, probe skipped
+#   PCI count > 0, get_num_devices() > 0  -> cards present and usable: try opening one
+#   PCI count > 0, get_num_devices() == 0 -> cards present, driver absent/unbound: FAIL
+#
+# The whole probe (imports included) runs under `timeout` — a wedged card is
+# a documented Tenstorrent hardware state needing a warm reset, and a
+# version-mismatched toolchain hanging instead of crashing is not something
+# either failure mode reproduced here rules out. An unattended postinst with
+# no timeout would rather hang forever than report a failure.
 verify_runner_venv() {
   local venv="$1"
+  local rc
   # Run from VERIFY_RUNDIR, not the caller's cwd: `import ttnn` writes a
   # `generated/` debug-artifact tree relative to the process's working
   # directory (see VERIFY_RUNDIR's definition above for how that was found).
-  (cd "$VERIFY_RUNDIR" && "${venv}/bin/python3" - <<'PY'
+  (cd "$VERIFY_RUNDIR" && timeout --kill-after=10s "${DEVICE_PROBE_TIMEOUT_SECONDS}s" "${venv}/bin/python3" - <<'PY'
 import os, sys
+from pathlib import Path
 
 # Match tt_bio's own suppression (see its main.py) so a plain import doesn't
 # dump ttnn/tt-metal debug logging and nanobind leak-tracker noise into what
 # is meant to be a one-line health check.
 os.environ.setdefault("LOGURU_LEVEL", "WARNING")
 os.environ.setdefault("TT_METAL_LOGGER_LEVEL", "FATAL")
+
+TENSTORRENT_PCI_VENDOR_ID = "0x1e52"
+
+
+def physical_tt_pci_device_count(root="/sys/bus/pci/devices"):
+    """Count Tenstorrent PCI devices via sysfs, independent of the tt-kmd
+    kernel driver's load/bind state (see the big comment above this
+    function's caller in setup-venvs.sh for why `ttnn.get_num_devices()`
+    alone cannot make this distinction). `root` is a parameter, not a
+    hardcoded path, specifically so this can be exercised against a fake
+    sysfs tree in tests without touching real hardware or drivers.
+    """
+    count = 0
+    try:
+        for vendor_path in Path(root).glob("*/vendor"):
+            try:
+                if vendor_path.read_text().strip().lower() == TENSTORRENT_PCI_VENDOR_ID:
+                    count += 1
+            except OSError:
+                continue
+    except OSError:
+        pass
+    return count
+
+
+pci_count = physical_tt_pci_device_count()
 
 try:
     import torch
@@ -332,9 +401,13 @@ stack_ok = (
     f"tt_bio {getattr(tt_bio, '__version__', 'unknown')} ok, tt_bio.tenstorrent ok"
 )
 
-# Device probe. get_num_devices() itself can only fail if the ttnn stack is
-# broken in a way imports above didn't already catch, so a failure here is
-# still a real failure, not a "no hardware" signal.
+if pci_count == 0:
+    print(f"{stack_ok}, device probe SKIPPED (0 Tenstorrent PCI devices detected)")
+    sys.exit(0)
+
+# get_num_devices() itself can only fail if the ttnn stack is broken in a
+# way imports above didn't already catch, so a failure here is still a real
+# failure, not a "no hardware" signal.
 try:
     n = ttnn.get_num_devices()
 except Exception as e:
@@ -342,23 +415,37 @@ except Exception as e:
     sys.exit(1)
 
 if n == 0:
-    print(f"{stack_ok}, device probe SKIPPED (0 Tenstorrent devices detected)")
-    sys.exit(0)
+    print(
+        f"VERIFY-FAIL: {pci_count} Tenstorrent PCI device(s) present but "
+        f"ttnn.get_num_devices() reports 0 -- the tt-kmd driver is most "
+        f"likely not loaded or not bound (this is NOT the same as no "
+        f"hardware; see docs/venv-bootstrap-notes.md)",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 try:
     dev = ttnn.open_device(device_id=0)
     ttnn.close_device(dev)
 except Exception as e:
     print(
-        f"VERIFY-FAIL: ttnn.open_device(0) failed with {n} device(s) detected: "
-        f"{type(e).__name__}: {e}",
+        f"VERIFY-FAIL: ttnn.open_device(0) failed with {n} usable device(s) "
+        f"reported ({pci_count} PCI device(s) present): {type(e).__name__}: {e}",
         file=sys.stderr,
     )
     sys.exit(1)
 
-print(f"{stack_ok}, device probe OK ({n} device(s) detected, opened+closed device 0)")
+print(
+    f"{stack_ok}, device probe OK ({pci_count} PCI device(s) present, "
+    f"{n} usable, opened+closed device 0)"
+)
 PY
   )
+  rc=$?
+  if [[ $rc -eq 124 ]]; then
+    echo "VERIFY-FAIL: device probe timed out after ${DEVICE_PROBE_TIMEOUT_SECONDS}s — treating as a probe failure, not a hang (possible wedged card; may need a warm reset)" >&2
+  fi
+  return "$rc"
 }
 
 # Version of tt-bio actually installed in a venv, or empty if none/unreadable.
@@ -522,6 +609,11 @@ ensure_sfpi_installed() {
   ttnn_dir="${purelib}/ttnn"
   [[ -d "$ttnn_dir" ]] || die "ensure_sfpi_installed: no ttnn package found under $purelib — did tt-bio's install actually bring in ttnn?"
 
+  # sfpi_build/sfpi_base are captured (via read_sfpi_manifest's dynamic
+  # scoping, see its own comment) but never read here — they exist so the
+  # manifest's assignments to them land in a real local instead of leaking
+  # into the global namespace, not because this function needs their value.
+  # shellcheck disable=SC2034
   local sfpi_repo="" sfpi_version="" sfpi_hashtype="" sfpi_build="" sfpi_base=""
   read_sfpi_manifest "$ttnn_dir"
   if [[ -z "$sfpi_repo" || -z "$sfpi_version" || -z "$sfpi_hashtype" ]]; then
@@ -546,9 +638,16 @@ $(grep -E '^sfpi_[a-z0-9_]+_hash=' "${ttnn_dir}/tt_metal/sfpi-version")"
     return 0
   fi
 
+  # Note an existing-but-untrusted directory, but do NOT touch it yet. It
+  # only gets removed once a fully downloaded, hash-verified, extracted
+  # replacement is ready to take its place — never before. A transient
+  # network blip during download/verify must leave the old (even if
+  # wrong-version) directory exactly as it was, not an empty one; a naive
+  # "remove first, then fetch" ordering was the previous shape of this
+  # function and a review round caught it turning "wrong version present"
+  # into "nothing present" on a failed download.
   if [[ -d "$sfpi_dir" ]]; then
-    log "venv-runner: ${sfpi_dir} exists but has no matching receipt (untrusted — hand-placed, stale, or from a different SFPI version) — replacing it"
-    safe_rm_rf "$sfpi_dir"
+    log "venv-runner: ${sfpi_dir} exists but has no matching receipt (untrusted — hand-placed, stale, or from a different SFPI version) — will replace it once a verified copy is ready"
   fi
 
   local filename url download_path
@@ -557,29 +656,62 @@ $(grep -E '^sfpi_[a-z0-9_]+_hash=' "${ttnn_dir}/tt_metal/sfpi-version")"
   download_path="${VERIFY_RUNDIR}/${filename}"
 
   log "venv-runner: downloading SFPI ${sfpi_version} (${platform_key}) from ${url}"
-  if ! curl -fsSL -o "$download_path" "$url"; then
+  if ! curl -fsSL \
+       --connect-timeout "$SFPI_DOWNLOAD_CONNECT_TIMEOUT_SECONDS" \
+       --max-time "$SFPI_DOWNLOAD_MAX_TIME_SECONDS" \
+       -o "$download_path" "$url"; then
     rm -f "$download_path"
-    die "venv-runner: SFPI download failed: $url"
+    die "venv-runner: SFPI download failed or timed out: $url (existing ${sfpi_dir}, if any, is untouched)"
   fi
 
   local actual_hash
   actual_hash="$(sha256sum "$download_path" | cut -d' ' -f1)"
   if [[ "$actual_hash" != "$expected_hash" ]]; then
     rm -f "$download_path"
-    die "venv-runner: SFPI ${sfpi_version} sha256 mismatch for ${filename} — expected ${expected_hash}, got ${actual_hash}. This is a compiler toolchain fetched over the network; refusing to install one that doesn't match its published hash. Not retrying automatically."
+    die "venv-runner: SFPI ${sfpi_version} sha256 mismatch for ${filename} — expected ${expected_hash}, got ${actual_hash}. This is a compiler toolchain fetched over the network; refusing to install one that doesn't match its published hash (existing ${sfpi_dir}, if any, is untouched). Not retrying automatically."
   fi
   log "venv-runner: SFPI ${sfpi_version} sha256 verified"
 
+  # Extract to a staging directory, never straight into runtime/ — so a
+  # partial or failed extraction can never leave runtime/sfpi half-written,
+  # and the existing directory (if any) still isn't touched yet.
   mkdir -p "${ttnn_dir}/runtime"
-  # The tarball's own top-level entry is "sfpi/", so extracting into
-  # runtime/ (not runtime/sfpi/) lands it at runtime/sfpi/... directly,
-  # rather than the doubly-nested runtime/sfpi/sfpi/... a naive
-  # `mkdir sfpi && tar -C sfpi` would produce.
-  tar -xJf "$download_path" -C "${ttnn_dir}/runtime"
+  local staging_parent
+  staging_parent="$(mktemp -d "${ttnn_dir}/runtime/.sfpi-staging.XXXXXX")" || die "venv-runner: could not create a staging directory under ${ttnn_dir}/runtime"
+  if ! tar -xJf "$download_path" -C "$staging_parent"; then
+    rm -f "$download_path"
+    safe_rm_rf "$staging_parent"
+    die "venv-runner: extracting the SFPI tarball failed (existing ${sfpi_dir}, if any, is untouched). Not retrying automatically."
+  fi
   rm -f "$download_path"
-  [[ -d "$sfpi_dir" ]] || die "venv-runner: extracted the SFPI tarball but ${sfpi_dir} doesn't exist — unexpected tarball layout (expected a top-level 'sfpi/' entry)"
+  # The tarball's own top-level entry is "sfpi/", so it lands at
+  # staging_parent/sfpi/... — check for exactly that, not a doubly-nested
+  # staging_parent/sfpi/sfpi/... a different tarball layout would produce.
+  if [[ ! -d "${staging_parent}/sfpi" ]]; then
+    safe_rm_rf "$staging_parent"
+    die "venv-runner: extracted the SFPI tarball but ${staging_parent}/sfpi doesn't exist — unexpected tarball layout (expected a top-level 'sfpi/' entry). Existing ${sfpi_dir}, if any, is untouched."
+  fi
+  printf '%s\n' "$receipt_line" >"${staging_parent}/sfpi/.tt-bio-demo-sfpi-receipt"
 
-  printf '%s\n' "$receipt_line" >"$receipt"
+  # Swap the verified copy into place. Renaming the old directory aside
+  # first (an O(1) rename, not a recursive copy) rather than deleting it
+  # outright shrinks the window in which runtime/sfpi doesn't exist to the
+  # time between two renames, instead of the time a `rm -rf` of a ~435MB
+  # tree takes — and if this process is killed in that narrow window, the
+  # old copy is still recoverable at its ".old" name rather than gone.
+  local old_aside="${sfpi_dir}.old.$$"
+  if [[ -d "$sfpi_dir" ]]; then
+    mv "$sfpi_dir" "$old_aside" || die "venv-runner: could not move aside the existing ${sfpi_dir} to install the verified replacement"
+  fi
+  if ! mv "${staging_parent}/sfpi" "$sfpi_dir"; then
+    # Put the old one back rather than leave neither in place.
+    [[ -d "$old_aside" ]] && mv "$old_aside" "$sfpi_dir"
+    safe_rm_rf "$staging_parent"
+    die "venv-runner: could not move the verified SFPI install into place at ${sfpi_dir}"
+  fi
+  safe_rm_rf "$old_aside"
+  safe_rm_rf "$staging_parent"
+
   log "venv-runner: SFPI ${sfpi_version} installed to ${sfpi_dir}"
 }
 
