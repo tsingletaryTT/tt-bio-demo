@@ -73,11 +73,20 @@ is currently dead outside tests.
 
 ## Gotchas worth knowing before touching this code
 
-**Use `/usr/bin/python3`, never bare `python3`.** A Tenstorrent virtualenv is
-active on `$PATH` on the QB2 dev box; it has numpy but not gemmi, PyGObject or
-PyOpenGL, because distro packages install only for the system interpreter. Tests
-run under the venv pass by accident on the numpy-only modules and fail the moment
-gemmi or GTK is involved. This cost a task to discover.
+**Use the project's `venv-ui`, never bare `python3`.** A personal Tenstorrent
+virtualenv is active on `$PATH` on the QB2 dev box (a different CPython *build*
+from the system interpreter — uv-managed 3.12.12 vs. apt's 3.12.3 — and it has
+numpy but not gemmi, PyGObject or PyOpenGL, because distro packages install only
+for the system interpreter). Tests run under it pass by accident on the
+numpy-only modules and fail the moment gemmi or GTK is involved. This cost a
+task to discover, and for a while the fix was "remember to type
+`/usr/bin/python3` explicitly." `scripts/setup-venvs.sh` retired that: it builds
+`.venvs/venv-ui` from `/usr/bin/python3` with `--system-site-packages`, so it
+inherits the apt bindings and there is nothing left to remember — run
+`scripts/test.sh` (or `.venvs/venv-ui/bin/python3 -m ui.app` directly) instead of
+either bare `python3` or a hand-typed `/usr/bin/python3`. The trap the venv
+exists to route around is still real, just no longer the thing you have to hold
+in your head: see [`docs/venv-bootstrap-notes.md`](venv-bootstrap-notes.md).
 
 **GDK may negotiate a GLES context by default.** Observed on KWin/Wayland with
 radeonsi: GDK hands back GLES 3.2, which rejects the desktop `#version 330 core`

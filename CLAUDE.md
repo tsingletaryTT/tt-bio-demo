@@ -96,9 +96,73 @@ of record now matches what was built rather than quietly disagreeing with it.
 survived a green suite because the test could not distinguish the right answer from
 the wrong one. See the last section of [`docs/followups.md`](docs/followups.md).
 
+### 2026-08-11 — venv bootstrap: the project owns its own environment now
+
+Prompted from `~/code/tt-boltz` with a request to give tt-bio-demo project-owned
+virtualenvs instead of running against `/usr/bin/python3` bare and a personal
+`~/.tenstorrent-venv` for the future runner — the venv was a different CPython
+*build* (uv 3.12.12 vs. apt's 3.12.3) and had neither `ttnn` nor `tt_bio`, so it
+was never going to work for Phase 3 and had to be retired before it caused a
+worse surprise than the bare-`python3` trap already on record.
+
+**What got built:** `scripts/setup-venvs.sh` creates `.venvs/venv-ui` (system
+python + `--system-site-packages`, inherits apt's `python3-gi`/`gemmi`/`OpenGL`/
+`numpy`) and `.venvs/venv-runner` (isolated, `pip install tt-bio==0.6.2`, pinned
+in one variable at the top of the script). Idempotent — a second run is a
+~0.3–0.5 s no-op once both venvs verify — with `--force` to rebuild and
+`--skip-runner` to skip the expensive half while iterating on the UI side.
+`scripts/test.sh` retires the last reason to type a bare `python3` command.
+
+**Key decisions:**
+- **Two venvs, not the single `/opt/tt-bio-demo/venv` the original design spec
+  sketched.** The spec (§2) predates this work and is left as-is since it's a
+  historical record, but the two-venv split is a refinement of the same idea,
+  not a contradiction of it: the spec's point was "UI environment and tt-bio
+  environment must never mix," and splitting the *UI* side into its own venv
+  (rather than running it bare against `/usr/bin/python3`) makes that
+  reproducible on a fresh box instead of just non-conflicting on this one.
+- **`.venvs/` inside the repo, gitignored, as the dev default.** Mirrors the
+  production `/opt/tt-bio-demo` layout one level down (`venv-ui`/`venv-runner`
+  live directly under the prefix either way), so `--prefix /opt/tt-bio-demo`
+  in the later Debian postinst is the same script, same code paths, different
+  argument — not a separate dev-vs-prod branch to keep in sync.
+- **No `tt-bio install-deps`, ever, from this script.** Installing Tenstorrent
+  system packages/kernel modules is a Debian-packaging-phase decision that
+  needs explicit consent; a bootstrap script silently doing that on someone's
+  box is exactly the kind of surprise this project's `install-deps`-free
+  design elsewhere is trying to avoid.
+
+**Notable moment in prompting:** the script's first end-to-end run looked
+successful right up until a second, idempotent run silently died — no error,
+exit code 120, nothing on stderr. Root cause: `pip show tt-bio | awk
+'/^Version:/{print $2; exit}'` inside a `local x=$(...)` assignment. `awk`'s
+early `exit` closes its end of the pipe before `pip show` finishes writing the
+rest of its output (Summary, Home-page, ...), so `pip` gets `SIGPIPE`,
+`pipefail` turns that into a nonzero pipeline status, and `set -e` kills the
+whole script on a plain assignment statement with no message at all — the
+exact "silent half-built environment" this script's own design principle says
+to avoid, sitting in the script meant to enforce that principle. Fixed by
+capturing pip's full output into a variable first and parsing it with no live
+pipe underneath. Worth remembering: any `cmd | prog_with_early_exit` inside
+`set -e -o pipefail` is this bug waiting to happen, not just this one instance
+of it.
+
+See [`docs/venv-bootstrap-notes.md`](docs/venv-bootstrap-notes.md) for the
+environment split written up for a future reader, including what `tt-bio`
+actually pulls in and its measured install size/time on this box.
+
 ## Conventions
 
 - Spec-first: brainstormed design → committed spec → implementation plan → code.
-- tt-bio is pinned to a **release tag**, never `main` (upstream nightly moves fast).
+- tt-bio is pinned to a **release tag**, never `main` (upstream nightly moves fast) —
+  same rule applies to the `TT_BIO_VERSION` pin in `scripts/setup-venvs.sh`.
 - Nothing in the UI may ever display a stack trace; every failure path resolves to
   something presentable. See §6 of the spec.
+- **Use the project's own venvs, not bare or hand-typed `python3`.** Run
+  `scripts/setup-venvs.sh` once to create `.venvs/venv-ui` (GTK/gemmi/OpenGL, via
+  `--system-site-packages` off `/usr/bin/python3`) and `.venvs/venv-runner`
+  (isolated, `pip install tt-bio`). Run the suite with `scripts/test.sh`, the app
+  with `.venvs/venv-ui/bin/python3 -m ui.app`. This retires the earlier
+  "always type `/usr/bin/python3` explicitly" rule — see
+  [`docs/venv-bootstrap-notes.md`](docs/venv-bootstrap-notes.md) for why bare
+  `python3` is still a trap on this box even with the venvs in place.
