@@ -247,7 +247,7 @@ def unpack_coords(s):
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `/usr/bin/python3 -m pytest tests/unit/test_events.py -v`
-Expected: PASS, 11 tests
+Expected: PASS, 11 tests (grew to 11 after review)
 
 - [ ] **Step 5: Commit**
 
@@ -1401,7 +1401,7 @@ git add ui/geometry.py tests/unit/test_geometry_mesh.py
 git commit -m "feat: add spline, tube mesh, and pLDDT color ramp"
 ```
 
-Expected: all tests from Tasks 1–6 pass (49 total).
+Expected: all tests from Tasks 1–6 pass. The plan projects 49; review fix rounds grew this to 64 by the end of Task 6 — treat the projected counts as minimums, not exact.
 
 ---
 
@@ -2328,7 +2328,7 @@ And add the handler:
 - [ ] **Step 5: Run the full headless suite**
 
 Run: `/usr/bin/python3 -m pytest tests/unit -v`
-Expected: PASS, 57 tests
+Expected: PASS — the plan projected 57; the delivered suite is 79 (review fix rounds added 22)
 
 - [ ] **Step 6: Verify manually**
 
@@ -2351,7 +2351,7 @@ git commit -m "feat: add cross-fade, idle spin, and connection-state handling"
 
 Phase 1–2 is complete when:
 
-1. `/usr/bin/python3 -m pytest tests/unit -v` passes with 57 tests.
+1. `/usr/bin/python3 -m pytest tests/unit -v` passes. The plan projected 57 tests; the delivered suite is 79, the extra 22 added by review fix rounds pinning behavior the original tests could not distinguish.
 2. `/usr/bin/python3 -m ui.app --socket /tmp/ttbio-demo.sock` against the mock runner shows the full sequence: noise cloud → contraction → cross-fade → rotating pLDDT-colored ribbon.
 3. Killing and restarting the mock runner mid-playback never blanks the window or raises to the terminal.
 
