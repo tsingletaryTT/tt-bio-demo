@@ -5,6 +5,7 @@ structure prediction on a Tenstorrent QB2.
 
 - Design spec: [`docs/superpowers/specs/2026-08-10-tt-bio-demo-design.md`](docs/superpowers/specs/2026-08-10-tt-bio-demo-design.md)
 - Phase 1–2 plan: [`docs/superpowers/plans/2026-08-10-protocol-and-renderer.md`](docs/superpowers/plans/2026-08-10-protocol-and-renderer.md)
+- Known follow-ups and gotchas: [`docs/followups.md`](docs/followups.md) — **read this before touching the renderer**
 
 ## What happened
 
@@ -56,6 +57,44 @@ integrated GTK UI.
 - The interactivity question came back as *"3 but with an attract loop too"* — i.e. a kiosk
   visitors can drive that also runs itself when nobody's there. That answer is what produced
   the four-state machine with a 45-second idle reset.
+
+### 2026-08-11 — Phase 1–2 built (protocol, mock runner, renderer)
+
+Executed the Phase 1–2 plan with subagent-driven development: a fresh implementer per
+task, a spec-and-quality review after each, and a whole-branch review at the end.
+Ten tasks, 24 commits, 83 tests. The deliverable works: a recorded fold plays back
+end to end — noise cloud, contraction, cross-fade, rotating pLDDT ribbon — on any
+Linux box with no Tenstorrent hardware attached.
+
+**The review loop found nine genuine bugs in the plan's own code**, not in the
+implementations of it. The plan was written carefully and reviewed before execution,
+and it was still wrong in nine places. Worth remembering the next time a plan looks
+finished:
+
+- `look_at` stored its rotation basis as rows where column-major storage needs
+  columns — wrong for every off-axis camera.
+- `tube_mesh` wound every triangle backwards; with backface culling the ribbon would
+  have been invisible.
+- The point-size formula cancelled exactly against the camera distance, pinning atoms
+  at ~1.3 px at any zoom. The fold rendered, invisibly.
+- `EventClient._run` set state to `"disconnected"` before testing for
+  `"incompatible"`, clobbering the flag its own guard checked — infinite reconnects.
+- `on_event` was called unguarded, and `unpack_coords` too, either of which silently
+  freezes a GLib source forever.
+- `clear_structure` reset the blend but not its target, so a second fold faded toward
+  a discarded ribbon.
+- `_frame_camera`'s streaming ease was reused for the one-shot ribbon, which therefore
+  never converged and left the hero image permanently mis-scaled.
+- A degenerate leading tangent produced an all-NaN mesh, silently.
+- Every command in the plan used bare `python3`, which resolves to a Tenstorrent venv
+  lacking gemmi and GTK.
+
+Each fix was applied to the shipped code *and* back to the plan document, so the plan
+of record now matches what was built rather than quietly disagreeing with it.
+
+**The recurring failure mode was tests that could not fail.** Four of those bugs
+survived a green suite because the test could not distinguish the right answer from
+the wrong one. See the last section of [`docs/followups.md`](docs/followups.md).
 
 ## Conventions
 
