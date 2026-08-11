@@ -31,7 +31,7 @@
 # something a venv bootstrap script should do on its own.
 #
 # Usage:
-#   scripts/setup-venvs.sh [--prefix PATH] [--force] [--skip-runner] [--strict]
+#   scripts/setup-venvs.sh [--prefix PATH] [--force] [--skip-runner] [--strict] [--dev]
 #
 #   --prefix PATH   Where to create venv-ui/ and venv-runner/. Default:
 #                    <repo>/.venvs (gitignored). The Debian postinst passes
@@ -48,6 +48,21 @@
 #                    instead of a reported-but-nonfatal degraded state. See
 #                    "Exit codes" below — without --strict this situation
 #                    exits 2.
+#   --dev           Also install pytest into venv-runner, so Phase 3a's own
+#                    unit tests (tests/unit/test_runner_env.py and everything
+#                    after it — see docs/superpowers/plans/2026-08-11-runner-
+#                    daemon.md, which runs every step through
+#                    `venv-runner/bin/python3 -m pytest`) can actually run
+#                    there. NOT on by default: venv-runner is the exact
+#                    artifact a Debian postinst builds for a booth machine
+#                    (see --prefix above), and test tooling is dead weight
+#                    and extra supply-chain surface on that machine — the
+#                    same reasoning that keeps `tt-bio install-deps` and the
+#                    system SFPI out of this script's default path (see
+#                    section 4b below). Pass this when bootstrapping a dev
+#                    box for Phase 3a work; leave it off for a production
+#                    build. See docs/venv-bootstrap-notes.md for the
+#                    reasoning and the reproducibility check performed.
 #
 # Exit codes:
 #   0   everything requested was built/verified and works — including, on a
@@ -102,13 +117,19 @@ PREFIX="${REPO_ROOT}/.venvs"
 FORCE=0
 SKIP_RUNNER=0
 STRICT=0
+DEV=0
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [--prefix PATH] [--force] [--skip-runner] [--strict]
+Usage: $(basename "$0") [--prefix PATH] [--force] [--skip-runner] [--strict] [--dev]
 
 Creates <prefix>/venv-ui and <prefix>/venv-runner. Default prefix:
 ${REPO_ROOT}/.venvs
+
+--dev also installs pytest into venv-runner, for running this phase's own
+unit tests there (see the header comment) — off by default, since
+venv-runner is the same artifact a production/Debian build creates and test
+tooling shouldn't ship on a booth machine.
 
 Exit codes: 0 fully working (including "no Tenstorrent hardware present"),
 1 hard failure, 2 venv-runner installed but its stack doesn't import or its
@@ -137,6 +158,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --strict)
       STRICT=1
+      shift
+      ;;
+    --dev)
+      DEV=1
       shift
       ;;
     -h|--help)
@@ -515,6 +540,40 @@ RUNNER_STATUS="skipped"
 RUNNER_INSTALL_SECONDS=""
 RUNNER_SIZE=""
 RUNNER_DEGRADED=0   # 1 iff venv-runner has tt-bio installed but its stack won't import (see exit code 2 below)
+TEST_DEPS_STATUS="not installed (pass --dev to add pytest for Phase 3a's unit tests)"
+
+# Reports whether pytest is importable in venv-runner via TEST_DEPS_STATUS,
+# and — only when --dev was passed — installs it if it isn't there yet.
+# Called unconditionally at both sites in create_runner_venv below (not
+# itself gated on $DEV) so the summary's "test deps" line always reflects
+# reality, including on a plain re-run after an earlier --dev run already
+# put pytest there; only the actual `pip install` is gated.
+#
+# No version pin, unlike tt-bio/SFPI: pytest is dev tooling with no coupling
+# to what venv-runner actually runs (a version mismatch there doesn't break
+# kernel compilation the way SFPI skew does), so "already importable" is a
+# good enough idempotency check without a receipt file.
+#
+# Installing is deliberately gated behind --dev rather than unconditional:
+# venv-runner is not just a dev convenience, it's the exact venv a Debian
+# postinst builds for a real booth machine (--prefix /opt/tt-bio-demo, see
+# the header comment) — test tooling and its dependency chain have no
+# business shipping there, same reasoning that keeps `tt-bio install-deps`
+# and the system SFPI out of this script by default (section 4b below).
+ensure_test_deps_installed() {
+  local venv="$1"
+  if "${venv}/bin/python3" -c "import pytest" >/dev/null 2>&1; then
+    TEST_DEPS_STATUS="installed (pytest)"
+    return 0
+  fi
+  if [[ "$DEV" -ne 1 ]]; then
+    TEST_DEPS_STATUS="not installed (pass --dev to add pytest for Phase 3a's unit tests)"
+    return 0
+  fi
+  log "venv-runner: --dev given, installing pytest so this phase's unit tests can run here"
+  "${venv}/bin/python3" -m pip install pytest >/dev/null || die "venv-runner: 'pip install pytest' failed (--dev)"
+  TEST_DEPS_STATUS="installed (pytest, just added via --dev)"
+}
 
 # ---------------------------------------------------------------------------
 # 4b. venv-runner's SFPI toolchain
@@ -719,6 +778,7 @@ create_runner_venv() {
   if [[ "$SKIP_RUNNER" -eq 1 ]]; then
     log "venv-runner: --skip-runner given, not touching it"
     RUNNER_STATUS="skipped (--skip-runner)"
+    TEST_DEPS_STATUS="skipped (--skip-runner)"
     return 0
   fi
 
@@ -734,6 +794,7 @@ create_runner_venv() {
         # every idempotent pass so an existing venv whose SFPI is missing,
         # stale, or untrusted gets fixed without redoing the pip install.
         ensure_sfpi_installed "$VENV_RUNNER"
+        ensure_test_deps_installed "$VENV_RUNNER"
         if verify_runner_venv "$VENV_RUNNER" >"$VERIFY_TMP" 2>&1; then
           log "venv-runner: already has tt-bio==$TT_BIO_VERSION with a matching SFPI, and its torch/ttnn/tt_bio stack (plus device probe) checks out — skipping (use --force to rebuild)"
           cat "$VERIFY_TMP"; rm -f "$VERIFY_TMP"
@@ -786,6 +847,7 @@ create_runner_venv() {
 
   ensure_sfpi_installed "$VENV_RUNNER"
   RUNNER_SIZE="$(du -sh "$VENV_RUNNER" 2>/dev/null | cut -f1)" || true   # SFPI adds ~435M; refresh the reported size
+  ensure_test_deps_installed "$VENV_RUNNER"
 
   log "venv-runner: verifying torch/ttnn/tt_bio import and a real device probe"
   if verify_runner_venv "$VENV_RUNNER"; then
@@ -835,6 +897,10 @@ if [[ -n "$RUNNER_SIZE" ]]; then
 fi
 echo "  activate:    source ${VENV_RUNNER}/bin/activate"
 echo "  pinned:      tt-bio==${TT_BIO_VERSION}"
+echo "  test deps:   $TEST_DEPS_STATUS"
+if [[ "$DEV" -eq 1 ]]; then
+  echo "  run tests:   ${VENV_RUNNER}/bin/python3 -m pytest tests/unit/test_runner_env.py -v"
+fi
 echo
 echo "NOT run by this script (deliberately, needs explicit consent — Debian"
 echo "packaging phase owns this): 'tt-bio install-deps' / any Tenstorrent"
