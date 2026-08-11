@@ -6,17 +6,28 @@ structure prediction on Tenstorrent hardware.
 Watch a protein condense out of noise into its folded structure, in real time, computed on
 the Blackhole cards in the room. Native GTK4, no browser.
 
-> **Status:** design complete, implementation not yet started.
-> See [the design spec](docs/superpowers/specs/2026-08-10-tt-bio-demo-design.md).
+> **Status:** Phase 1–2 (protocol and renderer) is implemented. The event protocol, a mock
+> runner that replays a recorded fold, and the GTK4 renderer all work end to end today —
+> against a recording, with **no Tenstorrent hardware involved yet**. See
+> [the design spec](docs/superpowers/specs/2026-08-10-tt-bio-demo-design.md) and
+> [the Phase 1–2 plan](docs/superpowers/plans/2026-08-10-protocol-and-renderer.md) for what's
+> done versus what's still ahead.
 
-## What it does
+## What works today
 
-- **Live fold trajectory** — streams the actual per-step output of tt-bio's diffusion
-  sampler, so what you see is the computation, not an animation of it.
-- **Hardware telemetry** — all four p300c cards on screen, working.
-- **Pipeline progress** — MSA → trunk → diffusion → confidence, as it happens.
-- **Visitor-driven or self-running** — an attract loop cycles curated proteins unattended;
-  a visitor can step in and pick one, and the booth resets itself when they leave.
+- **Event protocol** — newline-delimited JSON over a Unix socket (`protocol/events.py`),
+  shared by the runner and the UI.
+- **Mock runner** — replays a recorded fold trajectory (`runner/mock.py`) at the protocol's
+  real pace, standing in for the compute daemon during this phase.
+- **Renderer** — a GTK4 `GtkGLArea` (`ui/`) that streams the diffusion point cloud in real
+  time, then cross-fades into a pLDDT-colored ribbon once the fold completes.
+
+## Not yet built
+
+The real `tt-bio-demod` compute daemon, `tt-smi` hardware telemetry, the pipeline-progress
+widget, the visitor-facing gallery, the curated playlist, and Debian packaging are all later
+phases — see the plan's "what this phase deliberately leaves out" for the full list. None of
+that exists on this branch.
 
 ## Intended install
 

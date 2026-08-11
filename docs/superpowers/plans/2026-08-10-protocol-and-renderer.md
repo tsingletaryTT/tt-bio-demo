@@ -13,6 +13,7 @@
 ## Global Constraints
 
 - **Target platform:** Ubuntu 24.04, Wayland, Python 3.12. All dependencies must come from Ubuntu repos — no pip installs in the UI environment.
+- **Always invoke `/usr/bin/python3` explicitly, never bare `python3`.** On the QB2 development box a Tenstorrent virtualenv is active on `$PATH`, so bare `python3` resolves to `~/.tenstorrent-venv/bin/python3` — which has numpy but *not* gemmi, PyGObject, or PyOpenGL, because distro packages install only for the system interpreter. Tests run under the venv pass by accident on the numpy-only tasks and fail the moment gemmi or GTK is involved.
 - **No web browser, no WebKit.** Anywhere. This is the defining constraint of the project.
 - **`protocol/events.py` must import only stdlib and numpy.** It is imported by both the system-python UI and the tt-bio venv runner; anything else breaks one side.
 - **Nothing in the UI may ever display a stack trace or raw error text.** Errors are logged; the display shows neutral copy.
@@ -32,7 +33,7 @@ sudo apt install -y python3-gi python3-gi-cairo gir1.2-gtk-4.0 \
 
 Verify:
 ```bash
-python3 -c "import gi; gi.require_version('Gtk','4.0'); from gi.repository import Gtk; import numpy, gemmi, OpenGL; print('ok')"
+/usr/bin/python3 -c "import gi; gi.require_version('Gtk','4.0'); from gi.repository import Gtk; import numpy, gemmi, OpenGL; print('ok')"
 ```
 Expected: `ok`
 
@@ -166,7 +167,7 @@ def test_unpack_coords_rejects_truncated_buffer():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `python3 -m pytest tests/unit/test_events.py -v`
+Run: `/usr/bin/python3 -m pytest tests/unit/test_events.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'protocol'`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -245,8 +246,8 @@ def unpack_coords(s):
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `python3 -m pytest tests/unit/test_events.py -v`
-Expected: PASS, 11 tests
+Run: `/usr/bin/python3 -m pytest tests/unit/test_events.py -v`
+Expected: PASS, 11 tests (grew to 11 after review)
 
 - [ ] **Step 5: Commit**
 
@@ -402,8 +403,8 @@ def test_runner_removes_stale_socket_file(tmp_path):
 
 Run:
 ```bash
-python3 tests/fixtures/streams/make_short_fold.py
-python3 -m pytest tests/unit/test_mock_runner.py -v
+/usr/bin/python3 tests/fixtures/streams/make_short_fold.py
+/usr/bin/python3 -m pytest tests/unit/test_mock_runner.py -v
 ```
 Expected: fixture writes 11 events; tests FAIL with `ModuleNotFoundError: No module named 'runner'`
 
@@ -501,7 +502,7 @@ class MockRunner:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `python3 -m pytest tests/unit/test_mock_runner.py -v`
+Run: `/usr/bin/python3 -m pytest tests/unit/test_mock_runner.py -v`
 Expected: PASS, 5 tests
 
 - [ ] **Step 5: Commit**
@@ -655,7 +656,7 @@ def test_client_survives_absent_socket_and_connects_when_it_appears(tmp_path):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `python3 -m pytest tests/unit/test_client.py -v`
+Run: `/usr/bin/python3 -m pytest tests/unit/test_client.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'ui'`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -725,7 +726,10 @@ class EventClient:
     def stop(self):
         self._stop.set()
         if self._thread is not None:
-            self._thread.join(timeout=2.0)
+            # Must exceed the socket read timeout below: a thread blocked on a
+            # silent connection only notices the stop flag after that timeout
+            # fires, so a shorter join would return while it is still running.
+            self._thread.join(timeout=6.0)
 
     def _set_state(self, state):
         if state != self.state:
@@ -739,9 +743,12 @@ class EventClient:
                 self._session()
             except (FileNotFoundError, ConnectionRefusedError, OSError) as exc:
                 log.debug("runner unavailable: %s", exc)
-            self._set_state("disconnected")
+            # Check before overwriting the state: a version mismatch will never
+            # fix itself, so it must not be downgraded to "disconnected" and
+            # then retried.
             if self.state == "incompatible":
                 return
+            self._set_state("disconnected")
             self._stop.wait(self.reconnect_delay)
 
     def _session(self):
@@ -767,14 +774,21 @@ class EventClient:
                         )
                         self._set_state("incompatible")
                         return
-                self.on_event(event)
+                # A raising callback must not be able to kill the reconnect
+                # thread or wedge the state machine — this loop is what keeps
+                # the display alive when the runner misbehaves. Exception, not
+                # BaseException, so KeyboardInterrupt/SystemExit still pass.
+                try:
+                    self.on_event(event)
+                except Exception:
+                    log.exception("on_event callback raised; continuing")
 ```
 
-Note the `incompatible` path returns from `_run` without retrying: a mismatched pair will not fix itself, and reconnecting in a loop would only spam the log.
+Note the `incompatible` path returns from `_run` without retrying: a mismatched pair will not fix itself, and reconnecting in a loop would only spam the log. The state check must come *before* `_set_state("disconnected")`, or it downgrades the flag it is meant to test.
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `python3 -m pytest tests/unit/test_client.py -v`
+Run: `/usr/bin/python3 -m pytest tests/unit/test_client.py -v`
 Expected: PASS, 6 tests
 
 - [ ] **Step 5: Commit**
@@ -863,7 +877,7 @@ def test_rotation_is_orthonormal():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `python3 -m pytest tests/unit/test_mathutil.py -v`
+Run: `/usr/bin/python3 -m pytest tests/unit/test_mathutil.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'ui.mathutil'`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -909,10 +923,14 @@ def look_at(eye, target, up):
     side /= np.linalg.norm(side)
     true_up = np.cross(side, forward)
 
+    # Column-major storage means the basis vectors go in COLUMNS, not rows.
+    # Assigning them as rows transposes the rotation block, which is invisible
+    # for an axis-aligned camera (the block reduces to the identity) and wrong
+    # for every other one.
     m = np.eye(4, dtype=np.float32)
-    m[0, :3] = side
-    m[1, :3] = true_up
-    m[2, :3] = -forward
+    m[:3, 0] = side
+    m[:3, 1] = true_up
+    m[:3, 2] = -forward
     m[3, 0] = -np.dot(side, eye)
     m[3, 1] = -np.dot(true_up, eye)
     m[3, 2] = np.dot(forward, eye)
@@ -929,7 +947,7 @@ def rotation_y(angle_rad):
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `python3 -m pytest tests/unit/test_mathutil.py -v`
+Run: `/usr/bin/python3 -m pytest tests/unit/test_mathutil.py -v`
 Expected: PASS, 8 tests
 
 - [ ] **Step 5: Commit**
@@ -1034,7 +1052,7 @@ def test_structure_without_ca_atoms_raises(tmp_path):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `python3 -m pytest tests/unit/test_geometry_load.py -v`
+Run: `/usr/bin/python3 -m pytest tests/unit/test_geometry_load.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'ui.geometry'`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -1106,7 +1124,7 @@ def load_ca_trace(cif_path):
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `python3 -m pytest tests/unit/test_geometry_load.py -v`
+Run: `/usr/bin/python3 -m pytest tests/unit/test_geometry_load.py -v`
 Expected: PASS, 6 tests
 
 If `test_structure_without_ca_atoms_raises` fails because gemmi returns zero models for an empty file, the `len(structure) == 0` guard already covers it — confirm the raised message still matches `no C-alpha atoms` and adjust that guard's message rather than the test.
@@ -1237,7 +1255,7 @@ def test_plddt_colors_are_in_unit_range():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `python3 -m pytest tests/unit/test_geometry_mesh.py -v`
+Run: `/usr/bin/python3 -m pytest tests/unit/test_geometry_mesh.py -v`
 Expected: FAIL — `ImportError: cannot import name 'catmull_rom' from 'ui.geometry'`
 
 - [ ] **Step 3: Write minimal implementation**
@@ -1335,7 +1353,11 @@ def tube_mesh(centerline, radius=1.6, sides=10):
             b = i * sides + jn
             d = (i + 1) * sides + j
             e = (i + 1) * sides + jn
-            indices += [a, d, b, b, d, e]
+            # Wound so face normals agree with the vertex normals above. The
+            # transposed order (a, d, b, b, d, e) inverts every triangle, which
+            # no unit test catches and backface culling renders as an
+            # invisible model.
+            indices += [a, b, d, b, e, d]
 
     return (
         verts.reshape(-1, 3).astype(np.float32),
@@ -1368,18 +1390,18 @@ def plddt_colors(plddt):
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `python3 -m pytest tests/unit/test_geometry_mesh.py -v`
+Run: `/usr/bin/python3 -m pytest tests/unit/test_geometry_mesh.py -v`
 Expected: PASS, 13 tests
 
 - [ ] **Step 5: Run the whole headless suite and commit**
 
 ```bash
-python3 -m pytest tests/unit -v
+/usr/bin/python3 -m pytest tests/unit -v
 git add ui/geometry.py tests/unit/test_geometry_mesh.py
 git commit -m "feat: add spline, tube mesh, and pLDDT color ramp"
 ```
 
-Expected: all tests from Tasks 1–6 pass (49 total).
+Expected: all tests from Tasks 1–6 pass. The plan projects 49; review fix rounds grew this to 64 by the end of Task 6 — treat the projected counts as minimums, not exact.
 
 ---
 
@@ -1534,9 +1556,10 @@ import logging
 import gi
 
 gi.require_version("Gtk", "4.0")
+gi.require_version("Gdk", "4.0")
 
 import numpy as np
-from gi.repository import Gtk
+from gi.repository import Gdk, Gtk
 from OpenGL import GL
 
 from ui import mathutil, shaders
@@ -1555,6 +1578,15 @@ class StructureViewer(Gtk.GLArea):
 
     def __init__(self):
         super().__init__()
+        # GDK may negotiate a GLES context by default (observed on KWin/Wayland
+        # with radeonsi), and GLES rejects the desktop `#version 330 core`
+        # shaders below even when the driver exposes GL 4.6 core. Pin to
+        # desktop GL, guarded: the API is a newer GTK4 addition, and crashing
+        # in __init__ would bypass the realize-time error handling entirely.
+        if hasattr(self, "set_allowed_apis") and hasattr(Gdk, "GLAPI"):
+            self.set_allowed_apis(Gdk.GLAPI.GL)
+        else:
+            log.warning("cannot pin to desktop GL; shaders may fail to compile")
         self.set_has_depth_buffer(True)
         self.set_auto_render(True)
 
@@ -1677,7 +1709,7 @@ if __name__ == "__main__":
 
 - [ ] **Step 5: Verify manually**
 
-Run: `python3 -m ui.app`
+Run: `/usr/bin/python3 -m ui.app`
 
 Expected: a 1280×800 window titled "tt-bio" opens, filled with the dark forest-teal brand background (`#092221`). No warnings about shader compilation in the terminal. Close the window to exit.
 
@@ -1865,7 +1897,7 @@ from ui.viewer import StructureViewer
 In one terminal, serve the fixture at true recorded pace:
 
 ```bash
-python3 - <<'PY'
+/usr/bin/python3 - <<'PY'
 import time
 from runner.mock import MockRunner, load_stream
 r = MockRunner("/tmp/ttbio-demo.sock", load_stream("tests/fixtures/streams/short_fold.jsonl"), speed=1.0)
@@ -1881,7 +1913,7 @@ PY
 In another:
 
 ```bash
-python3 -m ui.app --socket /tmp/ttbio-demo.sock
+/usr/bin/python3 -m ui.app --socket /tmp/ttbio-demo.sock
 ```
 
 Expected: a teal point cloud appears, scattered wide, and over roughly six frames contracts into a straight line of twelve evenly spaced points along the X axis. The terminal logs `folding synthetic (12 residues) on card 0`, two stage lines, and `done in 1.25s`.
@@ -1929,7 +1961,7 @@ def test_ribbon_from_cif_produces_consistent_buffers():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `python3 -m pytest tests/unit/test_geometry_mesh.py::test_ribbon_from_cif_produces_consistent_buffers -v`
+Run: `/usr/bin/python3 -m pytest tests/unit/test_geometry_mesh.py::test_ribbon_from_cif_produces_consistent_buffers -v`
 Expected: FAIL — `ImportError: cannot import name 'ribbon_from_cif'`
 
 - [ ] **Step 3: Implement the composed helper**
@@ -1957,7 +1989,7 @@ def ribbon_from_cif(cif_path, samples_per_segment=8, radius=1.6, sides=10):
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `python3 -m pytest tests/unit/test_geometry_mesh.py -v`
+Run: `/usr/bin/python3 -m pytest tests/unit/test_geometry_mesh.py -v`
 Expected: PASS, 14 tests
 
 - [ ] **Step 5: Add ribbon rendering to the viewer**
@@ -2157,7 +2189,7 @@ def test_zero_duration_snaps_immediately():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `python3 -m pytest tests/unit/test_blend.py -v`
+Run: `/usr/bin/python3 -m pytest tests/unit/test_blend.py -v`
 Expected: FAIL — `ImportError: cannot import name 'blend_step'`
 
 Note: importing `ui.viewer` pulls in GTK and PyOpenGL but does not create a GL context, so this test runs headlessly. If it fails at import in a truly headless CI container, mark the module with `pytest.importorskip("gi")`.
@@ -2295,8 +2327,8 @@ And add the handler:
 
 - [ ] **Step 5: Run the full headless suite**
 
-Run: `python3 -m pytest tests/unit -v`
-Expected: PASS, 57 tests
+Run: `/usr/bin/python3 -m pytest tests/unit -v`
+Expected: PASS — the plan projected 57; the delivered suite is 79 (review fix rounds added 22)
 
 - [ ] **Step 6: Verify manually**
 
@@ -2319,8 +2351,8 @@ git commit -m "feat: add cross-fade, idle spin, and connection-state handling"
 
 Phase 1–2 is complete when:
 
-1. `python3 -m pytest tests/unit -v` passes with 57 tests.
-2. `python3 -m ui.app --socket /tmp/ttbio-demo.sock` against the mock runner shows the full sequence: noise cloud → contraction → cross-fade → rotating pLDDT-colored ribbon.
+1. `/usr/bin/python3 -m pytest tests/unit -v` passes. The plan projected 57 tests; the delivered suite is 79, the extra 22 added by review fix rounds pinning behavior the original tests could not distinguish.
+2. `/usr/bin/python3 -m ui.app --socket /tmp/ttbio-demo.sock` against the mock runner shows the full sequence: noise cloud → contraction → cross-fade → rotating pLDDT-colored ribbon.
 3. Killing and restarting the mock runner mid-playback never blanks the window or raises to the terminal.
 
 ## What this phase deliberately leaves out

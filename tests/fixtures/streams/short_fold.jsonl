@@ -1,0 +1,11 @@
+{"type":"hello","version":1,"cards":[0,1,2,3],"models":["protenix-v2"],"preflight":"ok","_delay_ms":0}
+{"type":"job_start","job_id":"j1","target_id":"synthetic","model":"protenix-v2","card":0,"n_residues":12,"_delay_ms":50}
+{"type":"stage","job_id":"j1","stage":"trunk","frac":0.3,"_delay_ms":50}
+{"type":"frame","job_id":"j1","step":1,"total":6,"n_atoms":12,"coords_b64":"Gr5FwVzL2j6LDp5A3D2xvu9DuECEXZtB+rUuwW6zyUCbuDHB6FvEP4WkWsByMw1BaBLGwIOmXUDc8gbBfrtowYp8OUBb4jhB8p5nQJ3L1cD6/OQ/mzWyQFYj/kAQ6vbAMsisQHjsFUB3SV2+gAGTPxrokMBSYYTAedAjQSLg3D/ibk3AzR9vwRIAu8AUr1fA","_delay_ms":100}
+{"type":"frame","job_id":"j1","step":2,"total":6,"n_atoms":12,"coords_b64":"sDE+wRcJrz4S5HxAIuf0v4xpk0CglXhB4CEgwVhcoUBJLQ7B8OSiPgTqLsDq6+FAfumvwANSMUD66tfAUhg9waJjFEBJ6BNB3e5EQEsJq8DIMLc/pgWgQHhPy0AOiMXACFGnQMDg7z+TBzG+xEEMQMTZZ8DrzlPAujsdQU+zsD+1WCTApEwfwaiZlcAQjCzA","_delay_ms":100}
+{"type":"frame","job_id":"j1","step":3,"total":6,"n_atoms":12,"coords_b64":"Q6U2wdFGgz4Nqz1AZ79ewFIeXUA4cDpBxY0RwYQKckDtQ9XA4NJlv4MvA8DvcKlAksCZwIL9BEA78KHAJnURwXOV3j9t3N1AyT4iQPhGgMCWZIk/sdWNQJp7mEAKJpTA3tmhQJDosz+uxQS+xwJPQFPjLcAw2x7A+qYWQXuGhD8Phfa/9vKewHxmYMAMaQHA","_delay_ms":100}
+{"type":"frame","job_id":"j1","step":4,"total":6,"n_atoms":12,"coords_b64":"2BgvwRcJLz4S5Pw/n4WhwIxpE0CglfhAqvkCwVhcIUBJLY7ADkYHwATqrr/q62FAqJeDwANSsT/66lfA9aPLwKJjlD9J6JNAaR3/P0sJK8DIMDc/eEt3QHhPS0AOiEXAs2KcQMDgbz+TB7G95uGIQMTZ57/rztO/OhIQQU+zMD+1WKS/AFyzPKiZFcAQjKy/","_delay_ms":100}
+{"type":"frame","job_id":"j1","step":5,"total":6,"n_atoms":12,"coords_b64":"bIwnwRcJrz0S5Hw/iavTwIxpkz+glXhAH8vowFhcoT9JLQ7AZBdVwATqLr/q6+E/ed1awANSMT/66te/O7towKJjFD9J6BNAQL25P0sJq7/IMLc+jetSQHhPyz8OiMW/iOuWQMDg7z6TBzG9Z0KqQMTZZ7/rzlO/en0JQU+zsD61WCS/rVmgQKiZlb8QjCy/","_delay_ms":100}
+{"type":"frame","job_id":"j1","step":6,"total":6,"n_atoms":12,"coords_b64":"AAAgwQAAAAAAAAAAuugCwQAAAAAAAAAA6aLLwAAAAAAAAAAAXXSRwAAAAAAAAAAAo4suwAAAAAAAAAAAL7povwAAAAAAAAAAL7poPwAAAAAAAAAAo4suQAAAAAAAAAAAXXSRQAAAAAAAAAAA6aLLQAAAAAAAAAAAuugCQQAAAAAAAAAAAAAgQQAAAAAAAAAA","_delay_ms":100}
+{"type":"stage","job_id":"j1","stage":"confidence","frac":0.9,"_delay_ms":50}
+{"type":"job_done","job_id":"j1","cif_path":"tests/fixtures/structures/minimal.cif","wall_s":1.25,"mean_plddt":82.4,"_delay_ms":50}
