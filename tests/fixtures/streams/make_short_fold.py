@@ -1,4 +1,4 @@
-"""Generate the short_fold.jsonl fixture: a synthetic 3-residue fold.
+"""Generate the short_fold.jsonl fixture: a synthetic 12-residue fold.
 
 Coordinates start as noise and converge to a straight line, which is enough
 to exercise the point-cloud renderer and the frame pipeline deterministically.

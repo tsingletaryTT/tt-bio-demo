@@ -97,6 +97,23 @@ class DemoApp(Gtk.Application):
                     else:
                         self.viewer.set_ribbon(verts, norms, colors, idx)
                         self.viewer.begin_crossfade()
+                else:
+                    # A misconfigured runner sending job_done with nothing
+                    # to render used to no-op here silently; log it so it's
+                    # diagnosable instead of just "the ribbon never showed up".
+                    log.warning("job_done for %s has no cif_path; nothing "
+                                "to render", event.get("job_id"))
+            elif kind == "job_error":
+                # Per the protocol spec, `message` may hold arbitrary detail
+                # from the runner and must never reach the display -- log it
+                # in full so a failed fold is still diagnosable from the
+                # logs, which is all this branch does.
+                log.error("job %s failed: %s", event.get("job_id"),
+                          event.get("message"))
+            else:
+                # A future protocol addition should be visible in the logs,
+                # not silently dropped the way job_error was before this fix.
+                log.warning("unhandled event type %r", kind)
         except Exception:
             log.exception("dropping malformed %s event", event.get("type"))
         return False
@@ -138,21 +155,17 @@ class DemoApp(Gtk.Application):
         if frame is None:
             return True
         # unpack_coords raises protocol.events.ProtocolError on truncated
-        # base64 or a byte count that isn't a whole number of 3-vectors --
-        # decode() validates only that "type" is present and known, so a
-        # malformed coords_b64 payload reaches here unguarded. This source
-        # is a REPEATING GLib.timeout_add, unlike _handle_event's one-shot
-        # idle_add -- and confirmed by direct reproduction (see
-        # task-8-report.md), an uncaught exception here doesn't crash the
-        # process, it permanently removes this 33ms timeout source from the
-        # main loop. Without this guard, one malformed frame anywhere in an
-        # otherwise-fine stream freezes the viewer forever on whatever was
-        # last successfully drawn -- no crash, no error on screen, nothing
-        # to signal that it happened, which is worse than a crash for an
-        # unattended booth. Drop the bad frame and keep going; the next one
-        # arrives in <=33ms regardless. Catch Exception broadly (not just
-        # ProtocolError) since set_points() itself does array reshaping on
-        # attacker/wire-shaped data too.
+        # base64 or a byte count that isn't a whole number of 3-vectors, and
+        # decode() only validates that "type" is present and known -- so a
+        # malformed coords_b64 payload reaches here unguarded. This source is
+        # a REPEATING GLib.timeout_add, unlike _handle_event's one-shot
+        # idle_add: confirmed by direct reproduction, an uncaught exception
+        # here doesn't crash the process, it permanently removes this 33ms
+        # timeout source -- a silent freeze, worse than a crash for an
+        # unattended booth since nothing signals it happened. Drop the bad
+        # frame and keep going; the next one arrives in <=33ms regardless.
+        # Catch Exception broadly (not just ProtocolError) since
+        # set_points() itself reshapes wire-shaped data too.
         try:
             coords = unpack_coords(frame["coords_b64"])
             self.viewer.set_points(coords)

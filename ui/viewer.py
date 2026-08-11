@@ -34,7 +34,7 @@ POINT_COLOR = (0x74 / 255.0, 0xC5 / 255.0, 0xDF / 255.0)
 # of silently drifting back toward invisibility with nothing to catch it.
 # (The brief's original, unrelated 3.5 multiplier nearly canceled the 2.6
 # distance factor and rendered points at a near-constant ~1.3px regardless
-# of frame -- see task-8-report.md for the measurements.)
+# of frame -- measured directly against a live GL context.)
 _CAMERA_DISTANCE_FACTOR = 2.6
 _TARGET_POINT_PX = 9.0
 _POINT_SIZE_FACTOR = _TARGET_POINT_PX * _CAMERA_DISTANCE_FACTOR
@@ -126,12 +126,10 @@ class StructureViewer(Gtk.GLArea):
         # how many vertices are uploaded to the GPU right now, and gets
         # reset on unrealize/realize) -- this flag must NOT reset just
         # because the GL context was recreated; it should only go back to
-        # False when a genuinely new structure/job starts. There is no such
-        # reset path yet: a future `clear_structure()` (Task 10, for
-        # starting a second fold) MUST set this back to False, or that
-        # job's first frame will ease in from the previous job's leftover
-        # extent/center instead of snapping fresh -- reintroducing the exact
-        # bad-first-frame bug this flag exists to prevent.
+        # False when a genuinely new structure/job starts. clear_structure()
+        # below is that reset path: it sets this back to False so the next
+        # job's first frame snaps fresh instead of easing in from this job's
+        # leftover extent/center.
         self._camera_framed = False
 
         self.connect("realize", self._on_realize)
@@ -248,9 +246,9 @@ class StructureViewer(Gtk.GLArea):
         # entire surface for the whole duration of Task 10's cross-fade.
         # tube_mesh's winding is outward/CCW as seen from the camera
         # (verified in tests/unit/test_geometry_mesh.py and, at the pixel
-        # level, in task-9-report.md's Harness 1 -- forcing this exact
-        # culling produced an identical pixel-for-pixel readback), so
-        # enabling backface culling here removes the far wall from the
+        # level, by a glReadPixels harness: forcing this exact culling
+        # produced an identical pixel-for-pixel readback), so enabling
+        # backface culling here removes the far wall from the
         # rasterizer entirely: only the true near surface ever draws,
         # independent of depth-write state or triangle order. Enabled
         # globally (once, here) rather than scoped around _draw_ribbon
@@ -347,20 +345,25 @@ class StructureViewer(Gtk.GLArea):
         self._frame_camera(arr)
         self.queue_render()
 
-    def _frame_camera(self, coords):
-        """Center and scale the camera to fit the given coordinates."""
+    def _frame_camera(self, coords, snap=False):
+        """Center and scale the camera to fit the given coordinates.
+
+        By default eases toward the new extent (right for a stream of
+        diffusion frames, where a noisy frame shouldn't snap the camera
+        around as the cloud contracts). Pass `snap=True` for a one-shot
+        upload -- e.g. the finished ribbon -- that will not be followed by
+        further calls to ease the rest of the way in; see set_ribbon().
+        """
         if len(coords) == 0:
             return
         self._center = coords.mean(axis=0)
         spread = float(np.abs(coords - self._center).max())
-        if not self._camera_framed:
-            # No frame has ever been framed yet (this is the constructor's
-            # placeholder _extent=20.0, not a real prior frame). Easing from
-            # it would frame the very first frame against an arbitrary
-            # default instead of its actual spread -- fine by luck for a
-            # fixture whose first-frame spread happens to be near 20, but
-            # wrong in general (e.g. real diffusion noise scaled well past
-            # or under that). Snap straight to the real spread instead.
+        if snap or not self._camera_framed:
+            # Either explicitly requested, or no frame has ever been framed
+            # yet (this is the constructor's placeholder _extent=20.0, not a
+            # real prior frame) -- easing from it would frame the very first
+            # frame against an arbitrary default instead of its actual
+            # spread. Snap straight to the real spread instead.
             self._extent = max(spread, 5.0)
             self._camera_framed = True
         else:
@@ -396,8 +399,7 @@ class StructureViewer(Gtk.GLArea):
             # NB: deviates from the brief's literal `self._extent * 3.5`,
             # which nearly canceled against _mvp's distance factor and
             # rendered points at a near-constant ~1.3px regardless of
-            # frame (see the module-level comment on _POINT_SIZE_FACTOR and
-            # task-8-report.md for the measurements that caught this).
+            # frame (see the module-level comment on _POINT_SIZE_FACTOR).
             self._extent * _POINT_SIZE_FACTOR)
         GL.glUniform3f(
             GL.glGetUniformLocation(self._point_program, "u_color"), *POINT_COLOR)
@@ -417,7 +419,14 @@ class StructureViewer(Gtk.GLArea):
             np.ascontiguousarray(colors, dtype=np.float32),
             np.ascontiguousarray(indices, dtype=np.uint32),
         )
-        self._frame_camera(self._pending_ribbon[0])
+        # Unlike set_points(), this is called exactly once per job -- there
+        # is no subsequent frame to ease the rest of the way in. _frame_camera
+        # defaults to an 80/20 ease meant for a stream; a single eased step
+        # here would leave the camera framed against a blend of the last
+        # diffusion frame's extent and the ribbon's own, permanently (the
+        # finished structure is what stays on screen for the rest of the
+        # attract cycle). Snap straight to the ribbon's actual spread instead.
+        self._frame_camera(self._pending_ribbon[0], snap=True)
         self.queue_render()
 
     def clear_structure(self):
@@ -494,16 +503,16 @@ class StructureViewer(Gtk.GLArea):
         # Depth *test* stays on (enabled once, globally, in _on_realize) so
         # the ribbon still respects whatever's already in the depth buffer.
         # Depth *write* is conditional: only latch depth when the ribbon is
-        # the sole, fully-opaque visual (opacity == 1, the steady state
-        # right after job_done snaps blend straight to 1.0 with no fade in
-        # play). While opacity < 1 -- Task 10's cross-fade -- a translucent
-        # ribbon must NOT write a solid depth value, or it would still fully
-        # occlude the points drawn right after it via the depth test, even
-        # though its own color contribution is only partial. That would
-        # make the points vanish behind a half-see-through ribbon instead of
-        # blending through it, defeating the entire point of a cross-fade.
-        # Always restored to GL_TRUE below so this doesn't leak into
-        # _draw_points or the next frame.
+        # the sole, fully-opaque visual (opacity == 1, the steady state once
+        # begin_crossfade()'s fade-in reaches 1.0). While opacity < 1 -- the
+        # cross-fade itself -- a translucent ribbon must NOT write a solid
+        # depth value, or it would still fully occlude the points drawn
+        # right after it via the depth test, even though its own color
+        # contribution is only partial. That would make the points vanish
+        # behind a half-see-through ribbon instead of blending through it,
+        # defeating the entire point of a cross-fade. Always restored to
+        # GL_TRUE below so this doesn't leak into _draw_points or the next
+        # frame.
         GL.glDepthMask(GL.GL_TRUE if opacity >= 1.0 else GL.GL_FALSE)
         GL.glBindVertexArray(self._ribbon_vao)
         GL.glDrawElements(GL.GL_TRIANGLES, self._ribbon_index_count,
