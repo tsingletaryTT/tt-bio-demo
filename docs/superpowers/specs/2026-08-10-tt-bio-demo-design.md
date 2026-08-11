@@ -73,6 +73,13 @@ from the runner. If the runner is wedged, the cards visibly keep breathing on sc
 the last structure keeps rotating, behind a small "reconnecting" indicator. This is a
 deliberate resilience property, not an accident of layering.
 
+Both processes sample `tt-smi`, for different purposes, and this duplication is
+intentional. The **runner** samples temperature to make scheduling decisions (§6); the
+**UI** samples power and temperature to draw the telemetry panel. Routing the UI's display
+data through the runner would couple the one component that must never fail to the one
+most likely to. The cost is two cheap subprocess calls a few times a second; the benefit is
+that the display survives the compute side entirely.
+
 ### Components
 
 | Component | Environment | Responsibility |
@@ -104,7 +111,8 @@ Newline-delimited JSON over a Unix socket at
 
 | Type | Payload | Meaning |
 |---|---|---|
-| `hello` | `{version, cards[], models[]}` | Sent on connect; UI validates protocol version |
+| `hello` | `{version, cards[], models[], preflight}` | Sent on connect; carries preflight result (§6) |
+| `not_ready` | `{missing[]}` | Preflight failed; UI holds a "preparing" screen |
 | `job_start` | `{job_id, target_id, model, card, n_residues}` | A fold began |
 | `stage` | `{job_id, stage, frac}` | Stage progress: `msa`/`prep`/`trunk`/`diffusion`/`confidence`/`saving` |
 | `frame` | `{job_id, step, total, coords_b64, n_atoms}` | One subsampled diffusion frame |
@@ -119,6 +127,12 @@ under a megabyte per job, which the socket handles without ceremony.
 **Frame dropping is a UI-side responsibility.** If the UI cannot keep up, it discards
 frames rather than queuing them, so the animation stays real-time and lag never
 accumulates. Frames are advisory; `job_done` is authoritative.
+
+**Version mismatch is fatal to the connection, not to the display.** `hello.version` is an
+integer bumped on any breaking protocol change. If the UI does not recognize it, it closes
+the socket, logs loudly, and holds the "preparing" screen rather than misinterpreting a
+payload — the realistic case being a partially upgraded install where one package updated
+and the other did not.
 
 ---
 
@@ -195,7 +209,11 @@ Four states:
 - **Attract** — auto-cycles the curated playlist unattended. Large typography, rotating
   structure, live telemetry, and a persistent "Touch to choose a protein" affordance.
 - **Gallery** — a grid of curated targets: thumbnail, name, one-line description, residue
-  count, expected runtime.
+  count, expected runtime. Thumbnails are **static PNGs committed to the repository**,
+  regenerated on demand by a developer script (`tools/make_thumbnails.py`) that folds each
+  target once and screenshots the ribbon renderer. Generating them at package build time
+  was considered and rejected: it would require both hardware and a headless GL path in the
+  build, to produce assets that change only when the playlist does.
 - **Folding** — the live trajectory, the pipeline panel, and the cards working.
 - **Showcase** — the finished structure rotating, with observed wall-clock, residue count,
   model name, cards used, and two or three sentences on what this protein is and why it
@@ -240,7 +258,7 @@ below ever puts a stack trace on the display.
 | Target fails 3× | Quarantined for the session; logged; silently skipped |
 | Runner dies | UI keeps telemetry live and the last structure rotating behind a "reconnecting" chip; systemd restarts it |
 | Socket backs up | UI drops frames; never queues them |
-| Card overheats | Runner stops scheduling to it; UI dims that card in the telemetry panel |
+| Card overheats | Runner's own temperature sample crosses the threshold; it stops scheduling to that card and emits `card_state: quarantined`; UI dims it |
 | All cards unavailable | Calm "warming up" state; no scheduling attempts; loud logging |
 | Weights/MSA missing | Preflight refuses to enter Attract and states exactly what is missing |
 
@@ -341,14 +359,30 @@ tt-bio-demo/
 
 ---
 
-## 10. Open questions for implementation
+## 10. Build order
 
-These are deliberately deferred to the implementation plan rather than guessed at now:
+The work decomposes into four phases, each independently demonstrable. This ordering is
+chosen so the riskiest unknown — the renderer — is proven before anything is built on top
+of it, and so UI work is never blocked on hardware availability.
 
-1. **Playlist composition.** Which dozen targets, and their exact blurbs, needs a pass with
+1. **Protocol and mock runner.** Define the event schema, build the `--mock` replay runner
+   from a hand-authored event stream, and capture one real fold to JSONL. Everything
+   downstream can then be developed without a QB2. Build this first even though it is test
+   infrastructure.
+2. **Renderer.** `GtkGLArea` with both draw modes, camera, and the point-cloud → ribbon
+   cross-fade, driven entirely by the mock stream. This is the highest-risk component and
+   the one whose quality decides whether the demo works; prove it in isolation.
+3. **Runner and full application.** The real compute daemon, job queue, preflight,
+   telemetry, state machine, and gallery. First end-to-end folds on hardware.
+4. **Packaging and content.** The four Debian packages, the curated playlist and blurbs,
+   thumbnails, and the soak test on a freshly imaged QB2.
+
+## 11. Open questions
+
+Content decisions deliberately deferred; neither blocks starting implementation.
+
+1. **Playlist composition.** Which dozen targets, and their exact blurbs, wants a pass with
    someone who can speak to biological interest, not just runtime.
 2. **Which model leads.** Protenix-v2 carries the live trajectory today, so it likely
-   anchors the loop; whether Boltz-2 affinity or BoltzGen design earn a slot is a content
-   decision to make once the loop exists.
-3. **Thumbnail generation.** Gallery thumbnails could be pre-rendered at package build time
-   using the app's own renderer — pleasing consistency, but it needs a headless render path.
+   anchors the loop; whether Boltz-2 affinity or BoltzGen design earn a slot is a decision
+   to make once the loop exists and can be watched.
