@@ -33,12 +33,17 @@ class DemoApp(Gtk.Application):
         window.set_child(self.viewer)
         window.present()
 
+        self.viewer.start_animation()
+
         if self.socket_path:
             self._start_client()
 
     def _start_client(self):
         self._frames = LatestFrame()
-        self._client = EventClient(self.socket_path, self._on_event)
+        self._client = EventClient(
+            self.socket_path, self._on_event,
+            on_state_change=lambda s: GLib.idle_add(self._on_state, s),
+        )
         self._client.start()
         # Drain the frame buffer on the main loop at display rate; the client
         # thread must never touch GTK directly.
@@ -71,6 +76,7 @@ class DemoApp(Gtk.Application):
                 log.info("folding %s (%s residues) on card %s",
                          event.get("target_id"), event.get("n_residues"),
                          event.get("card"))
+                self.viewer.clear_structure()
             elif kind == "stage":
                 log.info("stage %s %.0f%%", event.get("stage"),
                          100.0 * event.get("frac", 0.0))
@@ -90,9 +96,20 @@ class DemoApp(Gtk.Application):
                         log.exception("could not build ribbon for %s", cif_path)
                     else:
                         self.viewer.set_ribbon(verts, norms, colors, idx)
-                        self.viewer.set_blend(1.0)
+                        self.viewer.begin_crossfade()
         except Exception:
             log.exception("dropping malformed %s event", event.get("type"))
+        return False
+
+    def _on_state(self, state):
+        # The display must survive the runner dying: log the transition and
+        # keep rendering whatever is already on screen. This runs via
+        # GLib.idle_add (on_state_change is invoked from EventClient's
+        # background thread; see ui/client.py's own docstring on why GTK/GL
+        # calls must never happen there directly), so it's a one-shot idle
+        # source like _handle_event -- no repeating-source freeze risk here.
+        log.info("runner connection: %s", state)
+        self.viewer.connection_state = state
         return False
 
     def _drain_frames(self):

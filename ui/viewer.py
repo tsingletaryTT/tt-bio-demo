@@ -1,6 +1,7 @@
 """The structure viewer: a GtkGLArea that draws points and ribbons."""
 
 import logging
+import math
 
 import gi
 
@@ -38,6 +39,38 @@ _CAMERA_DISTANCE_FACTOR = 2.6
 _TARGET_POINT_PX = 9.0
 _POINT_SIZE_FACTOR = _TARGET_POINT_PX * _CAMERA_DISTANCE_FACTOR
 
+_TWO_PI = 2.0 * math.pi
+
+# A real GTK frame clock normally hands _on_tick a dt in the low tens of
+# milliseconds. Two situations can make it far larger instead: the very
+# first tick after start_animation() (nothing to diff against yet -- see
+# _on_tick, which short-circuits that case explicitly) and a wall-clock gap
+# with no ticks at all, e.g. the system suspending or the window being
+# backgrounded for a while. blend_step already clamps at its target so a
+# huge dt can't overshoot the cross-fade, but SPIN_RATE * dt has no such
+# clamp -- an unclamped multi-minute dt would spin the model through
+# thousands of radians in a single frame, which looks identical to the
+# model jumping to a random new orientation. Cap dt at a ceiling well above
+# any real frame interval so a resumed/foregrounded app just continues
+# spinning smoothly from where it left off instead of jumping.
+_MAX_TICK_DT = 0.5  # seconds
+
+# The states EventClient reports via on_state_change (ui/client.py). Kept
+# here, not just accepted on faith from callers, so a typo'd or unexpected
+# string is caught where it's set rather than silently stored and never
+# noticed.
+_CONNECTION_STATES = frozenset({"connected", "disconnected", "incompatible"})
+
+
+def blend_step(current, target, dt, duration):
+    """Advance a 0-1 blend value toward `target`, never overshooting."""
+    if duration <= 0.0:
+        return target
+    delta = dt / duration
+    if target > current:
+        return min(current + delta, target)
+    return max(current - delta, target)
+
 
 class StructureViewer(Gtk.GLArea):
     """Renders a diffusion point cloud, a finished ribbon, or a blend."""
@@ -71,6 +104,10 @@ class StructureViewer(Gtk.GLArea):
 
         self._spin = 0.0
         self._blend = 0.0          # 0 = points only, 1 = ribbon only
+        self._blend_target = 0.0
+        self._tick_id = None
+        self._last_frame_time = None
+        self._connection_state = "disconnected"
         self._center = np.zeros(3, dtype=np.float32)
         self._extent = 20.0
 
@@ -100,6 +137,76 @@ class StructureViewer(Gtk.GLArea):
         self.connect("realize", self._on_realize)
         self.connect("unrealize", self._on_unrealize)
         self.connect("render", self._on_render)
+
+    # ── connection state ─────────────────────────────────────────────────
+    #
+    # Exposed as a real property (not a bare attribute) so a typo'd or
+    # otherwise unexpected string from EventClient is caught right where
+    # it's assigned, rather than being stored silently and discovered much
+    # later by whatever eventually reads it. As of this task nothing reads
+    # it for rendering -- Phase 3's four-state machine and telemetry panel
+    # (see the plan's "what this phase deliberately leaves out") are what's
+    # expected to consume it. Recording it here regardless is still useful:
+    # it is the one piece of live connection status the app already has in
+    # hand, and it costs nothing to keep it findable on the viewer instead
+    # of dropping it on the floor.
+
+    @property
+    def connection_state(self):
+        return self._connection_state
+
+    @connection_state.setter
+    def connection_state(self, value):
+        if value not in _CONNECTION_STATES:
+            raise ValueError(f"unknown connection state: {value!r}")
+        self._connection_state = value
+
+    # ── animation ────────────────────────────────────────────────────────
+
+    CROSSFADE_SECONDS = 0.8
+    SPIN_RATE = 0.35  # radians per second
+
+    def start_animation(self):
+        """Drive spin and cross-fade from GTK's frame clock."""
+        if self._tick_id is None:
+            self._tick_id = self.add_tick_callback(self._on_tick)
+
+    def stop_animation(self):
+        if self._tick_id is not None:
+            self.remove_tick_callback(self._tick_id)
+            self._tick_id = None
+
+    def begin_crossfade(self):
+        """Fade from the point cloud to the ribbon."""
+        self._blend_target = 1.0
+
+    def _on_tick(self, _widget, frame_clock):
+        now = frame_clock.get_frame_time() / 1e6  # microseconds to seconds
+        if self._last_frame_time is None:
+            # Nothing to diff against yet -- record this instant as the
+            # baseline and advance nothing this frame. Without this, the
+            # very first tick would measure dt against frame time 0 (or
+            # whatever _last_frame_time was left at), producing a bogus
+            # multi-second-or-worse dt on frame one.
+            self._last_frame_time = now
+            return True
+        dt = now - self._last_frame_time
+        self._last_frame_time = now
+        # Clamp dt into a sane range: guards a large gap (system suspend,
+        # the window being backgrounded -- see _MAX_TICK_DT's module-level
+        # comment) and, defensively, a clock that ever appears to move
+        # backwards (not observed on this stack, but a negative dt would
+        # run the cross-fade a step in reverse for one frame).
+        dt = max(0.0, min(dt, _MAX_TICK_DT))
+
+        # Wrap _spin into [0, 2*pi) so it stays bounded across an all-day
+        # (or longer) unattended run instead of growing forever. rotation_y
+        # is periodic in 2*pi, so this changes nothing about what's drawn.
+        self._spin = (self._spin + self.SPIN_RATE * dt) % _TWO_PI
+        self._blend = blend_step(
+            self._blend, self._blend_target, dt, self.CROSSFADE_SECONDS)
+        self.queue_render()
+        return True
 
     # ── lifecycle ────────────────────────────────────────────────────────
 
@@ -292,21 +399,34 @@ class StructureViewer(Gtk.GLArea):
     def clear_structure(self):
         """Drop whatever's currently shown so a new job starts from blank.
 
-        Resets `_camera_framed` to False -- this is the reset path called
-        out in the field's own comment in __init__: without it, the next
-        job's first frame would ease the camera in from this job's leftover
-        extent/center instead of snapping fresh, since `_frame_camera` only
-        snaps when `_camera_framed` is False.
+        Resets every piece of per-job state, not just the counts:
+
+        - `_point_count` / `_ribbon_index_count` / `_pending_points` /
+          `_pending_ribbon`: GPU-buffer and not-yet-uploaded state. Any
+          not-yet-uploaded data from the job that's ending must not surface
+          on a later render -- otherwise a race between this call and the
+          next `_on_render` could resurrect the old structure right after
+          we asked for it to disappear.
+        - `_camera_framed`: set back to False, the reset path called out in
+          the field's own comment in __init__ -- without it, the next job's
+          first frame would ease the camera in from this job's leftover
+          extent/center instead of snapping fresh, since `_frame_camera`
+          only snaps when `_camera_framed` is False.
+        - `_blend` *and* `_blend_target`: both, not just `_blend`. Without
+          resetting the target too, a second fold in the same session would
+          inherit `_blend_target == 1.0` from the first job's completed
+          cross-fade, and the very next tick would immediately start easing
+          `_blend` back toward 1.0 -- fading the new point cloud straight
+          into an empty ribbon-shaped hole instead of showing it. This is
+          exactly the bug the brief calls out by name; the fix is resetting
+          both fields here, together, every time.
         """
         self._point_count = 0
         self._ribbon_index_count = 0
-        # Any not-yet-uploaded data from the job that's ending must not
-        # surface on a later render -- otherwise a race between this call
-        # and the next _on_render could resurrect the old structure right
-        # after we asked for it to disappear.
         self._pending_points = None
         self._pending_ribbon = None
         self._blend = 0.0
+        self._blend_target = 0.0
         self._camera_framed = False
         self.queue_render()
 
@@ -368,12 +488,15 @@ class StructureViewer(Gtk.GLArea):
         GL.glDepthMask(GL.GL_TRUE)
 
     def set_blend(self, t):
-        """0 shows only points, 1 only the ribbon.
+        """Jump the blend immediately; prefer begin_crossfade() for transitions.
 
-        Temporary: Task 10 replaces this with an animated tick-driven
-        version that eases between the two instead of snapping.
+        Also pins `_blend_target` to the same value, so a later tick (which
+        eases `_blend` toward `_blend_target` every frame) can't immediately
+        undo this jump by continuing to chase whatever target was set
+        before -- see clear_structure() for why a stale target is exactly
+        the bug that would reintroduce.
         """
-        self._blend = float(np.clip(t, 0.0, 1.0))
+        self._blend = self._blend_target = float(np.clip(t, 0.0, 1.0))
         self.queue_render()
 
     def _on_render(self, _area, _context):
