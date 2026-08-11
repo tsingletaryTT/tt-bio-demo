@@ -59,7 +59,16 @@ class EventClient:
     def stop(self):
         self._stop.set()
         if self._thread is not None:
-            self._thread.join(timeout=2.0)
+            # The join timeout must exceed the socket read timeout in
+            # _session (5.0s): when the thread is blocked in `for line in
+            # stream` with no data pending, it cannot notice `_stop` until
+            # that read call returns -- either because data arrives or
+            # because the socket timeout fires. A shorter join timeout here
+            # would let stop() return before the thread has actually
+            # exited, which is a benign no-op in tests (where the mock
+            # runner's own .stop() closes the connection and unblocks the
+            # read immediately) but not a real guarantee.
+            self._thread.join(timeout=6.0)
 
     def _set_state(self, state):
         if state != self.state:
@@ -106,4 +115,15 @@ class EventClient:
                         )
                         self._set_state("incompatible")
                         return
-                self.on_event(event)
+                try:
+                    self.on_event(event)
+                except Exception:
+                    # A raising callback (e.g. a bug in a later GTK
+                    # marshaling wrapper) must not be mistaken for a
+                    # connection failure and must not cost the rest of the
+                    # stream: one bad event should neither end the
+                    # reconnect loop nor leave `state` wedged at
+                    # "connected" with no further callbacks. Catch
+                    # Exception, not BaseException, so KeyboardInterrupt/
+                    # SystemExit still propagate and can stop the thread.
+                    log.exception("on_event callback raised; continuing")
