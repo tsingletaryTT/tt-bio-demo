@@ -8,6 +8,27 @@ The trajectory-tap check is here for a specific reason: if the tap is broken,
 folds still succeed and produce correct structures, and the only symptom is that
 nothing condenses on screen. That is a failure the demo cannot detect while
 running, so it is checked before starting.
+
+Each check below is individually guarded, not the function body as a whole.
+That is deliberate: an unreadable weights directory (wrong ownership after a
+copy, an NFS mount not yet up) can raise PermissionError from a plain
+`Path.is_file()`, and a broken tt-bio install can raise something other than
+this module's own `TapUnavailable` out of `check_tap_supported()` (e.g.
+ImportError). Both are exactly the kind of night-before misconfiguration this
+module exists to surface. A single try/except around the whole function would
+catch those too, but it would also throw away every problem already
+accumulated by checks that ran and completed fine before the one that raised —
+which defeats the "report everything in one pass" purpose stated above. So
+each check catches its own failure and turns it into a `missing` entry,
+letting every other check still run to completion regardless of what any one
+of them does.
+
+The catches are deliberately scoped to OSError (filesystem checks) and to
+"whatever check_tap_supported can raise, since it inspects a third-party
+module's internals" rather than a single bare `except Exception` around
+everything — so a genuine bug in this file's own control flow (a NameError
+from a typo, say) still surfaces as a real traceback instead of being
+laundered into an unhelpful "missing" string.
 """
 
 import logging
@@ -33,8 +54,15 @@ def run_preflight(weights_dir, playlist_dir, *, check_tap=True, card_count=None)
 
     weights_dir = Path(weights_dir)
     for name in REQUIRED_WEIGHTS:
-        if not (weights_dir / name).is_file():
-            missing.append(f"model weights: {weights_dir / name}")
+        path = weights_dir / name
+        try:
+            present = path.is_file()
+        except OSError as exc:
+            # e.g. PermissionError on a directory with the wrong ownership.
+            missing.append(f"model weights: cannot check {path}: {exc}")
+            continue
+        if not present:
+            missing.append(f"model weights: {path}")
 
     playlist_dir = Path(playlist_dir)
     targets = sorted(playlist_dir.glob("*.yaml")) if playlist_dir.is_dir() else []
@@ -52,6 +80,15 @@ def run_preflight(weights_dir, playlist_dir, *, check_tap=True, card_count=None)
             check_tap_supported()
         except TapUnavailable as exc:
             missing.append(f"trajectory tap: {exc}")
+        except Exception as exc:
+            # check_tap_supported imports and inspects tt_bio.protenix; a
+            # partial/broken install can fail with something other than its
+            # own TapUnavailable (e.g. ImportError). Any failure here means
+            # the same thing operationally: the tap cannot be trusted.
+            missing.append(
+                f"trajectory tap: unexpected error checking tap support "
+                f"({type(exc).__name__}): {exc}"
+            )
 
     for item in missing:
         log.error("preflight: %s", item)
