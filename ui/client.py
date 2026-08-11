@@ -73,9 +73,14 @@ class EventClient:
                 self._session()
             except (FileNotFoundError, ConnectionRefusedError, OSError) as exc:
                 log.debug("runner unavailable: %s", exc)
-            self._set_state("disconnected")
+            # Check for "incompatible" before touching state: it was just set
+            # inside _session(), and calling _set_state("disconnected")
+            # unconditionally here would immediately clobber it, defeating
+            # the no-retry guard below and causing an infinite reconnect
+            # spam against a runner that speaks the wrong protocol version.
             if self.state == "incompatible":
                 return
+            self._set_state("disconnected")
             self._stop.wait(self.reconnect_delay)
 
     def _session(self):
