@@ -22,8 +22,8 @@
 #
 # Both venvs are built from the *same* /usr/bin/python3 (Python 3.12.3 on
 # this box), never from a personal Tenstorrent venv on $PATH — see the
-# "Use /usr/bin/python3" gotcha in docs/followups.md. That gotcha predates
-# this script; the script exists so nobody has to remember it by hand again.
+# bare-python3 gotcha in docs/followups.md. That gotcha predates this script;
+# the script exists so nobody has to remember it by hand again.
 #
 # This script does NOT run `tt-bio install-deps` or touch any Tenstorrent
 # system package / kernel module. Installing system-level TT dependencies is
