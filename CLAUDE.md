@@ -3,7 +3,8 @@
 A turnkey GTK4 conference demo for [tt-bio](https://github.com/moritztng/tt-bio) protein
 structure prediction on a Tenstorrent QB2.
 
-Design spec: [`docs/superpowers/specs/2026-08-10-tt-bio-demo-design.md`](docs/superpowers/specs/2026-08-10-tt-bio-demo-design.md)
+- Design spec: [`docs/superpowers/specs/2026-08-10-tt-bio-demo-design.md`](docs/superpowers/specs/2026-08-10-tt-bio-demo-design.md)
+- Phase 1–2 plan: [`docs/superpowers/plans/2026-08-10-protocol-and-renderer.md`](docs/superpowers/plans/2026-08-10-protocol-and-renderer.md)
 
 ## What happened
 
