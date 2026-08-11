@@ -1,7 +1,13 @@
 import numpy as np
 import pytest
 
-from ui.geometry import catmull_rom, plddt_colors, resample_scalar, tube_mesh
+from ui.geometry import (
+    GeometryError,
+    catmull_rom,
+    plddt_colors,
+    resample_scalar,
+    tube_mesh,
+)
 
 
 def test_spline_passes_through_control_points():
@@ -70,6 +76,63 @@ def test_tube_mesh_indices_stay_in_range():
 def test_tube_mesh_rejects_degenerate_centerline():
     with pytest.raises(Exception):
         tube_mesh(np.zeros((1, 3), dtype=np.float32))
+
+
+def test_tube_mesh_faces_wind_outward():
+    """Every triangle's face normal must agree with its own vertex normals.
+
+    `norms` is defined as the radially-outward direction at each vertex (by
+    construction: `verts[i, j] = centerline[i] + radius * norms[i, j]`), so
+    it is ground truth for "outward" here -- not just a reference convention.
+    A face whose winding order makes cross(v1-v0, v2-v0) point the opposite
+    way from its own vertex normals is genuinely inside-out: under backface
+    culling (OpenGL default: cull GL_BACK, front faces wound CCW) the entire
+    visible surface would be culled away instead of the inside.
+    """
+    centerline = np.zeros((10, 3), dtype=np.float32)
+    centerline[:, 0] = np.arange(10)
+    verts, norms, idx = tube_mesh(centerline, radius=1.0, sides=8)
+    tris = idx.reshape(-1, 3)
+    v0, v1, v2 = verts[tris[:, 0]], verts[tris[:, 1]], verts[tris[:, 2]]
+    face_normals = np.cross(v1 - v0, v2 - v0)
+    vertex_normal_avg = norms[tris[:, 0]] + norms[tris[:, 1]] + norms[tris[:, 2]]
+    dots = np.sum(face_normals * vertex_normal_avg, axis=1)
+    assert np.all(dots > 0)
+
+
+def test_tube_mesh_rejects_duplicate_leading_point():
+    """A duplicate point at the very start collapses the boundary tangent to
+    zero length with no neighbor to borrow direction from, which otherwise
+    divides 0/0 into a NaN that silently poisons the whole mesh via parallel
+    transport. That must fail loudly instead.
+    """
+    centerline = np.array(
+        [[0.0, 0, 0], [0.0, 0, 0], [1.0, 0, 0], [2.0, 0, 0]], dtype=np.float32
+    )
+    with pytest.raises(GeometryError):
+        tube_mesh(centerline)
+
+
+def test_tube_mesh_rejects_duplicate_trailing_point():
+    centerline = np.array(
+        [[0.0, 0, 0], [1.0, 0, 0], [2.0, 0, 0], [2.0, 0, 0]], dtype=np.float32
+    )
+    with pytest.raises(GeometryError):
+        tube_mesh(centerline)
+
+
+def test_tube_mesh_tolerates_duplicate_midpoint():
+    """A duplicate point in the *middle* is fine: central differencing at
+    that index bridges it using its two distinct neighbors, so it must not
+    raise and must not produce NaNs.
+    """
+    centerline = np.array(
+        [[0.0, 0, 0], [1.0, 0, 0], [1.0, 0, 0], [2.0, 0, 0], [3.0, 0, 0]],
+        dtype=np.float32,
+    )
+    verts, norms, idx = tube_mesh(centerline, sides=6)
+    assert not np.isnan(verts).any()
+    assert not np.isnan(norms).any()
 
 
 def test_resample_scalar_stretches_values_to_new_length():

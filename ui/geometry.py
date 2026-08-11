@@ -135,6 +135,24 @@ def tube_mesh(centerline, radius=1.6, sides=10):
 
     tangents = np.gradient(c, axis=0)
     lengths = np.linalg.norm(tangents, axis=1, keepdims=True)
+
+    # A duplicate point in the *middle* of the centerline is harmless --
+    # central differencing bridges it using its two distinct neighbors on
+    # either side, so the local tangent there is still well-defined. But a
+    # duplicate at the very first or very last point collapses that
+    # boundary's one-sided difference to a zero-length vector with no other
+    # neighbor to borrow direction from. Normalizing that divides 0/0 into
+    # NaN, and every later ring inherits it via parallel transport, so the
+    # *entire* mesh comes back all-NaN with nothing but a RuntimeWarning to
+    # show for it. A renderer must never hand that silently to OpenGL, so
+    # fail loudly and specifically instead -- this is the same "can't derive
+    # geometry from this input" situation as the n < 2 guard above.
+    if lengths[0, 0] < 1e-9 or lengths[-1, 0] < 1e-9:
+        raise GeometryError(
+            "tube_mesh centerline has a duplicate leading or trailing "
+            "point, so no initial sweep direction can be established"
+        )
+
     tangents = tangents / np.maximum(lengths, 1e-9)
 
     # Seed the frame with any vector not parallel to the first tangent.
@@ -172,7 +190,13 @@ def tube_mesh(centerline, radius=1.6, sides=10):
             b = i * sides + jn
             d = (i + 1) * sides + j
             e = (i + 1) * sides + jn
-            indices += [a, d, b, b, d, e]
+            # (a, b, d) and (b, e, d) wind each triangle so cross(v1-v0, v2-v0)
+            # points outward, matching the vertex normals stored in `norms`
+            # (radially outward by construction). Getting this backwards is
+            # invisible in a unit test that only checks counts/shapes but
+            # shows up as an inside-out or culled-away model once backface
+            # culling is enabled downstream.
+            indices += [a, b, d, b, e, d]
 
     return (
         verts.reshape(-1, 3).astype(np.float32),
