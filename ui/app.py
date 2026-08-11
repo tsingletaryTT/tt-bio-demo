@@ -107,9 +107,30 @@ class DemoApp(Gtk.Application):
         # GLib.idle_add (on_state_change is invoked from EventClient's
         # background thread; see ui/client.py's own docstring on why GTK/GL
         # calls must never happen there directly), so it's a one-shot idle
-        # source like _handle_event -- no repeating-source freeze risk here.
-        log.info("runner connection: %s", state)
-        self.viewer.connection_state = state
+        # source like _handle_event -- no repeating-source freeze risk to a
+        # *timer*.
+        #
+        # It still needs its own guard, though: connection_state's setter
+        # (ui/viewer.py) deliberately raises ValueError on anything outside
+        # {"connected", "disconnected", "incompatible"}, so that a *future*
+        # mismatch -- someone adding a state to EventClient without teaching
+        # this setter about it -- fails loudly wherever it's set, instead of
+        # being stored silently and discovered much later. But
+        # EventClient._set_state only invokes on_state_change when the state
+        # actually *changes* (see ui/client.py), so if that new, unrecognized
+        # state ever becomes the client's steady state, an unguarded raise
+        # here would fire once and then never be retried: there'd be no
+        # further transition to trigger it again, and connection_state would
+        # stay stuck reporting whatever the last valid transition left it at
+        # -- silently, on exactly the runner-disconnect path this task
+        # exists to harden. Guard it like every other GLib-invoked callback
+        # in this file, so the validator can do its job (a bad value still
+        # gets logged, loudly, right here) without bricking this channel.
+        try:
+            log.info("runner connection: %s", state)
+            self.viewer.connection_state = state
+        except Exception:
+            log.exception("dropping unrecognized connection state %r", state)
         return False
 
     def _drain_frames(self):

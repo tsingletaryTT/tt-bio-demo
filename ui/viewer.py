@@ -261,7 +261,31 @@ class StructureViewer(Gtk.GLArea):
         GL.glCullFace(GL.GL_BACK)
         self._ready = True
 
+        # Resume the tick callback on every realize, not just the first one.
+        # This widget's own comments elsewhere (see _camera_framed and the
+        # point/ribbon buffer resets in _on_unrealize below) already treat
+        # realize/unrealize as something that can happen more than once in
+        # a session, not just at construction and final teardown. Pairs
+        # with the stop_animation() call in _on_unrealize just below:
+        # without resuming here, a widget that unrealizes and re-realizes
+        # mid-session (GL context loss, monitor change, etc.) would lose
+        # its spin/cross-fade permanently, since app.py only calls
+        # start_animation() once, right after the window is first
+        # presented. start_animation() is idempotent (guarded by
+        # `_tick_id is None`) so this is a no-op on the ordinary path where
+        # realize only ever happens once.
+        self.start_animation()
+
     def _on_unrealize(self, _area):
+        # Stop driving spin/cross-fade before tearing down GL state below.
+        # start_animation()/stop_animation() were added as a pair (Task 10)
+        # but nothing called the teardown half -- completing it here means
+        # the widget doesn't keep ticking (and calling queue_render() on
+        # itself) across a context loss it can't currently render through
+        # anyway, and it restores the pair's symmetry with the resume in
+        # _on_realize above.
+        self.stop_animation()
+
         self.make_current()
         for program in (self._point_program, self._ribbon_program):
             if program:
