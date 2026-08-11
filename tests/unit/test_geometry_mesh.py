@@ -173,3 +173,64 @@ def test_ribbon_from_cif_produces_consistent_buffers():
     assert idx.max() < len(verts)
     assert colors.min() >= 0.0 and colors.max() <= 1.0
     assert verts.dtype == np.float32 and idx.dtype == np.uint32
+
+
+def test_ribbon_from_cif_colors_align_ring_by_ring_with_known_bfactors():
+    """Pins the vertex-color <-> centerline-ring correspondence to the
+    fixture's own known B-factors (95/80/60/40/88), so a future shift in how
+    `ribbon_from_cif` zips resampled pLDDT onto tube_mesh's rings fails a
+    test instead of only being caught by a human diffing colors by hand (as
+    happened in review: `test_ribbon_from_cif_produces_consistent_buffers`
+    above checks only shapes/dtypes/index range, and would pass identically
+    whether colors were correctly aligned per ring or shifted by one ring).
+
+    Checks alignment two independent ways:
+      1. Against a fresh recomputation using the same lower-level functions
+         `ribbon_from_cif` composes -- catches an internal shift anywhere
+         along the ribbon, ring by ring, not just at the ends.
+      2. Against the fixture's real B-factors converted through the
+         documented AlphaFold ramp thresholds by hand -- these two expected
+         colors are typed in from the ramp table, not derived from the code
+         under test, so a bug that happened to reproduce itself identically
+         in both the implementation and the (1)-style recomputation would
+         still be caught here.
+    """
+    from ui.geometry import load_ca_trace, ribbon_from_cif
+
+    cif_path = "tests/fixtures/structures/minimal.cif"
+    samples_per_segment, sides = 4, 6
+
+    trace = load_ca_trace(cif_path)
+    assert list(trace.plddt) == [95.0, 80.0, 60.0, 40.0, 88.0]  # pin the input
+
+    # catmull_rom's first curve sample is exactly the first control point
+    # (p[0]) and its last is exactly appended as the last control point
+    # (p[-1]) -- see catmull_rom's implementation -- so combined with
+    # resample_scalar's exact endpoint preservation, ring 0 below must carry
+    # the first CA atom's B-factor (95) and the last ring the last CA
+    # atom's (88), not an approximation.
+    centerline = catmull_rom(trace.coords, samples_per_segment)
+    expected_ring_colors = plddt_colors(resample_scalar(trace.plddt, len(centerline)))
+
+    _, _, colors, _ = ribbon_from_cif(
+        cif_path, samples_per_segment=samples_per_segment, sides=sides
+    )
+    actual_ring_colors = colors.reshape(-1, sides, 3)
+
+    assert len(actual_ring_colors) == len(expected_ring_colors)
+    for i, expected in enumerate(expected_ring_colors):
+        # Every vertex within a ring must carry that ring's color -- an
+        # off-by-one in the np.repeat/reshape bookkeeping would break this
+        # even if the *set* of colors present elsewhere looked fine.
+        np.testing.assert_allclose(
+            actual_ring_colors[i], np.tile(expected, (sides, 1)), atol=1e-6
+        )
+
+    # 95 -> ">90" blue; 88 -> "70-90" pale blue. Typed straight from the
+    # ramp table in ui/geometry.py's _PLDDT_STOPS, independent of (1) above.
+    np.testing.assert_allclose(
+        actual_ring_colors[0, 0], np.array([0x00, 0x53, 0xD6]) / 255.0, atol=1e-3
+    )
+    np.testing.assert_allclose(
+        actual_ring_colors[-1, 0], np.array([0x65, 0xCB, 0xF3]) / 255.0, atol=1e-3
+    )

@@ -127,6 +127,31 @@ class StructureViewer(Gtk.GLArea):
         GL.glEnable(GL.GL_BLEND)
         GL.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA)
         GL.glEnable(GL.GL_PROGRAM_POINT_SIZE)
+        # The ribbon is a closed tube, so from outside almost every screen
+        # pixel is hit by two of its triangles (the near wall and the far
+        # wall). That's harmless while the ribbon draws fully opaque with
+        # depth writes on (near wins depth, far is correctly discarded) --
+        # but _draw_ribbon turns depth writes OFF while translucent (see its
+        # comment), which is required so a fading ribbon can't occlude the
+        # points behind it, but as a side effect leaves near vs. far
+        # decided by triangle index order instead of actual depth for that
+        # whole draw. Since RIBBON_FRAG's diffuse term depends on
+        # `dot(n, light)`, the near and far walls shade differently, so the
+        # tube could shimmer between correct and backwards-lit across its
+        # entire surface for the whole duration of Task 10's cross-fade.
+        # tube_mesh's winding is outward/CCW as seen from the camera
+        # (verified in tests/unit/test_geometry_mesh.py and, at the pixel
+        # level, in task-9-report.md's Harness 1 -- forcing this exact
+        # culling produced an identical pixel-for-pixel readback), so
+        # enabling backface culling here removes the far wall from the
+        # rasterizer entirely: only the true near surface ever draws,
+        # independent of depth-write state or triangle order. Enabled
+        # globally (once, here) rather than scoped around _draw_ribbon
+        # because face culling only applies to polygons -- GL_TRIANGLES --
+        # and never to GL_POINTS, so it cannot affect _draw_points either
+        # way; there is no draw call in this file it would be wrong for.
+        GL.glEnable(GL.GL_CULL_FACE)
+        GL.glCullFace(GL.GL_BACK)
         self._ready = True
 
     def _on_unrealize(self, _area):
