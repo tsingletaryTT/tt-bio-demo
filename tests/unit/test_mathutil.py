@@ -49,11 +49,33 @@ def test_look_at_maps_eye_to_the_view_space_origin_when_off_axis():
     np.testing.assert_allclose(seen[:3], [0.0, 0.0, 0.0], atol=1e-5)
 
 
-def test_look_at_rotation_block_is_orthonormal():
+def test_look_at_matches_the_standard_view_matrix_when_off_axis():
+    # A stronger regression guard than checking orthonormality alone: a
+    # row/column transposition of an orthonormal triad (the original bug)
+    # is *still* orthonormal, so that property can't distinguish correct
+    # from buggy. This builds the standard view matrix independently (rows
+    # = side, up, -forward, per any textbook lookAt derivation) and checks
+    # look_at's output matches it exactly, which the pre-fix code did not.
     eye = np.array([3.0, 4.0, 5.0])
-    view = look_at(eye, np.zeros(3), np.array([0.0, 1.0, 0.0]))
-    upper = view.T[:3, :3]
-    np.testing.assert_allclose(upper @ upper.T, np.eye(3), atol=1e-6)
+    target = np.zeros(3)
+    up_hint = np.array([0.0, 1.0, 0.0])
+
+    forward = target - eye
+    forward = forward / np.linalg.norm(forward)
+    side = np.cross(forward, up_hint)
+    side = side / np.linalg.norm(side)
+    true_up = np.cross(side, forward)
+
+    expected = np.eye(4)
+    expected[0, :3] = side
+    expected[1, :3] = true_up
+    expected[2, :3] = -forward
+    expected[0, 3] = -np.dot(side, eye)
+    expected[1, 3] = -np.dot(true_up, eye)
+    expected[2, 3] = np.dot(forward, eye)
+
+    view = look_at(eye, target, up_hint)
+    np.testing.assert_allclose(view.T, expected, atol=1e-5)
 
 
 def test_rotation_y_by_ninety_degrees_maps_x_to_minus_z():

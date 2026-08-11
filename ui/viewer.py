@@ -5,6 +5,7 @@ import logging
 import gi
 
 gi.require_version("Gtk", "4.0")
+gi.require_version("Gdk", "4.0")
 
 import numpy as np
 from gi.repository import Gdk, Gtk
@@ -29,12 +30,23 @@ class StructureViewer(Gtk.GLArea):
         self.set_has_depth_buffer(True)
         self.set_auto_render(True)
         # Our shaders are desktop GLSL ("#version 330 core"), which an ES
-        # context rejects outright. GDK will otherwise happily hand us a
-        # GLES context on backends where one is available (observed on this
-        # Wayland/Mesa/radeonsi stack, which supports both) — pin to desktop
-        # GL so realize() gets a context our shaders can actually compile
-        # against, on any platform this runs on.
-        self.set_allowed_apis(Gdk.GLAPI.GL)
+        # context rejects outright. GDK will pick a GLES context on stacks
+        # where one is available even though desktop GL is too (observed on
+        # this Wayland/Mesa/radeonsi stack) — pin to desktop GL so realize()
+        # gets a context our shaders can actually compile against.
+        # set_allowed_apis()/Gdk.GLAPI are a GTK 4.12+ addition, absent on
+        # older-but-still-circulating GTK4 (e.g. Ubuntu 22.04 ships 4.6).
+        # Where it's missing, fall back to GDK's own default negotiation
+        # rather than crashing the widget's construction, and log so a
+        # resulting shader-compile failure downstream is diagnosable instead
+        # of a silent blank viewer with no clue why.
+        if hasattr(self, "set_allowed_apis") and hasattr(Gdk, "GLAPI"):
+            self.set_allowed_apis(Gdk.GLAPI.GL)
+        else:
+            log.warning(
+                "Gtk.GLArea.set_allowed_apis is unavailable on this GTK "
+                "version; cannot steer the context away from GLES. If the "
+                "shaders below fail to compile, this is likely why.")
 
         self._point_program = None
         self._ribbon_program = None
@@ -63,6 +75,12 @@ class StructureViewer(Gtk.GLArea):
                 shaders.RIBBON_VERT, shaders.RIBBON_FRAG)
         except GLError:
             log.exception("shader setup failed; viewer will stay blank")
+            # Tidy up a partial success (e.g. point program compiled, then
+            # the ribbon program failed) so we don't leave a live handle
+            # dangling outside of _on_unrealize's cleanup.
+            if self._point_program:
+                GL.glDeleteProgram(self._point_program)
+            self._point_program = self._ribbon_program = None
             return
 
         GL.glEnable(GL.GL_DEPTH_TEST)
