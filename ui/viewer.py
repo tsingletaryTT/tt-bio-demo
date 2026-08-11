@@ -79,6 +79,11 @@ class StructureViewer(Gtk.GLArea):
         self._point_count = 0
         self._point_opacity = 1.0
         self._pending_points = None
+
+        self._ribbon_vao = None
+        self._ribbon_buffers = None
+        self._ribbon_index_count = 0
+        self._pending_ribbon = None
         # True once _frame_camera has snapped the camera to a real frame at
         # least once. Deliberately separate from _point_count (which tracks
         # how many vertices are uploaded to the GPU right now, and gets
@@ -143,6 +148,20 @@ class StructureViewer(Gtk.GLArea):
         # _camera_framed is about which *job's* data the camera has framed,
         # unrelated to context recreation.
         self._point_count = 0
+
+        # Same lifecycle contract as the point buffers just above: the
+        # ribbon VAO/VBOs/EBO die with this GL context, so the handles and
+        # the index count that gates _draw_ribbon must be dropped together
+        # here, or a future realize would hand out fresh buffer ids while
+        # _ribbon_index_count still claims the old (now-deleted) VAO has
+        # geometry to draw.
+        if self._ribbon_vao is not None:
+            GL.glDeleteVertexArrays(1, [self._ribbon_vao])
+            GL.glDeleteBuffers(len(self._ribbon_buffers), self._ribbon_buffers)
+        self._ribbon_vao = None
+        self._ribbon_buffers = None
+        self._ribbon_index_count = 0
+
         self._ready = False
 
     # ── camera ───────────────────────────────────────────────────────────
@@ -232,6 +251,106 @@ class StructureViewer(Gtk.GLArea):
         GL.glDrawArrays(GL.GL_POINTS, 0, self._point_count)
         GL.glBindVertexArray(0)
 
+    # ── ribbon ───────────────────────────────────────────────────────────
+
+    def set_ribbon(self, vertices, normals, colors, indices):
+        """Upload a finished structure. Safe to call before GL is realized."""
+        self._pending_ribbon = (
+            np.ascontiguousarray(vertices, dtype=np.float32),
+            np.ascontiguousarray(normals, dtype=np.float32),
+            np.ascontiguousarray(colors, dtype=np.float32),
+            np.ascontiguousarray(indices, dtype=np.uint32),
+        )
+        self._frame_camera(self._pending_ribbon[0])
+        self.queue_render()
+
+    def clear_structure(self):
+        """Drop whatever's currently shown so a new job starts from blank.
+
+        Resets `_camera_framed` to False -- this is the reset path called
+        out in the field's own comment in __init__: without it, the next
+        job's first frame would ease the camera in from this job's leftover
+        extent/center instead of snapping fresh, since `_frame_camera` only
+        snaps when `_camera_framed` is False.
+        """
+        self._point_count = 0
+        self._ribbon_index_count = 0
+        # Any not-yet-uploaded data from the job that's ending must not
+        # surface on a later render -- otherwise a race between this call
+        # and the next _on_render could resurrect the old structure right
+        # after we asked for it to disappear.
+        self._pending_points = None
+        self._pending_ribbon = None
+        self._blend = 0.0
+        self._camera_framed = False
+        self.queue_render()
+
+    def _upload_ribbon(self):
+        verts, norms, colors, indices = self._pending_ribbon
+        self._pending_ribbon = None
+
+        if self._ribbon_vao is None:
+            self._ribbon_vao = GL.glGenVertexArrays(1)
+            self._ribbon_buffers = GL.glGenBuffers(4)
+
+        vbo_pos, vbo_norm, vbo_color, ebo = self._ribbon_buffers
+        GL.glBindVertexArray(self._ribbon_vao)
+
+        for location, buffer, data in (
+            (0, vbo_pos, verts), (1, vbo_norm, norms), (2, vbo_color, colors)
+        ):
+            GL.glBindBuffer(GL.GL_ARRAY_BUFFER, buffer)
+            GL.glBufferData(GL.GL_ARRAY_BUFFER, data.nbytes, data, GL.GL_STATIC_DRAW)
+            GL.glEnableVertexAttribArray(location)
+            GL.glVertexAttribPointer(location, 3, GL.GL_FLOAT, GL.GL_FALSE, 0, None)
+
+        GL.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, ebo)
+        GL.glBufferData(GL.GL_ELEMENT_ARRAY_BUFFER, indices.nbytes, indices,
+                        GL.GL_STATIC_DRAW)
+        GL.glBindVertexArray(0)
+        self._ribbon_index_count = len(indices)
+
+    def _draw_ribbon(self, mvp, model, opacity):
+        if not self._ribbon_index_count or opacity <= 0.0:
+            return
+        GL.glUseProgram(self._ribbon_program)
+        GL.glUniformMatrix4fv(
+            GL.glGetUniformLocation(self._ribbon_program, "u_mvp"),
+            1, GL.GL_FALSE, mvp)
+        GL.glUniformMatrix4fv(
+            GL.glGetUniformLocation(self._ribbon_program, "u_model"),
+            1, GL.GL_FALSE, model)
+        GL.glUniform1f(
+            GL.glGetUniformLocation(self._ribbon_program, "u_opacity"), opacity)
+        # Depth *test* stays on (enabled once, globally, in _on_realize) so
+        # the ribbon still respects whatever's already in the depth buffer.
+        # Depth *write* is conditional: only latch depth when the ribbon is
+        # the sole, fully-opaque visual (opacity == 1, the steady state
+        # right after job_done snaps blend straight to 1.0 with no fade in
+        # play). While opacity < 1 -- Task 10's cross-fade -- a translucent
+        # ribbon must NOT write a solid depth value, or it would still fully
+        # occlude the points drawn right after it via the depth test, even
+        # though its own color contribution is only partial. That would
+        # make the points vanish behind a half-see-through ribbon instead of
+        # blending through it, defeating the entire point of a cross-fade.
+        # Always restored to GL_TRUE below so this doesn't leak into
+        # _draw_points or the next frame.
+        GL.glDepthMask(GL.GL_TRUE if opacity >= 1.0 else GL.GL_FALSE)
+        GL.glBindVertexArray(self._ribbon_vao)
+        GL.glDrawElements(GL.GL_TRIANGLES, self._ribbon_index_count,
+                          GL.GL_UNSIGNED_INT, None)
+        GL.glBindVertexArray(0)
+        GL.glDepthMask(GL.GL_TRUE)
+
+    def set_blend(self, t):
+        """0 shows only points, 1 only the ribbon.
+
+        Temporary: Task 10 replaces this with an animated tick-driven
+        version that eases between the two instead of snapping.
+        """
+        self._blend = float(np.clip(t, 0.0, 1.0))
+        self.queue_render()
+
     def _on_render(self, _area, _context):
         GL.glClearColor(*BACKGROUND)
         GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
@@ -240,7 +359,15 @@ class StructureViewer(Gtk.GLArea):
 
         if self._pending_points is not None:
             self._upload_points()
+        if self._pending_ribbon is not None:
+            self._upload_ribbon()
 
-        mvp, _model = self._mvp()
+        mvp, model = self._mvp()
+        # Ribbon first, points second: translucent points should composite
+        # over the ribbon's color. This ordering is safe with depth testing
+        # on because _draw_ribbon only writes depth while fully opaque (see
+        # its comment) -- so a translucent ribbon never hides points behind
+        # it via the depth test during a cross-fade, only via alpha.
+        self._draw_ribbon(mvp, model, self._blend)
         self._draw_points(mvp, self._point_opacity * (1.0 - self._blend))
         return True

@@ -235,3 +235,21 @@ def plddt_colors(plddt):
         out[mask] = np.asarray(rgb, dtype=np.float32) / 255.0
         claimed |= mask
     return out
+
+
+def ribbon_from_cif(cif_path, samples_per_segment=8, radius=1.6, sides=10):
+    """Read a CIF and build everything the ribbon renderer needs.
+
+    Returns (vertices, normals, colors, indices) with one color per vertex,
+    interpolated from per-residue pLDDT along the spline.
+    """
+    trace = load_ca_trace(cif_path)
+    centerline = catmull_rom(trace.coords, samples_per_segment)
+    verts, norms, indices = tube_mesh(centerline, radius=radius, sides=sides)
+
+    # One pLDDT value per centerline sample, then repeated around each ring.
+    along = resample_scalar(trace.plddt, len(centerline))
+    ring_colors = plddt_colors(along)
+    colors = np.repeat(ring_colors, sides, axis=0).astype(np.float32)
+
+    return verts, norms, colors, indices

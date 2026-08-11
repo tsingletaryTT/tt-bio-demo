@@ -159,3 +159,17 @@ def test_plddt_colors_follow_the_alphafold_ramp():
 def test_plddt_colors_are_in_unit_range():
     colors = plddt_colors(np.linspace(0.0, 100.0, 50))
     assert colors.min() >= 0.0 and colors.max() <= 1.0
+
+
+def test_ribbon_from_cif_produces_consistent_buffers():
+    from ui.geometry import ribbon_from_cif
+
+    verts, norms, colors, idx = ribbon_from_cif(
+        "tests/fixtures/structures/minimal.cif", samples_per_segment=4, sides=6
+    )
+    assert verts.shape == norms.shape == colors.shape
+    assert verts.shape[1] == 3
+    assert len(verts) % 6 == 0
+    assert idx.max() < len(verts)
+    assert colors.min() >= 0.0 and colors.max() <= 1.0
+    assert verts.dtype == np.float32 and idx.dtype == np.uint32

@@ -12,6 +12,7 @@ from gi.repository import GLib, Gtk
 
 from protocol.events import unpack_coords
 from ui.client import EventClient, LatestFrame
+from ui.geometry import GeometryError, ribbon_from_cif
 from ui.viewer import StructureViewer
 
 log = logging.getLogger(__name__)
@@ -75,6 +76,21 @@ class DemoApp(Gtk.Application):
                          100.0 * event.get("frac", 0.0))
             elif kind == "job_done":
                 log.info("done in %.2fs", event.get("wall_s", 0.0))
+                cif_path = event.get("cif_path")
+                if cif_path:
+                    try:
+                        verts, norms, colors, idx = ribbon_from_cif(cif_path)
+                    except GeometryError:
+                        # Leave whatever's on screen (the last diffusion
+                        # frame) exactly as it is and just log -- never a
+                        # stack trace on screen, never a crash. set_ribbon
+                        # and set_blend below are only reached on success,
+                        # so a bad CIF simply forfeits the ribbon reveal for
+                        # this job instead of corrupting the current view.
+                        log.exception("could not build ribbon for %s", cif_path)
+                    else:
+                        self.viewer.set_ribbon(verts, norms, colors, idx)
+                        self.viewer.set_blend(1.0)
         except Exception:
             log.exception("dropping malformed %s event", event.get("type"))
         return False
