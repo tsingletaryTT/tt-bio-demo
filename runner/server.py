@@ -23,9 +23,14 @@ log = logging.getLogger(__name__)
 class EventServer:
     """Accepts UI clients and broadcasts protocol events to all of them."""
 
-    def __init__(self, socket_path, hello_factory):
+    def __init__(self, socket_path, hello_factory, client_send_timeout=1.0):
         self.socket_path = socket_path
         self._hello_factory = hello_factory
+        # Bounds how long a single send to one client may block the caller
+        # (the accept loop for `hello`, `broadcast()` for the fold loop). See
+        # `_accept_loop` for the reasoning behind the default. Overridable so
+        # tests can exercise the timeout path without a slow test.
+        self._client_send_timeout = client_send_timeout
         self._server = None
         self._thread = None
         self._stop = threading.Event()
@@ -68,8 +73,20 @@ class EventServer:
             pass
 
     def broadcast(self, event):
-        """Send `event` to every connected client. Returns how many received it."""
-        payload = encode(event)
+        """Send `event` to every connected client. Returns how many received it.
+
+        Never raises into the caller (the daemon's fold loop): a malformed
+        `event` is a bug in the caller, not a client problem, and is logged
+        and treated as reaching nobody rather than propagating. A client that
+        cannot keep up (see `_accept_loop` for the send timeout) is dropped
+        exactly like one that has disconnected outright -- diffusion frames
+        are advisory, so a stuck screen is not worth stalling compute for.
+        """
+        try:
+            payload = encode(event)
+        except Exception:
+            log.exception("dropping malformed broadcast event: %r", event)
+            return 0
         with self._lock:
             clients = list(self._clients)
         delivered, dead = 0, []
@@ -78,6 +95,9 @@ class EventServer:
                 conn.sendall(payload)
                 delivered += 1
             except OSError:
+                # Covers both a closed/reset peer and `socket.timeout` (a
+                # subclass of OSError) from a peer that stopped reading --
+                # see the send timeout set in `_accept_loop`.
                 dead.append(conn)
         if dead:
             with self._lock:
@@ -87,7 +107,7 @@ class EventServer:
                     conn.close()
                 except OSError:
                     pass
-            log.info("dropped %d disconnected UI client(s)", len(dead))
+            log.info("dropped %d disconnected or unresponsive UI client(s)", len(dead))
         return delivered
 
     def _accept_loop(self):
@@ -98,6 +118,18 @@ class EventServer:
                 continue
             except OSError:
                 return
+            # Bound how long a slow or wedged client can block a send. A UI
+            # process that is suspended, deadlocked, or simply not draining
+            # its socket buffer would otherwise let `sendall` block
+            # indefinitely -- both here (freezing the accept loop, so no
+            # *other* client could connect either) and in `broadcast()`
+            # (freezing the daemon's fold loop, so compute would stop
+            # because a screen stopped reading). 1 second is generous enough
+            # to absorb a scheduling hiccup but short enough that the one-time
+            # cost of discovering a stuck client is negligible against a fold
+            # that runs for seconds to minutes; once dropped, later
+            # broadcasts no longer pay the cost at all.
+            conn.settimeout(self._client_send_timeout)
             try:
                 conn.sendall(encode(self._hello_factory()))
             except Exception:
