@@ -189,8 +189,9 @@ sys.exit(0 if ok else 1)
 fi
 log "system python: $SYSTEM_PYTHON ($PYVER) — within tt-bio's supported range"
 
-# Apt packages venv-ui inherits via --system-site-packages, plus the venv
-# module itself and the system libraries the GTK app needs to actually run.
+# Apt packages venv-ui inherits via --system-site-packages, the system
+# libraries the GTK app needs to actually run, and the tools venv-runner's
+# SFPI vendoring (see section 4b below) shells out to.
 REQUIRED_APT_PKGS=(
   python3-venv
   python3-pip
@@ -202,6 +203,8 @@ REQUIRED_APT_PKGS=(
   python3-numpy
   libgl1
   libglu1-mesa
+  curl
+  xz-utils
 )
 MISSING_PKGS=()
 for pkg in "${REQUIRED_APT_PKGS[@]}"; do
@@ -275,12 +278,20 @@ PY
 # that tt_bio's own code loads against the torch/ttnn actually present, not
 # just that the lazy top-level package does nothing and reports success.
 #
-# What this deliberately does NOT do: open a Tenstorrent device or call
-# anything that needs `tt-bio install-deps`'s system libraries/kernel
-# modules. `import ttnn` alone does not touch hardware (verified: it imports
-# cleanly on this box with no device opened, just noisy debug/nanobind
-# logging, which LOGURU_LEVEL/TT_METAL_LOGGER_LEVEL below suppress). Whether
-# tt-bio can actually drive hardware is a Phase-3 question, not this one.
+# Even that is not enough, though: torch/ttnn/tt_bio.tenstorrent all import
+# fine even when `ttnn.open_device()` cannot actually work — confirmed on
+# this box, where a version-skewed SFPI toolchain (see ensure_sfpi_installed
+# below) breaks JIT kernel compilation with a TT_THROW deep inside
+# open_device, well after every import above has already succeeded. Imports
+# alone cannot catch that class of failure because none of them open a
+# device. So this also does a real, best-effort device probe:
+# `ttnn.get_num_devices()` first distinguishes "no Tenstorrent hardware on
+# this box" (legitimate on a packaging/CI machine, not a failure) from
+# "hardware is present" — only when it's present does open_device(0) get
+# tried, and only a failure in that case counts as a real, reportable
+# problem. This deliberately still never calls anything that needs
+# `tt-bio install-deps`'s system libraries/kernel modules beyond what
+# opening a device already requires on this box.
 verify_runner_venv() {
   local venv="$1"
   # Run from VERIFY_RUNDIR, not the caller's cwd: `import ttnn` writes a
@@ -316,10 +327,36 @@ except Exception as e:
     print(f"VERIFY-FAIL: tt_bio.tenstorrent import failed: {type(e).__name__}: {e}", file=sys.stderr)
     sys.exit(1)
 
-print(
+stack_ok = (
     f"torch {torch.__version__} ok, ttnn ok, "
     f"tt_bio {getattr(tt_bio, '__version__', 'unknown')} ok, tt_bio.tenstorrent ok"
 )
+
+# Device probe. get_num_devices() itself can only fail if the ttnn stack is
+# broken in a way imports above didn't already catch, so a failure here is
+# still a real failure, not a "no hardware" signal.
+try:
+    n = ttnn.get_num_devices()
+except Exception as e:
+    print(f"VERIFY-FAIL: ttnn.get_num_devices() failed: {type(e).__name__}: {e}", file=sys.stderr)
+    sys.exit(1)
+
+if n == 0:
+    print(f"{stack_ok}, device probe SKIPPED (0 Tenstorrent devices detected)")
+    sys.exit(0)
+
+try:
+    dev = ttnn.open_device(device_id=0)
+    ttnn.close_device(dev)
+except Exception as e:
+    print(
+        f"VERIFY-FAIL: ttnn.open_device(0) failed with {n} device(s) detected: "
+        f"{type(e).__name__}: {e}",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+print(f"{stack_ok}, device probe OK ({n} device(s) detected, opened+closed device 0)")
 PY
   )
 }
@@ -392,6 +429,160 @@ RUNNER_INSTALL_SECONDS=""
 RUNNER_SIZE=""
 RUNNER_DEGRADED=0   # 1 iff venv-runner has tt-bio installed but its stack won't import (see exit code 2 below)
 
+# ---------------------------------------------------------------------------
+# 4b. venv-runner's SFPI toolchain
+# ---------------------------------------------------------------------------
+#
+# ttnn JIT-compiles Tenstorrent device kernels with a RISC-V toolchain called
+# SFPI. tt-bio 0.6.2's ttnn==0.68.0 requires SFPI 7.35.3 specifically (see
+# <ttnn>/tt_metal/sfpi-version, the wheel's own manifest) — but this box also
+# has a *different* SFPI (7.61.0) installed system-wide at
+# /opt/tenstorrent/sfpi, shared with the user's other Tenstorrent projects.
+# ttnn's shared objects have two SFPI paths baked in: that absolute system
+# path, and a *relative* <ttnn>/runtime/sfpi, which the wheel ships empty.
+# Whichever is present wins the relative one if present at all — no
+# environment variable involved (confirmed: unsetting TT_METAL_HOME makes no
+# difference either way). Version skew between the two breaks kernel
+# compilation: confirmed on this box, `ttnn.open_device()` throws
+# `TT_THROW @ tt_metal/jit_build/build.cpp:60` ("lto1: internal compiler
+# error in lto_read_decls") with only the system 7.61.0 in play, and clean
+# open_device()/close_device() with a vendored 7.35.3 dropped into
+# <ttnn>/runtime/sfpi instead — moving that vendored copy aside reintroduces
+# the exact same failure, which is what actually demonstrates the mechanism
+# rather than just correlating with it.
+#
+# So venv-runner gets its own private, version-matched SFPI rather than
+# relying on (or mutating) the system one. This is deliberately *not* what
+# `tt-bio install-deps` would do for SFPI — that installs/upgrades the
+# *system* copy, which would fix this venv but could just as easily break
+# whichever other Tenstorrent project on this box is pinned to 7.61.0.
+# Vendoring is the same "give each thing its own environment" principle the
+# rest of this script is built on, applied one level deeper — and it also
+# means `tt-bio install-deps` is no longer needed for SFPI at all, which is
+# one less system-mutating step a turnkey Debian install has to take.
+#
+# The version and its hashes are read out of the manifest the venv's own
+# ttnn wheel ships — never hardcoded here — so a future TT_BIO_VERSION bump
+# that changes ttnn's required SFPI is picked up automatically instead of
+# silently installing a stale one.
+
+# Sources <ttnn>/tt_metal/sfpi-version — a handful of `name='value'` shell
+# assignments (sfpi_repo, sfpi_version, sfpi_hashtype, and one sha256 hash
+# per platform/package-format) — into the caller's own local variables.
+# tt-metal's own dockerfile/scripts/install-sfpi.sh reads this same file the
+# same way; predeclaring e.g. `local sfpi_version=""` in the *caller* before
+# calling this is what makes the assignments land there and not leak
+# globally — bash's dynamic scoping resolves a plain assignment to the
+# nearest enclosing local of that name up the call stack, and this function
+# deliberately declares none of its own so the caller's locals are that
+# nearest enclosing scope.
+read_sfpi_manifest() {
+  local ttnn_dir="$1"
+  local manifest="${ttnn_dir}/tt_metal/sfpi-version"
+  [[ -r "$manifest" ]] || die "SFPI manifest not found at $manifest — does this ttnn wheel still ship one? (this script needs updating if the layout changed)"
+  # shellcheck disable=SC1090
+  source "$manifest"
+}
+
+# Prints "<arch>_<distro>", matching tenstorrent/sfpi's own sfpi-info.sh
+# algorithm (the canonical generator of both the manifest and its own
+# install scripts): arch is exactly `uname -m`; distro is /etc/os-release's
+# ID, UNLESS ID_LIKE names a debian or fedora ancestor, in which case that
+# wins — so e.g. Ubuntu's ID=ubuntu, ID_LIKE=debian resolves to "debian",
+# because the manifest ships one binary per upstream family, not one per
+# downstream distro.
+sfpi_platform_key() {
+  local arch dist="" id="" id_like="" like
+  arch="$(uname -m)"
+  if [[ -r /etc/os-release ]]; then
+    id="$(. /etc/os-release; printf '%s' "${ID:-}")"
+    id_like="$(. /etc/os-release; printf '%s' "${ID_LIKE:-}")"
+  fi
+  dist="$id"
+  for like in $id_like; do
+    case "$like" in
+      debian) dist=debian; break ;;
+      fedora) dist=fedora; break ;;
+    esac
+  done
+  printf '%s_%s\n' "$arch" "$dist"
+}
+
+# Ensures <venv>'s ttnn has the SFPI version its own manifest declares,
+# vendored at <ttnn>/runtime/sfpi. Idempotent via a receipt file this
+# function writes itself immediately after a hash-verified install — an
+# existing runtime/sfpi *without* a matching receipt (hand-placed by a
+# person, left over from a different ttnn version, or anything else this
+# function didn't itself just verify) is never trusted on the strength of
+# merely existing; it's replaced.
+ensure_sfpi_installed() {
+  local venv="$1"
+  local purelib ttnn_dir
+  purelib="$("${venv}/bin/python3" -c 'import sysconfig; print(sysconfig.get_path("purelib"))')"
+  ttnn_dir="${purelib}/ttnn"
+  [[ -d "$ttnn_dir" ]] || die "ensure_sfpi_installed: no ttnn package found under $purelib — did tt-bio's install actually bring in ttnn?"
+
+  local sfpi_repo="" sfpi_version="" sfpi_hashtype="" sfpi_build="" sfpi_base=""
+  read_sfpi_manifest "$ttnn_dir"
+  if [[ -z "$sfpi_repo" || -z "$sfpi_version" || -z "$sfpi_hashtype" ]]; then
+    die "ensure_sfpi_installed: could not parse sfpi_repo/sfpi_version/sfpi_hashtype out of ${ttnn_dir}/tt_metal/sfpi-version"
+  fi
+
+  local platform_key hash_var expected_hash
+  platform_key="$(sfpi_platform_key)"
+  hash_var="sfpi_${platform_key}_txz_hash"
+  expected_hash="${!hash_var:-}"
+  if [[ -z "$expected_hash" ]]; then
+    die "ensure_sfpi_installed: no SFPI ${sfpi_version} .txz release published for this platform ($platform_key). ${ttnn_dir}/tt_metal/sfpi-version only lists:
+$(grep -E '^sfpi_[a-z0-9_]+_hash=' "${ttnn_dir}/tt_metal/sfpi-version")"
+  fi
+
+  local sfpi_dir="${ttnn_dir}/runtime/sfpi"
+  local receipt="${sfpi_dir}/.tt-bio-demo-sfpi-receipt"
+  local receipt_line="version=${sfpi_version} sha256=${expected_hash}"
+
+  if [[ -f "$receipt" ]] && grep -qxF "$receipt_line" "$receipt" 2>/dev/null; then
+    log "venv-runner: SFPI ${sfpi_version} already vendored at ${sfpi_dir} (verified receipt) — skipping (use --force to reinstall)"
+    return 0
+  fi
+
+  if [[ -d "$sfpi_dir" ]]; then
+    log "venv-runner: ${sfpi_dir} exists but has no matching receipt (untrusted — hand-placed, stale, or from a different SFPI version) — replacing it"
+    safe_rm_rf "$sfpi_dir"
+  fi
+
+  local filename url download_path
+  filename="sfpi_${sfpi_version}_${platform_key}.txz"
+  url="${sfpi_repo}/releases/download/${sfpi_version}/${filename}"
+  download_path="${VERIFY_RUNDIR}/${filename}"
+
+  log "venv-runner: downloading SFPI ${sfpi_version} (${platform_key}) from ${url}"
+  if ! curl -fsSL -o "$download_path" "$url"; then
+    rm -f "$download_path"
+    die "venv-runner: SFPI download failed: $url"
+  fi
+
+  local actual_hash
+  actual_hash="$(sha256sum "$download_path" | cut -d' ' -f1)"
+  if [[ "$actual_hash" != "$expected_hash" ]]; then
+    rm -f "$download_path"
+    die "venv-runner: SFPI ${sfpi_version} sha256 mismatch for ${filename} — expected ${expected_hash}, got ${actual_hash}. This is a compiler toolchain fetched over the network; refusing to install one that doesn't match its published hash. Not retrying automatically."
+  fi
+  log "venv-runner: SFPI ${sfpi_version} sha256 verified"
+
+  mkdir -p "${ttnn_dir}/runtime"
+  # The tarball's own top-level entry is "sfpi/", so extracting into
+  # runtime/ (not runtime/sfpi/) lands it at runtime/sfpi/... directly,
+  # rather than the doubly-nested runtime/sfpi/sfpi/... a naive
+  # `mkdir sfpi && tar -C sfpi` would produce.
+  tar -xJf "$download_path" -C "${ttnn_dir}/runtime"
+  rm -f "$download_path"
+  [[ -d "$sfpi_dir" ]] || die "venv-runner: extracted the SFPI tarball but ${sfpi_dir} doesn't exist — unexpected tarball layout (expected a top-level 'sfpi/' entry)"
+
+  printf '%s\n' "$receipt_line" >"$receipt"
+  log "venv-runner: SFPI ${sfpi_version} installed to ${sfpi_dir}"
+}
+
 create_runner_venv() {
   if [[ "$SKIP_RUNNER" -eq 1 ]]; then
     log "venv-runner: --skip-runner given, not touching it"
@@ -407,26 +598,31 @@ create_runner_venv() {
       local installed
       installed="$(installed_tt_bio_version "$VENV_RUNNER")"
       if [[ "$installed" == "$TT_BIO_VERSION" ]]; then
+        # Cheap once installed (a receipt check, not a re-download) — run on
+        # every idempotent pass so an existing venv whose SFPI is missing,
+        # stale, or untrusted gets fixed without redoing the pip install.
+        ensure_sfpi_installed "$VENV_RUNNER"
         if verify_runner_venv "$VENV_RUNNER" >"$VERIFY_TMP" 2>&1; then
-          log "venv-runner: already has tt-bio==$TT_BIO_VERSION and its torch/ttnn/tt_bio stack imports cleanly — skipping (use --force to rebuild)"
+          log "venv-runner: already has tt-bio==$TT_BIO_VERSION with a matching SFPI, and its torch/ttnn/tt_bio stack (plus device probe) checks out — skipping (use --force to rebuild)"
           cat "$VERIFY_TMP"; rm -f "$VERIFY_TMP"
           RUNNER_STATUS="already valid (skipped)"
           RUNNER_SIZE="$(du -sh "$VENV_RUNNER" 2>/dev/null | cut -f1)" || true
           return 0
         else
-          # pip already reports the pinned version installed but the deep
-          # import check fails. Re-running pip would not fix a missing system
-          # library or a partially-deleted package, and would re-pay the
-          # multi-GB download for nothing — so don't, unless --force says to.
+          # pip already reports the pinned version installed, and SFPI is in
+          # place, but the deep import/device check still fails. Re-running
+          # pip would not fix a missing system library or a genuinely broken
+          # card, and would re-pay the multi-GB download for nothing — so
+          # don't, unless --force says to.
           RUNNER_SIZE="$(du -sh "$VENV_RUNNER" 2>/dev/null | cut -f1)" || true
           if [[ "$STRICT" -eq 1 ]]; then
             cat "$VERIFY_TMP" >&2; rm -f "$VERIFY_TMP"
-            die "venv-runner: tt-bio==$TT_BIO_VERSION is installed but its torch/ttnn/tt_bio stack fails to import (--strict). Rerun with --force to rebuild, or without --strict to treat this as a reported-but-nonfatal degraded state."
+            die "venv-runner: tt-bio==$TT_BIO_VERSION is installed but its torch/ttnn/tt_bio stack or device probe fails (--strict). Rerun with --force to rebuild, or without --strict to treat this as a reported-but-nonfatal degraded state."
           fi
-          warn "venv-runner: tt-bio==$TT_BIO_VERSION is installed but its torch/ttnn/tt_bio stack fails to import:"
+          warn "venv-runner: tt-bio==$TT_BIO_VERSION is installed but its torch/ttnn/tt_bio stack or device probe fails:"
           cat "$VERIFY_TMP" >&2; rm -f "$VERIFY_TMP"
           warn "venv-runner: leaving the venv as-is (see docs/venv-bootstrap-notes.md for what this usually means). Use --force to rebuild anyway, or --strict to make this fatal."
-          RUNNER_STATUS="pinned version installed, import stack FAILS (left as-is)"
+          RUNNER_STATUS="pinned version installed, import/device check FAILS (left as-is)"
           RUNNER_DEGRADED=1
           return 0
         fi
@@ -456,18 +652,22 @@ create_runner_venv() {
     die "venv-runner: 'pip install tt-bio==${TT_BIO_VERSION}' FAILED after ${RUNNER_INSTALL_SECONDS}s (venv left at $VENV_RUNNER, ${RUNNER_SIZE}, for inspection). Not retrying automatically — see pip's own error above."
   fi
 
-  log "venv-runner: verifying torch/ttnn/tt_bio import cleanly"
+  ensure_sfpi_installed "$VENV_RUNNER"
+  RUNNER_SIZE="$(du -sh "$VENV_RUNNER" 2>/dev/null | cut -f1)" || true   # SFPI adds ~435M; refresh the reported size
+
+  log "venv-runner: verifying torch/ttnn/tt_bio import and a real device probe"
   if verify_runner_venv "$VENV_RUNNER"; then
     RUNNER_STATUS="created and verified"
   else
-    # pip succeeded but the import doesn't work — most likely Tenstorrent
-    # system libraries/kernel modules are absent on this box. That is
-    # expected here: this script deliberately never installs them (see
-    # header comment). Report precisely; do not paper over it.
+    # pip and SFPI both succeeded but the deep check still fails — most
+    # likely Tenstorrent system libraries/kernel modules are absent on this
+    # box (SFPI itself is vendored per-venv now, so it's no longer the
+    # likely cause; see docs/venv-bootstrap-notes.md). Report precisely; do
+    # not paper over it.
     if [[ "$STRICT" -eq 1 ]]; then
-      die "venv-runner: pip install succeeded but its torch/ttnn/tt_bio stack fails to import (--strict, see VERIFY-FAIL line above)."
+      die "venv-runner: pip install succeeded but its torch/ttnn/tt_bio stack or device probe fails (--strict, see VERIFY-FAIL line above)."
     fi
-    RUNNER_STATUS="created; pip install OK but import stack FAILS (see above)"
+    RUNNER_STATUS="created; pip install OK but import/device check FAILS (see above)"
     RUNNER_DEGRADED=1
   fi
 }
@@ -506,8 +706,11 @@ echo "  pinned:      tt-bio==${TT_BIO_VERSION}"
 echo
 echo "NOT run by this script (deliberately, needs explicit consent — Debian"
 echo "packaging phase owns this): 'tt-bio install-deps' / any Tenstorrent"
-echo "system package or kernel module install. If the torch/ttnn/tt_bio import"
-echo "check failed above, that is almost certainly why — see"
+echo "system package or kernel module install. SFPI — the piece install-deps"
+echo "used to matter for here — is now vendored per-venv above, matched to"
+echo "what this ttnn build needs, so it no longer depends on install-deps at"
+echo "all. If the import/device check still failed above, the likely cause is"
+echo "a missing or mismatched Tenstorrent driver/kernel module instead — see"
 echo "docs/venv-bootstrap-notes.md."
 if [[ "$RUNNER_DEGRADED" -eq 1 ]]; then
   echo
