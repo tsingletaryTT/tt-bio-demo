@@ -37,9 +37,9 @@ def look_at(eye, target, up):
     true_up = np.cross(side, forward)
 
     m = np.eye(4, dtype=np.float32)
-    m[0, :3] = side
-    m[1, :3] = true_up
-    m[2, :3] = -forward
+    m[:3, 0] = side
+    m[:3, 1] = true_up
+    m[:3, 2] = -forward
     m[3, 0] = -np.dot(side, eye)
     m[3, 1] = -np.dot(true_up, eye)
     m[3, 2] = np.dot(forward, eye)

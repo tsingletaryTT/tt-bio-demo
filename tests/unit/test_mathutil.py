@@ -37,6 +37,25 @@ def test_look_at_places_target_on_negative_z_axis():
     np.testing.assert_allclose(seen[:3], [0.0, 0.0, -10.0], atol=1e-5)
 
 
+def test_look_at_maps_eye_to_the_view_space_origin_when_off_axis():
+    # A regression guard: an axis-aligned eye (see the test above) leaves the
+    # rotation part of the view matrix as the identity, so a row/column
+    # transposition bug in the rotation block is invisible from that case
+    # alone. Placing the eye off-axis exercises the actual rotation.
+    eye = np.array([5.0, 0.0, 0.0])
+    view = look_at(eye, np.zeros(3), np.array([0.0, 1.0, 0.0]))
+    eye_h = np.array([5.0, 0.0, 0.0, 1.0], dtype=np.float32)
+    seen = view.T @ eye_h
+    np.testing.assert_allclose(seen[:3], [0.0, 0.0, 0.0], atol=1e-5)
+
+
+def test_look_at_rotation_block_is_orthonormal():
+    eye = np.array([3.0, 4.0, 5.0])
+    view = look_at(eye, np.zeros(3), np.array([0.0, 1.0, 0.0]))
+    upper = view.T[:3, :3]
+    np.testing.assert_allclose(upper @ upper.T, np.eye(3), atol=1e-6)
+
+
 def test_rotation_y_by_ninety_degrees_maps_x_to_minus_z():
     m = rotation_y(np.pi / 2)
     v = np.array([1.0, 0.0, 0.0, 1.0], dtype=np.float32)
