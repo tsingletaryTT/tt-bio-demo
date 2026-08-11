@@ -1759,7 +1759,9 @@ git commit -m "feat(runner): add a priority job queue for visitor picks"
 
 **Interfaces:**
 - Consumes: nothing (shells out to `tt-smi`).
-- Produces: `parse_tt_smi(snapshot: dict) -> list[CardState]`; `CardState(index, board_type, temperature_c, power_w, aiclk_mhz)`; `CardPool(indices, max_temp_c=85.0)` with `.update(cards) -> list[dict]` (returns `card_state` events for anything that changed), `.schedulable() -> list[int]`, `.mark_busy(index)`, `.mark_idle(index)`.
+- Produces: `parse_tt_smi(snapshot: dict) -> list[CardState]`; `CardState(index, board_type, temperature_c, power_w, aiclk_mhz)`; `CardPool(indices, max_temp_c=85.0)` with `.update(cards) -> list[dict]` (returns `card_state` events for anything that changed), `.schedulable() -> list[int]`, `.mark_busy(index)`, `.mark_idle(index) -> dict | None`.
+
+**As implemented** (the reference code below was corrected during execution): busy and too-hot are tracked as two independent flags, not one state string, because a single string cannot represent a card that is both. `mark_busy` **raises `ValueError`** on a quarantined card rather than silently un-quarantining it — Task 9's daemon must guard that call, since its telemetry thread can quarantine a card between `schedulable()` and `mark_busy()`. The wire event's single `state` field follows an explicit precedence: quarantined > busy > idle.
 
 Per spec §6, a card that runs too hot stops receiving work and the UI dims it. The runner samples temperature itself for scheduling; the UI samples `tt-smi` independently for display, so a wedged runner still shows live silicon.
 
@@ -1987,7 +1989,7 @@ class CardPool:
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `.venvs/venv-runner/bin/python3 -m pytest tests/unit/runner/test_cards.py -v`
-Expected: PASS, 12 tests
+Expected: PASS, 11 tests
 
 - [ ] **Step 5: Check the parser against this machine's real output**
 
@@ -2359,8 +2361,7 @@ class Daemon:
                 # folding onto a card we have just decided is unsafe.
                 available = self.cards.schedulable()
                 if not available:
-                    log.error("no schedulable cards; holding off (states=%s)",
-                              self.cards._states)
+                    log.error("no schedulable cards; holding off")
                     self._stop.wait(5.0)
                     continue
 
@@ -2371,14 +2372,30 @@ class Daemon:
                         log.error("no playlist targets available; idling")
                         self._stop.wait(10.0)
                     continue
-                self._run_one(job, card=available[0])
+
+                # Claiming the card is a race: the telemetry thread runs
+                # update() on a timer, so a card can be quarantined between
+                # schedulable() above and mark_busy() here. CardPool raises
+                # rather than handing out hot hardware, so catch it, put the
+                # job back, and pick again with fresh state.
+                card = available[0]
+                try:
+                    self._emit(self.cards.mark_busy(card))
+                except ValueError:
+                    log.warning("card %d was quarantined while being claimed; "
+                                "requeueing %s", card, job.target_id)
+                    self.queue.submit(job)
+                    continue
+
+                self._run_one(job, card=card)
         finally:
             if self.folder is not None:
                 self.folder.close()
             self.server.stop()
 
     def _run_one(self, job, card):
-        self._emit(self.cards.mark_busy(card))
+        # The card is already claimed by the caller — claiming here would
+        # duplicate the busy event and re-open the race the caller guards.
         try:
             self.folder.fold(job.job_id, job.input_path, self._emit,
                              target_id=job.target_id,
