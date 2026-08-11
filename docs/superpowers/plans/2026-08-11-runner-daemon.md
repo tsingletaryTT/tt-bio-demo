@@ -76,13 +76,15 @@ This is first because the spike measured **121 MB of Inspector/Watcher logs for 
 Run each of these in turn and record what happens — whether a `generated/` tree appears, how big it gets, and whether the process behaves normally. Use a scratch CWD each time so results are unambiguous:
 
 ```bash
-cd "$(mktemp -d)" && TT_METAL_INSPECTOR_LOG_PATH=/tmp/probe-logs \
+cd "$(mktemp -d)" && TT_METAL_LOGS_PATH=/tmp/probe-logs \
   /home/ttuser/code/tt-bio-demo/.venvs/venv-runner/bin/python3 -c "
 import ttnn; d=ttnn.open_device(device_id=0); ttnn.close_device(d); print('ok')
 " 2>&1 | tail -3; ls
 ```
 
-Try at minimum: `TT_METAL_INSPECTOR_LOG_PATH` set to an absolute path, and `TT_METAL_INSPECTOR=0`. **Time-box each probe** and do not retry `TT_METAL_WATCHER=0` — it is known to hang.
+Try at minimum: `TT_METAL_LOGS_PATH` set to an absolute path, and `TT_METAL_INSPECTOR=0`. **Time-box each probe** and do not retry `TT_METAL_WATCHER=0` — it is known to hang.
+
+Confirm the variable you settle on actually appears in the shipped binaries before trusting it — `strings` over `libtt_metal.so` and the other `.so` files in `venv-runner`'s ttnn install is a two-minute check that distinguishes "this variable works" from "this variable is ignored and my test passes anyway."
 
 Write what you find into the module docstring of `runner/env.py`, with the measured `generated/` sizes. A future reader must be able to see the evidence, because the obvious reading of these variable names is wrong.
 
@@ -165,8 +167,15 @@ busy-poll. It is deliberately not set here.
 import os
 from pathlib import Path
 
-# tt-metal reads this to decide where Inspector writes. Absolute paths only.
-LOG_ROOT_VAR = "TT_METAL_INSPECTOR_LOG_PATH"
+# tt-metal reads this to decide where its logs are written. Absolute paths only.
+#
+# NOTE (corrected during execution): this plan originally specified
+# TT_METAL_INSPECTOR_LOG_PATH, which does not exist in this tt-metal build —
+# zero matches across every shared object in site-packages, and no measurable
+# effect. It would have passed every unit test while containing nothing. The
+# real lever is TT_METAL_LOGS_PATH (one match, in libtt_metal.so), verified by
+# a device probe that left the CWD empty.
+LOG_ROOT_VAR = "TT_METAL_LOGS_PATH"
 
 
 def runner_environ(log_root, base=None):
@@ -686,7 +695,7 @@ git commit -m "feat(runner): tap Protenix's diffusion trajectory, with a loud gu
 
 **Files:**
 - Create: `runner/shaping.py`
-- Test: `tests/unit/test_shaping.py`
+- Test: `tests/unit/runner/test_shaping.py`
 
 **Interfaces:**
 - Consumes: `protocol.events.pack_coords`.
@@ -696,7 +705,7 @@ Pulled into its own module because it is pure, it is where two of the spike's fi
 
 - [ ] **Step 1: Write the failing test**
 
-Create `tests/unit/test_shaping.py`:
+Create `tests/unit/runner/test_shaping.py`:
 
 ```python
 import numpy as np
@@ -775,7 +784,7 @@ def test_stage_order_matches_the_protocol_table():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `.venvs/venv-runner/bin/python3 -m pytest tests/unit/test_shaping.py -v`
+Run: `.venvs/venv-runner/bin/python3 -m pytest tests/unit/runner/test_shaping.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'runner.shaping'`
 
 - [ ] **Step 3: Write the implementation**
@@ -846,13 +855,13 @@ def plddt_to_percent(value):
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `.venvs/venv-runner/bin/python3 -m pytest tests/unit/test_shaping.py -v`
+Run: `.venvs/venv-runner/bin/python3 -m pytest tests/unit/runner/test_shaping.py -v`
 Expected: PASS, 11 tests
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add runner/shaping.py tests/unit/test_shaping.py
+git add runner/shaping.py tests/unit/runner/test_shaping.py
 git commit -m "feat(runner): subsample frames and scale pLDDT for the wire format"
 ```
 
@@ -862,7 +871,7 @@ git commit -m "feat(runner): subsample frames and scale pLDDT for the wire forma
 
 **Files:**
 - Create: `runner/server.py`
-- Test: `tests/unit/test_runner_server.py`
+- Test: `tests/unit/runner/test_runner_server.py`
 
 **Interfaces:**
 - Consumes: `protocol.events.encode`, `PROTOCOL_VERSION`.
@@ -874,7 +883,7 @@ This is the production counterpart to `runner/mock.py`. It differs in the way th
 
 - [ ] **Step 1: Write the failing test**
 
-Create `tests/unit/test_runner_server.py`:
+Create `tests/unit/runner/test_runner_server.py`:
 
 ```python
 import socket
@@ -1036,7 +1045,7 @@ def test_stop_removes_the_socket_file(tmp_path):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `.venvs/venv-runner/bin/python3 -m pytest tests/unit/test_runner_server.py -v`
+Run: `.venvs/venv-runner/bin/python3 -m pytest tests/unit/runner/test_runner_server.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'runner.server'`
 
 - [ ] **Step 3: Write the implementation**
@@ -1160,13 +1169,13 @@ class EventServer:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `.venvs/venv-runner/bin/python3 -m pytest tests/unit/test_runner_server.py -v`
+Run: `.venvs/venv-runner/bin/python3 -m pytest tests/unit/runner/test_runner_server.py -v`
 Expected: PASS, 8 tests
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add runner/server.py tests/unit/test_runner_server.py
+git add runner/server.py tests/unit/runner/test_runner_server.py
 git commit -m "feat(runner): broadcast live events to connected UI clients"
 ```
 
@@ -1178,7 +1187,7 @@ git commit -m "feat(runner): broadcast live events to connected UI clients"
 - Create: `runner/folder.py`
 - Create: `tests/integration/__init__.py` (empty)
 - Create: `tests/integration/conftest.py`
-- Test: `tests/unit/test_folder_events.py`, `tests/integration/test_real_fold.py`
+- Test: `tests/unit/runner/test_folder_events.py`, `tests/integration/test_real_fold.py`
 
 **Interfaces:**
 - Consumes: `runner.env.runner_environ`, `runner.dump_tap.*`, `runner.shaping.*`, `protocol.events`.
@@ -1190,7 +1199,7 @@ git commit -m "feat(runner): broadcast live events to connected UI clients"
 
 - [ ] **Step 1: Write the failing unit test for event ordering**
 
-Create `tests/unit/test_folder_events.py`:
+Create `tests/unit/runner/test_folder_events.py`:
 
 ```python
 import pytest
@@ -1272,7 +1281,7 @@ def test_all_six_protocol_stages_can_be_expressed():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `.venvs/venv-runner/bin/python3 -m pytest tests/unit/test_folder_events.py -v`
+Run: `.venvs/venv-runner/bin/python3 -m pytest tests/unit/runner/test_folder_events.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'runner.folder'`
 
 - [ ] **Step 3: Write the implementation**
@@ -1418,7 +1427,7 @@ class Folder:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `.venvs/venv-runner/bin/python3 -m pytest tests/unit/test_folder_events.py -v`
+Run: `.venvs/venv-runner/bin/python3 -m pytest tests/unit/runner/test_folder_events.py -v`
 Expected: PASS, 6 tests
 
 - [ ] **Step 5: Implement `_run_fold` against real tt-bio**
@@ -1551,7 +1560,7 @@ def test_a_structure_file_was_written(folded):
 - [ ] **Step 7: Run both suites**
 
 ```bash
-.venvs/venv-runner/bin/python3 -m pytest tests/unit -q
+./scripts/test.sh
 .venvs/venv-runner/bin/python3 -m pytest tests/integration -v
 ```
 
@@ -1560,7 +1569,7 @@ Expected: unit suite passes; the integration test runs a real fold in roughly 10
 - [ ] **Step 8: Commit**
 
 ```bash
-git add runner/folder.py tests/unit/test_folder_events.py tests/integration/
+git add runner/folder.py tests/unit/runner/test_folder_events.py tests/integration/
 git commit -m "feat(runner): fold on device and emit the full event sequence"
 ```
 
@@ -1570,7 +1579,7 @@ git commit -m "feat(runner): fold on device and emit the full event sequence"
 
 **Files:**
 - Create: `runner/queue.py`
-- Test: `tests/unit/test_job_queue.py`
+- Test: `tests/unit/runner/test_job_queue.py`
 
 **Interfaces:**
 - Consumes: nothing.
@@ -1580,7 +1589,7 @@ Visitor picks are submitted with a higher priority than attract-loop jobs so the
 
 - [ ] **Step 1: Write the failing test**
 
-Create `tests/unit/test_job_queue.py`:
+Create `tests/unit/runner/test_job_queue.py`:
 
 ```python
 from runner.queue import Job, JobQueue
@@ -1665,7 +1674,7 @@ def test_the_queue_is_safe_to_use_from_two_threads():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `.venvs/venv-runner/bin/python3 -m pytest tests/unit/test_job_queue.py -v`
+Run: `.venvs/venv-runner/bin/python3 -m pytest tests/unit/runner/test_job_queue.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'runner.queue'`
 
 - [ ] **Step 3: Write the implementation**
@@ -1730,13 +1739,13 @@ class JobQueue:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `.venvs/venv-runner/bin/python3 -m pytest tests/unit/test_job_queue.py -v`
+Run: `.venvs/venv-runner/bin/python3 -m pytest tests/unit/runner/test_job_queue.py -v`
 Expected: PASS, 7 tests
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add runner/queue.py tests/unit/test_job_queue.py
+git add runner/queue.py tests/unit/runner/test_job_queue.py
 git commit -m "feat(runner): add a priority job queue for visitor picks"
 ```
 
@@ -1746,7 +1755,7 @@ git commit -m "feat(runner): add a priority job queue for visitor picks"
 
 **Files:**
 - Create: `runner/cards.py`
-- Test: `tests/unit/test_cards.py`
+- Test: `tests/unit/runner/test_cards.py`
 
 **Interfaces:**
 - Consumes: nothing (shells out to `tt-smi`).
@@ -1758,7 +1767,7 @@ The real `tt-smi -s` field names, confirmed on this machine: `board_info.board_t
 
 - [ ] **Step 1: Write the failing test**
 
-Create `tests/unit/test_cards.py`:
+Create `tests/unit/runner/test_cards.py`:
 
 ```python
 import pytest
@@ -1857,7 +1866,7 @@ def test_marking_busy_emits_a_busy_event():
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `.venvs/venv-runner/bin/python3 -m pytest tests/unit/test_cards.py -v`
+Run: `.venvs/venv-runner/bin/python3 -m pytest tests/unit/runner/test_cards.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'runner.cards'`
 
 - [ ] **Step 3: Write the implementation**
@@ -1977,7 +1986,7 @@ class CardPool:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `.venvs/venv-runner/bin/python3 -m pytest tests/unit/test_cards.py -v`
+Run: `.venvs/venv-runner/bin/python3 -m pytest tests/unit/runner/test_cards.py -v`
 Expected: PASS, 12 tests
 
 - [ ] **Step 5: Check the parser against this machine's real output**
@@ -1996,7 +2005,7 @@ Expected: four `p300c` cards with plausible temperatures. If the field names dif
 - [ ] **Step 6: Commit**
 
 ```bash
-git add runner/cards.py tests/unit/test_cards.py
+git add runner/cards.py tests/unit/runner/test_cards.py
 git commit -m "feat(runner): track card health and quarantine hot cards"
 ```
 
@@ -2006,7 +2015,7 @@ git commit -m "feat(runner): track card health and quarantine hot cards"
 
 **Files:**
 - Create: `runner/preflight.py`
-- Test: `tests/unit/test_preflight.py`
+- Test: `tests/unit/runner/test_preflight.py`
 
 **Interfaces:**
 - Consumes: `runner.dump_tap.check_tap_supported`, `runner.cards`.
@@ -2016,7 +2025,7 @@ Per spec §6, preflight verifies offline readiness *before* the demo starts fold
 
 - [ ] **Step 1: Write the failing test**
 
-Create `tests/unit/test_preflight.py`:
+Create `tests/unit/runner/test_preflight.py`:
 
 ```python
 from runner.preflight import not_ready_event, run_preflight
@@ -2097,7 +2106,7 @@ def test_not_ready_event_carries_the_full_missing_list(tmp_path):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `.venvs/venv-runner/bin/python3 -m pytest tests/unit/test_preflight.py -v`
+Run: `.venvs/venv-runner/bin/python3 -m pytest tests/unit/runner/test_preflight.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'runner.preflight'`
 
 - [ ] **Step 3: Write the implementation**
@@ -2172,13 +2181,13 @@ def not_ready_event(result):
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `.venvs/venv-runner/bin/python3 -m pytest tests/unit/test_preflight.py -v`
+Run: `.venvs/venv-runner/bin/python3 -m pytest tests/unit/runner/test_preflight.py -v`
 Expected: PASS, 7 tests
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add runner/preflight.py tests/unit/test_preflight.py
+git add runner/preflight.py tests/unit/runner/test_preflight.py
 git commit -m "feat(runner): preflight offline readiness before folding starts"
 ```
 
@@ -2189,7 +2198,7 @@ git commit -m "feat(runner): preflight offline readiness before folding starts"
 **Files:**
 - Create: `runner/daemon.py`
 - Create: `runner/__main__.py`
-- Test: `tests/unit/test_daemon.py`
+- Test: `tests/unit/runner/test_daemon.py`
 
 **Interfaces:**
 - Consumes: everything above.
@@ -2197,7 +2206,7 @@ git commit -m "feat(runner): preflight offline readiness before folding starts"
 
 - [ ] **Step 1: Write the failing test**
 
-Create `tests/unit/test_daemon.py`:
+Create `tests/unit/runner/test_daemon.py`:
 
 ```python
 import pytest
@@ -2243,7 +2252,7 @@ def test_preflight_only_never_opens_a_device(tmp_path, monkeypatch):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `.venvs/venv-runner/bin/python3 -m pytest tests/unit/test_daemon.py -v`
+Run: `.venvs/venv-runner/bin/python3 -m pytest tests/unit/runner/test_daemon.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'runner.daemon'`
 
 - [ ] **Step 3: Write the implementation**
@@ -2476,7 +2485,7 @@ sys.exit(main())
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `.venvs/venv-runner/bin/python3 -m pytest tests/unit/test_daemon.py -v`
+Run: `.venvs/venv-runner/bin/python3 -m pytest tests/unit/runner/test_daemon.py -v`
 Expected: PASS, 3 tests
 
 - [ ] **Step 5: Check preflight-only works without a device**
@@ -2492,7 +2501,7 @@ Expected: it prints what is missing and exits non-zero without opening a device 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add runner/daemon.py runner/__main__.py tests/unit/test_daemon.py
+git add runner/daemon.py runner/__main__.py tests/unit/runner/test_daemon.py
 git commit -m "feat(runner): assemble tt-bio-demod"
 ```
 
@@ -2550,7 +2559,7 @@ git commit -m "feat: run the real daemon and the real UI together"
 
 ## Definition of done
 
-1. `.venvs/venv-runner/bin/python3 -m pytest tests/unit -q` passes, including the 83 tests that already existed.
+1. `./scripts/test.sh` passes both halves — the UI half under `venv-ui`, the runner half under `venv-runner` — including the 83 tests that already existed.
 2. `.venvs/venv-runner/bin/python3 -m pytest tests/integration -v` runs a real fold and passes on a machine with cards; skips cleanly on one without.
 3. `./scripts/run-demo.sh` shows a live fold in the real UI, driven by the real daemon.
 4. Killing the daemon mid-fold never blanks the UI; restarting it produces another fold.

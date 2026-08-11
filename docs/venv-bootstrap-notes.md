@@ -60,6 +60,7 @@ scripts/setup-venvs.sh                    # builds .venvs/venv-ui and .venvs/ven
 scripts/setup-venvs.sh --skip-runner       # UI only — skips the slow pip install
 scripts/setup-venvs.sh --force             # rebuild both from scratch
 scripts/setup-venvs.sh --strict            # a degraded venv-runner (see below) becomes fatal
+scripts/setup-venvs.sh --dev               # also install pytest into venv-runner (see below)
 scripts/setup-venvs.sh --prefix /opt/tt-bio-demo   # what the Debian postinst will pass, later
 ```
 
@@ -124,14 +125,133 @@ the suite and `.venvs/venv-ui/bin/python3 -m ui.app` to run the app.
 ### Running the suite
 
 ```bash
-scripts/test.sh              # full suite through venv-ui
-scripts/test.sh -k geometry -v   # args forwarded straight to pytest
+scripts/test.sh                  # both halves, one combined verdict
+scripts/test.sh -k geometry -v   # args forwarded, unchanged, to both halves
 ```
 
-This is now the one obvious way to run tests — it resolves `venv-ui` itself
-(default `.venvs/venv-ui` next to the repo; override with `TT_BIO_DEMO_PREFIX`
-if you built somewhere else) and fails with a clear message if it isn't built
-yet, instead of quietly running under whatever `python3` happens to resolve to.
+This is the one obvious way to run tests, and running it means something
+different than it used to: `scripts/test.sh` no longer runs the suite through
+`venv-ui` alone. As of Phase 3a, the suite is split across the two venvs —
+`tests/unit/runner/` (and `tests/integration/`, once it exists) run *only*
+under `venv-runner`; everything else in `tests/unit/` runs *only* under
+`venv-ui`. `scripts/test.sh` runs both halves itself, one after the other,
+and reports a single combined pass/fail — a developer or CI job invokes the
+one script and gets a trustworthy answer for the whole suite, not half of it.
+See the "How the split is decided" section in `scripts/test.sh`'s own header
+comment for the full reasoning (a directory boundary, not a pytest marker —
+a marker turned out not to work here, see below) and
+[`infra-test-split-report.md`](superpowers/sdd/2026-08-11-runner-daemon/infra-test-split-report.md)
+for the verification transcripts.
+
+It still resolves both venvs itself (default `.venvs/venv-ui` and
+`.venvs/venv-runner` next to the repo; override with `TT_BIO_DEMO_PREFIX` if
+you built somewhere else) and fails with a clear message if either isn't
+built yet — including, for `venv-runner`, pointing at `--dev` specifically if
+the venv exists but `pytest` isn't in it (see the next section) — instead of
+quietly running under whatever `python3` happens to resolve to, or silently
+running zero tests for a half whose venv is missing.
+
+**Adding a test:** if it imports anything from `runner.*` — directly, or via
+the module under test — put it in `tests/unit/runner/`, not `tests/unit/`.
+Everything else goes in `tests/unit/` directly. Guessing wrong is loud, not
+silently skipped: a runner-side file left in `tests/unit/` either explodes the
+*entire* UI half's collection (pytest must import every file under its search
+path before it can even see markers or run anything, so one `import torch` at
+module scope there is fatal to the whole half, not just that file) or — the
+sharper trap, since venv-runner *does* have a `gemmi` (a transitive `tt-bio`
+dependency, a different version than venv-ui's apt-provided one) — imports
+fine on the wrong side and silently gives wrong answers instead of erroring.
+Confirmed directly: `tests/unit/test_geometry_load.py` collects and runs
+without any import error under `venv-runner`, but two of its assertions
+(`test_missing_b_factor_column_raises`, `test_missing_b_factor_value_defaults_to_fifty`)
+fail there while passing 10/10 under `venv-ui` — the two `gemmi`s parse the
+same fixture differently. "It imported" is therefore never the test for which
+half a file belongs on.
+
+A pytest marker (`pytestmark = pytest.mark.runner`) was tried first and
+rejected, not just skipped for style: pytest must import a module to read its
+markers, and `tests/unit/`'s UI-side modules (`ui/app.py`, `ui/viewer.py`, ...)
+hard-fail that import under `venv-runner` with `ModuleNotFoundError: No
+module named 'gi'` regardless of any marker elsewhere — which aborts the
+*entire* venv-runner collection (pytest's own `Interrupted: N errors during
+collection`, exit code `2`) before any marker is ever consulted. A marker
+cannot prevent a crash that happens at import time, before markers exist to
+the collector at all. Only "which directory is this file in" can, since it
+decides whether pytest opens the file in the first place — hence the
+directory split, enforced in `scripts/test.sh` via `--ignore=tests/unit/runner`
+for the UI half and an explicit path for the runner half.
+
+### Running `venv-runner`'s own tests: `--dev`, and why it's a flag, not automatic
+
+Phase 3a (the runner daemon, `runner/`) adds a second suite of unit tests that
+must run *through `venv-runner`*, not `venv-ui` — `tests/unit/runner/test_runner_env.py`
+and everything the Phase 3a plan
+([`docs/superpowers/plans/2026-08-11-runner-daemon.md`](superpowers/plans/2026-08-11-runner-daemon.md))
+adds after it, all specified as `.venvs/venv-runner/bin/python3 -m pytest ...`
+(and, since the test-infra split above, all collected automatically by a
+plain `scripts/test.sh` too — no separate invocation needed day to day).
+`pip install tt-bio` does not pull in `pytest` — it's not one of `tt-bio`'s own
+dependencies — so a plain `scripts/setup-venvs.sh` run leaves `venv-runner`
+unable to run them at all: `ModuleNotFoundError: No module named 'pytest'`.
+
+This was caught, not designed in advance: Task 1 of Phase 3a needed `pytest` in
+`venv-runner` to do its own TDD, found it missing, and `pip install`ed it by
+hand outside the script — which passed that one task but left the fix
+unrecorded anywhere a rebuild or a `--force` would preserve it. Fixed properly
+by adding a `--dev` flag rather than just re-running the manual `pip install`:
+
+```bash
+scripts/setup-venvs.sh --dev
+```
+
+**Why a flag, and not just installing `pytest` unconditionally:** `venv-runner`
+is not only a dev environment — it's the exact artifact the Debian postinst
+builds later, at `--prefix /opt/tt-bio-demo`, for a real booth machine. Test
+tooling (and `pytest`'s own dependency chain — `pluggy`, `iniconfig`) is dead
+weight and extra supply-chain surface there, for zero benefit: nothing on a
+booth machine runs `pytest`. That's the same reasoning this script already
+applies to `tt-bio install-deps` and the system SFPI (§"why not just run
+`tt-bio install-deps`" above) — give production only what it needs, keep dev
+conveniences opt-in. So `--dev` installs `pytest` into `venv-runner`; leaving
+it off (the default, including whatever a future Debian postinst passes) keeps
+the venv exactly as lean as `pip install tt-bio==${TT_BIO_VERSION}` makes it.
+
+Mechanically: `ensure_test_deps_installed` (in `scripts/setup-venvs.sh`) checks
+whether `pytest` is importable and reports that in the summary's `test deps:`
+line *unconditionally* — so the line stays accurate on a plain re-run after an
+earlier `--dev` run already added it — but only actually runs `pip install
+pytest` when `--dev` was passed on that invocation. No version pin, unlike
+`tt-bio`/SFPI: `pytest` has no coupling to what `venv-runner` actually runs at
+a booth (a version mismatch doesn't break kernel compilation the way SFPI skew
+does), so "already importable" is a good enough idempotency check without a
+receipt file.
+
+**Verified, not just asserted, on a genuinely fresh prefix** (never built
+before, not the dev box's existing `.venvs/`):
+
+```bash
+scripts/setup-venvs.sh --prefix /tmp/tt-bio-demo-fresh-venvs --dev
+```
+— full from-scratch build (venv-ui, venv-runner, `pip install tt-bio==0.6.2`,
+SFPI download+verify+install, device probe), 55s wall clock (pip's cache was
+warm; see "measured on this box" above for why that's expected), summary
+reported `test deps: installed (pytest, just added via --dev)`, exit `0`.
+Then, against that exact freshly-built venv:
+```bash
+/tmp/tt-bio-demo-fresh-venvs/venv-runner/bin/python3 -m pytest tests/unit/test_runner_env.py -v
+```
+— `15 passed`. A subsequent idempotent re-run with `--dev` reported `test
+deps: installed (pytest)` (the plain, no-reinstall wording) rather than
+re-running pip. Separately, uninstalling `pytest` from that same venv and
+re-running **without** `--dev` reproduced the summary's documented degraded
+line, `test deps: not installed (pass --dev to add pytest for Phase 3a's unit
+tests)`, and confirmed attempting to run the tests anyway fails with the
+plain, immediately-recognizable `No module named pytest` — which, combined
+with the summary line already printed by that same build, is the "fail loudly
+enough that the reason is obvious" this flag is meant to guarantee rather than
+leaving to chance. The temp prefix was removed afterward; the dev box's own
+`.venvs/venv-runner` was never touched by any of this and still has `pytest`
+9.1.1 (from the original manual install) throughout.
 
 ## The bare-`python3` trap (still real, no longer something to remember)
 
