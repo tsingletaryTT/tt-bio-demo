@@ -76,13 +76,15 @@ This is first because the spike measured **121 MB of Inspector/Watcher logs for 
 Run each of these in turn and record what happens — whether a `generated/` tree appears, how big it gets, and whether the process behaves normally. Use a scratch CWD each time so results are unambiguous:
 
 ```bash
-cd "$(mktemp -d)" && TT_METAL_INSPECTOR_LOG_PATH=/tmp/probe-logs \
+cd "$(mktemp -d)" && TT_METAL_LOGS_PATH=/tmp/probe-logs \
   /home/ttuser/code/tt-bio-demo/.venvs/venv-runner/bin/python3 -c "
 import ttnn; d=ttnn.open_device(device_id=0); ttnn.close_device(d); print('ok')
 " 2>&1 | tail -3; ls
 ```
 
-Try at minimum: `TT_METAL_INSPECTOR_LOG_PATH` set to an absolute path, and `TT_METAL_INSPECTOR=0`. **Time-box each probe** and do not retry `TT_METAL_WATCHER=0` — it is known to hang.
+Try at minimum: `TT_METAL_LOGS_PATH` set to an absolute path, and `TT_METAL_INSPECTOR=0`. **Time-box each probe** and do not retry `TT_METAL_WATCHER=0` — it is known to hang.
+
+Confirm the variable you settle on actually appears in the shipped binaries before trusting it — `strings` over `libtt_metal.so` and the other `.so` files in `venv-runner`'s ttnn install is a two-minute check that distinguishes "this variable works" from "this variable is ignored and my test passes anyway."
 
 Write what you find into the module docstring of `runner/env.py`, with the measured `generated/` sizes. A future reader must be able to see the evidence, because the obvious reading of these variable names is wrong.
 
@@ -165,8 +167,15 @@ busy-poll. It is deliberately not set here.
 import os
 from pathlib import Path
 
-# tt-metal reads this to decide where Inspector writes. Absolute paths only.
-LOG_ROOT_VAR = "TT_METAL_INSPECTOR_LOG_PATH"
+# tt-metal reads this to decide where its logs are written. Absolute paths only.
+#
+# NOTE (corrected during execution): this plan originally specified
+# TT_METAL_INSPECTOR_LOG_PATH, which does not exist in this tt-metal build —
+# zero matches across every shared object in site-packages, and no measurable
+# effect. It would have passed every unit test while containing nothing. The
+# real lever is TT_METAL_LOGS_PATH (one match, in libtt_metal.so), verified by
+# a device probe that left the CWD empty.
+LOG_ROOT_VAR = "TT_METAL_LOGS_PATH"
 
 
 def runner_environ(log_root, base=None):
