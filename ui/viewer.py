@@ -21,6 +21,23 @@ BACKGROUND = (0x09 / 255.0, 0x22 / 255.0, 0x21 / 255.0, 1.0)
 # Teal, used for the diffusion point cloud before confidence data exists.
 POINT_COLOR = (0x74 / 255.0, 0xC5 / 255.0, 0xDF / 255.0)
 
+# _mvp() places the camera at distance = self._extent * _CAMERA_DISTANCE_FACTOR,
+# and the point vertex shader (ui/shaders.py POINT_VERT) divides its
+# u_point_size uniform by gl_Position.w, which for a point near the origin is
+# approximately that same distance. Both scale with self._extent, so their
+# *ratio* -- not either value alone -- determines the point's apparent
+# on-screen size, independent of zoom. _POINT_SIZE_FACTOR is derived from
+# _CAMERA_DISTANCE_FACTOR and a target pixel size here, in code, rather than
+# left as a comment at the call site: a future change to the camera distance
+# now automatically keeps the point size in the same visible range, instead
+# of silently drifting back toward invisibility with nothing to catch it.
+# (The brief's original, unrelated 3.5 multiplier nearly canceled the 2.6
+# distance factor and rendered points at a near-constant ~1.3px regardless
+# of frame -- see task-8-report.md for the measurements.)
+_CAMERA_DISTANCE_FACTOR = 2.6
+_TARGET_POINT_PX = 9.0
+_POINT_SIZE_FACTOR = _TARGET_POINT_PX * _CAMERA_DISTANCE_FACTOR
+
 
 class StructureViewer(Gtk.GLArea):
     """Renders a diffusion point cloud, a finished ribbon, or a blend."""
@@ -62,6 +79,18 @@ class StructureViewer(Gtk.GLArea):
         self._point_count = 0
         self._point_opacity = 1.0
         self._pending_points = None
+        # True once _frame_camera has snapped the camera to a real frame at
+        # least once. Deliberately separate from _point_count (which tracks
+        # how many vertices are uploaded to the GPU right now, and gets
+        # reset on unrealize/realize) -- this flag must NOT reset just
+        # because the GL context was recreated; it should only go back to
+        # False when a genuinely new structure/job starts. There is no such
+        # reset path yet: a future `clear_structure()` (Task 10, for
+        # starting a second fold) MUST set this back to False, or that
+        # job's first frame will ease in from the previous job's leftover
+        # extent/center instead of snapping fresh -- reintroducing the exact
+        # bad-first-frame bug this flag exists to prevent.
+        self._camera_framed = False
 
         self.connect("realize", self._on_realize)
         self.connect("unrealize", self._on_unrealize)
@@ -101,6 +130,19 @@ class StructureViewer(Gtk.GLArea):
             if program:
                 GL.glDeleteProgram(program)
         self._point_program = self._ribbon_program = None
+        if self._point_vao is not None:
+            GL.glDeleteVertexArrays(1, [self._point_vao])
+            GL.glDeleteBuffers(1, [self._point_vbo])
+        self._point_vao = None
+        self._point_vbo = None
+        # The VBO backing this count is gone (or about to be, on a future
+        # realize, regenerated fresh) -- without resetting this, _draw_points
+        # would see a stale nonzero count and try to bind the now-None VAO.
+        # Left deliberately distinct from _camera_framed (see __init__):
+        # this is GPU-buffer bookkeeping, tied to the GL context's lifetime;
+        # _camera_framed is about which *job's* data the camera has framed,
+        # unrelated to context recreation.
+        self._point_count = 0
         self._ready = False
 
     # ── camera ───────────────────────────────────────────────────────────
@@ -108,7 +150,7 @@ class StructureViewer(Gtk.GLArea):
     def _mvp(self):
         width = max(self.get_width(), 1)
         height = max(self.get_height(), 1)
-        distance = self._extent * 2.6
+        distance = self._extent * _CAMERA_DISTANCE_FACTOR
 
         model = mathutil.rotation_y(self._spin)
         model[3, :3] -= self._center @ model[:3, :3]
@@ -136,7 +178,7 @@ class StructureViewer(Gtk.GLArea):
             return
         self._center = coords.mean(axis=0)
         spread = float(np.abs(coords - self._center).max())
-        if self._point_count == 0:
+        if not self._camera_framed:
             # No frame has ever been framed yet (this is the constructor's
             # placeholder _extent=20.0, not a real prior frame). Easing from
             # it would frame the very first frame against an arbitrary
@@ -145,6 +187,7 @@ class StructureViewer(Gtk.GLArea):
             # wrong in general (e.g. real diffusion noise scaled well past
             # or under that). Snap straight to the real spread instead.
             self._extent = max(spread, 5.0)
+            self._camera_framed = True
         else:
             # Ease toward the new extent so a noisy frame doesn't snap the
             # camera around as the cloud contracts.
@@ -175,23 +218,12 @@ class StructureViewer(Gtk.GLArea):
             1, GL.GL_FALSE, mvp)
         GL.glUniform1f(
             GL.glGetUniformLocation(self._point_program, "u_point_size"),
-            # NB: deviates from the brief's literal `self._extent * 3.5`.
-            # _mvp() places the eye at distance = self._extent * 2.6, and
-            # the point vertex shader divides this uniform by
-            # gl_Position.w (~ that same distance) to keep on-screen point
-            # size roughly constant across zoom. With 3.5 those two
-            # extent-proportional factors nearly cancel (3.5 / 2.6 ~= 1.35),
-            # so points render at a near-constant ~1.3px regardless of
-            # frame -- confirmed by direct measurement against the mock
-            # runner: some frames luck into a full-opacity center pixel per
-            # point, but the fixture's final, fully-converged frame (all
-            # twelve points collinear, sharing one sub-pixel Y offset) hits
-            # a worst case where every point's single rasterized sample
-            # lands in the antialiased fringe and none reaches full color
-            # -- i.e. the "reveal" moment of the whole demo was nearly
-            # invisible. 24.0 keeps the same constant-apparent-size
-            # behavior but at ~9px, comfortably visible on a projector.
-            self._extent * 24.0)
+            # NB: deviates from the brief's literal `self._extent * 3.5`,
+            # which nearly canceled against _mvp's distance factor and
+            # rendered points at a near-constant ~1.3px regardless of
+            # frame (see the module-level comment on _POINT_SIZE_FACTOR and
+            # task-8-report.md for the measurements that caught this).
+            self._extent * _POINT_SIZE_FACTOR)
         GL.glUniform3f(
             GL.glGetUniformLocation(self._point_program, "u_color"), *POINT_COLOR)
         GL.glUniform1f(
