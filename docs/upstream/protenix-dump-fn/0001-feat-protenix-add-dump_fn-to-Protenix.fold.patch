@@ -1,0 +1,66 @@
+From 23590bf62d71eae0cfc867d510146faab2bd42af Mon Sep 17 00:00:00 2001
+From: Taylor Singletary <tsingletary@tenstorrent.com>
+Date: Tue, 11 Aug 2026 14:41:10 -0700
+Subject: [PATCH] feat(protenix): add dump_fn to Protenix.fold, mirroring
+ OpenDDE.fold
+
+edm_sample already accepts a per-step trajectory callback (dump_fn(step,
+coords)), and OpenDDE.fold exposes it publicly, wrapping it into the
+3-arg (sample, step, coords) contract for the multi-sample case. Protenix.fold
+never exposed this last inch, even though it threads through the same
+edm_sample internally -- the only way to get a trajectory out of
+Protenix.fold was to monkeypatch the module-level tt_bio.protenix.edm_sample
+before calling fold().
+
+Add dump_fn=None to Protenix.fold's signature (same position as
+OpenDDE.fold: after trace, before max_parallel_samples) and wrap it
+exactly as OpenDDE.fold does in both the batched-multiplicity branch and
+the per-sample loop branch, so callers get dump_fn(sample, step, coords)
+for n_sample>1 and dump_fn(0, step, coords) for the common n_sample=1 case.
+No behavior changes when dump_fn is not passed.
+---
+ tt_bio/protenix.py | 8 +++++---
+ 1 file changed, 5 insertions(+), 3 deletions(-)
+
+diff --git a/tt_bio/protenix.py b/tt_bio/protenix.py
+index dd108cbf..f7c9651f 100644
+--- a/tt_bio/protenix.py
++++ b/tt_bio/protenix.py
+@@ -1689,7 +1689,7 @@ class Protenix:
+                             for b in range(nb)], 0)                            # (nb,nq,nk,16)
+ 
+     def fold(self, feats, *, n_step=200, n_sample=1, seed=None, progress_fn=None,
+-             return_confidence=False, n_cycles=None, trace=False,
++             return_confidence=False, n_cycles=None, trace=False, dump_fn=None,
+              max_parallel_samples=None):
+         """Run the full pipeline. feats: model-ready tensor dict. n_cycles = trunk recycling
+         iterations (default 10, protenix-v2's spec; fewer trades accuracy for speed). Returns
+@@ -1763,21 +1763,23 @@ class Protenix:
+         # batched denoise chunk (OOM safety); None = n_sample (one batched forward).
+         if n_sample > 1 and getattr(self.diffusion, "supports_multiplicity", False):
+             _mps = DEFAULT_MAX_PARALLEL_SAMPLES if max_parallel_samples is None else max_parallel_samples
++            _df = (lambda step, x: dump_fn(step, step, x)) if dump_fn is not None else None
+             if _prof:
+                 import ttnn as _tn; _tn.synchronize_device(self.diffusion.dev); _ts = _time.time()
+             coords = edm_sample(self.diffusion, cond, N, n_step=n_step, multiplicity=n_sample,
+                                  max_parallel_samples=_mps, seed=seed, trace=trace,
+-                                 progress_fn=progress_fn)
++                                 progress_fn=progress_fn, dump_fn=_df)
+             if _prof:
+                 import ttnn as _tn; _tn.synchronize_device(self.diffusion.dev); print(f"[PROF] edm_sample[batch={n_sample}] {_time.time()-_ts:.3f}s", flush=True)
+         else:
+             coords = []
+             for k in range(n_sample):
+                 sd_seed = None if seed is None else seed + k
++                _df = (lambda step, x, _k=k: dump_fn(_k, step, x)) if dump_fn is not None else None
+                 if _prof:
+                     import ttnn as _tn; _tn.synchronize_device(self.diffusion.dev); _ts = _time.time()
+                 coords.append(edm_sample(self.diffusion, cond, N, n_step=n_step, seed=sd_seed,
+-                                         trace=trace, progress_fn=progress_fn)[0])
++                                         trace=trace, progress_fn=progress_fn, dump_fn=_df)[0])
+                 if _prof:
+                     import ttnn as _tn; _tn.synchronize_device(self.diffusion.dev); print(f"[PROF] edm_sample[{k}] {_time.time()-_ts:.3f}s", flush=True)
+             coords = torch.stack(coords, 0)
+-- 
+2.43.0
+
