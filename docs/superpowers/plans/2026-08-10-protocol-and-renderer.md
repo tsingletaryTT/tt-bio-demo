@@ -923,10 +923,14 @@ def look_at(eye, target, up):
     side /= np.linalg.norm(side)
     true_up = np.cross(side, forward)
 
+    # Column-major storage means the basis vectors go in COLUMNS, not rows.
+    # Assigning them as rows transposes the rotation block, which is invisible
+    # for an axis-aligned camera (the block reduces to the identity) and wrong
+    # for every other one.
     m = np.eye(4, dtype=np.float32)
-    m[0, :3] = side
-    m[1, :3] = true_up
-    m[2, :3] = -forward
+    m[:3, 0] = side
+    m[:3, 1] = true_up
+    m[:3, 2] = -forward
     m[3, 0] = -np.dot(side, eye)
     m[3, 1] = -np.dot(true_up, eye)
     m[3, 2] = np.dot(forward, eye)
@@ -1349,7 +1353,11 @@ def tube_mesh(centerline, radius=1.6, sides=10):
             b = i * sides + jn
             d = (i + 1) * sides + j
             e = (i + 1) * sides + jn
-            indices += [a, d, b, b, d, e]
+            # Wound so face normals agree with the vertex normals above. The
+            # transposed order (a, d, b, b, d, e) inverts every triangle, which
+            # no unit test catches and backface culling renders as an
+            # invisible model.
+            indices += [a, b, d, b, e, d]
 
     return (
         verts.reshape(-1, 3).astype(np.float32),
@@ -1548,9 +1556,10 @@ import logging
 import gi
 
 gi.require_version("Gtk", "4.0")
+gi.require_version("Gdk", "4.0")
 
 import numpy as np
-from gi.repository import Gtk
+from gi.repository import Gdk, Gtk
 from OpenGL import GL
 
 from ui import mathutil, shaders
@@ -1569,6 +1578,15 @@ class StructureViewer(Gtk.GLArea):
 
     def __init__(self):
         super().__init__()
+        # GDK may negotiate a GLES context by default (observed on KWin/Wayland
+        # with radeonsi), and GLES rejects the desktop `#version 330 core`
+        # shaders below even when the driver exposes GL 4.6 core. Pin to
+        # desktop GL, guarded: the API is a newer GTK4 addition, and crashing
+        # in __init__ would bypass the realize-time error handling entirely.
+        if hasattr(self, "set_allowed_apis") and hasattr(Gdk, "GLAPI"):
+            self.set_allowed_apis(Gdk.GLAPI.GL)
+        else:
+            log.warning("cannot pin to desktop GL; shaders may fail to compile")
         self.set_has_depth_buffer(True)
         self.set_auto_render(True)
 
