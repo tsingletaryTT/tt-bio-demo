@@ -66,43 +66,101 @@ def sample_tt_smi(timeout=5.0):
 
 
 class CardPool:
-    """Tracks which cards are healthy, idle, and eligible for work."""
+    """Tracks which cards are healthy, idle, and eligible for work.
+
+    Two independent facts are tracked per card:
+
+    - `busy`  — a job is in flight on it (set by mark_busy/mark_idle).
+    - `hot`   — its last-sampled temperature was at or above max_temp_c
+                (set by update()).
+
+    These are kept as two separate booleans rather than one status string
+    because they really are independent: a fold keeps running on a card that
+    overheats mid-fold, so "a job is in flight" must survive the card getting
+    hot, and must survive the card cooling back down before that job finishes.
+    An earlier version of this class folded both facts into a single
+    `"idle"/"busy"/"quarantined"` state, which meant overheating a busy card
+    clobbered the fact that it was busy — and cooling it back down then
+    silently un-quarantined it and made it schedulable while the original job
+    was still running.
+
+    Wire precedence: the `card_state` event and the UI's dimming both take a
+    single `state` string, so a card that is both busy and hot has to pick
+    one. Quarantined wins: heat is the fact the scheduler and the UI most
+    need to see, and "there's a job running on it" is comparatively minor
+    bookkeeping once you already know not to send it more work. See
+    `_reported_state`.
+    """
 
     def __init__(self, indices, max_temp_c=85.0):
         self.max_temp_c = max_temp_c
-        self._states = {i: "idle" for i in indices}
+        self._indices = list(indices)
+        self._busy = {i: False for i in self._indices}
+        self._hot = {i: False for i in self._indices}
+
+    def _reported_state(self, index):
+        """The single state string this card would be reported as right now.
+
+        Precedence: quarantined beats busy beats idle (see class docstring).
+        """
+        if self._hot.get(index, False):
+            return "quarantined"
+        if self._busy.get(index, False):
+            return "busy"
+        return "idle"
 
     def update(self, cards):
-        """Fold in a telemetry sample. Returns card_state events for changes."""
+        """Fold in a telemetry sample. Returns card_state events for changes.
+
+        Only updates the `hot` fact — `busy` is untouched here and can only
+        change via mark_busy/mark_idle. A card that is busy when it crosses
+        max_temp_c is reported as quarantined (per the precedence rule) but
+        stays busy underneath; if it cools before mark_idle is called, it is
+        reported as busy again, not idle — it never became schedulable
+        through temperature recovery alone.
+        """
         events = []
         for card in cards:
-            if card.index not in self._states:
+            if card.index not in self._hot:
                 continue
-            was = self._states[card.index]
-            if card.temperature_c >= self.max_temp_c:
-                if was != "quarantined":
-                    self._states[card.index] = "quarantined"
-                    log.warning("card %d at %.1fC exceeds %.1fC; not scheduling to it",
-                                card.index, card.temperature_c, self.max_temp_c)
-                    events.append({"type": "card_state", "card": card.index,
-                                   "state": "quarantined"})
-            elif was == "quarantined":
-                self._states[card.index] = "idle"
-                log.info("card %d cooled to %.1fC; schedulable again",
-                         card.index, card.temperature_c)
-                events.append({"type": "card_state", "card": card.index,
-                               "state": "idle"})
+            before = self._reported_state(card.index)
+            self._hot[card.index] = card.temperature_c >= self.max_temp_c
+            after = self._reported_state(card.index)
+            if after == before:
+                continue
+            if after == "quarantined":
+                log.warning("card %d at %.1fC exceeds %.1fC; not scheduling to it",
+                            card.index, card.temperature_c, self.max_temp_c)
+            elif before == "quarantined":
+                log.info("card %d cooled to %.1fC", card.index, card.temperature_c)
+            events.append({"type": "card_state", "card": card.index, "state": after})
         return events
 
     def schedulable(self):
-        return sorted(i for i, state in self._states.items() if state == "idle")
+        """Indices that are neither busy nor hot — safe to hand a job to."""
+        return sorted(i for i in self._indices if not self._busy[i] and not self._hot[i])
 
     def mark_busy(self, index):
-        self._states[index] = "busy"
+        """Reserve a card for a job.
+
+        Raises ValueError if the card is quarantined. schedulable() already
+        excludes hot cards, so a correct caller never reaches this branch —
+        it exists to fail loudly on a scheduler bug (dispatching to a card it
+        should never have picked), not as a control path callers branch on.
+        """
+        if self._hot.get(index, False):
+            raise ValueError(f"card {index} is quarantined; refusing to mark it busy")
+        self._busy[index] = True
         return {"type": "card_state", "card": index, "state": "busy"}
 
     def mark_idle(self, index):
-        if self._states.get(index) == "quarantined":
+        """Release a card after its job finishes.
+
+        Returns a card_state event dict, or None if the card is still hot:
+        in that case it remains quarantined rather than idle, and stays out
+        of schedulable() until a later update() sees it cool down.
+        """
+        self._busy[index] = False
+        if self._hot.get(index, False):
             return None      # a hot card stays out until telemetry clears it
-        self._states[index] = "idle"
         return {"type": "card_state", "card": index, "state": "idle"}

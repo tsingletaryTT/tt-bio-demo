@@ -90,3 +90,54 @@ def test_a_busy_card_is_not_handed_out_again():
 def test_marking_busy_emits_a_busy_event():
     pool = CardPool([0])
     assert pool.mark_busy(0) == {"type": "card_state", "card": 0, "state": "busy"}
+
+
+# --- busy x hot combination (regression coverage for the single-state-string bug) ---
+#
+# The original CardPool represented "idle"/"busy"/"quarantined" as one status
+# string per card. That made a busy card's overheating clobber the fact that a
+# job was in flight, and let the card cooling back down silently un-quarantine
+# it — schedulable() would then hand out a card whose original job was still
+# running. These tests cover exactly the combination the single-string bug
+# hid: busy AND hot on the same card, in both orders.
+
+def test_a_busy_card_that_overheats_stays_unschedulable_while_cooling():
+    pool = CardPool([0], max_temp_c=85.0)
+    pool.mark_busy(0)
+    pool.update([_card(0, 91.0)])          # overheats mid-fold
+    assert pool.schedulable() == []
+    pool.update([_card(0, 60.0)])          # cools, but the fold is still running
+    assert pool.schedulable() == []        # must NOT become schedulable via cooling alone
+    pool.mark_idle(0)                      # the fold actually finishes
+    assert pool.schedulable() == [0]
+
+
+def test_a_busy_card_that_overheats_reports_quarantined_not_busy():
+    pool = CardPool([0], max_temp_c=85.0)
+    pool.mark_busy(0)
+    events = pool.update([_card(0, 91.0)])
+    assert {"type": "card_state", "card": 0, "state": "quarantined"} in events
+
+
+def test_a_busy_card_that_cools_while_still_running_reports_busy_not_idle():
+    pool = CardPool([0], max_temp_c=85.0)
+    pool.mark_busy(0)
+    pool.update([_card(0, 91.0)])
+    events = pool.update([_card(0, 60.0)])
+    assert {"type": "card_state", "card": 0, "state": "busy"} in events
+    assert {"type": "card_state", "card": 0, "state": "idle"} not in events
+
+
+def test_mark_idle_on_a_still_hot_card_returns_none_and_stays_quarantined():
+    pool = CardPool([0], max_temp_c=85.0)
+    pool.mark_busy(0)
+    pool.update([_card(0, 91.0)])
+    assert pool.mark_idle(0) is None
+    assert pool.schedulable() == []
+
+
+def test_mark_busy_on_a_quarantined_card_raises():
+    pool = CardPool([0], max_temp_c=85.0)
+    pool.update([_card(0, 91.0)])
+    with pytest.raises(ValueError):
+        pool.mark_busy(0)
