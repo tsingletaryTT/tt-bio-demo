@@ -55,7 +55,7 @@ Deliberate boundary: `env.py`, `queue.py`, `preflight.py` and the event-shaping 
 
 ---
 
-### Task 1: Contain tt-metal's log output
+### Task 1: Contain and bound tt-metal's log output
 
 **Files:**
 - Create: `runner/env.py`
@@ -63,7 +63,9 @@ Deliberate boundary: `env.py`, `queue.py`, `preflight.py` and the event-shaping 
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `runner_environ(log_root: str | os.PathLike, base: dict | None = None) -> dict[str, str]`; `LOG_ROOT_VAR: str`.
+- Produces: `runner_environ(log_root, base=None) -> dict[str, str]`; `LOG_ROOT_VAR: str`; `prune_log_root(log_root, max_bytes, *, dry_run=False) -> tuple[int, list[str]]` returning `(bytes_freed, paths_removed)`; `log_root_size(log_root) -> int`.
+
+Two halves, both needed. Pinning the path stops gigabytes landing in whatever directory the daemon happened to start in. It does **not** stop them accumulating — tt-metal has no size cap of its own, so an unattended booth still fills its disk, just tidily. The daemon therefore enforces a budget itself.
 
 This is first because the spike measured **121 MB of Inspector/Watcher logs for two folds**, written relative to whatever the daemon's CWD happens to be. At one fold every ~45 s for a conference day that is gigabytes, and a booth machine that fills its disk overnight is a dead booth. Every later task runs folds, so containment must exist before they do.
 
@@ -200,11 +202,186 @@ echo "--- files left in CWD:"; ls -A; echo "--- log root:"; du -sh /tmp/ttbio-de
 
 Expected: the scratch CWD is empty (or contains nothing tt-metal wrote), and any output landed under `/tmp/ttbio-demo-logs`. **If `generated/` still appears in the CWD, say so in your report rather than proceeding** — that means the variable does not do what Step 1 suggested and the containment strategy needs rethinking before any later task runs folds in a loop.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 7: Write the failing test for the size budget**
+
+Append to `tests/unit/test_runner_env.py`:
+
+```python
+import os
+import time
+
+from runner.env import log_root_size, prune_log_root
+
+
+def _file(root, name, size, age_s=0):
+    root.mkdir(parents=True, exist_ok=True)
+    p = root / name
+    p.write_bytes(b"x" * size)
+    if age_s:
+        old = time.time() - age_s
+        os.utime(p, (old, old))
+    return p
+
+
+def test_size_of_a_missing_root_is_zero(tmp_path):
+    assert log_root_size(tmp_path / "nope") == 0
+
+
+def test_size_counts_files_in_subdirectories(tmp_path):
+    _file(tmp_path / "inspector", "a.yaml", 1000)
+    _file(tmp_path / "inspector" / "deep", "b.yaml", 500)
+    assert log_root_size(tmp_path) == 1500
+
+
+def test_nothing_is_removed_when_under_budget(tmp_path):
+    _file(tmp_path, "a.yaml", 100)
+    freed, removed = prune_log_root(tmp_path, max_bytes=10_000)
+    assert freed == 0 and removed == []
+    assert (tmp_path / "a.yaml").exists()
+
+
+def test_oldest_files_go_first_until_under_budget(tmp_path):
+    _file(tmp_path, "old.yaml", 1000, age_s=900)
+    _file(tmp_path, "mid.yaml", 1000, age_s=600)
+    _file(tmp_path, "new.yaml", 1000, age_s=1)
+    freed, removed = prune_log_root(tmp_path, max_bytes=1500)
+    assert not (tmp_path / "old.yaml").exists()
+    assert not (tmp_path / "mid.yaml").exists()
+    assert (tmp_path / "new.yaml").exists(), "the newest log must survive"
+    assert freed == 2000
+    assert sorted(os.path.basename(p) for p in removed) == ["mid.yaml", "old.yaml"]
+
+
+def test_dry_run_reports_without_deleting(tmp_path):
+    _file(tmp_path, "old.yaml", 1000, age_s=900)
+    _file(tmp_path, "new.yaml", 1000, age_s=1)
+    freed, removed = prune_log_root(tmp_path, max_bytes=1500, dry_run=True)
+    assert freed == 1000
+    assert len(removed) == 1
+    assert (tmp_path / "old.yaml").exists(), "dry run must not delete"
+
+
+def test_the_root_directory_itself_is_never_removed(tmp_path):
+    _file(tmp_path, "a.yaml", 5000)
+    prune_log_root(tmp_path, max_bytes=0)
+    assert tmp_path.is_dir()
+
+
+def test_a_missing_root_is_not_an_error(tmp_path):
+    freed, removed = prune_log_root(tmp_path / "nope", max_bytes=100)
+    assert freed == 0 and removed == []
+
+
+def test_a_symlink_pointing_outside_the_root_is_never_followed(tmp_path):
+    """The one that matters: this function deletes files."""
+    outside = tmp_path / "precious"
+    outside.mkdir()
+    victim = outside / "do-not-delete.txt"
+    victim.write_bytes(b"y" * 5000)
+
+    root = tmp_path / "logs"
+    root.mkdir()
+    _file(root, "a.yaml", 100)
+    (root / "escape").symlink_to(outside)
+
+    prune_log_root(root, max_bytes=0)
+    assert victim.exists(), "pruning escaped the log root via a symlink"
+
+
+def test_refuses_a_root_that_is_not_a_directory(tmp_path):
+    f = tmp_path / "afile"
+    f.write_text("x")
+    freed, removed = prune_log_root(f, max_bytes=0)
+    assert freed == 0 and removed == []
+```
+
+- [ ] **Step 8: Run test to verify it fails**
+
+Run: `.venvs/venv-runner/bin/python3 -m pytest tests/unit/test_runner_env.py -v`
+Expected: the six original tests pass; the nine new ones FAIL with `ImportError: cannot import name 'prune_log_root'`
+
+- [ ] **Step 9: Implement the budget**
+
+Append to `runner/env.py`:
+
+```python
+def log_root_size(log_root):
+    """Total bytes of regular files under `log_root`. Missing root counts as 0."""
+    root = Path(log_root)
+    if not root.is_dir():
+        return 0
+    total = 0
+    for path in root.rglob("*"):
+        if path.is_file() and not path.is_symlink():
+            try:
+                total += path.stat().st_size
+            except OSError:
+                continue
+    return total
+
+
+def prune_log_root(log_root, max_bytes, *, dry_run=False):
+    """Delete oldest log files until the root fits in `max_bytes`.
+
+    Returns (bytes_freed, paths_removed).
+
+    This function deletes files, so it is deliberately narrow about what it will
+    touch: regular files only, never symlinks (so a link inside the root cannot
+    be used to reach anything outside it), never the root directory itself, and
+    nothing at all if the root is missing or is not a directory. Oldest-first by
+    mtime, so the newest logs — the ones useful for diagnosing whatever just
+    happened — are the last to go.
+    """
+    root = Path(log_root)
+    if not root.is_dir():
+        return 0, []
+
+    entries = []
+    for path in root.rglob("*"):
+        if path.is_symlink() or not path.is_file():
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        entries.append((stat.st_mtime, stat.st_size, path))
+
+    total = sum(size for _, size, _ in entries)
+    if total <= max_bytes:
+        return 0, []
+
+    entries.sort(key=lambda e: e[0])          # oldest first
+    freed, removed = 0, []
+    for _, size, path in entries:
+        if total - freed <= max_bytes:
+            break
+        if not dry_run:
+            try:
+                path.unlink()
+            except OSError:
+                log.warning("could not remove %s while pruning logs", path)
+                continue
+        freed += size
+        removed.append(str(path))
+
+    if removed:
+        log.info("pruned %d log file(s), freed %.1f MB%s",
+                 len(removed), freed / 1e6, " (dry run)" if dry_run else "")
+    return freed, removed
+```
+
+Add `import logging` and `log = logging.getLogger(__name__)` at the top of the module if not already present.
+
+- [ ] **Step 10: Run test to verify it passes**
+
+Run: `.venvs/venv-runner/bin/python3 -m pytest tests/unit/test_runner_env.py -v`
+Expected: PASS, 15 tests
+
+- [ ] **Step 11: Commit**
 
 ```bash
 git add runner/env.py tests/unit/test_runner_env.py
-git commit -m "feat(runner): pin tt-metal log output to an absolute root"
+git commit -m "feat(runner): pin tt-metal logs to an absolute root and cap their size"
 ```
 
 ---
@@ -2099,7 +2276,7 @@ from pathlib import Path
 
 from protocol.events import PROTOCOL_VERSION
 from runner.cards import CardPool, sample_tt_smi
-from runner.env import runner_environ
+from runner.env import log_root_size, prune_log_root, runner_environ
 from runner.folder import Folder, FoldError
 from runner.preflight import not_ready_event, run_preflight
 from runner.queue import Job, JobQueue
@@ -2110,6 +2287,12 @@ log = logging.getLogger("tt-bio-demod")
 QUARANTINE_AFTER = 3          # consecutive failures before a target is dropped
 TELEMETRY_PERIOD_S = 2.0
 
+# tt-metal wrote 121 MB of Inspector logs for two folds during the spike, and
+# caps nothing itself. At a fold every ~45s for a conference day that is tens of
+# gigabytes, so the daemon enforces its own budget between folds. 2 GB keeps
+# enough recent history to diagnose a failure without threatening the disk.
+DEFAULT_LOG_BUDGET_BYTES = 2 * 1024**3
+
 
 @dataclass
 class DaemonConfig:
@@ -2119,6 +2302,7 @@ class DaemonConfig:
     log_root: str
     device_id: int = 0
     max_temp_c: float = 85.0
+    log_budget_bytes: int = DEFAULT_LOG_BUDGET_BYTES
 
 
 class Daemon:
@@ -2206,6 +2390,22 @@ class Daemon:
             event = self.cards.mark_idle(card)
             if event is not None:
                 self._emit(event)
+            # Between folds, not during: pruning walks the tree, and the gap
+            # between jobs is when nothing is competing for the disk.
+            self._prune_logs()
+
+    def _prune_logs(self):
+        """Keep tt-metal's log output inside its budget. Never fatal."""
+        try:
+            freed, removed = prune_log_root(self.config.log_root,
+                                            self.config.log_budget_bytes)
+            if removed:
+                log.info("log root pruned: %d file(s), %.1f MB freed, now %.1f MB",
+                         len(removed), freed / 1e6,
+                         log_root_size(self.config.log_root) / 1e6)
+        except Exception:
+            # A janitor failure must never stop the demo folding.
+            log.exception("log pruning failed; continuing")
 
     def stop(self):
         self._stop.set()
@@ -2219,6 +2419,8 @@ def main(argv=None):
     parser.add_argument("--log-root", required=True)
     parser.add_argument("--device", type=int, default=0)
     parser.add_argument("--max-temp", type=float, default=85.0)
+    parser.add_argument("--log-budget-gb", type=float, default=2.0,
+                        help="cap on tt-metal's log root; oldest files pruned first")
     parser.add_argument("--preflight-only", action="store_true",
                         help="check readiness and exit; opens no device")
     args = parser.parse_args(argv)
@@ -2251,9 +2453,11 @@ def main(argv=None):
         finally:
             server.stop()
 
-    daemon = Daemon(DaemonConfig(socket_path=args.socket, weights_dir=args.weights,
-                                 playlist_dir=args.playlist, log_root=args.log_root,
-                                 device_id=args.device, max_temp_c=args.max_temp))
+    daemon = Daemon(DaemonConfig(
+        socket_path=args.socket, weights_dir=args.weights,
+        playlist_dir=args.playlist, log_root=args.log_root,
+        device_id=args.device, max_temp_c=args.max_temp,
+        log_budget_bytes=int(args.log_budget_gb * 1024**3)))
     signal.signal(signal.SIGTERM, lambda *_: daemon.stop())
     signal.signal(signal.SIGINT, lambda *_: daemon.stop())
     daemon.run()
@@ -2351,6 +2555,7 @@ git commit -m "feat: run the real daemon and the real UI together"
 3. `./scripts/run-demo.sh` shows a live fold in the real UI, driven by the real daemon.
 4. Killing the daemon mid-fold never blanks the UI; restarting it produces another fold.
 5. After several folds, the launch directory is clean and tt-metal's logs are confined to the configured root.
+6. The log root stays under its budget across a run of many folds — verified by setting a deliberately small `--log-budget-gb` and watching the root stop growing rather than by trusting the code.
 
 ## What this phase deliberately leaves out
 
