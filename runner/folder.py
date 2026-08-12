@@ -28,12 +28,25 @@ that existed mainly to make the suite look covered.
 """
 
 import logging
+import tempfile
 import time
+import uuid
+from pathlib import Path
 
 from runner.dump_tap import install_trajectory_tap, remove_trajectory_tap
 from runner.shaping import STAGE_ORDER, frame_event, plddt_to_percent, select_frame_steps
 
 log = logging.getLogger(__name__)
+
+# Where tt-bio's weights and the shared CCD mol library are already cached on
+# this box (the spike confirmed protenix-v2.pt and mols.tar are present here
+# already -- see tests/fixtures/streams/capture_real_fold.py, which reads
+# from and writes to this same path). Not configurable via Folder's own
+# constructor: Folder(device_id, model) is Task 9's fixed dependency surface,
+# and this is tt-bio's own artifact-cache convention (hf_artifact/
+# download_mols are used the same way by every tt-bio model), not something
+# this module's callers should need to know about.
+_WEIGHTS_CACHE = Path.home() / ".boltz"
 
 
 class FoldError(Exception):
@@ -94,16 +107,72 @@ class Folder:
         self.device_id = device_id
         self.model = model
         self._loaded = False
+        self._device = None
+        self._model_obj = None
+        self._mol_dir = None
 
     def load(self):
-        """Open the device and load model weights. Call once, at startup."""
+        """Open the device and load model weights. Call once, at startup.
+
+        Also resolves the shared CCD mol library (`_mol_dir`): tt-bio needs it
+        for every fold's feature build (nucleic-acid / ligand templates), it
+        is fold-input-independent, and download_mols() only touches the
+        filesystem (checks a cache, no device work) -- so resolving it here,
+        once, keeps _run_fold() to the one thing per-fold it actually has to
+        do: build features for *this* input and run *this* fold.
+        """
         if self._loaded:
             return
+        if self.model != "protenix-v2":
+            raise ValueError(f"unsupported model {self.model!r}; only "
+                             "protenix-v2 is wired up")
         t0 = time.monotonic()
         # Imported here rather than at module scope: importing tt_bio pulls in
         # torch and ttnn, which the unit tests must not need.
+        from tt_bio.main import PROTENIX_REPO, download_mols, hf_artifact
+        from tt_bio.protenix import Protenix
         from tt_bio.tenstorrent import get_device
+
         self._device = get_device()
+        # load() must be all-or-nothing from here on. get_device() above is
+        # self-healing on its own failure (it releases the host-local
+        # DeviceLease before raising -- see tt_bio.tenstorrent.get_device),
+        # but the three calls below are not: a corrupt checkpoint, an
+        # incompatible tt-bio version, or a failed mol-tarball extraction --
+        # exactly the "tt-bio upgrade breaks this" scenario this module is
+        # designed around -- can raise *after* the device is already open and
+        # the lease already held. Without this guard, that leaves self._device
+        # set but self._loaded still False, and close()'s own guard
+        # (`if not self._loaded: return`) treats that indistinguishably from
+        # "load() was never called" -- a no-op that never calls cleanup() and
+        # never releases the lease. A caller that catches this and keeps
+        # running rather than exiting (runner/daemon.py's main() does exactly
+        # that on a startup failure, serving a `not_ready` screen instead)
+        # would then sit on a card it can neither use nor release for the
+        # rest of the process's life. So a failure here undoes its own
+        # partial work on the way out: after this except block, self._device
+        # is back to None and the real device/lease are released, the same
+        # end state as if load() had never touched hardware at all -- which
+        # is exactly what lets close()'s existing "safe to call even if
+        # load() never succeeded" contract stay true after a *failed* load()
+        # too, not just a load() that was never attempted.
+        try:
+            _WEIGHTS_CACHE.mkdir(parents=True, exist_ok=True)
+            ckpt_path = hf_artifact(PROTENIX_REPO, "protenix-v2.pt", _WEIGHTS_CACHE)
+            self._model_obj = Protenix.load_from_checkpoint(
+                str(ckpt_path), device=self._device)
+            self._mol_dir = download_mols(_WEIGHTS_CACHE)
+        except Exception:
+            from tt_bio.tenstorrent import cleanup
+            try:
+                cleanup()
+            except Exception:
+                log.exception("cleanup after a failed load() also raised; "
+                              "the device/lease may still be held")
+            self._device = None
+            self._model_obj = None
+            self._mol_dir = None
+            raise
         self._loaded = True
         log.info("device %d open, model %s resident in %.2fs",
                  self.device_id, self.model, time.monotonic() - t0)
@@ -185,10 +254,24 @@ class Folder:
         # starts as None so the finally below can tell "never installed"
         # apart from "installed, then _run_fold raised" without calling
         # remove_trajectory_tap on a name that was never bound.
+        # `result["cif_path"]` / `result["mean_plddt"]` used to be read
+        # *after* this try block ended, so a malformed return from
+        # `_run_fold` (a missing key, or a `mean_plddt` that isn't a number)
+        # raised a raw KeyError/TypeError straight out of fold() instead of
+        # the FoldError this method's own docstring promises ("Raises
+        # FoldError on failure") -- dormant the whole time `_run_fold` was a
+        # stub, live the moment it started returning real (and therefore
+        # occasionally malformed-by-upstream-change) dicts. Both result
+        # fields are now pulled out inside the try, so any way `_run_fold`
+        # can fail to honor its own contract -- raising, or returning
+        # something that doesn't shape up -- becomes one FoldError, not two
+        # different exception types depending on which failure mode it was.
         handle = None
         try:
             handle = install_trajectory_tap(on_frame)
             result = self._run_fold(input_path, on_progress, n_step)
+            cif_path = result["cif_path"]
+            mean_plddt = plddt_to_percent(result["mean_plddt"])
         except Exception as exc:
             raise FoldError(f"fold failed for {target_id}: {exc}") from exc
         finally:
@@ -200,17 +283,58 @@ class Folder:
         emit({"type": "stage", "job_id": job_id, "stage": "saving",
               "frac": _bracket_frac("saving")})
         emit({"type": "job_done", "job_id": job_id,
-              "cif_path": result["cif_path"],
+              "cif_path": cif_path,
               "wall_s": time.monotonic() - wall0,
-              "mean_plddt": plddt_to_percent(result["mean_plddt"])})
+              "mean_plddt": mean_plddt})
 
     def _run_fold(self, input_path, on_progress, n_step):
         """Invoke tt-bio. Returns {'cif_path': str, 'mean_plddt': float}.
 
         Kept separate so the event plumbing above can be read without tt-bio's
         API in the way, and so this is the only method an upgrade has to touch.
+
+        Mirrors the working invocation captured in
+        tests/fixtures/streams/capture_real_fold.py: build features for the
+        input yaml (no MSA search needed for this demo's own targets, which
+        set `msa: empty`), fold with the resident model, and write the
+        resulting structure to a scratch .cif this process owns. `mean_plddt`
+        is returned unscaled (tt-bio's own 0-1 fraction) -- fold() applies
+        plddt_to_percent itself, so scaling here would double it.
         """
-        raise NotImplementedError(
-            "wire this to tt-bio's predict path in Step 5, using the working "
-            "invocation in tests/fixtures/streams/capture_real_fold.py"
-        )
+        from tt_bio.main import (_read_bio_chains, _read_bio_constraints,
+                                 _resolve_a3m_text, _write_protenix_structure)
+        from tt_bio.protenix_data import build_complex_features
+
+        # _read_bio_chains/_read_bio_constraints call `path.suffix` -- they
+        # need a Path, not the plain str `fold()`'s callers pass around on
+        # the rest of this module's surface (job.input_path is a str
+        # end-to-end elsewhere, e.g. runner/daemon.py). Coerced here, at the
+        # one place tt-bio's API actually requires it, rather than pushing
+        # a Path requirement onto every caller of fold().
+        input_path = Path(input_path)
+        chains = _read_bio_chains(input_path)
+        bonds = _read_bio_constraints(input_path)
+        chain_specs = [(cseq, _resolve_a3m_text(spec, cseq, None), mol_type)
+                       for _cid, cseq, spec, mol_type in chains]
+        feats = build_complex_features(
+            chain_specs, mol_dir=str(self._mol_dir),
+            chain_ids=[cid for cid, _s, _sp, _mt in chains], bonds=bonds)
+
+        coords, conf = self._model_obj.fold(
+            feats, n_step=n_step, n_sample=1, progress_fn=on_progress,
+            return_confidence=True)
+
+        # A scratch path this process owns, not a caller-configured output
+        # directory: Folder's constructor (Folder(device_id, model)) is
+        # Task 9's fixed dependency surface, and where a .cif lands is not
+        # part of it. tempfile's own default dir (never the daemon's CWD,
+        # which runner/env.py already treats as something the daemon may
+        # not pollute) plus a uuid per fold keeps concurrent/successive
+        # folds from ever colliding on a filename.
+        out_dir = Path(tempfile.gettempdir()) / "tt-bio-demo" / "structures"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        cif_path = out_dir / f"{uuid.uuid4().hex}.cif"
+        _write_protenix_structure(coords[0], feats, None, cif_path, "cif",
+                                  b_factors=conf["plddt_atom"] * 100.0)
+
+        return {"cif_path": str(cif_path), "mean_plddt": float(conf["plddt"])}

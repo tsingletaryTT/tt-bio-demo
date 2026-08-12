@@ -213,6 +213,29 @@ def test_a_broken_trajectory_tap_is_wrapped_in_fold_error(monkeypatch):
         _fold(folder)
 
 
+def test_a_malformed_run_fold_result_is_wrapped_in_fold_error(monkeypatch):
+    """fold()'s tail end used to read result["cif_path"] and
+    result["mean_plddt"] *after* the try/except that wraps _run_fold, so a
+    _run_fold that returned something not shaped like the documented
+    {'cif_path': str, 'mean_plddt': float} raised a raw KeyError/TypeError
+    straight out of fold() -- breaking the "Raises FoldError on failure"
+    contract for exactly the failure mode most likely once _run_fold talks
+    to real tt-bio (an upstream return-shape change, a missing key). Both a
+    missing key and a value plddt_to_percent can't coerce to float must
+    become FoldError, not whatever exception the malformed access happens
+    to raise.
+    """
+    missing_key = _folder_with_fake_fold(monkeypatch, result={"cif_path": "/tmp/x.cif"})
+    with pytest.raises(FoldError, match="mean_plddt"):
+        _fold(missing_key)
+
+    bad_value = _folder_with_fake_fold(
+        monkeypatch, result={"cif_path": "/tmp/x.cif", "mean_plddt": "not-a-number"},
+    )
+    with pytest.raises(FoldError, match="not-a-number|could not convert"):
+        _fold(bad_value)
+
+
 def test_an_unexpected_progress_stage_is_dropped_not_fatal(monkeypatch):
     """tt-bio only ever reports trunk/diffusion today, but progress_fn is
     external instrumentation this module doesn't control -- an unrecognized
@@ -225,3 +248,102 @@ def test_an_unexpected_progress_stage_is_dropped_not_fatal(monkeypatch):
     assert events[-1]["type"] == "job_done"
     stages = [e["stage"] for e in events if e["type"] == "stage"]
     assert "some_future_stage" not in stages
+
+
+def _fake_tt_bio_load_stack(monkeypatch, *, fail_at):
+    """Install fake tt_bio.main / tt_bio.protenix / tt_bio.tenstorrent
+    modules that support forcing any one of Folder.load()'s three fallible
+    post-device-open calls -- hf_artifact, Protenix.load_from_checkpoint,
+    download_mols -- to raise, while counting get_device()/cleanup() calls
+    so a test can observe whether the device was actually released. No
+    torch/ttnn/hardware needed: get_device() here returns a plain sentinel
+    object, exactly the same faking approach _fake_protenix above uses for
+    tt_bio.protenix.edm_sample.
+    """
+    calls = {"get_device": 0, "cleanup": 0}
+
+    tenstorrent_mod = types.ModuleType("tt_bio.tenstorrent")
+
+    def get_device(trace_region_size=0):
+        calls["get_device"] += 1
+        return object()
+
+    def cleanup():
+        calls["cleanup"] += 1
+
+    tenstorrent_mod.get_device = get_device
+    tenstorrent_mod.cleanup = cleanup
+
+    main_mod = types.ModuleType("tt_bio.main")
+    main_mod.PROTENIX_REPO = "fake/repo"
+
+    def hf_artifact(repo_id, filename, dest_dir):
+        if fail_at == "hf_artifact":
+            raise RuntimeError("checkpoint download failed")
+        return dest_dir / filename
+
+    def download_mols(cache):
+        if fail_at == "download_mols":
+            raise RuntimeError("mol tarball extraction failed")
+        return cache / "mols"
+
+    main_mod.hf_artifact = hf_artifact
+    main_mod.download_mols = download_mols
+
+    protenix_mod = types.ModuleType("tt_bio.protenix")
+
+    class _FakeProtenixModel:
+        @classmethod
+        def load_from_checkpoint(cls, path, device=None):
+            if fail_at == "load_from_checkpoint":
+                raise RuntimeError("incompatible checkpoint format")
+            return object()
+
+    protenix_mod.Protenix = _FakeProtenixModel
+
+    pkg = types.ModuleType("tt_bio")
+    pkg.main = main_mod
+    pkg.protenix = protenix_mod
+    pkg.tenstorrent = tenstorrent_mod
+
+    monkeypatch.setitem(sys.modules, "tt_bio", pkg)
+    monkeypatch.setitem(sys.modules, "tt_bio.main", main_mod)
+    monkeypatch.setitem(sys.modules, "tt_bio.protenix", protenix_mod)
+    monkeypatch.setitem(sys.modules, "tt_bio.tenstorrent", tenstorrent_mod)
+    return calls
+
+
+@pytest.mark.parametrize("fail_at", ["hf_artifact", "load_from_checkpoint", "download_mols"])
+def test_a_failed_load_releases_the_device_it_already_opened(monkeypatch, fail_at):
+    """Regression: load() opens the device via get_device() *before* any of
+    its three later fallible calls run. A failure in any of those three used
+    to leave self._device set and self._loaded False -- and close()'s own
+    guard (`if not self._loaded: return`) treats that indistinguishably from
+    "load() was never called," so it never called cleanup() and never
+    released the device or its host-local DeviceLease. A daemon that catches
+    this startup failure and keeps running (runner/daemon.py's main() does
+    exactly that, serving a `not_ready` screen instead of exiting) would then
+    hold a card it can neither use nor release for the rest of the process's
+    life.
+
+    This forces each of the three fallible steps to raise in turn, without
+    hardware, and asserts the device was actually released -- cleanup()
+    called, self._device back to None -- rather than only that _loaded
+    stayed False, since _loaded is exactly the flag that lied about this.
+    """
+    calls = _fake_tt_bio_load_stack(monkeypatch, fail_at=fail_at)
+    folder = Folder()
+
+    with pytest.raises(RuntimeError):
+        folder.load()
+
+    assert calls["get_device"] == 1, "the device was opened before the failure"
+    assert calls["cleanup"] == 1, "a failed load() must release what it opened"
+    assert folder._device is None, "no device handle must survive a failed load()"
+    assert folder._loaded is False
+
+    # close() must remain the safe no-op its docstring promises -- and must
+    # not call cleanup() a second time on top of load()'s own cleanup, now
+    # that load() has already released everything itself.
+    folder.close()
+    assert calls["cleanup"] == 1
