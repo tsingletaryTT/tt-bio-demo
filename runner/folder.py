@@ -9,13 +9,29 @@ log readability too.
 On stages: tt-bio's own progress_fn only ever reports `trunk` and `diffusion`.
 The other four values the protocol promises — msa, prep, confidence, saving —
 are emitted here, bracketing the work this module does around the fold itself.
+
+There is no pure "assemble the event list" helper here on purpose. An earlier
+version had one (`fold_event_sequence`), and it was thoroughly unit tested —
+but nothing outside its own test file ever called it, so the six tests built
+around it covered a parallel model of `fold()`'s behaviour, not `fold()`
+itself. The real per-callback logic (`_progress_frac`, the frame-index math in
+`on_frame`) shipped with zero coverage as a result, and two bugs sat in it
+undetected (see CHANGELOG/task-5-report.md, "Finding 1/2"). `fold()` is
+inherently a streaming producer — it emits stage and frame events *as tt-bio's
+own callbacks fire*, interleaved with its own bracket stages — which a
+batch-assembled "list of events" can't faithfully represent without buffering
+everything until the very end, defeating the reason the live trajectory tap
+exists at all. So the fix was structural: test `fold()` directly, with
+`_run_fold` monkeypatched to drive the same callbacks production code drives
+(see tests/unit/runner/test_folder_events.py), not to keep a pure helper
+that existed mainly to make the suite look covered.
 """
 
 import logging
 import time
 
 from runner.dump_tap import install_trajectory_tap, remove_trajectory_tap
-from runner.shaping import frame_event, plddt_to_percent, select_frame_steps
+from runner.shaping import STAGE_ORDER, frame_event, plddt_to_percent, select_frame_steps
 
 log = logging.getLogger(__name__)
 
@@ -24,28 +40,51 @@ class FoldError(Exception):
     """A fold could not be completed. The message is for logs, never the screen."""
 
 
-def fold_event_sequence(stages, frames, result, *, job_id, target_id, model,
-                        card, n_residues):
-    """Assemble the ordered event list for one completed fold.
+# The fraction-of-progress-bar band each stage owns, in STAGE_ORDER. Bands are
+# contiguous -- each starts exactly where the previous one ends -- so the
+# fraction reported to the UI is monotonically non-decreasing across an entire
+# fold. That matters because a naive per-stage fraction (each stage restarting
+# its own 0.0 -> 1.0) makes the bar visibly jump backward at every stage
+# transition: trunk climbing to "40%" and then diffusion's first callback
+# reporting under 1%, in front of a live audience, on every single fold. See
+# task-5-report.md, "Finding 2" for the incident this replaced.
+#
+# tt-bio's progress_fn reports real (step, total) counts for exactly two
+# stages: trunk (10 refinement cycles) and diffusion (200 denoising steps).
+# The other four are synthetic brackets this module owns and fires once, at
+# the end of their own band, the instant it reaches that point -- there is no
+# partial progress to report for work this module doesn't itself perform.
+# diffusion gets the bulk of the bar deliberately: it is 20x trunk's step
+# count, so most of a fold's wall-clock time is spent there.
+_STAGE_BANDS = {
+    "msa": (0.00, 0.05),
+    "prep": (0.05, 0.10),
+    "trunk": (0.10, 0.15),
+    "diffusion": (0.15, 0.95),
+    "confidence": (0.95, 0.98),
+    "saving": (0.98, 1.00),
+}
+# Enforced at import time, not just by convention: if a stage is ever added to
+# or removed from the protocol's STAGE_ORDER without updating this table (or
+# vice versa), this fails loudly here rather than silently dropping a stage
+# from the wire the way "msa" was silently dropped before this fix (Finding 3).
+assert tuple(_STAGE_BANDS) == STAGE_ORDER, (
+    "_STAGE_BANDS must list exactly the stages in runner.shaping.STAGE_ORDER, "
+    "in the same order"
+)
 
-    Pure: takes what a fold produced and returns what should go on the wire, so
-    ordering and payload shape are testable without a device.
-    """
-    events = [{
-        "type": "job_start", "job_id": job_id, "target_id": target_id,
-        "model": model, "card": card, "n_residues": n_residues,
-    }]
-    for stage, frac in stages:
-        events.append({"type": "stage", "job_id": job_id,
-                       "stage": stage, "frac": float(frac)})
-    events.extend(frames)
-    events.append({
-        "type": "job_done", "job_id": job_id,
-        "cif_path": result["cif_path"],
-        "wall_s": float(result["wall_s"]),
-        "mean_plddt": plddt_to_percent(result["mean_plddt"]),
-    })
-    return events
+
+def _bracket_frac(stage):
+    """The frac reported for a synthetic bracket stage: its band's end."""
+    return _STAGE_BANDS[stage][1]
+
+
+def _progress_frac(stage, step, total):
+    """Map tt-bio's own (step, total) progress within `stage` onto that
+    stage's band, so the result is continuous with the bands before and after
+    it instead of restarting at 0.0 on every stage transition."""
+    start, end = _STAGE_BANDS[stage]
+    return start + (end - start) * (min(step, total) / total)
 
 
 class Folder:
@@ -70,10 +109,19 @@ class Folder:
                  self.device_id, self.model, time.monotonic() - t0)
 
     def close(self):
+        """Close the device. Safe to call even if load() never succeeded."""
         if not self._loaded:
             return
         from tt_bio.tenstorrent import cleanup
-        cleanup()
+        try:
+            cleanup()
+        except Exception:
+            # A raising cleanup() must not leave _loaded stuck True: that
+            # would make a later load() attempt a no-op forever, on a device
+            # this process no longer holds a good handle to. Log it -- the
+            # daemon needs to know its device teardown wasn't clean -- but
+            # still consider the device closed from our side.
+            log.exception("device cleanup raised; treating it as closed anyway")
         self._loaded = False
         log.info("device closed")
 
@@ -89,8 +137,20 @@ class Folder:
         emit({"type": "job_start", "job_id": job_id, "target_id": target_id,
               "model": self.model, "card": card, "n_residues": n_residues})
 
-        # Stages tt-bio does not report: emitted around the work we do.
-        emit({"type": "stage", "job_id": job_id, "stage": "prep", "frac": 0.15})
+        # msa and prep: brackets this module owns, not tt-bio instrumentation
+        # (tt-bio's progress_fn never reports either -- see module docstring).
+        # Each fires once, immediately, at the end of its own band: for this
+        # demo's own input MSA search is always skipped (examples/
+        # trpcage_no_msa.yaml sets `msa: empty`), and even where it were not,
+        # tt-bio gives this module no way to observe that it happened. A
+        # single "reached and passed this point" event is the honest thing to
+        # emit either way -- it is what distinguishes "fired and completed
+        # immediately" from "never fired at all" for the UI's pipeline panel,
+        # which was the bug: msa used to never appear on the wire (Finding 3).
+        emit({"type": "stage", "job_id": job_id, "stage": "msa",
+              "frac": _bracket_frac("msa")})
+        emit({"type": "stage", "job_id": job_id, "stage": "prep",
+              "frac": _bracket_frac("prep")})
 
         keep = set(select_frame_steps(n_step + 1, target=30))
         wall0 = time.monotonic()
@@ -102,10 +162,17 @@ class Folder:
                 emit(frame_event(job_id, step=index, total=n_step, coords=coords))
 
         def on_progress(stage, step=None, total=None):
-            if total:
-                frac = 0.4 if stage == "trunk" else 0.9
-                emit({"type": "stage", "job_id": job_id, "stage": stage,
-                      "frac": frac * (step / total)})
+            if not total:
+                return
+            if stage not in _STAGE_BANDS:
+                # tt-bio reporting a stage name this module doesn't know about
+                # is a telemetry mismatch, not a reason to crash a fold that
+                # is otherwise fine -- drop it, loudly, and keep going.
+                log.warning("tt-bio reported unexpected progress stage %r; "
+                            "dropping", stage)
+                return
+            emit({"type": "stage", "job_id": job_id, "stage": stage,
+                  "frac": _progress_frac(stage, step, total)})
 
         handle = install_trajectory_tap(on_frame)
         try:
@@ -115,8 +182,10 @@ class Folder:
         finally:
             remove_trajectory_tap(handle)
 
-        emit({"type": "stage", "job_id": job_id, "stage": "confidence", "frac": 0.95})
-        emit({"type": "stage", "job_id": job_id, "stage": "saving", "frac": 0.99})
+        emit({"type": "stage", "job_id": job_id, "stage": "confidence",
+              "frac": _bracket_frac("confidence")})
+        emit({"type": "stage", "job_id": job_id, "stage": "saving",
+              "frac": _bracket_frac("saving")})
         emit({"type": "job_done", "job_id": job_id,
               "cif_path": result["cif_path"],
               "wall_s": time.monotonic() - wall0,
