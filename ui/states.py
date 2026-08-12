@@ -66,6 +66,15 @@ Answering Task 9's two questions from state alone
    booth was never showcasing to begin with). Task 9 does not need to
    track timestamps itself; it only needs to keep calling `tick(now)` and
    read `.state`.
+
+Both are now spelled out as named predicates at the bottom of this module
+(`points_are_visible`, `ribbon_may_be_revealed`, `showcase_ended`) rather
+than left as `== "showcase"` comparisons inlined at the GTK call site.
+They are one line each and could have lived in ui/app.py; they are here
+because they are *decisions about booth state*, and the plan's rule for
+Task 9 is that the wiring layer makes none of those. Keeping them here
+also means each one is tested against the state machine itself, in a file
+with no GTK in it at all.
 """
 
 from enum import Enum
@@ -191,14 +200,24 @@ class StateMachine:
             # the daemon runs ahead) starts a fresh dwell for the NEW
             # ribbon rather than extending the old one.
             #
-            # This fires from ANY state, including `gallery` -- a stale or
-            # late job_done (e.g. for a job a visitor never picked, or one
-            # whose job_error/job_done ordering raced) would interrupt a
-            # visitor actively browsing the gallery. This is believed
-            # unreachable while the protocol stays strictly serial (one
-            # fold in flight at a time, one job_done per job_start), but it
-            # is a real consequence of "every job_done gets a full dwell"
-            # and is flagged here rather than silently relied upon.
+            # ...with ONE exception: a visitor standing at the booth with
+            # the gallery open. This branch used to fire from `gallery`
+            # too, flagged in Task 7 as "believed unreachable while the
+            # protocol stays strictly serial". It is not unreachable; it
+            # is the ORDINARY case, reproduced on screen against the mock
+            # runner during Task 9 (see that task's report and its
+            # screenshot sequence): the daemon's attract loop finishes a
+            # fold every ~4s no matter what the visitor is doing, so an
+            # open gallery was being torn down and replaced by a showcase
+            # within about two seconds -- long before anyone could read
+            # three blurbs and choose one. `gallery` is the only state
+            # that means "a human is mid-decision", and nothing the
+            # ambient loop finishes on its own is worth interrupting that
+            # for. (`folding` deliberately still showcases: there the
+            # visitor is watching a fold, and its completion is precisely
+            # what they are waiting to see.)
+            if self.state == BoothState.GALLERY:
+                return self.state
             self.state = BoothState.SHOWCASE
             self._showcase_entered_at = None
             return self.state
@@ -218,6 +237,36 @@ class StateMachine:
         # pipeline/telemetry panels (Task 5) and the viewer (Task 2/camera
         # fix) consume these directly; they never move the booth between
         # its five display states.
+        return self.state
+
+    def on_structure_revealed(self):
+        """The finished structure is now genuinely ON SCREEN -- restart the
+        dwell from this instant.
+
+        `job_done` says the daemon finished; it does not say the visitor can
+        see anything yet. Between the two sits the ribbon build (measured at
+        up to ~1.2s for 3000 residues, on a worker thread -- see ui/app.py)
+        and then the viewer's own 0.8s cross-fade. A dwell measured from
+        `job_done` is therefore shortened by exactly that much: for a large
+        structure it can be entirely consumed before the ribbon has even
+        finished fading in, which would put this module back to guaranteeing
+        nothing at all -- the very defect it exists to fix.
+
+        Deliberately a no-op outside `showcase`. If the ribbon arrives after
+        the dwell has already expired, the booth has moved on to the next
+        fold's live diffusion and that reveal's moment has passed (ui/app.py
+        drops such a ribbon rather than throwing it over live diffusion --
+        see `ribbon_may_be_revealed`); silently re-entering a showcase we
+        already left would be the same bug wearing a different hat.
+
+        Re-stamping is spelled the same way `job_done` spells it: set
+        `_showcase_entered_at` back to None and let the NEXT `tick(now)`
+        supply the clock reading, because this method -- like every other
+        non-tick entry point here -- is given no clock of its own, by
+        design (see the module docstring on purity).
+        """
+        if self.state == BoothState.SHOWCASE:
+            self._showcase_entered_at = None
         return self.state
 
     # -- visitor input ----------------------------------------------------
@@ -278,3 +327,55 @@ class StateMachine:
         # nowhere further to fall back to; preparing is released only by
         # a real job_start (on_event, above), never by the clock.
         return self.state
+
+
+# ---------------------------------------------------------------------------
+# The three questions the GTK wiring layer asks about state, named.
+#
+# Each is a one-line comparison and each could trivially have been inlined
+# in ui/app.py. They live here because they are decisions about what the
+# booth's state MEANS, and Task 9's own rule is that the wiring layer makes
+# none of those -- it only carries them out. Being here also makes each one
+# testable with no GTK, no viewer and no display (tests/unit/test_states.py).
+# ---------------------------------------------------------------------------
+
+def points_are_visible(state):
+    """Should a diffusion frame arriving right now be put on screen?
+
+    No while `showcase` is holding a finished structure -- and note what
+    those suppressed frames actually ARE: the daemon starts fold N+1 before
+    fold N's ribbon has even been built, so a frame arriving mid-showcase is
+    fold N+1's *opening noise*, three orders of magnitude wider than the
+    finished structure it would be drawn over. Letting it through is what
+    put the point cloud beyond the camera's far plane and left fold N's
+    ribbon cross-fading in over nothing (measured; see the module docstring).
+
+    Suppressed, not discarded: ui/app.py leaves the frame in its one-slot
+    latest-wins buffer, so the instant the dwell expires the booth cuts
+    straight to live diffusion rather than to an empty screen.
+    """
+    return state != BoothState.SHOWCASE
+
+
+def ribbon_may_be_revealed(state):
+    """Is this still the moment to cross-fade a finished structure in?
+
+    Only while showcasing. A ribbon build that outlasts its own dwell
+    (possible for a large structure) would otherwise land on a booth that
+    has already moved on to the next fold's live diffusion, and cross-fading
+    the previous structure in over it is the headline defect arriving by a
+    different route. The right answer then is to drop it: its fold is over.
+    """
+    return state == BoothState.SHOWCASE
+
+
+def showcase_ended(previous, current):
+    """Did the showcase dwell just expire, between these two states?
+
+    This is the edge, not the level -- the one instant at which the booth
+    owes the screen a transition (ui/app.py: apply the `job_start` clear it
+    deferred, then show the newest buffered diffusion frame). Answering it
+    from a (previous, current) pair rather than a timestamp is what keeps
+    the caller free of any clock bookkeeping of its own.
+    """
+    return previous == BoothState.SHOWCASE and current != BoothState.SHOWCASE

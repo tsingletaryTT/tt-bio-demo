@@ -1,6 +1,8 @@
 import pytest
 
-from ui.states import StateMachine
+from ui.states import (
+    StateMachine, points_are_visible, ribbon_may_be_revealed, showcase_ended,
+)
 
 
 def _sm(**kw):
@@ -281,3 +283,77 @@ def test_repeated_identical_tick_calls_do_not_advance_the_showcase_dwell():
     for _ in range(5):
         assert sm.tick(now=0.0) == "showcase"
     assert sm.tick(now=2.0) == "attract"
+
+
+# ---------------------------------------------------------------------------
+# The reveal hook, and the three predicates the GTK wiring layer reads.
+# ---------------------------------------------------------------------------
+
+def test_the_dwell_restarts_when_the_structure_is_actually_revealed():
+    """`job_done` is when the daemon finished; the reveal is when a visitor
+    can see anything, and the gap between them is a ribbon build (up to
+    ~1.2s) plus a 0.8s cross-fade. Mutation this catches:
+    `on_structure_revealed` leaving `_showcase_entered_at` alone (a
+    structure whose build ate the whole dwell would flash past)."""
+    sm = _sm(showcase_dwell_s=3.0)
+    sm.on_event({"type": "job_done", "job_id": "j1"})
+    sm.tick(now=0.0)                       # dwell would have started here
+    assert sm.tick(now=2.9) == "showcase"
+    sm.on_structure_revealed()             # ...but this is when it was seen
+    sm.tick(now=2.9)                       # re-stamped at 2.9
+    assert sm.tick(now=5.5) == "showcase"
+    assert sm.tick(now=5.95) == "attract"
+
+
+def test_revealing_a_structure_outside_a_showcase_changes_nothing():
+    """A ribbon that lands after its own dwell expired must not silently
+    re-enter a showcase the booth already left -- by then the next fold's
+    live diffusion is on screen. Mutation this catches: dropping the
+    `state == SHOWCASE` guard in on_structure_revealed."""
+    sm = _sm()
+    assert sm.on_structure_revealed() == "attract"
+    assert sm.state == "attract"
+
+
+def test_points_are_visible_everywhere_except_a_showcase():
+    """Mutation this catches: inverting the predicate, or narrowing it to
+    `folding` (which would blank the ambient attract loop's own folds --
+    the attract loop is where the measured defect was reproduced)."""
+    for state in ("attract", "gallery", "folding", "preparing"):
+        assert points_are_visible(state) is True
+    assert points_are_visible("showcase") is False
+
+
+def test_a_ribbon_may_only_be_revealed_while_showcasing():
+    """Mutation this catches: returning True unconditionally, which is
+    exactly the pre-task behaviour -- a finished ribbon thrown over
+    whatever happened to be on screen."""
+    assert ribbon_may_be_revealed("showcase") is True
+    for state in ("attract", "gallery", "folding", "preparing"):
+        assert ribbon_may_be_revealed(state) is False
+
+
+def test_showcase_ended_is_an_edge_not_a_level():
+    """Mutation this catches: `current != "showcase"` alone (which fires on
+    every single tick of every non-showcase state, so the deferred clear
+    would run continuously and blank the booth)."""
+    assert showcase_ended("showcase", "attract") is True
+    assert showcase_ended("showcase", "preparing") is True
+    assert showcase_ended("showcase", "showcase") is False
+    assert showcase_ended("attract", "attract") is False
+    assert showcase_ended("folding", "attract") is False
+
+
+def test_the_attract_loops_own_job_done_does_not_close_an_open_gallery():
+    """Reproduced on screen, not hypothesised (Task 9): the daemon folds
+    continuously, so a `job_done` lands every few seconds regardless of
+    what the visitor is doing. With `job_done` firing from any state, an
+    open gallery was replaced by a showcase about two seconds after a
+    visitor touched the booth -- before they could read the cards. Mutation
+    this catches: removing the `gallery` guard from the job_done branch."""
+    sm = _sm()
+    sm.on_touch()
+    assert sm.on_event({"type": "job_done", "job_id": "attract-loop"}) == "gallery"
+    # ...and the visitor's own pick still leads to a showcase as normal.
+    sm.on_pick("trpcage")
+    assert sm.on_event({"type": "job_done", "job_id": "theirs"}) == "showcase"
