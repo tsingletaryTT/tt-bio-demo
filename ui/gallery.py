@@ -37,6 +37,16 @@ the ORDINARY case here, not a rare edge, and must render a deliberate
 placeholder, never GTK's own "broken image" icon and never an uncaught
 exception. See `_load_thumbnail_texture` and `_build_thumbnail`.
 
+Design note (redesign after the first render was reviewed on real glass):
+the first cut of the placeholder was a large pale `_BG_ALT` block with a
+giant dark initial -- since it is what every visitor sees on every card
+today, this read as the same "kids app" problem ui/panels.py's own first
+draft had (see that module's design-redirect note), and fought the dark,
+restrained panel language sitting right next to it. The placeholder is
+now dark-ground with only a hairline border and a small, muted initial --
+quiet enough that the target's NAME and BLURB (what a visitor actually
+reads to choose) are the loudest things on the card, not the empty tile.
+
 Legibility guard: per this task's brief, ui/panels.py's generalized
 "every label must carry an explicitly-coloured CSS class, checked both
 statically against the real stylesheet text and dynamically via runtime
@@ -183,11 +193,14 @@ def _build_thumbnail(target):
     """One thumbnail widget for `target`'s card.
 
     Its real image if `target.thumbnail` names a file that actually loads;
-    otherwise a placeholder that looks deliberate -- a large initial on a
-    light, calm fill plus a small "preview coming soon" caption -- rather
-    than a broken-image icon or blank space, since every shipped target
-    lacks a thumbnail today (Phase 4 owns the art) and this is the normal
-    case, not a failure mode a visitor should read as one.
+    otherwise a placeholder that looks deliberate -- a hairline-bordered
+    tile on the SAME dark ground as the rest of the card, holding only a
+    small, muted initial -- rather than a broken-image icon, blank space,
+    or (the first-cut design this replaced) a large pale block that
+    outshone the target's own name and blurb. Every shipped target lacks a
+    thumbnail today (Phase 4 owns the art), so this is the normal case a
+    visitor sees on every card, not a rare failure mode that can afford to
+    look loud.
     """
     texture = None
     if target.thumbnail is not None:
@@ -201,25 +214,34 @@ def _build_thumbnail(target):
         picture.set_can_shrink(True)
         return picture
 
-    placeholder = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+    placeholder = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
     placeholder.add_css_class("gallery-thumbnail-placeholder")
     placeholder.set_size_request(_THUMBNAIL_WIDTH_PX, _THUMBNAIL_HEIGHT_PX)
     placeholder.set_halign(Gtk.Align.FILL)
     placeholder.set_valign(Gtk.Align.FILL)
+    # Layout bug found by rendering and measuring actual pixel rows (see
+    # this task's report): GtkWidget's default "compute my own expand from
+    # my children" behavior means the vexpand=True set on `glyph` below
+    # (there only to CENTER it within this box's own fixed height) would
+    # otherwise propagate upward and make THIS BOX report vexpand=True too
+    # -- which let the tile stretch to help absorb a taller sibling card's
+    # extra row height, instead of staying pinned at exactly
+    # _THUMBNAIL_HEIGHT_PX. A shorter blurb (less content elsewhere in the
+    # card) meant MORE spare row height landed here, so tiles measured
+    # visibly different heights across a row of differently-sized blurbs
+    # (confirmed directly: 278px / 303px / 317px for three real cards
+    # sharing one grid row). Setting vexpand explicitly here overrides that
+    # propagation -- see Gtk.Widget.set_vexpand -- so the tile's own size
+    # never depends on what else is in its row.
+    placeholder.set_vexpand(False)
 
     glyph = Gtk.Label(label=_placeholder_glyph(target.name))
     glyph.add_css_class("gallery-thumbnail-placeholder-glyph")
     glyph.set_halign(Gtk.Align.CENTER)
     glyph.set_valign(Gtk.Align.CENTER)
-    glyph.set_vexpand(True)
-
-    caption = Gtk.Label(label="PREVIEW COMING SOON")
-    caption.add_css_class("gallery-thumbnail-placeholder-caption")
-    caption.set_halign(Gtk.Align.CENTER)
-    caption.set_margin_bottom(8)
+    glyph.set_vexpand(True)  # centers the glyph WITHIN the placeholder's fixed height; see placeholder.set_vexpand(False) above for why this doesn't leak outward
 
     placeholder.append(glyph)
-    placeholder.append(caption)
     return placeholder
 
 
@@ -231,18 +253,18 @@ def _build_thumbnail(target):
 # `_BACKGROUND_BY_CLASS` is the single source of truth for "which CSS class
 # carries an explicitly-set background," read by tests/unit/test_gallery.py
 # via the shared tests/unit/_legibility.py walker -- exactly the role
-# ui/panels.py's own dict plays for its tests. Two tiers here (unlike
-# panels.py's one): the gallery root's dark ground, and the placeholder
-# thumbnail's own light fill -- a label inside the placeholder must be
-# checked against ITS true nearest background (light), not the gallery
-# root's (dark), which is precisely the "nearest, not merely registered"
-# property tests/unit/_legibility.py's walker exists to get right.
+# ui/panels.py's own dict plays for its tests. ONE tier here, like
+# panels.py's own redesign ("everything in this module now sits on one
+# background tier -- no nested card/chip backgrounds"): the placeholder
+# thumbnail no longer has a background of its own (see _GALLERY_CSS below
+# -- it is a hairline-bordered cutout on the SAME dark ground, not a
+# second, lighter surface), so every label in this module is checked
+# against the identical `_DARK_BASE` ground, the gallery root's.
 # ---------------------------------------------------------------------------
 _CSS_INSTALLED = False
 
 _BACKGROUND_BY_CLASS = {
     "gallery": _DARK_BASE,
-    "gallery-thumbnail-placeholder": _BG_ALT,
 }
 
 _GALLERY_CSS = f"""
@@ -253,7 +275,6 @@ _GALLERY_CSS = f"""
     padding: 14px;
     border-radius: 8px;
     border: 1px solid {_HAIRLINE};
-    min-height: 260px;
 }}
 .gallery-card:hover {{
     background-color: rgba(199, 217, 216, 0.08);
@@ -273,21 +294,25 @@ _GALLERY_CSS = f"""
     letter-spacing: 0.08em;
     color: {_ACCENT_TEXT};
 }}
+/* The placeholder tile: NO fill of its own -- just a hairline border on
+   the card's own dark ground, so an empty tile reads as a deliberate,
+   quiet cutout rather than a competing light surface. See the design note
+   above _build_thumbnail's docstring for what this replaced. */
 .gallery-thumbnail-placeholder {{
-    background-color: {_BACKGROUND_BY_CLASS["gallery-thumbnail-placeholder"]};
+    border: 1px solid {_HAIRLINE};
     border-radius: 6px;
 }}
+/* A quiet mark, not a billboard: small, muted secondary-text colour --
+   the SAME `_BG_ALT` the blurb uses, not a saturated or "loud" hue --
+   so the target's name (above, in `_BG`) stays the visually loudest
+   thing on the card, exactly like ui/panels.py reserves its brightest
+   treatment for the hero number, not a decorative icon. */
 .gallery-thumbnail-placeholder-glyph {{
     font-family: "Berkeley Mono", monospace;
-    font-size: 42px;
-    font-weight: 700;
-    color: {_DARK_BASE};
-}}
-.gallery-thumbnail-placeholder-caption {{
-    font-size: 10px;
+    font-size: 22px;
     font-weight: 600;
-    letter-spacing: 0.06em;
-    color: {_DARK_BASE};
+    letter-spacing: 0.02em;
+    color: {_BG_ALT};
 }}
 """
 
@@ -384,6 +409,18 @@ class Gallery(Gtk.ScrolledWindow):
         button.set_tooltip_text(f"Fold {target.name}")
 
         content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        # A grid ROW is necessarily one height shared by every cell in it
+        # (see grid_shape/Gallery docs), so a card sitting next to a
+        # longer-blurbed sibling can be allocated more height than its own
+        # content needs. Top-aligning the whole content block means the
+        # thumbnail/name/blurb/hint always start at the SAME y position
+        # across a row regardless of that -- any leftover height becomes
+        # ordinary bottom padding under the card, not a gap wedged between
+        # two lines of text (the previous design's `blurb.set_vexpand
+        # (True)` pushed "TAP TO FOLD" to the card's true bottom instead,
+        # which read as a dead gap whenever a sibling card had a much
+        # longer blurb -- see this task's report).
+        content.set_valign(Gtk.Align.START)
         content.append(_build_thumbnail(target))
 
         name = Gtk.Label(label=target.name, xalign=0.0)
@@ -399,8 +436,6 @@ class Gallery(Gtk.ScrolledWindow):
         blurb.add_css_class("gallery-card-blurb")
         blurb.set_wrap(True)
         blurb.set_justify(Gtk.Justification.LEFT)
-        blurb.set_vexpand(True)
-        blurb.set_valign(Gtk.Align.START)
         content.append(blurb)
 
         hint = Gtk.Label(label="TAP TO FOLD", xalign=0.0)
