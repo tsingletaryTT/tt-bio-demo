@@ -107,6 +107,9 @@ class Folder:
         self.device_id = device_id
         self.model = model
         self._loaded = False
+        self._device = None
+        self._model_obj = None
+        self._mol_dir = None
 
     def load(self):
         """Open the device and load model weights. Call once, at startup.
@@ -131,11 +134,45 @@ class Folder:
         from tt_bio.tenstorrent import get_device
 
         self._device = get_device()
-        _WEIGHTS_CACHE.mkdir(parents=True, exist_ok=True)
-        ckpt_path = hf_artifact(PROTENIX_REPO, "protenix-v2.pt", _WEIGHTS_CACHE)
-        self._model_obj = Protenix.load_from_checkpoint(
-            str(ckpt_path), device=self._device)
-        self._mol_dir = download_mols(_WEIGHTS_CACHE)
+        # load() must be all-or-nothing from here on. get_device() above is
+        # self-healing on its own failure (it releases the host-local
+        # DeviceLease before raising -- see tt_bio.tenstorrent.get_device),
+        # but the three calls below are not: a corrupt checkpoint, an
+        # incompatible tt-bio version, or a failed mol-tarball extraction --
+        # exactly the "tt-bio upgrade breaks this" scenario this module is
+        # designed around -- can raise *after* the device is already open and
+        # the lease already held. Without this guard, that leaves self._device
+        # set but self._loaded still False, and close()'s own guard
+        # (`if not self._loaded: return`) treats that indistinguishably from
+        # "load() was never called" -- a no-op that never calls cleanup() and
+        # never releases the lease. A caller that catches this and keeps
+        # running rather than exiting (runner/daemon.py's main() does exactly
+        # that on a startup failure, serving a `not_ready` screen instead)
+        # would then sit on a card it can neither use nor release for the
+        # rest of the process's life. So a failure here undoes its own
+        # partial work on the way out: after this except block, self._device
+        # is back to None and the real device/lease are released, the same
+        # end state as if load() had never touched hardware at all -- which
+        # is exactly what lets close()'s existing "safe to call even if
+        # load() never succeeded" contract stay true after a *failed* load()
+        # too, not just a load() that was never attempted.
+        try:
+            _WEIGHTS_CACHE.mkdir(parents=True, exist_ok=True)
+            ckpt_path = hf_artifact(PROTENIX_REPO, "protenix-v2.pt", _WEIGHTS_CACHE)
+            self._model_obj = Protenix.load_from_checkpoint(
+                str(ckpt_path), device=self._device)
+            self._mol_dir = download_mols(_WEIGHTS_CACHE)
+        except Exception:
+            from tt_bio.tenstorrent import cleanup
+            try:
+                cleanup()
+            except Exception:
+                log.exception("cleanup after a failed load() also raised; "
+                              "the device/lease may still be held")
+            self._device = None
+            self._model_obj = None
+            self._mol_dir = None
+            raise
         self._loaded = True
         log.info("device %d open, model %s resident in %.2fs",
                  self.device_id, self.model, time.monotonic() - t0)
