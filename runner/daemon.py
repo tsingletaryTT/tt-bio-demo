@@ -162,11 +162,6 @@ class Daemon:
                 self._emit(event)
 
     def _enqueue_playlist(self):
-        # Imported here, not at module scope: tt_bio pulls in torch/ttnn,
-        # which this module's own unit tests must not need (same discipline
-        # runner/folder.py's load()/_run_fold() already follow).
-        from tt_bio.main import _read_bio_chains
-
         for target in sorted(Path(self.config.playlist_dir).glob("*.yaml")):
             if target.stem in self._quarantined:
                 continue
@@ -177,8 +172,20 @@ class Daemon:
             # handling, the same way a bad target always has; this is
             # best-effort only, and 0 is the same "unknown" default the
             # field already had before this fix.
+            #
+            # The import lives inside this try, not at module or method
+            # scope: tt_bio pulls in torch/ttnn, which this module's own
+            # unit tests must not need (same discipline runner/folder.py's
+            # load()/_run_fold() already follow) -- but the try/except is
+            # what makes a *renamed* private helper degrade to
+            # n_residues=0 instead of an ImportError killing run()'s whole
+            # loop (this method is called unguarded from there). Mirrors
+            # runner/folder.py's _run_fold(), which imports the same
+            # private name inside the try that _run_one wraps in FoldError
+            # handling, for the same reason.
             n_residues = 0
             try:
+                from tt_bio.main import _read_bio_chains
                 chains = _read_bio_chains(target)
                 n_residues = sum(len(seq) for _cid, seq, _msa, mol_type in chains
                                  if mol_type != "ligand")

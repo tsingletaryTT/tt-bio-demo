@@ -278,6 +278,44 @@ def test_enqueue_playlist_defaults_n_residues_to_zero_on_a_read_failure(tmp_path
     assert [j.n_residues for j in daemon.queue.pending] == [0]
 
 
+def _fake_tt_bio_main_missing_read_bio_chains(monkeypatch):
+    """Install a stand-in tt_bio.main with no _read_bio_chains attribute at
+    all -- simulates a tt-bio upgrade that renames or removes the private
+    helper _enqueue_playlist imports. Distinct from
+    _fake_tt_bio_main_read_bio_chains above, which always defines the
+    attribute (and only varies what calling it does); this one makes the
+    `from tt_bio.main import _read_bio_chains` statement itself raise
+    ImportError, which is the failure this regression test targets.
+    """
+    main_mod = types.ModuleType("tt_bio.main")   # deliberately no _read_bio_chains
+    pkg = types.ModuleType("tt_bio")
+    pkg.main = main_mod
+    monkeypatch.setitem(sys.modules, "tt_bio", pkg)
+    monkeypatch.setitem(sys.modules, "tt_bio.main", main_mod)
+
+
+def test_enqueue_playlist_survives_a_renamed_tt_bio_helper(tmp_path, monkeypatch):
+    """A tt-bio upgrade that renames or removes _read_bio_chains must degrade
+    _enqueue_playlist to n_residues=0, the same as any other unreadable
+    target (see test_enqueue_playlist_defaults_n_residues_to_zero_on_a_read_failure
+    just above) -- not take the whole daemon down. Before this fix, the
+    import sat above _enqueue_playlist's try block, so this exact scenario
+    raised ImportError out of _enqueue_playlist and, since run()'s loop
+    calls it unguarded, out of run() itself: an unattended booth killed by
+    a routine tt-bio version bump.
+    """
+    _fake_tt_bio_main_missing_read_bio_chains(monkeypatch)
+    playlist = tmp_path / "playlist"
+    playlist.mkdir()
+    (playlist / "trpcage.yaml").write_text("version: 1\n")
+
+    daemon = _daemon(tmp_path, _FakeFolder(), _FakeCards())
+    daemon._enqueue_playlist()   # must not raise ImportError
+
+    assert [j.target_id for j in daemon.queue.pending] == ["trpcage"]
+    assert [j.n_residues for j in daemon.queue.pending] == [0]
+
+
 def test_logs_are_pruned_after_a_job(tmp_path, monkeypatch):
     """Mirrors test_structures_are_pruned_after_a_job's specificity on
     purpose: the previous form of this test asserted only `pruned` truthy,
@@ -777,3 +815,13 @@ def test_a_transient_folder_load_failure_serves_not_ready_and_retries(
         watchdog.cancel()
 
     assert folder.loads == 3, "two failures, then a successful third load"
+    # Closes the gap the previous fix wave left open: this test asserted
+    # not_ready *before* the first load and never checked again, so
+    # deleting run()'s `self._folder_ready = True` line (which is what
+    # actually flips _hello() over to claiming readiness) left the suite
+    # green -- a daemon that loads successfully but never sets the flag
+    # would serve not_ready to every UI for the rest of the conference,
+    # and nothing here would have noticed. Checking _hello() again after
+    # run() returns is what makes that deletion visible as a failure.
+    assert daemon._hello()["type"] == "hello", (
+        "after a successful load, hello must stop claiming not_ready")
