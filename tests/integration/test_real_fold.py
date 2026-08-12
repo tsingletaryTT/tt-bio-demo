@@ -9,7 +9,7 @@ import pathlib
 import numpy as np
 import pytest
 
-from protocol.events import EVENT_TYPES, unpack_coords
+from protocol.events import EVENT_TYPES, STAGE_BANDS, STAGE_ORDER, unpack_coords
 from runner.folder import Folder
 
 # Vendored in this repo (examples/trpcage_no_msa.yaml), not read from a
@@ -118,3 +118,60 @@ def test_confidence_is_reported_in_percent(folded):
 
 def test_a_structure_file_was_written(folded):
     assert pathlib.Path(folded[-1]["cif_path"]).is_file()
+
+
+# --- stage progress -------------------------------------------------------
+# These four use the same `folded` fixture as everything above, so they cost
+# no extra fold time on the card.
+#
+# They exist because Phase 3b moved STAGE_ORDER and the per-stage band table
+# out of runner/folder.py into protocol/events.py (the UI venv cannot import
+# runner/). The band values came across byte-identical and the runner's unit
+# tests passed -- but until these landed, NOTHING in this suite asserted
+# anything about `stage` or `frac`, so no test had ever driven the relocated
+# table through real progress_fn callbacks on silicon. A suite that folds
+# successfully while emitting a progress bar that runs backwards is exactly
+# the kind of green this project has been bitten by before.
+
+
+def test_every_declared_stage_actually_reaches_the_wire(folded):
+    """A stage in the table but never emitted is a row the panel never fills."""
+    seen = {e["stage"] for e in folded if e["type"] == "stage"}
+    missing = [name for name in STAGE_ORDER if name not in seen]
+    assert not missing, f"declared stages that never appeared: {missing}"
+
+
+def test_progress_never_runs_backward(folded):
+    """The contiguous bands exist for exactly this property.
+
+    A naive per-stage fraction (each stage restarting at 0.0) makes the bar
+    jump backward at every transition -- trunk climbing to 40%, then
+    diffusion's first callback reporting under 1%, in front of an audience,
+    on every single fold.
+    """
+    fracs = [e["frac"] for e in folded if e["type"] == "stage"]
+    backward = [(i, fracs[i - 1], fracs[i])
+                for i in range(1, len(fracs)) if fracs[i] < fracs[i - 1] - 1e-9]
+    assert not backward, f"frac ran backward at {backward[:5]}"
+
+
+def test_each_frac_sits_inside_its_own_stages_band(folded):
+    """Catches a stage mapped to the wrong band -- monotonic but misattributed.
+
+    Monotonicity alone would not: a fraction can climb steadily while being
+    reported under a stage whose band it has no business being in.
+    """
+    stray = []
+    for e in folded:
+        if e["type"] != "stage":
+            continue
+        start, end = STAGE_BANDS[e["stage"]]
+        if not (start - 1e-9 <= e["frac"] <= end + 1e-9):
+            stray.append((e["stage"], e["frac"], (start, end)))
+    assert not stray, f"frac outside its declared band: {stray[:5]}"
+
+
+def test_the_fold_finishes_at_exactly_one(folded):
+    """A bar that stalls at 98% is a bar the visitor reads as broken."""
+    fracs = [e["frac"] for e in folded if e["type"] == "stage"]
+    assert fracs[-1] == pytest.approx(1.0)
