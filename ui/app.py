@@ -26,6 +26,30 @@ log = logging.getLogger(__name__)
 # `missing` in any way.
 _PREPARING_MESSAGE = "Getting the booth ready. Please check back shortly."
 
+
+def _format_missing(missing):
+    """Render a not_ready event's `missing` value for the log without ever
+    raising.
+
+    `missing` is trusted to be a list of strings, and normally is one --
+    but this is wire data from the daemon, and the whole point of logging
+    it is to help an operator diagnose a *different* problem. If some
+    future daemon change (or a wire bug) ever sends something else --  a
+    single string, a number, `None` -- `"; ".join(missing)` would raise
+    inside this log call itself. That exception would be caught by
+    _handle_event's outer broad `except Exception`, but at the cost of
+    replacing this specific, useful detail with the generic "dropping
+    malformed not_ready event", which is exactly the outcome an operator
+    at 11pm can least afford: the one signal that could tell them what's
+    actually wrong, swallowed by the same guard that's supposed to keep
+    the app alive. repr() never raises on anything, so this always
+    produces *something* diagnosable instead.
+    """
+    if isinstance(missing, list):
+        return "; ".join(str(item) for item in missing)
+    return repr(missing)
+
+
 # CSS for the preparing overlay, in the brand palette from the docs-site
 # theme: dark base for the backdrop, accent/teal for the text. Kept as a
 # module-level constant (not rebuilt per window) since it never varies.
@@ -203,7 +227,7 @@ class DemoApp(Gtk.Application):
                 self.display_state = "preparing"
                 self.display_message = _PREPARING_MESSAGE
                 if missing:
-                    log.warning("booth not ready: %s", "; ".join(missing))
+                    log.warning("booth not ready: %s", _format_missing(missing))
                 else:
                     log.warning("booth not ready (no detail given)")
                 self._sync_preparing_overlay()
