@@ -151,6 +151,40 @@ See [`docs/venv-bootstrap-notes.md`](docs/venv-bootstrap-notes.md) for the
 environment split written up for a future reader, including what `tt-bio`
 actually pulls in and its measured install size/time on this box.
 
+### 2026-08-12 — Phase 3a built (the compute daemon)
+
+`tt-bio-demod` folds proteins on real Blackhole silicon and streams the live
+diffusion trajectory to the GTK app over the existing socket protocol. Verified
+across 28 consecutive folds: 5.66 s cold, 4.33–4.42 s with the model resident,
+30 frames each, radius of gyration collapsing 4453 Å → 7.0 Å. Kill the daemon
+mid-fold and the UI keeps rotating the last structure and reconnects within a
+second. 224 tests.
+
+Ten tasks, subagent-driven, each with its own review gate. Preceded by a
+hardware spike, because the design assumed things about `dump_fn` nobody had
+watched run — and three of those assumptions were wrong.
+
+**The review loop found nineteen defects in the plan's own code**, not in the
+implementations of it. Worth internalising rather than reading past: a
+log-pinning environment variable that does not exist in this tt-metal build; a
+card-state model that could not represent a card that was both busy and hot; a
+preflight that crashed instead of reporting on exactly the misconfigurations it
+exists to catch; a progress bar that ran backwards on every fold; a daemon that
+discarded its injected test double and opened real hardware inside a unit test.
+
+**The whole-branch review then flipped to not-shippable on mutation evidence** —
+13 of 15 mutations left the suite green. See the "Write tests that can fail" and
+"Short runs cannot see unbounded growth" sections in
+[`docs/followups.md`](docs/followups.md); they are the two lessons this phase
+actually paid for.
+
+Also from this phase: the project now owns its Python environments
+([`scripts/setup-venvs.sh`](scripts/setup-venvs.sh)) including a **vendored SFPI
+toolchain**, which avoids downgrading the system-wide one that other Tenstorrent
+projects on this box depend on. And a tested patch for upstream tt-bio lives in
+[`docs/upstream/protenix-dump-fn/`](docs/upstream/protenix-dump-fn/) — adding the
+public `dump_fn` that `OpenDDE.fold` already has and `Protenix.fold` lacks.
+
 ## Conventions
 
 - Spec-first: brainstormed design → committed spec → implementation plan → code.

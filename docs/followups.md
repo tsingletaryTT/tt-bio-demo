@@ -1,11 +1,50 @@
 # Known follow-ups
 
-Findings from the Phase 1–2 build that were deliberately not fixed at the time.
-Recorded here because the review scratch space they came from is not version
-controlled. Each names why it was deferred, so a future reader can judge whether
-the reasoning still holds.
+Findings from the Phase 1–2 and 3a builds that were deliberately not fixed at
+the time. Recorded here because the review scratch space they came from is not
+version controlled. Each names why it was deferred, so a future reader can judge
+whether the reasoning still holds.
 
-## Blocks Phase 3
+## From Phase 3a — blocks Phase 3b
+
+**The UI has no `not_ready` branch.** `ui/app.py` logs `unhandled event type
+'not_ready'`. The daemon now serves that event correctly whenever preflight
+fails or the model has not loaded yet, but nothing renders the "preparing"
+screen the spec calls for — so today the degrade path is invisible to a visitor,
+who sees the last structure rotating with no explanation. The daemon half is
+done; only the rendering is missing.
+
+## From Phase 3a — worth doing, not urgent
+
+- **`--device` was removed rather than plumbed.** `get_device()` cannot select a
+  card, and threading `TT_VISIBLE_DEVICES` through was judged unverified
+  hardware risk. The daemon is card-0 only and says so. Real multi-card
+  scheduling — one resident model per card — is a separate piece of work with
+  its own memory questions.
+- **A permanent `Folder.load()` failure writes a full traceback per retry.** At
+  the 5 s retry cadence that is roughly 25 MB/day into `daemon.log`, which
+  `--log-budget-gb` does **not** cover (that governs the tt-metal log root
+  only). Bounded by nothing today.
+- **A client connecting during the not-ready window never runs the
+  protocol-version check** for that connection's lifetime, because it receives
+  `not_ready` instead of `hello`. Later connections are fine — `EventServer`
+  calls the hello factory per accept.
+- **`Folder.fold()`'s tt-bio contact surface is five symbols**, four of them
+  underscore-private in `tt_bio/main.py`. An upgrade has five places to check
+  rather than one. There is no public entry point that fits a resident
+  device-and-model, so this is inherent rather than an oversight.
+- **`prune_log_root` gives no signal when the protected floor exceeds the
+  budget.** It returns `removed=[]`, and the daemon's `if removed:` gate means
+  an operator who sets `--structures-budget-gb` below three files' worth sees
+  the same log output as a healthy run. Growth is bounded, but the metric cannot
+  distinguish healthy from misconfigured — the same shape as the Inspector
+  finding below, at far lower severity.
+- **`cleanup()` raising during `load()`'s rollback is logged and swallowed**
+  while the state is zeroed anyway, so `Folder` can report clean while the ttnn
+  device and its lease are still held. Bounded by tt-bio's own `atexit` handler
+  and the flock lease dying with the process.
+
+## From Phase 1–2 — blocks Phase 3
 
 These are fine against the recorded fixture but not against real folds.
 
@@ -109,3 +148,27 @@ the identity, hiding a row/column transposition), an orthonormality assertion
 triangle winding, and a ribbon test that passed whether or not colors aligned to
 the correct residues. When a test's input is symmetric, axis-aligned, or otherwise
 degenerate, ask what wrong answer it would still accept.
+
+Phase 3a made this concrete. Its whole-branch review mutation-tested the suite:
+**13 of 15 mutations aimed at supposedly-covered behavior left it fully green.**
+Deleting `folder.load()`, deleting `server.start()`, replacing the fold call with
+`pass`, changing the protocol version to 999, swapping the log-containment
+constant back to a name that does not exist on this build — all green. The code
+was largely right; the evidence that it was right was far thinner than 210 passing
+tests suggested.
+
+**If a fix matters, mutate it and watch the test go red.** That is now the
+standard here. The wave that fixed the above still introduced one new test that
+could not fail, caught only because a reviewer invented a mutation nobody had
+asked for. This is a bias to keep checking for, not a bug you fix once.
+
+**Short runs cannot see unbounded growth.** Two separate tasks "verified log
+containment" with two-fold sessions. A 28-fold run found tt-metal's Inspector
+holds its log file open and keeps writing ~13–14 MB/s *after* the file is
+unlinked — invisible to a `rglob`-based size walk, which reported the budget
+healthy while space was still consumed. The default log root is tmpfs, so an
+unattended booth would have exhausted 24.9 GB of RAM in roughly half an hour.
+Inspector is now off by default (`TT_METAL_INSPECTOR=1` re-enables it, at the
+cost of `tt-triage` functionality). When a property is about *bounds*, verify it
+over a duration long enough to distinguish bounded from unbounded — and check
+`lsof`, not just the directory.
