@@ -10,8 +10,6 @@ WAYLAND_DISPLAY=wayland-0 per the task's environment notes), so these run
 against the real thing rather than a fake.
 """
 
-import re
-
 import gi
 
 gi.require_version("Gtk", "4.0")
@@ -20,6 +18,7 @@ gi.require_version("Gdk", "4.0")
 import pytest
 from gi.repository import Gdk, Gtk
 
+import _legibility
 import ui.panels as ui_panels
 from protocol.events import STAGE_ORDER, within_stage_frac
 from ui.panels import (
@@ -493,171 +492,52 @@ def test_min_contrast_ratio_is_the_wcag_aa_normal_text_floor():
 # missing display is a hard pytest.fail, never a skip.
 # ---------------------------------------------------------------------------
 
+# Thin, panel-specific bindings over tests/unit/_legibility.py's shared,
+# stylesheet-agnostic implementation (see this task's brief: the same
+# guard is now also applied to ui/gallery.py, in test_gallery.py, via the
+# identical shared module -- not a second, independently-maintained copy of
+# this logic). Kept under these original names so every test below reads
+# exactly as it did before the extraction; only the bodies moved.
 def _iter_labels(widget):
-    if isinstance(widget, Gtk.Label):
-        yield widget
-    child = widget.get_first_child()
-    while child is not None:
-        yield from _iter_labels(child)
-        child = child.get_next_sibling()
+    return _legibility.iter_labels(widget)
 
 
 def _rgba_to_hex(rgba):
-    def channel(c):
-        return round(max(0.0, min(1.0, c)) * 255)
-    return f"#{channel(rgba.red):02X}{channel(rgba.green):02X}{channel(rgba.blue):02X}"
-
-
-_CSS_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
-_CSS_RULE_RE = re.compile(r"([^{}]+)\{([^{}]*)\}", re.DOTALL)
-_CSS_CLASS_TOKEN_RE = re.compile(r"\.([A-Za-z0-9_-]+)")
-_CSS_BARE_CLASS_RE = re.compile(r"^\.[A-Za-z0-9_-]+$")
-# Negative lookbehind on "-" excludes `background-color:`/`border-color:` --
-# only a bare `color:` property counts here.
-_CSS_EXPLICIT_COLOR_PROP_RE = re.compile(r"(?<!-)color\s*:")
-_CSS_BACKGROUND_PROP_RE = re.compile(r"background(-color)?\s*:")
-
-
-def _strip_css_comments(css_text):
-    return _CSS_COMMENT_RE.sub("", css_text)
+    return _legibility.rgba_to_hex(rgba)
 
 
 def _color_rules_from_css(css_text):
-    """Every CSS rule in the REAL, currently-installed stylesheet
-    (`ui.panels._PANEL_CSS`, read fresh each call -- not a cached copy --
-    so a test that monkeypatches it, like the ones below, is actually
-    honored) that sets a plain `color:` (never `background-color:`)
-    property, as a list of frozensets of the class(es) a compound selector
-    REQUIRES ALL of (e.g. `.telemetry-hero-number.telemetry-hero-hot`
-    requires both, not either alone -- a naive "any token in this
-    selector" reading would wrongly keep crediting a class after its OWN
-    base rule's `color:` was deleted, as long as some unrelated compound
-    rule happened to still mention that class name).
-
-    This is what makes `_label_has_an_explicit_color_rule` below a STATIC,
-    theme-independent check: it is pure text analysis of this module's own
-    stylesheet source, never a runtime GTK CSS cascade resolved against
-    whatever desktop theme happens to be loaded (see this task's report,
-    "Fix round 2", for why a resolved-color check alone cannot catch this
-    defect class on every machine).
-    """
-    css_text = _strip_css_comments(css_text)
-    rules = []
-    for selector_part, props in _CSS_RULE_RE.findall(css_text):
-        if not _CSS_EXPLICIT_COLOR_PROP_RE.search(props):
-            continue
-        for compound in selector_part.split(","):
-            required = frozenset(_CSS_CLASS_TOKEN_RE.findall(compound))
-            if required:
-                rules.append(required)
-    return rules
+    return _legibility.color_rules_from_css(css_text)
 
 
 def _label_has_an_explicit_color_rule(label, color_rules):
-    """True if `label`'s currently-applied CSS classes are a superset of
-    at least one real color-setting rule's required class set -- i.e. some
-    rule in the actual stylesheet text genuinely applies a `color:` to
-    exactly the classes this widget carries, so its foreground cannot be
-    silently inherited from an ambient theme regardless of what that theme
-    resolves to on any given machine."""
-    classes = set(label.get_css_classes())
-    return any(required <= classes for required in color_rules)
+    return _legibility.label_has_an_explicit_color_rule(label, color_rules)
 
 
 def _background_affecting_classes_from_css(css_text):
-    """Every class named by a BARE single-class selector (`.foo { ... }`,
-    no compound, no descendant combinator) whose rule sets a background,
-    parsed from the real, currently-installed stylesheet text -- read
-    fresh each call, not cached, so a test that monkeypatches
-    `ui.panels._PANEL_CSS` (see the tests below) is honored.
-
-    Deliberately restricted to BARE class selectors: this module's
-    ProgressBar fill rules (e.g. `.stage-done.pipeline-progress trough
-    progress { background-color: ...; }`) are compound/descendant
-    selectors targeting a decorative nested paint node, not a container a
-    Gtk.Label could sit inside -- and those rules' classes (`stage-done`,
-    `pipeline-progress`, ...) are also applied directly to LABELS
-    themselves (see PipelinePanel.set_stage), so treating every token in
-    those selectors as "background-affecting" would make a label's OWN
-    class look like a background it sits ON, an immediate false failure
-    on every real pipeline row. A bare `.foo { background-color: ...; }`
-    rule, by contrast, really does mean "an element with exactly this
-    class has this background" -- which is exactly what a container that
-    a label sits inside looks like in this stylesheet today
-    (`.telemetry-panel`, `.pipeline-panel`), and exactly what a new nested
-    background tier (the reviewer's scenario) would look like too.
-    """
-    css_text = _strip_css_comments(css_text)
-    classes = set()
-    for selector_part, props in _CSS_RULE_RE.findall(css_text):
-        if not _CSS_BACKGROUND_PROP_RE.search(props):
-            continue
-        for piece in selector_part.split(","):
-            piece = piece.strip()
-            if _CSS_BARE_CLASS_RE.match(piece):
-                classes.add(piece[1:])
-    return classes
+    return _legibility.background_affecting_classes_from_css(css_text)
 
 
 def _nearest_explicit_background_hex(widget):
-    """Walk from `widget` up through its ancestors and return the hex of
-    the FIRST (nearest) one carrying any class this module's real
-    stylesheet actually paints a background with.
-
-    This is the reviewer's fix for problem (b): the previous version
-    climbed the ancestor chain looking only for classes already present in
-    `_BACKGROUND_BY_CLASS`, so a nearer ancestor with a genuine background
-    class that dict had never been taught about was silently skipped in
-    favor of a REGISTERED ancestor further out -- validating a label at
-    its true 1.08:1 contrast against a certified-but-wrong 16.6:1. Here,
-    "does this ancestor have a background" is answered from the real CSS
-    text itself (`_background_affecting_classes_from_css`, not a second,
-    hand-maintained copy of that knowledge), so the walk stops at the
-    TRUE nearest background-painted ancestor every time, registered or
-    not. If it is not registered, that is a real gap in this test file's
-    own bookkeeping and must fail loudly right here -- never silently
-    fall through to a different, more distant ancestor's background.
-    """
-    background_classes = _background_affecting_classes_from_css(ui_panels._PANEL_CSS)
-    node = widget
-    while node is not None:
-        hit = set(node.get_css_classes()) & background_classes
-        if hit:
-            registered = hit & set(ui_panels._BACKGROUND_BY_CLASS)
-            if not registered:
-                raise AssertionError(
-                    f"{widget!r}'s NEAREST background-affecting ancestor "
-                    f"{node!r} carries class(es) {sorted(hit)!r}, which set "
-                    "a background in the real ui.panels._PANEL_CSS "
-                    "stylesheet but are NOT registered in "
-                    "ui.panels._BACKGROUND_BY_CLASS -- teach the walker "
-                    "about this background tier; do not let it fall "
-                    "through to a different, more distant ancestor")
-            return ui_panels._BACKGROUND_BY_CLASS[next(iter(registered))]
-        node = node.get_parent()
-    raise AssertionError(
-        f"no ancestor of {widget!r} carries any class that paints a "
-        "background in the real ui.panels._PANEL_CSS stylesheet -- a label "
-        "with no backgrounded ancestor at all cannot be contrast-checked")
+    """See _legibility.nearest_explicit_background_hex. The two lambdas
+    read `ui_panels._PANEL_CSS` / `ui_panels._BACKGROUND_BY_CLASS` fresh on
+    every call (never a value captured once), which is exactly what lets
+    the monkeypatch-based tests below (`test_nearest_background_walker_*`)
+    still work unchanged after this extraction."""
+    return _legibility.nearest_explicit_background_hex(
+        widget,
+        css_text_fn=lambda: ui_panels._PANEL_CSS,
+        background_by_class_fn=lambda: ui_panels._BACKGROUND_BY_CLASS,
+    )
 
 
 def _assert_every_label_is_legible(root, *, context):
-    if Gdk.Display.get_default() is None:
-        # Loud, not a skip -- see this section's own docstring above.
-        pytest.fail(
-            f"[{context}] no default display: cannot resolve real GTK "
-            "colors, and a legibility test that silently no-ops on a "
-            "headless run would be worse than not having one")
-    failures = []
-    for label in _iter_labels(root):
-        fg_hex = _rgba_to_hex(label.get_color())
-        bg_hex = _nearest_explicit_background_hex(label)
-        ratio = contrast_ratio(fg_hex, bg_hex)
-        if ratio < MIN_CONTRAST_RATIO:
-            failures.append(
-                f"[{context}] label {label.get_label()!r}: fg={fg_hex} "
-                f"bg={bg_hex} ratio={ratio:.2f} < {MIN_CONTRAST_RATIO}")
-    assert not failures, "\n".join(failures)
+    return _legibility.assert_every_label_is_legible(
+        root, context=context, min_contrast=MIN_CONTRAST_RATIO,
+        contrast_ratio_fn=contrast_ratio,
+        css_text_fn=lambda: ui_panels._PANEL_CSS,
+        background_by_class_fn=lambda: ui_panels._BACKGROUND_BY_CLASS,
+    )
 
 
 def test_telemetry_panel_labels_are_legible_in_every_state():
