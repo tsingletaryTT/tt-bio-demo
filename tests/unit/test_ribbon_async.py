@@ -63,7 +63,15 @@ def _join_ribbon_worker(app, timeout=5.0):
 
 
 class _SlowGeometry:
-    """Stands in for ribbon_from_cif, recording which thread called it."""
+    """Stands in for ribbon_from_cif, recording which thread called it.
+
+    The returned "verts" slot is `cif_path` itself, not a fixed placeholder
+    -- this is what lets a test with two folds in flight (see
+    test_a_second_fold_supersedes_a_slow_first_one) tell *which* fold's
+    result actually reached the viewer, not merely how many did. A fixed
+    return value would make the two folds' results indistinguishable, and a
+    test that can't tell them apart can't assert which one won a race.
+    """
 
     def __init__(self, delay=0.3):
         self.delay = delay
@@ -74,7 +82,7 @@ class _SlowGeometry:
         self.thread_name = threading.current_thread().name
         self.calls += 1
         time.sleep(self.delay)
-        return ("verts", "norms", "colors", "indices")
+        return (cif_path, "norms", "colors", "indices")
 
 
 def test_ribbon_construction_does_not_run_on_the_calling_thread(monkeypatch):
@@ -175,4 +183,15 @@ def test_a_second_fold_supersedes_a_slow_first_one(monkeypatch):
                        "wall_s": 5.0, "mean_plddt": 95.0})
     _join_ribbon_worker(app, timeout=10.0)
     app._drain_pending_ribbon()
-    assert app.viewer.ribbons <= 1, "only the newest fold's ribbon should land"
+    # A bare "<= 1" count can't tell "the newest fold's ribbon landed" apart
+    # from "every result was dropped" -- both leave ribbons at 0 or 1. Pin
+    # the actual contract: exactly one ribbon lands, and it's identifiably
+    # the second (superseding) fold's, not the first's. _SlowGeometry
+    # returns cif_path as the "verts" slot precisely so last_ribbon can be
+    # checked against which fold produced it.
+    assert app.viewer.ribbons == 1, (
+        "exactly one ribbon should land -- zero means every result was "
+        "dropped, which is not 'the newest fold won'")
+    assert app.viewer.last_ribbon[0] == "/tmp/b.cif", (
+        "the ribbon that landed must be the second (newest) fold's "
+        "('/tmp/b.cif'), not the first's ('/tmp/a.cif')")
