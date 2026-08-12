@@ -1,7 +1,7 @@
 import os
 import time
 
-from runner.env import LOG_ROOT_VAR, log_root_size, prune_log_root, runner_environ
+from runner.env import INSPECTOR_VAR, LOG_ROOT_VAR, log_root_size, prune_log_root, runner_environ
 
 
 def test_inspector_log_path_is_absolute_and_under_the_log_root(tmp_path):
@@ -39,6 +39,25 @@ def test_defaults_to_the_process_environment_when_no_base_given(monkeypatch):
     monkeypatch.setenv("TTBIO_DEMO_MARKER", "present")
     env = runner_environ("/tmp/logs")
     assert env["TTBIO_DEMO_MARKER"] == "present"
+
+
+def test_inspector_is_disabled_by_default():
+    """Task 10 found that tt-metal's Inspector opens
+    generated/inspector/mesh_workloads_log.yaml once at device bring-up and
+    holds it open (appending) for the daemon's entire life -- unlinking it
+    later does not free the space while that fd stays open, so
+    prune_log_root cannot actually bound it. Disabling Inspector removes the
+    file entirely; nothing here reads its output.
+    """
+    env = runner_environ("/tmp/logs", base={})
+    assert env[INSPECTOR_VAR] == "0"
+
+
+def test_caller_supplied_inspector_setting_is_not_silently_overridden():
+    # Same setdefault discipline as LOG_ROOT_VAR: an operator who deliberately
+    # wants Inspector output for debugging keeps that choice.
+    env = runner_environ("/tmp/logs", base={INSPECTOR_VAR: "1"})
+    assert env[INSPECTOR_VAR] == "1"
 
 
 def _file(root, name, size, age_s=0):

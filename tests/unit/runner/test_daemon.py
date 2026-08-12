@@ -181,6 +181,37 @@ def test_a_pruning_failure_does_not_stop_the_daemon(tmp_path, monkeypatch):
     daemon._run_one(Job("j1", "t", "/tmp/t.yaml"), card=0)   # must not raise
 
 
+def test_structures_are_pruned_after_a_job(tmp_path, monkeypatch):
+    """The .cif accumulation flagged in Task 5b (runner/folder.py's
+    STRUCTURES_DIR) must actually be swept, the same way the tt-metal log
+    root is -- both calls happen in _run_one's finally, so a fold that never
+    calls prune_log_root against STRUCTURES_DIR would leave that directory
+    growing forever even though the log root is bounded.
+    """
+    from runner import daemon as mod
+    from runner.folder import STRUCTURES_DIR
+
+    pruned = []
+    monkeypatch.setattr(mod, "prune_log_root",
+                        lambda root, budget: (pruned.append(root), (0, []))[1])
+    daemon = _daemon(tmp_path, _FakeFolder(), _FakeCards())
+    daemon._run_one(Job("j1", "t", "/tmp/t.yaml"), card=0)
+    assert STRUCTURES_DIR in pruned, (
+        "the structures budget is never enforced if pruning is not called "
+        "against runner.folder.STRUCTURES_DIR")
+
+
+def test_a_structures_pruning_failure_does_not_stop_the_daemon(tmp_path, monkeypatch):
+    from runner import daemon as mod
+
+    def explode(root, budget):
+        raise OSError("disk gone strange")
+
+    monkeypatch.setattr(mod, "prune_log_root", explode)
+    daemon = _daemon(tmp_path, _FakeFolder(), _FakeCards())
+    daemon._run_one(Job("j1", "t", "/tmp/t.yaml"), card=0)   # must not raise
+
+
 def test_main_reports_preflight_failure_and_exits_non_zero(tmp_path, capsys, monkeypatch):
     # Deviation from the brief: as given, this test calls the real
     # run_preflight() unmocked. Its tap check imports tt_bio.protenix, which

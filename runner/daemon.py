@@ -22,7 +22,7 @@ from pathlib import Path
 from protocol.events import PROTOCOL_VERSION
 from runner.cards import CardPool, sample_tt_smi
 from runner.env import log_root_size, prune_log_root, runner_environ
-from runner.folder import Folder, FoldError
+from runner.folder import STRUCTURES_DIR, Folder, FoldError
 from runner.preflight import not_ready_event, run_preflight
 from runner.queue import Job, JobQueue
 from runner.server import EventServer
@@ -38,6 +38,19 @@ TELEMETRY_PERIOD_S = 2.0
 # enough recent history to diagnose a failure without threatening the disk.
 DEFAULT_LOG_BUDGET_BYTES = 2 * 1024**3
 
+# Task 5b flagged runner/folder.py's STRUCTURES_DIR as the same class of
+# problem: every fold writes one .cif, forever, with nothing pruning old
+# ones. Measured at ~16 KB for a 20-residue target (tests/fixtures/streams/
+# real_fold_trpcage.cif); the curated playlist's real targets will run
+# larger, so this budgets by bytes rather than by a fold count that would
+# mean something different for every target. 200 MB is small next to the
+# 2 GB log budget on purpose -- once the UI has read a job_done's cif_path
+# and built its ribbon mesh, nothing in this codebase reads that file again
+# (no gallery exists yet; see docs/followups.md), so there is little reason
+# to keep more than a handful of recent structures around for a human to
+# inspect after the fact.
+DEFAULT_STRUCTURES_BUDGET_BYTES = 200 * 1024**2
+
 
 @dataclass
 class DaemonConfig:
@@ -48,6 +61,7 @@ class DaemonConfig:
     device_id: int = 0
     max_temp_c: float = 85.0
     log_budget_bytes: int = DEFAULT_LOG_BUDGET_BYTES
+    structures_budget_bytes: int = DEFAULT_STRUCTURES_BUDGET_BYTES
 
 
 class Daemon:
@@ -233,6 +247,7 @@ class Daemon:
             # Between folds, not during: pruning walks the tree, and the gap
             # between jobs is when nothing is competing for the disk.
             self._prune_logs()
+            self._prune_structures()
 
     def _prune_logs(self):
         """Keep tt-metal's log output inside its budget. Never fatal."""
@@ -246,6 +261,29 @@ class Daemon:
         except Exception:
             # A janitor failure must never stop the demo folding.
             log.exception("log pruning failed; continuing")
+
+    def _prune_structures(self):
+        """Keep accumulated .cif output inside its budget. Never fatal.
+
+        Same unbounded-growth shape as _prune_logs above, just a different
+        root and a different (smaller) budget -- see
+        DEFAULT_STRUCTURES_BUDGET_BYTES's comment for why the numbers
+        differ. Reuses prune_log_root rather than duplicating its
+        oldest-file-first deletion logic: "delete oldest regular files
+        under a root until it fits a byte budget" is exactly the same
+        operation for runner/folder.py's STRUCTURES_DIR as it is for
+        tt-metal's log root, so there is nothing structures-specific to
+        write.
+        """
+        try:
+            freed, removed = prune_log_root(STRUCTURES_DIR,
+                                            self.config.structures_budget_bytes)
+            if removed:
+                log.info("structures pruned: %d file(s), %.1f MB freed",
+                         len(removed), freed / 1e6)
+        except Exception:
+            # A janitor failure must never stop the demo folding.
+            log.exception("structure pruning failed; continuing")
 
     def stop(self):
         self._stop.set()
@@ -261,6 +299,8 @@ def main(argv=None):
     parser.add_argument("--max-temp", type=float, default=85.0)
     parser.add_argument("--log-budget-gb", type=float, default=2.0,
                         help="cap on tt-metal's log root; oldest files pruned first")
+    parser.add_argument("--structures-budget-gb", type=float, default=0.2,
+                        help="cap on accumulated .cif output; oldest pruned first")
     parser.add_argument("--preflight-only", action="store_true",
                         help="check readiness and exit; opens no device")
     args = parser.parse_args(argv)
@@ -317,7 +357,8 @@ def main(argv=None):
         socket_path=args.socket, weights_dir=args.weights,
         playlist_dir=args.playlist, log_root=args.log_root,
         device_id=args.device, max_temp_c=args.max_temp,
-        log_budget_bytes=int(args.log_budget_gb * 1024**3)))
+        log_budget_bytes=int(args.log_budget_gb * 1024**3),
+        structures_budget_bytes=int(args.structures_budget_gb * 1024**3)))
     signal.signal(signal.SIGTERM, lambda *_: daemon.stop())
     signal.signal(signal.SIGINT, lambda *_: daemon.stop())
     daemon.run()

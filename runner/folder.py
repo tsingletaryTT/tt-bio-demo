@@ -48,6 +48,16 @@ log = logging.getLogger(__name__)
 # this module's callers should need to know about.
 _WEIGHTS_CACHE = Path.home() / ".boltz"
 
+# Every successful fold writes one uuid-named .cif here (see _run_fold below)
+# and nothing has ever deleted one -- flagged during Task 5b as a booth-
+# longevity risk in the same class as the tt-metal log growth runner/env.py
+# bounds, deferred to Task 10 to actually fix. Exposed as a module constant
+# (rather than left as a literal inside _run_fold) so runner/daemon.py can
+# prune it with the same oldest-file-first budget it already applies to the
+# tt-metal log root, without this module and the daemon needing to agree on
+# the path by copying it into two places.
+STRUCTURES_DIR = Path(tempfile.gettempdir()) / "tt-bio-demo" / "structures"
+
 
 class FoldError(Exception):
     """A fold could not be completed. The message is for logs, never the screen."""
@@ -331,9 +341,8 @@ class Folder:
         # which runner/env.py already treats as something the daemon may
         # not pollute) plus a uuid per fold keeps concurrent/successive
         # folds from ever colliding on a filename.
-        out_dir = Path(tempfile.gettempdir()) / "tt-bio-demo" / "structures"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        cif_path = out_dir / f"{uuid.uuid4().hex}.cif"
+        STRUCTURES_DIR.mkdir(parents=True, exist_ok=True)
+        cif_path = STRUCTURES_DIR / f"{uuid.uuid4().hex}.cif"
         _write_protenix_structure(coords[0], feats, None, cif_path, "cif",
                                   b_factors=conf["plddt_atom"] * 100.0)
 
