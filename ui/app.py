@@ -3,6 +3,7 @@
 import argparse
 import logging
 import sys
+import threading
 
 import gi
 
@@ -13,7 +14,7 @@ from gi.repository import Gdk, GLib, Gtk
 
 from protocol.events import unpack_coords
 from ui.client import EventClient, LatestFrame
-from ui.geometry import GeometryError, ribbon_from_cif
+from ui.geometry import ribbon_from_cif
 from ui.viewer import StructureViewer
 
 log = logging.getLogger(__name__)
@@ -90,6 +91,31 @@ class DemoApp(Gtk.Application):
         self.display_message = ""
         self._preparing_box = None
         self._preparing_message_label = None
+
+        # ribbon_from_cif costs up to ~1.2s at 3000 residues (measured,
+        # docs/followups.md) and must never run on the thread that calls
+        # _handle_event -- for real traffic that's the GTK main loop, via
+        # _on_event's GLib.idle_add dispatch. See _spawn_ribbon_worker,
+        # _ribbon_worker_main, and _drain_pending_ribbon below for the full
+        # scheme; the fields here are just its state:
+        #
+        # _ribbon_lock guards the two fields below it against concurrent
+        # access from worker threads and the main thread at once.
+        # _ribbon_generation is a monotonic counter, bumped once per
+        # job_done that actually starts a worker -- it is the answer to
+        # "which fold is the newest one in flight", independent of which
+        # worker happens to finish first. _pending_ribbon holds at most one
+        # not-yet-applied result, as (generation, cif_path, outcome) --
+        # never more than one, because a fold that is superseded before its
+        # result is even applied should never reach the screen at all (see
+        # _ribbon_worker_main's docstring for the ordering argument).
+        # _ribbon_threads is bookkeeping only (test joins + shutdown
+        # visibility) -- nothing about correctness depends on this list;
+        # the generation check is what actually decides what lands.
+        self._ribbon_lock = threading.Lock()
+        self._ribbon_generation = 0
+        self._pending_ribbon = None
+        self._ribbon_threads = []
 
     def do_activate(self):
         window = Gtk.ApplicationWindow(application=self)
@@ -238,19 +264,10 @@ class DemoApp(Gtk.Application):
                 log.info("done in %.2fs", event.get("wall_s", 0.0))
                 cif_path = event.get("cif_path")
                 if cif_path:
-                    try:
-                        verts, norms, colors, idx = ribbon_from_cif(cif_path)
-                    except GeometryError:
-                        # Leave whatever's on screen (the last diffusion
-                        # frame) exactly as it is and just log -- never a
-                        # stack trace on screen, never a crash. set_ribbon
-                        # and set_blend below are only reached on success,
-                        # so a bad CIF simply forfeits the ribbon reveal for
-                        # this job instead of corrupting the current view.
-                        log.exception("could not build ribbon for %s", cif_path)
-                    else:
-                        self.viewer.set_ribbon(verts, norms, colors, idx)
-                        self.viewer.begin_crossfade()
+                    # ribbon_from_cif's cost moved off this thread -- see
+                    # _spawn_ribbon_worker. The result comes back later, via
+                    # _drain_pending_ribbon on the main loop, not here.
+                    self._spawn_ribbon_worker(cif_path)
                 else:
                     # A misconfigured runner sending job_done with nothing
                     # to render used to no-op here silently; log it so it's
@@ -270,6 +287,158 @@ class DemoApp(Gtk.Application):
                 log.warning("unhandled event type %r", kind)
         except Exception:
             log.exception("dropping malformed %s event", event.get("type"))
+        return False
+
+    # ── ribbon construction off the main loop ───────────────────────────
+    #
+    # ribbon_from_cif is pure numpy/gemmi (ui/geometry.py's own docstring:
+    # "no GL, no GTK"), so it is safe to run on a plain background thread
+    # with no GTK/GL calls anywhere in it. Only the hand-back to the viewer
+    # touches GTK, and that always happens on the main loop, via
+    # _drain_pending_ribbon.
+    #
+    # Ordering: the daemon folds continuously (the attract loop), so a slow
+    # structure's worker can still be running when the next job_done
+    # arrives. Rather than trying to cancel an in-flight worker -- there is
+    # no way to interrupt a thread already inside gemmi/numpy C calls, and
+    # daemon threads make that unnecessary anyway (see _spawn_ribbon_worker)
+    # -- every worker is stamped with a monotonic generation number at
+    # spawn time, and both the worker (when it finishes) and the drain
+    # step (when the main loop actually applies a result) check that
+    # generation against "what is the newest fold we know about right now".
+    # A stale result is simply dropped, silently, at whichever of those two
+    # points notices first. This makes "only the newest lands" a single
+    # integer comparison, correct no matter which worker happens to finish
+    # first -- no thread cancellation, no comparing job_id strings (which
+    # would need the daemon to guarantee an ordering the protocol doesn't
+    # actually promise), and no queue that could let a superseded ribbon
+    # sit and apply later.
+
+    def _spawn_ribbon_worker(self, cif_path):
+        """Move ribbon_from_cif's cost onto a background thread.
+
+        Threads, not e.g. a process pool: the payload (a cif_path string
+        in, four numpy arrays out) is small, gemmi/numpy release the GIL
+        for the bulk of their work same as any C-backed numeric library,
+        and a thread pool would add a shutdown-coordination problem this
+        task doesn't need -- daemon=True below already makes a worker in
+        flight at app-exit harmless (see the class docstring above and the
+        module-level shutdown note in the task brief): a daemon thread is
+        killed outright when the process exits, never blocking it, and it
+        never touches a GTK widget itself (only _drain_pending_ribbon does,
+        and only from the main loop).
+        """
+        with self._ribbon_lock:
+            self._ribbon_generation += 1
+            generation = self._ribbon_generation
+
+        # Bookkeeping only (test joins + a bound on how many dead Thread
+        # objects accumulate across a long attract-loop session) -- prune
+        # finished workers before adding the new one rather than letting
+        # this list grow for the life of the process.
+        self._ribbon_threads = [t for t in self._ribbon_threads if t.is_alive()]
+
+        worker = threading.Thread(
+            target=self._ribbon_worker_main,
+            args=(generation, cif_path),
+            name=f"ribbon-worker-{generation}",
+            daemon=True,
+        )
+        self._ribbon_threads.append(worker)
+        worker.start()
+
+    def _ribbon_worker_main(self, generation, cif_path):
+        """Runs entirely off the main loop -- must never raise out of this
+        method. A plain threading.Thread whose target raises doesn't freeze
+        anything the way an uncaught exception in a GLib source would (see
+        _handle_event's docstring), but it would still just vanish into
+        Python's default thread excepthook with nothing for the app to act
+        on and nothing applied or logged through this app's own channel.
+        Catch broadly -- deliberately not just GeometryError, since
+        anything ribbon_from_cif raises must produce the same "log it,
+        leave the screen alone" outcome, not a silent thread death.
+        """
+        try:
+            result = ribbon_from_cif(cif_path)
+        except Exception as exc:
+            outcome = ("error", exc)
+        else:
+            outcome = ("ok", result)
+
+        with self._ribbon_lock:
+            # Stale: a newer fold has started since this worker was
+            # spawned -- drop this result outright, it must never reach
+            # the screen even if nothing else is waiting to replace it.
+            stale = generation != self._ribbon_generation
+            # Superseded-in-slot: a *result* from a newer generation is
+            # already waiting to be drained. Guards the opposite race from
+            # `stale` above -- a straggler finishing after a faster, newer
+            # worker must not clobber the newer result that's already
+            # sitting in the slot before the main loop got to it.
+            superseded_in_slot = (
+                self._pending_ribbon is not None
+                and generation < self._pending_ribbon[0]
+            )
+            if not stale and not superseded_in_slot:
+                self._pending_ribbon = (generation, cif_path, outcome)
+
+        # Wake the main loop regardless of whether this worker's result was
+        # the one actually stored -- GLib.idle_add is safe to call from any
+        # thread (the same pattern EventClient's on_state_change already
+        # uses, from its own background thread, into this same app; see
+        # ui/client.py), and _drain_pending_ribbon is a correct, cheap
+        # no-op when there is nothing left to apply.
+        GLib.idle_add(self._drain_pending_ribbon)
+
+    def _drain_pending_ribbon(self):
+        """Runs on the main loop (scheduled via GLib.idle_add, from a
+        ribbon worker thread). Applies the newest still-relevant
+        ribbon-construction result to the viewer, or silently discards it
+        if a newer fold has started since -- see the class-level comment
+        above this section for why a generation check, not thread
+        cancellation, is what makes "only the newest lands" correct here.
+
+        Guarded the same broad way as every other GLib-invoked callback in
+        this file (_handle_event, _on_state, _drain_frames): this is a
+        one-shot idle source, so an uncaught exception here wouldn't cause
+        the *repeating*-source freeze those methods' comments warn about,
+        but the app must still never show a stack trace or die on e.g. a
+        viewer that was torn down mid-drain (app shutting down with a
+        worker's result still in flight) -- so treat that case the same as
+        any other malformed-input failure: log it, don't crash, leave
+        whatever is on screen exactly as it is.
+        """
+        with self._ribbon_lock:
+            pending = self._pending_ribbon
+            self._pending_ribbon = None
+            current_generation = self._ribbon_generation
+
+        if pending is None:
+            return False
+
+        generation, cif_path, outcome = pending
+        if generation != current_generation:
+            # A newer fold started after this result was produced (it was
+            # stored back when it was still current) -- it's stale now.
+            return False
+
+        kind, payload = outcome
+        try:
+            if kind == "error":
+                # Leave whatever's on screen (the last diffusion frame, or
+                # a previous ribbon) exactly as it is and just log -- never
+                # a stack trace on screen, never a crash. set_ribbon and
+                # begin_crossfade below are only reached on success, so a
+                # bad CIF simply forfeits the ribbon reveal for this job
+                # instead of corrupting the current view.
+                log.error("could not build ribbon for %s", cif_path,
+                          exc_info=payload)
+            else:
+                verts, norms, colors, idx = payload
+                self.viewer.set_ribbon(verts, norms, colors, idx)
+                self.viewer.begin_crossfade()
+        except Exception:
+            log.exception("dropping ribbon result for %s", cif_path)
         return False
 
     def _on_state(self, state):
