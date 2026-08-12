@@ -86,7 +86,14 @@ def load_ca_trace(cif_path):
 
 # AlphaFold's confidence ramp. Domain visitors read these colors fluently, so
 # we use the convention rather than inventing a brand-consistent one.
-_PLDDT_STOPS = (
+#
+# Public (no leading underscore) because the `?` help overlay explains this
+# ramp to visitors and builds its swatches from THIS tuple rather than from a
+# second, hand-copied list of hexes in ui/app.py -- a legend that can drift
+# from the ribbon it describes is worse than no legend, and a hand-copy is
+# exactly how that drift happens. tests/unit/test_app_interaction.py pins the
+# two together.
+PLDDT_STOPS = (
     (90.0, (0x00, 0x53, 0xD6)),   # very high
     (70.0, (0x65, 0xCB, 0xF3)),   # confident
     (50.0, (0xFF, 0xDB, 0x13)),   # low
@@ -230,7 +237,7 @@ def plddt_colors(plddt):
     v = np.asarray(plddt, dtype=np.float64).ravel()
     out = np.zeros((len(v), 3), dtype=np.float32)
     claimed = np.zeros(len(v), dtype=bool)
-    for threshold, rgb in _PLDDT_STOPS:
+    for threshold, rgb in PLDDT_STOPS:
         mask = (v >= threshold) & ~claimed
         out[mask] = np.asarray(rgb, dtype=np.float32) / 255.0
         claimed |= mask

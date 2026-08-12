@@ -38,7 +38,8 @@ fold".
 guaranteed to hold on it for at least this long. Within the normal
 visitor loop, nothing -- not a new `job_start`, not a `job_error`, not a
 touch -- can cut that short; only `tick(now)` ends a showcase, and only
-once the dwell has actually elapsed. The ONE deliberate exception is
+once the dwell has actually elapsed. A touch is not DISCARDED, though --
+see "The deferred touch" below. The ONE deliberate exception is
 `not_ready`: a degrading daemon overrides a showcase in progress exactly
 as it overrides everything else (see `on_event`), on the CONTROLLER
 RULING that a daemon which can no longer fold must be surfaced to the
@@ -55,6 +56,31 @@ short enough that it does not visually dominate an attract cycle whose own
 fold takes about as long. It is a constructor parameter, not a constant,
 so a later tuning pass (or a per-target override) doesn't need a code
 change here.
+
+The deferred touch
+-------------------
+The dwell above used to be paid for out of the visitor's pocket: a touch
+arriving mid-showcase set only the idle flag and was then thrown away when
+the dwell expired. Measured in Task 9, the booth sits in `showcase` for
+46-50% of every attract cycle -- so roughly HALF of all first taps did
+nothing a visitor could see, and a visitor who taps a booth and gets no
+response concludes it is broken and walks away.
+
+CONTROLLER RULING (Task 10): a touch during a showcase is REMEMBERED, and
+acted on the instant the dwell expires -- at most `showcase_dwell_s`
+later. Both promises are then kept at once: the finished structure still
+gets every millisecond of the hold it was guaranteed (nothing about the
+dwell itself changed; the pre-existing tests pinning it are untouched and
+still green), and the visitor's tap is never lost -- the showcase ends in
+`gallery` rather than `attract`.
+
+The flag (`_deferred_touch`) is bounded by construction: it is set only
+while showcasing, consumed by the very tick that ends that showcase, and
+dropped outright if `not_ready` tears the showcase down instead (by the
+time a degraded daemon recovers, the visitor who tapped is long gone, and
+`preparing` releases to `attract` precisely so that no pre-degrade screen
+gets resurrected). So it can never survive past the one showcase it was
+recorded during.
 
 Answering Task 9's two questions from state alone
 --------------------------------------------------
@@ -135,6 +161,13 @@ class StateMachine:
         # stamps it.
         self._showcase_entered_at = None
 
+        # "A visitor tapped while a structure was being showcased." Set by
+        # `on_touch` only while showcasing; consumed by the tick that ends
+        # that showcase (which then opens the gallery instead of returning
+        # to attract); dropped by `not_ready`. See "The deferred touch" in
+        # the module docstring for the ruling behind it.
+        self._deferred_touch = False
+
     # -- protocol events -----------------------------------------------
 
     def on_event(self, event):
@@ -153,6 +186,12 @@ class StateMachine:
         if etype == "not_ready":
             self.state = BoothState.PREPARING
             self.selected_target = None
+            # A tap this showcase was holding for later dies with the
+            # showcase. Honoring it after the daemon recovers would open a
+            # gallery, minutes later, for a visitor who has already left --
+            # the same "screen built on pre-degrade information" this
+            # branch's release-to-attract rule exists to prevent.
+            self._deferred_touch = False
             return self.state
 
         if self.state == BoothState.PREPARING:
@@ -191,18 +230,30 @@ class StateMachine:
             return self.state
 
         if etype == "job_done":
-            # Every finished structure gets a full showcase dwell,
-            # whether it came from a visitor's own pick or the ambient
-            # attract loop's continuous folding -- the measured defect
-            # this guards against was reproduced on attract-loop cycles,
-            # not only visitor picks. A job_done that arrives while an
-            # earlier showcase is still being held (rare, but possible if
-            # the daemon runs ahead) starts a fresh dwell for the NEW
-            # ribbon rather than extending the old one.
+            # A finished structure gets a full showcase dwell whether it
+            # came from a visitor's own pick or from the ambient attract
+            # loop's continuous folding -- the measured defect this guards
+            # against was reproduced on attract-loop cycles, not only
+            # visitor picks. A job_done that arrives while an earlier
+            # showcase is still being held (rare, but possible if the daemon
+            # runs ahead) starts a fresh dwell for the NEW ribbon rather
+            # than extending the old one.
             #
-            # ...with ONE exception: a visitor standing at the booth with
-            # the gallery open. This branch used to fire from `gallery`
-            # too, flagged in Task 7 as "believed unreachable while the
+            # This branch is NOT reached from every state, and the two it is
+            # not reached from are both deliberate:
+            #
+            #   - `preparing` never gets here at all -- the `not_ready`
+            #     branch above returns first, so a stray job_done from work
+            #     still in flight when the daemon degraded cannot paper over
+            #     the degrade message (test:
+            #     test_job_done_while_preparing_does_not_leak_into_showcase).
+            #   - `gallery` returns immediately below.
+            #
+            # ...which leaves `attract`, `folding` and an earlier
+            # `showcase`. The `gallery` exception exists because a visitor
+            # is standing at the booth with the gallery open. This branch
+            # used to fire from `gallery` too, flagged in Task 7 as
+            # "believed unreachable while the
             # protocol stays strictly serial". It is not unreachable; it
             # is the ORDINARY case, reproduced on screen against the mock
             # runner during Task 9 (see that task's report and its
@@ -272,11 +323,21 @@ class StateMachine:
     # -- visitor input ----------------------------------------------------
 
     def on_touch(self):
-        """A visitor touched the booth. Opens the gallery from attract;
-        otherwise just resets the idle clock (see `tick`)."""
+        """A visitor touched the booth.
+
+        Opens the gallery from `attract`. From `showcase` the gallery is
+        opened LATER, by the tick that ends the dwell -- the touch is
+        recorded here and honored there, never discarded (see "The deferred
+        touch" in the module docstring; the state returned is still
+        `showcase`, because the finished structure keeps the screen it was
+        guaranteed). From every other state it just resets the idle clock
+        (see `tick`).
+        """
         self._idle_dirty = True
         if self.state == BoothState.ATTRACT:
             self.state = BoothState.GALLERY
+        elif self.state == BoothState.SHOWCASE:
+            self._deferred_touch = True
         return self.state
 
     def on_pick(self, target_id):
@@ -304,13 +365,28 @@ class StateMachine:
                 # purposes.
                 self._showcase_entered_at = now
             elif now - self._showcase_entered_at >= self.showcase_dwell_s:
-                self.state = BoothState.ATTRACT
+                # Where the booth goes now is the ONE thing the deferred
+                # touch changes: a visitor who tapped during the dwell gets
+                # the gallery they asked for, in the same instant the
+                # structure's guaranteed hold ends -- not one tick later
+                # (which at 100ms would flash the attract screen in between)
+                # and not never (which is the defect this ruling fixes).
+                touched, self._deferred_touch = self._deferred_touch, False
+                self.state = BoothState.GALLERY if touched else BoothState.ATTRACT
                 self.selected_target = None
                 self._showcase_entered_at = None
-                # A fresh idle window starts once the booth returns to
-                # attract; nothing to time out from yet.
-                self._idle_dirty = False
-                self._idle_baseline = None
+                if touched:
+                    # The gallery opens NOW, so its 45s idle window starts
+                    # now -- stamped directly rather than left for the next
+                    # tick, so this visitor gets the full window and not
+                    # one shortened by however long the dwell ran.
+                    self._idle_baseline = now
+                    self._idle_dirty = False
+                else:
+                    # A fresh idle window starts once the booth returns to
+                    # attract; nothing to time out from yet.
+                    self._idle_dirty = False
+                    self._idle_baseline = None
             return self.state
 
         if self.state in (BoothState.GALLERY, BoothState.FOLDING):

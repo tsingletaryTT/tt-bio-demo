@@ -13,10 +13,24 @@ not make them:
   within-stage fraction conversion, which is why this module calls
   `set_stage_from_wire` and never `set_stage`);
 - how telemetry is sampled belongs to `ui.telemetry`;
-- how a grid of targets is laid out belongs to `ui.gallery`.
+- how a grid of targets is laid out belongs to `ui.gallery`;
+- what a line of the diagnostics log SAYS belongs to `ui.diagnostics`
+  (this file only decides when to feed it and when to repaint it).
 
 If a booth decision ever appears in this file as an `if` on raw state, that
 is the signal it belongs in one of those modules instead.
+
+The two interactive surfaces (Task 10)
+---------------------------------------
+The diagnostics panel and the `?` help card are CHROME, not booth state:
+they are laid over whatever `ui.states` is doing, and neither one touches
+it. That is deliberate and it is what lets `?` work "at any time" -- from
+attract, gallery, folding, showcase or preparing -- without the state
+machine growing a sixth state and every transition in it growing an
+opinion about overlays. What they do borrow from the state machine is its
+principle that a visitor who walks away must not leave the booth changed:
+`_tick_overlays` closes both of them after a period with no input at all
+(`_HELP_IDLE_S`, `_DIAGNOSTICS_IDLE_S`).
 
 The sequencing this file exists to get right
 ---------------------------------------------
@@ -77,8 +91,9 @@ from gi.repository import Gdk, GLib, Gtk
 
 from protocol.events import unpack_coords
 from ui.client import EventClient, LatestFrame
+from ui.diagnostics import KIND_MARK, DiagnosticsLog, DiagnosticsPanel
 from ui.gallery import Gallery
-from ui.geometry import ribbon_from_cif
+from ui.geometry import PLDDT_STOPS, ribbon_from_cif
 from ui.panels import PipelinePanel, TelemetryPanel
 from ui.playlist import PlaylistError, load_playlist
 from ui.states import (
@@ -206,42 +221,274 @@ def _format_missing(missing):
     return repr(missing)
 
 
+# ── visitor input ───────────────────────────────────────────────────────────
+#
+# Key names as `Gdk.keyval_name` reports them, lowercased. `?` is `question`
+# on every layout that has it as a shifted character; `F1` and the dedicated
+# `Help` key some keyboards carry are accepted as the same request, because a
+# booth operator reaching for help should not have to know which one this
+# build wanted.
+_HELP_KEYS = frozenset({"question", "f1", "help"})
+_DIAGNOSTICS_KEYS = frozenset({"d"})
+
+# How long an overlay a visitor left open survives their walking away.
+#
+# The state machine's own 45s idle timeout only covers the states it owns
+# (gallery, folding); this chrome sits outside those, so it needs its own
+# rule or a visitor who opens the help card and leaves would hand the next
+# person a booth with a wall of text over the protein. The help card is
+# transient by nature and goes first (60s -- comfortably longer than it takes
+# to read, short enough that the protein is back before the next visitor
+# arrives). The diagnostics panel is deliberately much more patient (5
+# minutes): it is also the panel WE want up while standing at the booth
+# talking to someone, and having it vanish mid-sentence would be worse than
+# useless. Both are measured from the last visitor input of any kind, so
+# neither can close while someone is actually pressing things.
+_HELP_IDLE_S = 60.0
+_DIAGNOSTICS_IDLE_S = 300.0
+
+# ── palette ─────────────────────────────────────────────────────────────────
+#
+# The same brand constants ui/panels.py names, repeated here rather than
+# imported so this file's stylesheet stays readable as a stylesheet -- but
+# with the same values and the same rule: `_ACCENT` (#1B8EB1) measures
+# 4.40:1 on the dark ground and is therefore a FILL colour only; anywhere
+# accent-coloured TEXT is wanted, `_ACCENT_TEXT` (#3299B9, 5.06:1) is what
+# clears the 4.5:1 AA floor this project holds every label to.
+_DARK_BASE = "#092221"
+_BG = "#F1F8F8"
+_BG_ALT = "#C7D9D8"
+_ACCENT_TEXT = "#3299B9"
+_TEAL = "#74C5DF"
+
+# The single source of truth for "which CSS class in _APP_CSS carries an
+# explicitly-set background", read by tests/unit/_legibility.py's shared
+# walker exactly as ui/panels.py's and ui/gallery.py's equivalents are. Every
+# entry maps to the same dark ground: the preparing and help overlays are
+# near-opaque washes OF that ground rather than a second surface colour, so
+# the contrast a label really has is the contrast against `_DARK_BASE`.
+#
+# `.booth-root` is on the root overlay as well as the root box, so that the
+# logo (and the help card) -- which are overlay children, i.e. siblings of
+# the root box rather than its descendants -- still have a
+# background-painting ANCESTOR and can therefore be contrast-checked at all.
+_BACKGROUND_BY_CLASS = {
+    "booth-root": _DARK_BASE,
+    "booth-side": _DARK_BASE,
+    "preparing-overlay": _DARK_BASE,
+    "help-overlay": _DARK_BASE,
+}
+
+# The pLDDT legend's swatches, generated from the ONE ramp the ribbon itself
+# is coloured by (ui/geometry.py's `PLDDT_STOPS`) rather than a second list
+# of hexes hand-copied into this file. A legend that has drifted from the
+# thing it describes is worse than no legend, and hand-copying is how that
+# drift happens; tests/unit/test_app_interaction.py pins the two together.
+#
+# Note these are FILLS, never text: `#0053D6` measures 2.54:1 against the
+# dark ground and could not legally be a label colour here. The label next
+# to each swatch is ordinary body text on the overlay's own ground.
+_PLDDT_LEGEND = (
+    ("plddt-very-high", "above 90", "very high — trust the detail"),
+    ("plddt-confident", "70 to 90", "confident backbone"),
+    ("plddt-low", "50 to 70", "low — treat with care"),
+    ("plddt-very-low", "below 50", "very low — likely floppy or disordered"),
+)
+
+
+def _plddt_swatch_css():
+    """One `.plddt-*` background rule per ramp stop, in ramp order.
+
+    `PLDDT_STOPS` is ordered high threshold first, which is the order
+    `_PLDDT_LEGEND` above reads in, so they zip directly. Built as CSS text
+    (not set per-widget) so the swatches live in the same stylesheet as
+    everything else and the legibility guard sees them for what they are:
+    background-painting classes that must never carry a label.
+    """
+    rules = []
+    for (css_class, _range_text, _meaning), (_threshold, rgb) in zip(
+            _PLDDT_LEGEND, PLDDT_STOPS):
+        hex_color = "#%02X%02X%02X" % tuple(rgb)
+        rules.append(f".{css_class} {{ background-color: {hex_color}; }}")
+    return "\n".join(rules)
+
+
 # CSS for the booth chrome, in the brand palette from the docs-site theme:
 # dark base for every ground, accent/teal for text. Kept as a module-level
 # constant (not rebuilt per window) since it never varies. The panels and
 # the gallery install their own stylesheets the same way (ui/panels.py,
 # ui/gallery.py) -- this one covers only what this file itself builds.
-_APP_CSS = """
-.preparing-overlay {
+_APP_CSS = f"""
+.preparing-overlay {{
     background-color: rgba(9, 34, 33, 0.94); /* #092221, near-opaque */
-}
-.preparing-title {
-    color: #74C5DF;
+}}
+.preparing-title {{
+    color: {_TEAL};
     font-size: 22px;
     font-weight: bold;
-}
-.preparing-message {
-    color: #1B8EB1;
+}}
+.preparing-message {{
+    /* _ACCENT_TEXT, not the raw brand accent: #1B8EB1 measures 4.40:1 on
+       this ground -- under the 4.5:1 floor the rest of the booth holds to,
+       and this is the one line a visitor reads when something has gone
+       wrong. Caught by extending the shared legibility guard to cover this
+       file's own widgets (Task 10). */
+    color: {_ACCENT_TEXT};
     font-size: 15px;
-}
-window, .booth-root, .booth-side {
-    background-color: #092221;
-}
-.booth-logo {
-    color: #74C5DF;
+}}
+window, .booth-root, .booth-side {{
+    background-color: {_DARK_BASE};
+}}
+.booth-logo {{
+    color: {_TEAL};
     font-family: "Berkeley Mono", monospace;
     font-size: 8pt;
-}
-.booth-title {
-    color: #F1F8F8;
+}}
+.booth-title {{
+    color: {_BG};
     font-size: 14pt;
     font-weight: 700;
-}
-.booth-sub {
-    color: #C7D9D8;
+}}
+.booth-sub {{
+    color: {_BG_ALT};
     font-size: 10pt;
-}
+}}
+/* The two affordances that tell a visitor this booth does anything at all
+   when you press it. Small, letterspaced, permanently visible -- the panel
+   and the help card they open are not. */
+.booth-hint {{
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    color: {_BG_ALT};
+}}
+.booth-hint-key {{
+    font-family: "Berkeley Mono", monospace;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    color: {_ACCENT_TEXT};
+}}
+/* The `?` card. A near-opaque wash of the same ground rather than a
+   different surface colour, so it reads as the booth dimming itself rather
+   than as a dialog from some other application. */
+.help-overlay {{
+    background-color: rgba(9, 34, 33, 0.96);
+}}
+.help-title {{
+    color: {_BG};
+    font-size: 26px;
+    font-weight: 700;
+}}
+.help-body {{
+    color: {_BG_ALT};
+    font-size: 13pt;
+}}
+.help-section {{
+    color: {_ACCENT_TEXT};
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+}}
+.help-key {{
+    font-family: "Berkeley Mono", monospace;
+    color: {_BG};
+    font-size: 12pt;
+    font-weight: 700;
+}}
+.help-desc {{
+    color: {_BG_ALT};
+    font-size: 12pt;
+}}
+.help-note {{
+    color: {_BG_ALT};
+    font-size: 10pt;
+    font-style: italic;
+}}
+.plddt-swatch {{
+    border-radius: 3px;
+    min-width: 34px;
+    min-height: 14px;
+}}
+{_plddt_swatch_css()}
 """
+
+# ── help copy ───────────────────────────────────────────────────────────────
+#
+# Plain language, on purpose: the person most likely to press `?` is the one
+# who does not already know what any of this is. Every claim here is one the
+# booth can actually back up -- the fold IS running on the cards in this
+# room, the trajectory IS the model's own, and the timings are the measured
+# ones from docs/followups.md's 30-fold soak (4.35-4.45s warm), not marketing
+# numbers.
+_HELP_INTRO = (
+    "A protein structure prediction, running right now on Tenstorrent "
+    "Blackhole cards a few feet away. This is not a recording or an "
+    "animation: the cloud of points collapsing on screen is the model's own "
+    "working, streamed off the card as it computes, and the ribbon at the "
+    "end is the structure it just predicted.",
+
+    "A protein is a chain of amino acids that only does its job once it "
+    "folds into a particular three-dimensional shape. Predicting that shape "
+    "from the sequence of the chain alone is the problem this model solves "
+    "— here, in about four and a half seconds per protein.",
+
+    "It works by denoising: the model starts from a cloud of random atom "
+    "positions and pulls it, over roughly 200 small steps, into a real "
+    "structure. Touch the screen to pick something to fold.",
+)
+
+# Every key the booth answers to, and what it does. This table is the ONE
+# place the bindings are described to a visitor, and the test
+# `test_every_key_the_booth_answers_to_is_listed_in_the_help` walks
+# `_handle_key`'s real behavior against it -- so a binding added to the
+# handler without a line here fails the suite rather than quietly becoming
+# folklore.
+_KEY_HELP = (
+    ("?  or  F1", "this card — from any screen, at any time"),
+    ("D", "diagnostics: the live protocol log in the right-hand rail"),
+    ("Esc", "close this card, or close the diagnostics panel"),
+    ("any other key,\nor a tap anywhere",
+     "wake the booth and choose a protein to fold"),
+    ("Ctrl + F", "leave or return to fullscreen — for the booth operator"),
+    ("Ctrl + Q", "quit the booth — for the booth operator"),
+)
+
+_HELP_PANELS = (
+    "Pipeline — one row per stage of a fold: msa, prep, trunk, diffusion, "
+    "confidence, saving. The bright row is the stage running right now; "
+    "diffusion owns most of the bar because it does most of the work.",
+
+    "Cards — temperature, power draw and clock speed for every Tenstorrent "
+    "card in this machine, read from the driver twice a second. It is "
+    "independent of the fold, so the silicon keeps breathing even if a fold "
+    "stalls.",
+)
+
+_APP_CSS_INSTALLED = False
+
+
+def _ensure_app_css_installed():
+    """Install `_APP_CSS` once, against the default display.
+
+    Same shape (and same reason) as ui/panels.py's and ui/gallery.py's
+    installers: guarded on a display existing at all, so building a widget
+    from this module never hard-requires one -- which is what lets the
+    legibility tests construct the help card and the side rail directly,
+    without running `do_activate` or a main loop.
+    """
+    global _APP_CSS_INSTALLED
+    if _APP_CSS_INSTALLED:
+        return
+    display = Gdk.Display.get_default()
+    if display is None:
+        log.debug("no default display; skipping app CSS install")
+        return
+    provider = Gtk.CssProvider()
+    provider.load_from_string(_APP_CSS)
+    Gtk.StyleContext.add_provider_for_display(
+        display, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+    _APP_CSS_INSTALLED = True
 
 
 class DemoApp(Gtk.Application):
@@ -284,6 +531,33 @@ class DemoApp(Gtk.Application):
         self.targets = []
         self._preparing_box = None
         self._preparing_message_label = None
+        self._window = None
+
+        # ── the two interactive surfaces this task adds ──────────────────
+        #
+        # The log is created here, not in do_activate, for the same reason
+        # `_frames` is: events can arrive before (or without) any widget, and
+        # a bounded buffer that is always present means no call site has to
+        # ask whether diagnostics exist yet. The PANEL may legitimately be
+        # None (headless tests, and the moment before do_activate runs);
+        # every method below tolerates that.
+        self.diagnostics = DiagnosticsLog()
+        self.diagnostics_panel = None
+        self._diagnostics_toggle_label = None
+        self._help_box = None
+
+        # Visibility is tracked as plain booleans, NOT read back off the
+        # widgets: `_handle_key`'s decisions have to be testable without a
+        # display, and a widget-derived answer would also be wrong for the
+        # window between construction and realization.
+        self.diagnostics_visible = False
+        self.help_visible = False
+
+        # When the last visitor input of any kind happened, on the injected
+        # clock -- the only thing that can close an overlay nobody is using
+        # (see `_HELP_IDLE_S`). None means "nobody has touched this booth
+        # yet", which is exactly when there is nothing to time out.
+        self._last_input_at = None
 
         # Neutral copy for the preparing overlay plus the raw `missing`
         # detail, which goes to the log and NEVER to the screen. The state
@@ -352,12 +626,9 @@ class DemoApp(Gtk.Application):
         window = Gtk.ApplicationWindow(application=self)
         window.set_title("tt-bio")
         window.set_default_size(1280, 800)
+        self._window = window
 
-        provider = Gtk.CssProvider()
-        provider.load_from_string(_APP_CSS)
-        Gtk.StyleContext.add_provider_for_display(
-            Gdk.Display.get_default(), provider,
-            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        _ensure_app_css_installed()
 
         self.viewer = StructureViewer()
         self.viewer.set_hexpand(True)
@@ -396,8 +667,15 @@ class DemoApp(Gtk.Application):
         logo.set_margin_bottom(22)
 
         root_overlay = Gtk.Overlay()
+        # The overlay paints the same ground as the box inside it, so its
+        # own overlay children (the logo, the help card) sit on a known,
+        # explicitly-set background rather than on whatever the desktop
+        # theme would otherwise show through -- which is also what makes
+        # them contrast-checkable (see `_BACKGROUND_BY_CLASS`).
+        root_overlay.add_css_class("booth-root")
         root_overlay.set_child(root)
         root_overlay.add_overlay(logo)
+        root_overlay.add_overlay(self._build_help_overlay())
         window.set_child(root_overlay)
 
         # A kiosk: no chrome, no window management, the protein as large as
@@ -438,6 +716,7 @@ class DemoApp(Gtk.Application):
         `set_hexpand(False)` plus an explicit width is load-bearing, not a
         preference -- see `_SIDE_RAIL_WIDTH_PX`.
         """
+        _ensure_app_css_installed()
         side = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
         side.add_css_class("booth-side")
         side.set_size_request(_SIDE_RAIL_WIDTH_PX, -1)
@@ -464,7 +743,67 @@ class DemoApp(Gtk.Application):
             panel.set_hexpand(False)
             panel.set_vexpand(False)
             side.append(panel)
+
+        # Below the progress legend and the card readout, in the space the
+        # rail was leaving empty (see .superpowers/.../booth-wired.png): the
+        # hint row, always visible, and the diagnostics panel it opens,
+        # hidden until asked for. The protein is the hero; this is for the
+        # curious visitor and for us.
+        side.append(self._build_hint_row())
+        self.diagnostics_panel = DiagnosticsPanel()
+        self.diagnostics_panel.set_visible(self.diagnostics_visible)
+        self.diagnostics_panel.refresh(self.diagnostics, force=True)
+        side.append(self.diagnostics_panel)
         return side
+
+    def _build_hint_row(self):
+        """The two small affordances that say the booth is interactive.
+
+        Both are clickable AND keyed, because the user asked for both ("with
+        a press of a button or a click"), and because a booth may or may not
+        have a keyboard in front of the public. Each click handler CLAIMS its
+        gesture sequence, which is what stops the window-wide "any click is a
+        visitor touch" gesture (see `_connect_visitor_input`) from also
+        opening the gallery underneath the thing the visitor just pressed.
+        """
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=18)
+        row.set_halign(Gtk.Align.START)
+
+        self._diagnostics_toggle_label = self._build_hint(
+            row, self._diagnostics_hint_text(), self._toggle_diagnostics)
+        self._build_hint(row, "?  HELP", self._show_help)
+        return row
+
+    def _build_hint(self, row, text, on_click):
+        """One clickable hint label. Returns the label so its text can be
+        updated (the diagnostics one changes as the panel opens/closes)."""
+        label = Gtk.Label(label=text, xalign=0.0)
+        label.add_css_class("booth-hint")
+        click = Gtk.GestureClick()
+        click.connect("pressed",
+                      lambda gesture, *_args: self._on_hint_pressed(gesture, on_click))
+        label.add_controller(click)
+        row.append(label)
+        return label
+
+    def _on_hint_pressed(self, gesture, on_click):
+        """One hint label was clicked or tapped.
+
+        The `set_state(CLAIMED)` is the load-bearing line, not boilerplate:
+        this gesture and the window-wide "any click is a visitor touch" one
+        both sit in the bubble phase, so without claiming the sequence BOTH
+        fire and the visitor gets a gallery they did not ask for on top of
+        the panel they did. Split out of the lambda that installs it so that
+        claim is directly testable with no display and no synthesized input
+        (tests/unit/test_app_interaction.py).
+        """
+        gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+        self._note_input()
+        on_click()
+
+    def _diagnostics_hint_text(self):
+        return ("▾  DIAGNOSTICS  ·  D" if self.diagnostics_visible
+                else "▸  DIAGNOSTICS  ·  D")
 
     def _build_gallery(self):
         """Load the playlist and build the pick grid, or ship without one.
@@ -527,23 +866,148 @@ class DemoApp(Gtk.Application):
         self._preparing_message_label = message
         return box
 
+    # ── the `?` card ─────────────────────────────────────────────────────
+
+    def _build_help_overlay(self):
+        """The help card: what this booth is, every key, and what the panels
+        on the right actually mean.
+
+        Written for a visitor who has never heard of any of this -- no
+        jargon that isn't unpacked in the same sentence -- and true: the
+        fold really is running on the cards in this room while this card is
+        on top of it (the overlay is a widget, not a modal loop; every GLib
+        source underneath keeps firing, which is the point of building it
+        this way and is asserted in tests/unit/test_app_interaction.py).
+        """
+        _ensure_app_css_installed()
+        ground = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        ground.add_css_class("help-overlay")
+        ground.set_hexpand(True)
+        ground.set_vexpand(True)
+        ground.set_halign(Gtk.Align.FILL)
+        ground.set_valign(Gtk.Align.FILL)
+
+        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
+        card.set_halign(Gtk.Align.CENTER)
+        # vexpand AND valign=CENTER: in a vertical box, `valign` alone only
+        # centres a child inside the (natural-height) cell it was given, so
+        # the card would sit at the top of a 1080px screen with half the
+        # glass empty below it -- looked at, on real glass, before this line
+        # existed. Expanding first gives it the whole column to centre in.
+        card.set_vexpand(True)
+        card.set_valign(Gtk.Align.CENTER)
+        card.set_size_request(980, -1)
+        for margin in ("set_margin_top", "set_margin_bottom",
+                       "set_margin_start", "set_margin_end"):
+            getattr(card, margin)(40)
+
+        card.append(self._help_label("What you are looking at", "help-title"))
+        for paragraph in _HELP_INTRO:
+            card.append(self._help_label(paragraph, "help-body", wrap=True))
+
+        columns = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=56)
+        columns.set_homogeneous(True)
+        columns.append(self._build_help_keys())
+        columns.append(self._build_help_panels())
+        card.append(columns)
+
+        card.append(self._help_label(
+            "The fold carries on behind this card — nothing is paused.",
+            "help-note", wrap=True))
+
+        ground.append(card)
+        ground.set_visible(False)
+        self._help_box = ground
+        return ground
+
+    @staticmethod
+    def _help_label(text, css_class, wrap=False):
+        """One label on the help card.
+
+        Every label built here takes a colour-bearing class from `_APP_CSS`
+        -- the project's legibility rule ("an explicitly-set background
+        implies an explicitly-set foreground") applies to this card exactly
+        as it does to the panels, and the shared guard in
+        tests/unit/_legibility.py now walks this tree to prove it.
+        """
+        label = Gtk.Label(label=text, xalign=0.0)
+        label.add_css_class(css_class)
+        label.set_wrap(wrap)
+        if wrap:
+            label.set_max_width_chars(88)
+        return label
+
+    def _build_help_keys(self):
+        column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        column.append(self._help_label("KEYS", "help-section"))
+        grid = Gtk.Grid(column_spacing=20, row_spacing=8)
+        for row_index, (keys, meaning) in enumerate(_KEY_HELP):
+            key_label = self._help_label(keys, "help-key")
+            key_label.set_valign(Gtk.Align.START)
+            meaning_label = self._help_label(meaning, "help-desc", wrap=True)
+            meaning_label.set_max_width_chars(34)
+            grid.attach(key_label, 0, row_index, 1, 1)
+            grid.attach(meaning_label, 1, row_index, 1, 1)
+        column.append(grid)
+        return column
+
+    def _build_help_panels(self):
+        column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        column.append(self._help_label("THE PANELS ON THE RIGHT", "help-section"))
+        for paragraph in _HELP_PANELS:
+            label = self._help_label(paragraph, "help-desc", wrap=True)
+            label.set_max_width_chars(52)
+            column.append(label)
+
+        column.append(self._help_label(
+            "pLDDT — the model's own confidence, per atom:", "help-desc",
+            wrap=True))
+        for css_class, range_text, meaning in _PLDDT_LEGEND:
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+            # A swatch is a painted BOX, never a coloured label: the top of
+            # the ramp (#0053D6) measures 2.54:1 on this ground and would be
+            # illegible as text. The words next to it are ordinary body
+            # text on the card's own ground.
+            swatch = Gtk.Box()
+            swatch.add_css_class("plddt-swatch")
+            swatch.add_css_class(css_class)
+            swatch.set_valign(Gtk.Align.CENTER)
+            row.append(swatch)
+            row.append(self._help_label(f"{range_text}  ·  {meaning}",
+                                        "help-desc", wrap=True))
+            column.append(row)
+        return column
+
     def _connect_visitor_input(self, window):
-        """Any tap, click or keypress counts as a visitor touch.
+        """Any tap, click or keypress reaches the booth through here.
 
         Which of those a venue actually has is a booth-setup decision (the
         plan leaves touchscreen hardware out of this phase on purpose), so
         all three are wired to the same place. The gesture sits on the
-        window in the default bubble phase, so a tap on a gallery card is
-        the card's first -- a touch during the gallery only resets the idle
-        clock anyway, so it is harmless either way.
+        window in the default bubble phase, so a tap on a gallery card (or
+        on a hint label, which CLAIMS its sequence -- see `_build_hint`) is
+        that widget's first.
+
+        Almost every key is still just "a visitor touched the booth". The
+        handful that are not -- `?`, `D`, `Esc`, and the operator's two
+        Ctrl chords -- are decided in `_handle_key`, which takes a plain
+        key NAME and a plain bool so that decision is testable with no GTK,
+        no window and no display.
         """
         click = Gtk.GestureClick()
-        click.connect("pressed", lambda *_args: self._on_touch())
+        click.connect("pressed", lambda *_args: self._on_click())
         window.add_controller(click)
 
         keys = Gtk.EventControllerKey()
-        keys.connect("key-pressed", lambda *_args: self._on_touch() or False)
+        keys.connect("key-pressed", self._on_key_pressed)
         window.add_controller(keys)
+
+    def _on_key_pressed(self, _controller, keyval, _keycode, modifiers):
+        """GTK adapter: turn a keyval + modifier mask into the two plain
+        values `_handle_key` reasons about, and nothing else."""
+        name = Gdk.keyval_name(keyval) or ""
+        ctrl = bool(modifiers & Gdk.ModifierType.CONTROL_MASK)
+        return self._handle_key(name, ctrl=ctrl)
 
     # ── the booth's screen, reconciled against the machine ───────────────
 
@@ -589,8 +1053,160 @@ class DemoApp(Gtk.Application):
 
     def _on_touch(self):
         """A visitor touched the booth."""
+        self._note_input()
         self.states.on_touch()
         self._sync_to_state()
+
+    def _on_click(self):
+        """A click or tap anywhere on the window.
+
+        One rule, and it is the same one the keyboard follows: if the help
+        card is up, this dismisses it and does nothing else. A visitor who
+        taps to get rid of the help card has not asked to open a gallery
+        behind it, and finding one there would be exactly the "why did it
+        do that" moment this whole task exists to remove.
+        """
+        self._note_input()
+        if self.help_visible:
+            self._set_help_visible(False)
+            return
+        self._on_touch()
+
+    def _handle_key(self, name, ctrl=False):
+        """Decide what one key press means. Returns True if the booth
+        consumed it (GTK's "handled"), which is always -- a kiosk has
+        nowhere else for a key to go.
+
+        Deliberately takes a NAME and a BOOL rather than a GDK keyval and a
+        modifier mask: this is the whole of the booth's keyboard policy, it
+        is the part a visitor and an operator both depend on, and it is
+        therefore the part that must be testable without a display. The GTK
+        adapter is `_on_key_pressed`, three lines above, and it decides
+        nothing.
+
+        Order matters, and each step is here for a reason:
+
+        1. The operator's Ctrl chords work from ANY screen, including with
+           the help card up -- if the booth needs to be quit or unfullscreened
+           at a venue, no visitor-facing state may stand in the way.
+        2. With the help card up, ANY key closes it and nothing else
+           happens. `?` and `Esc` are the documented ways out (per the
+           user's request), but a visitor pressing something random while a
+           wall of text is up means "get rid of this", not "and also open
+           the gallery behind it".
+        3. `?` opens the card from anywhere -- attract, gallery, folding,
+           showcase, preparing. It is chrome; it does not touch booth state.
+        4. `D` toggles diagnostics; `Esc` closes it if it is open.
+        5. Everything else is a visitor touch, exactly as before.
+        """
+        self._note_input()
+        lowered = (name or "").lower()
+
+        if ctrl and lowered == "q":
+            log.info("operator quit (ctrl+q)")
+            self.quit()
+            return True
+        if ctrl and lowered == "f":
+            self._toggle_fullscreen()
+            return True
+        if ctrl:
+            # An unbound chord is swallowed rather than treated as a touch:
+            # a stray Ctrl+something must not open the gallery.
+            return True
+
+        if self.help_visible:
+            self._set_help_visible(False)
+            return True
+
+        if lowered in _HELP_KEYS:
+            self._show_help()
+            return True
+        if lowered in _DIAGNOSTICS_KEYS:
+            self._toggle_diagnostics()
+            return True
+        if lowered == "escape":
+            # Nothing to close but the diagnostics panel; and if that is
+            # shut too, Escape does nothing at all -- notably it does NOT
+            # count as a touch, so a visitor cannot back out of a screen
+            # into a gallery they did not ask for.
+            if self.diagnostics_visible:
+                self._set_diagnostics_visible(False)
+            return True
+
+        self._on_touch()
+        return True
+
+    # ── chrome: the diagnostics panel and the help card ──────────────────
+    #
+    # Neither of these is booth STATE -- they are chrome laid over whatever
+    # the state machine is doing, which is precisely why `?` can work "at
+    # any time" without ui/states.py growing a sixth state and every
+    # transition in it growing an opinion about overlays. The one thing they
+    # do borrow from the state machine is its idea that a visitor who walks
+    # away should not leave the booth changed: `_tick_overlays` closes them
+    # both after a period of no input at all.
+
+    def _note_input(self):
+        """Stamp "a human did something just now", for the overlay idle
+        timers. Cheap and idempotent; called from every input path."""
+        try:
+            self._last_input_at = self._clock()
+        except Exception:
+            # A clock that raises must not cost the booth a keypress.
+            log.exception("clock failed while stamping visitor input")
+
+    def _toggle_diagnostics(self):
+        self._set_diagnostics_visible(not self.diagnostics_visible)
+
+    def _set_diagnostics_visible(self, visible):
+        self.diagnostics_visible = visible
+        if self.diagnostics_panel is not None:
+            self.diagnostics_panel.set_visible(visible)
+            if visible:
+                # Repaint immediately rather than waiting up to 100ms for
+                # the next tick: the panel must never appear empty (or
+                # showing the state it had when it was last closed) in the
+                # instant a visitor opens it.
+                self.diagnostics_panel.refresh(self.diagnostics, force=True)
+        if self._diagnostics_toggle_label is not None:
+            self._diagnostics_toggle_label.set_label(self._diagnostics_hint_text())
+
+    def _show_help(self):
+        self._set_help_visible(True)
+
+    def _set_help_visible(self, visible):
+        self.help_visible = visible
+        if self._help_box is not None:
+            self._help_box.set_visible(visible)
+
+    def _toggle_fullscreen(self):
+        """Operator escape hatch: get to the desktop without killing the
+        booth. A no-op if there is no window yet (headless tests)."""
+        if self._window is None:
+            return
+        if self._window.is_fullscreen():
+            self._window.unfullscreen()
+        else:
+            self._window.fullscreen()
+
+    def _tick_overlays(self, now):
+        """Close chrome a visitor walked away from.
+
+        Runs off the same 100ms tick as the state machine. Both timers are
+        measured from the last input of ANY kind, so neither overlay can
+        close while someone is still pressing things -- and neither can
+        outlive the visitor who opened it, which is what the booth's own
+        idle timeout guarantees for the screens the state machine owns.
+        """
+        if self._last_input_at is None:
+            return
+        idle_s = now - self._last_input_at
+        if self.help_visible and idle_s >= _HELP_IDLE_S:
+            log.info("help overlay closed after %.0fs idle", idle_s)
+            self._set_help_visible(False)
+        if self.diagnostics_visible and idle_s >= _DIAGNOSTICS_IDLE_S:
+            log.info("diagnostics panel closed after %.0fs idle", idle_s)
+            self._set_diagnostics_visible(False)
 
     def _on_pick(self, target_id):
         """A visitor picked a target off the gallery.
@@ -604,6 +1220,9 @@ class DemoApp(Gtk.Application):
         report; the booth still shows the visitor the fold that is running.
         """
         log.info("visitor picked %s", target_id)
+        self._note_input()
+        self._note_diagnostics(
+            self.diagnostics.note, f"visitor picked {target_id}", KIND_MARK)
         self.states.on_pick(target_id)
         self._sync_to_state()
 
@@ -635,8 +1254,18 @@ class DemoApp(Gtk.Application):
         frozen mid-showcase with nothing on screen saying so.
         """
         try:
-            self.states.tick(self._clock())
+            now = self._clock()
+            self.states.tick(now)
             self._sync_to_state()
+            self._tick_overlays(now)
+            # The diagnostics panel repaints from here rather than from
+            # every appended line: a 30Hz frame stream would otherwise
+            # re-label twenty rows thirty times a second to show a list a
+            # human reads at reading speed. `refresh` is a no-op when the
+            # log has not moved (revision check) and the panel is skipped
+            # entirely while it is closed.
+            if self.diagnostics_panel is not None and self.diagnostics_visible:
+                self.diagnostics_panel.refresh(self.diagnostics)
         except Exception:
             log.exception("state tick failed")
         return True
@@ -708,6 +1337,7 @@ class DemoApp(Gtk.Application):
                 self.missing = event.get("missing", [])
                 self.display_message = _PREPARING_MESSAGE
             self._sync_to_state()
+            self._note_diagnostics(self.diagnostics.note_event, event)
 
             if kind == "job_start":
                 log.info("folding %s (%s residues) on card %s",
@@ -780,6 +1410,23 @@ class DemoApp(Gtk.Application):
         except Exception:
             log.exception("dropping malformed %s event", event.get("type"))
         return False
+
+    def _note_diagnostics(self, method, *args):
+        """Feed the diagnostics log without ever letting it cost the booth
+        anything.
+
+        Its own guard, deliberately, even though every call site is already
+        inside a broad `except`: a diagnostics line is the least important
+        thing happening in any of those methods, and it must not be able to
+        pre-empt the rendering below it or turn a perfectly good event into
+        a "dropping malformed ..." log entry. `ui.diagnostics` is written not
+        to raise on wire-shaped data (`_safe`/`_num`); this is the belt to
+        that module's braces.
+        """
+        try:
+            method(*args)
+        except Exception:
+            log.exception("diagnostics line dropped")
 
     # ── ribbon construction off the main loop ───────────────────────────
     #
@@ -982,6 +1629,7 @@ class DemoApp(Gtk.Application):
         # at all.
         try:
             log.info("runner connection: %s", state)
+            self._note_diagnostics(self.diagnostics.note_connection, state)
             self.viewer.connection_state = state
         except Exception:
             log.exception("dropping unrecognized connection state %r", state)
@@ -1019,6 +1667,10 @@ class DemoApp(Gtk.Application):
         try:
             coords = unpack_coords(frame["coords_b64"])
             self.viewer.set_points(coords)
+            # Logged where it is DRAWN, not where it arrives: the buffer
+            # between socket and screen is latest-wins, so this is the only
+            # place that can honestly say "a visitor saw this frame".
+            self._note_diagnostics(self.diagnostics.note_frame, frame, coords)
         except Exception:
             log.exception("dropping malformed frame")
         return True

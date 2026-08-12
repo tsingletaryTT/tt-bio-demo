@@ -163,6 +163,129 @@ def test_leaving_showcase_clears_the_selected_target():
 
 
 # ---------------------------------------------------------------------------
+# The DEFERRED touch (controller ruling, Task 10).
+#
+# The dwell guarantee above used to be paid for with a swallowed tap: a touch
+# arriving during a showcase set only the idle flag and was then thrown away
+# when the dwell expired. Measured in Task 9, the booth sits in `showcase`
+# 46-50% of every attract cycle, so roughly HALF of all first taps produced
+# nothing a visitor could see -- and a visitor who taps a booth and gets no
+# response concludes it is broken and leaves.
+#
+# The ruling: remember the touch, act on it the instant the dwell expires.
+# Both promises are kept -- the finished structure still gets its full,
+# uninterrupted dwell (the tests above are unchanged and still green), and
+# the visitor's tap is never lost.
+# ---------------------------------------------------------------------------
+
+def test_a_touch_during_a_showcase_is_not_lost():
+    """The headline of this ruling: tap mid-dwell, and when the dwell
+    expires the booth opens the gallery instead of falling back to attract.
+
+    Mutation this catches: `on_touch` not recording `_deferred_touch` at all
+    (i.e. the pre-Task-10 behavior, where the touch set only the idle flag)
+    -- the booth lands in `attract` and the tap is gone.
+    """
+    sm = _showcased_sm(dwell_s=2.0)
+    assert sm.on_touch() == "showcase"          # still showcasing, as ruled
+    assert sm.tick(now=2.5) == "gallery"        # ...and the tap was honored
+
+
+def test_a_deferred_touch_does_not_cut_the_showcase_short():
+    """The other half of the ruling, and the one a careless fix breaks: the
+    structure keeps every millisecond of its dwell.
+
+    Mutation this catches: `on_touch` moving straight to GALLERY from
+    SHOWCASE (the "obvious" fix), which is exactly the behavior Task 7's
+    controller ruling forbids -- the finished structure would vanish under
+    the visitor's own tap.
+    """
+    sm = _showcased_sm(dwell_s=2.0)
+    sm.on_touch()
+    assert sm.state == "showcase"
+    assert sm.tick(now=0.5) == "showcase"
+    assert sm.tick(now=1.9999) == "showcase"    # right up to the boundary
+
+
+def test_the_deferred_touch_takes_effect_exactly_when_the_dwell_expires():
+    """Not earlier (that would be cutting the dwell short) and not later
+    (that would be a second swallowed tap).
+
+    Mutation this catches: honoring the deferred touch on the tick AFTER the
+    one that ends the dwell -- i.e. letting the machine pass through
+    `attract` first -- which at a 100ms tick would show the visitor a flash
+    of the attract screen before the gallery.
+    """
+    sm = _showcased_sm(dwell_s=2.0)
+    sm.on_touch()
+    assert sm.tick(now=1.99) == "showcase"
+    assert sm.tick(now=2.00) == "gallery"       # the very tick the dwell ends
+
+
+def test_a_showcase_nobody_touched_still_returns_to_attract():
+    """Mutation this catches: ending every showcase in `gallery` regardless
+    of whether anyone touched it, which would leave the unattended attract
+    loop parked on a pick grid nobody asked for."""
+    sm = _showcased_sm(dwell_s=2.0)
+    assert sm.tick(now=2.5) == "attract"
+
+
+def test_a_deferred_touch_is_consumed_once_not_remembered_forever():
+    """A tap honored at the end of one showcase must not re-open the gallery
+    at the end of the NEXT one, minutes later, in front of a different
+    visitor.
+
+    Mutation this catches: honoring `_deferred_touch` without clearing it.
+    """
+    sm = _showcased_sm(dwell_s=2.0)
+    sm.on_touch()
+    assert sm.tick(now=2.5) == "gallery"
+    # The visitor walks off; the gallery times out back to attract.
+    sm.tick(now=2.6)                            # stamps the idle baseline
+    assert sm.tick(now=60.0) == "attract"
+    # The attract loop finishes another fold, untouched by anyone.
+    sm.on_event({"type": "job_done", "job_id": "j2"})
+    sm.tick(now=61.0)
+    assert sm.tick(now=64.0) == "attract"
+
+
+def test_a_degrading_daemon_discards_a_deferred_touch():
+    """`not_ready` is the one thing that overrides a showcase outright (see
+    the section below). The tap that showcase was holding dies with it: by
+    the time the daemon recovers, the visitor who tapped is long gone, and
+    `preparing` releases to `attract` precisely so no pre-degrade screen is
+    resurrected.
+
+    Mutation this catches: leaving `_deferred_touch` set in the `not_ready`
+    branch, which makes the NEXT completed fold's showcase end in a gallery
+    opened by a tap from before the outage.
+    """
+    sm = _showcased_sm(dwell_s=2.0)
+    sm.on_touch()
+    assert sm.on_event({"type": "not_ready", "missing": ["weights"]}) == "preparing"
+    assert sm.on_event({"type": "job_start", "job_id": "j2"}) == "attract"
+    sm.on_event({"type": "job_done", "job_id": "j2"})
+    sm.tick(now=10.0)
+    assert sm.tick(now=13.0) == "attract"
+
+
+def test_the_idle_clock_of_a_deferred_gallery_starts_when_it_opens():
+    """The gallery a deferred touch opens gets a FULL idle window, measured
+    from the moment it actually appears -- not from the tap that was made up
+    to a whole dwell earlier.
+
+    Mutation this catches: stamping the idle baseline at the touch (or
+    leaving a baseline stamped from before the showcase), which would cut
+    this visitor's reading time short by however long the dwell ran.
+    """
+    sm = _showcased_sm(dwell_s=2.0)
+    sm.on_touch()
+    assert sm.tick(now=2.0) == "gallery"        # opened at t=2.0
+    assert sm.tick(now=46.9) == "gallery"       # 44.9s later: still open
+    assert sm.tick(now=47.0) == "attract"       # 45.0s later: timed out
+
+
+# ---------------------------------------------------------------------------
 # CONTROLLER RULING (fix round 1, Task 7 review): not_ready is the one
 # deliberate exception to "nothing but tick(now) can end a showcase" --
 # a daemon that just told us it cannot fold must surface that immediately,

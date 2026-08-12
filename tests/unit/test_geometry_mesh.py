@@ -252,7 +252,7 @@ def test_ribbon_from_cif_colors_align_ring_by_ring_with_known_bfactors():
         )
 
     # 95 -> ">90" blue; 40 -> "<50" orange. Typed straight from the ramp
-    # table in ui/geometry.py's _PLDDT_STOPS, independent of (1) above.
+    # table in ui/geometry.py's PLDDT_STOPS, independent of (1) above.
     np.testing.assert_allclose(
         actual_ring_colors[0, 0], np.array([0x00, 0x53, 0xD6]) / 255.0, atol=1e-3
     )

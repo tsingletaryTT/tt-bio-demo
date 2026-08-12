@@ -33,7 +33,17 @@ with neither file's stylesheet hardcoded into this module at all.
 
 import re
 
+import gi
 import pytest
+
+# Pinned here as well as in the modules under test: this file is imported
+# directly by several test modules, and if it is the FIRST thing to pull in
+# gi.repository (import order is alphabetical, and `_legibility` sorts before
+# `ui.*`), an unversioned import emits a PyGIWarning and -- worse -- would
+# accept whatever version happened to be installed.
+gi.require_version("Gtk", "4.0")
+gi.require_version("Gdk", "4.0")
+
 from gi.repository import Gdk, Gtk
 
 # ---------------------------------------------------------------------------
@@ -191,6 +201,40 @@ def nearest_explicit_background_hex(widget, *, css_text_fn, background_by_class_
         f"no ancestor of {widget!r} carries any class that paints a "
         "background in the real stylesheet -- a label with no backgrounded "
         "ancestor at all cannot be contrast-checked")
+
+
+def merged_stylesheets(*sources):
+    """Combine several modules' stylesheets into ONE (css_text_fn,
+    background_by_class_fn) pair, for checking a widget tree that is
+    assembled from more than one of them.
+
+    ui/app.py's side rail is exactly that tree: its own labels sit on
+    `_APP_CSS`'s `.booth-side`, but it also contains ui/panels.py's two
+    panels and ui/diagnostics.py's log rows, each with its own ground and
+    its own background-by-class map. Checking such a tree against a single
+    module's stylesheet is not merely incomplete -- it is WRONG in the
+    dangerous direction: `nearest_explicit_background_hex` would not even
+    see the nearer panel background (its class sets no background in the
+    stylesheet it was handed), so it would climb past it and certify every
+    panel label against the rail's ground instead of its own. Today those
+    two grounds happen to be the same colour, which is exactly why this
+    could rot silently the day a panel gains a tier of its own.
+
+    Each `source` is a `(css_text_fn, background_by_class_fn)` pair of
+    zero-argument callables -- the same late-binding contract every other
+    function here takes, so a test that monkeypatches a module constant is
+    still honored through the merge.
+    """
+    def css_text_fn():
+        return "\n".join(css_fn() for css_fn, _bg_fn in sources)
+
+    def background_by_class_fn():
+        merged = {}
+        for _css_fn, bg_fn in sources:
+            merged.update(bg_fn())
+        return merged
+
+    return css_text_fn, background_by_class_fn
 
 
 def assert_every_label_is_legible(root, *, context, min_contrast, contrast_ratio_fn,
