@@ -33,15 +33,21 @@
 #                                 (TT_BIO_DEMO_PLAYLIST) Default: a small
 #                                 directory this script builds itself under
 #                                 <runtime-dir>/playlist, containing only a
-#                                 symlink to
-#                                 ~/code/tt-boltz/examples/trpcage_no_msa.yaml
-#                                 (20 residues, no MSA server needed) —
-#                                 deliberately NOT all of tt-boltz/examples,
-#                                 most of which need a running MSA server or
-#                                 are far bigger than a booth demo needs.
+#                                 symlink to this repo's own
+#                                 examples/trpcage_no_msa.yaml (20 residues,
+#                                 no MSA server needed) — vendored here
+#                                 rather than pointed at a sibling tt-boltz
+#                                 checkout (this script used to default to
+#                                 ~/code/tt-boltz/examples/trpcage_no_msa.yaml;
+#                                 an absolute path into a different repository
+#                                 that this one has no control over, with no
+#                                 loud failure if it ever moved) — and
+#                                 deliberately NOT a curated tt-boltz
+#                                 playlist, most of which need a running MSA
+#                                 server or are far bigger than a booth demo
+#                                 needs.
 #   --weights DIR                 tt-bio's weights cache. (TT_BIO_DEMO_WEIGHTS)
 #                                 Default: ~/.boltz
-#   --device N                    Device index. (TT_BIO_DEMO_DEVICE) Default: 0
 #   --log-budget-gb N             Forwarded to the daemon's own
 #                                 --log-budget-gb (tt-metal log containment;
 #                                 see runner/env.py). Default: 2.0
@@ -67,7 +73,6 @@ SOCKET="${TT_BIO_DEMO_SOCKET:-${RUNTIME_DIR}/runner.sock}"
 LOG_ROOT="${TT_BIO_DEMO_LOG_ROOT:-${RUNTIME_DIR}/logs}"
 WEIGHTS="${TT_BIO_DEMO_WEIGHTS:-${HOME}/.boltz}"
 PLAYLIST="${TT_BIO_DEMO_PLAYLIST:-${RUNTIME_DIR}/playlist}"
-DEVICE="${TT_BIO_DEMO_DEVICE:-0}"
 LOG_BUDGET_GB="${TT_BIO_DEMO_LOG_BUDGET_GB:-2.0}"
 STRUCTURES_BUDGET_GB="${TT_BIO_DEMO_STRUCTURES_BUDGET_GB:-0.2}"
 
@@ -98,7 +103,6 @@ while [[ $# -gt 0 ]]; do
     --log-root)             LOG_ROOT="$2"; shift 2 ;;
     --playlist)             PLAYLIST="$2"; PLAYLIST_IS_DEFAULT=0; shift 2 ;;
     --weights)              WEIGHTS="$2"; shift 2 ;;
-    --device)               DEVICE="$2"; shift 2 ;;
     --log-budget-gb)        LOG_BUDGET_GB="$2"; shift 2 ;;
     --structures-budget-gb) STRUCTURES_BUDGET_GB="$2"; shift 2 ;;
     -h|--help)              usage; exit 0 ;;
@@ -129,11 +133,19 @@ LOG_ROOT="$(cd "$LOG_ROOT" && pwd)"
 mkdir -p "$PLAYLIST"
 PLAYLIST="$(cd "$PLAYLIST" && pwd)"
 
-DEFAULT_PLAYLIST_INPUT="${HOME}/code/tt-boltz/examples/trpcage_no_msa.yaml"
+# Vendored in this repo (examples/trpcage_no_msa.yaml) rather than pointed
+# at a sibling tt-boltz checkout -- this used to default to
+# ~/code/tt-boltz/examples/trpcage_no_msa.yaml, an absolute path into a
+# different repository this one does not control, with nothing here to
+# notice if it ever moved (see tests/integration/test_real_fold.py's own
+# fix for the matching hazard on the test side). This file always exists on
+# this branch, so the "input not found" warning below is now a real
+# problem with this checkout, not an expected day-one state.
+DEFAULT_PLAYLIST_INPUT="${REPO_ROOT}/examples/trpcage_no_msa.yaml"
 if [[ "$PLAYLIST_IS_DEFAULT" -eq 1 ]]; then
   if [[ -f "$DEFAULT_PLAYLIST_INPUT" ]]; then
     # -f (not -n): re-point the symlink every run rather than trusting a
-    # stale one left over from a previous checkout of tt-boltz.
+    # stale one left over from an old checkout.
     ln -sf "$DEFAULT_PLAYLIST_INPUT" "${PLAYLIST}/trpcage_no_msa.yaml"
   else
     echo "WARNING: default playlist input not found at ${DEFAULT_PLAYLIST_INPUT}." >&2
@@ -180,7 +192,6 @@ echo "run-demo.sh: starting daemon..." >&2
   --weights "$WEIGHTS" \
   --playlist "$PLAYLIST" \
   --log-root "$LOG_ROOT" \
-  --device "$DEVICE" \
   --log-budget-gb "$LOG_BUDGET_GB" \
   --structures-budget-gb "$STRUCTURES_BUDGET_GB" \
   >"$DAEMON_LOG" 2>&1 &

@@ -1,0 +1,21 @@
+# Vendored into this repo rather than read from a sibling tt-boltz checkout.
+#
+# Before this fix wave, tests/integration/test_real_fold.py and
+# scripts/run-demo.sh's default playlist both pointed at
+# ~/code/tt-boltz/examples/trpcage_no_msa.yaml -- an absolute path into a
+# different repository this one does not control. If that path ever moved,
+# all 7 integration tests would silently skip (the runner half still
+# collects its 120 unit tests, so scripts/test.sh's exit-5 "zero tests
+# matched" guard never fires) and the suite would print OVERALL: PASS with
+# zero coverage of the demo's headline mechanism -- a real fold actually
+# condensing out of noise. Vendoring this tiny, well-known Trp-cage
+# mini-protein sequence (20 residues, no MSA needed -- `msa: empty` below)
+# removes that cross-repo dependency entirely; see
+# tests/integration/test_real_fold.py and scripts/run-demo.sh for the two
+# places this file is used.
+version: 1
+sequences:
+  - protein:
+      id: A
+      sequence: NLYIQWLKDGGPSSGRPPPS
+      msa: empty

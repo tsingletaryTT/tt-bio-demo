@@ -173,9 +173,13 @@ class Folder:
         # (`if not self._loaded: return`) treats that indistinguishably from
         # "load() was never called" -- a no-op that never calls cleanup() and
         # never releases the lease. A caller that catches this and keeps
-        # running rather than exiting (runner/daemon.py's main() does exactly
-        # that on a startup failure, serving a `not_ready` screen instead)
-        # would then sit on a card it can neither use nor release for the
+        # running rather than exiting -- runner/daemon.py's Daemon.run() does
+        # exactly that on a startup failure, retrying load() on a backoff and
+        # serving `not_ready` in the meantime rather than letting the
+        # exception kill the process (a fix wave after this one: the daemon
+        # used to have no such catch at all, and load() raising here used to
+        # propagate straight out of run() and take the process down with it)
+        # -- would then sit on a card it can neither use nor release for the
         # rest of the process's life. So a failure here undoes its own
         # partial work on the way out: after this except block, self._device
         # is back to None and the real device/lease are released, the same

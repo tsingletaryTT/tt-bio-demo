@@ -59,10 +59,11 @@ On a box with the two venvs built (`scripts/setup-venvs.sh`) and a Tenstorrent c
 
 This starts the daemon (`venv-runner`) and the UI (`venv-ui`), wires them over a Unix
 socket under `${XDG_RUNTIME_DIR:-/tmp}/tt-bio-demo/`, and folds whatever `.yaml` it finds
-in a small playlist directory it builds itself (defaulting to
-`~/code/tt-boltz/examples/trpcage_no_msa.yaml`, a 20-residue target that needs no MSA
-server). Ctrl-C tears the daemon down cleanly. See `scripts/run-demo.sh --help` for the
-options — socket, log root, playlist, weights, device index, and the two disk/RAM budgets
+in a small playlist directory it builds itself (defaulting to this repo's own
+`examples/trpcage_no_msa.yaml`, a 20-residue target that needs no MSA server — vendored
+here rather than read from a sibling `tt-boltz` checkout, which this script used to depend
+on by absolute path). Ctrl-C tears the daemon down cleanly. See `scripts/run-demo.sh --help`
+for the options — socket, log root, playlist, weights, and the two disk/RAM budgets
 below.
 
 Two growth risks are bounded, not just noted: tt-metal's own log output (contained to
