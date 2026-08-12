@@ -4,6 +4,33 @@ import time
 from runner.env import INSPECTOR_VAR, LOG_ROOT_VAR, log_root_size, prune_log_root, runner_environ
 
 
+def test_log_root_var_is_pinned_to_the_verified_variable_name():
+    """LOG_ROOT_VAR must be TT_METAL_LOGS_PATH, not TT_METAL_INSPECTOR_LOG_PATH
+    -- the name the Phase 3a plan's draft code originally used, and one this
+    module's own docstring documents as fictional on this tt-metal build
+    (verified via `strings` against the installed libtt_metal.so: the string
+    does not appear anywhere in it, and setting it measurably had zero
+    effect). Every other test in this file imports LOG_ROOT_VAR from the
+    module under test and asserts values *against* it, so reverting the
+    constant back to the fictional name would leave every one of them green
+    -- they'd all still pass, just pinning the wrong variable. This is a
+    literal string specifically so that mutation cannot hide behind it.
+    """
+    assert LOG_ROOT_VAR == "TT_METAL_LOGS_PATH"
+
+
+def test_inspector_var_is_pinned_to_the_verified_variable_name():
+    """Same hole as the LOG_ROOT_VAR test above, for INSPECTOR_VAR -- this is
+    the variable that bounds the tmpfs OOM this phase's headline finding was
+    about (see the module docstring's "UPDATE, Task 10" section):
+    mesh_workloads_log.yaml grows unbounded while the daemon runs regardless
+    of pruning, and disabling Inspector is the only thing that actually stops
+    it. A test that only compared against the module's own constant would
+    not catch that constant silently reverting to something inert.
+    """
+    assert INSPECTOR_VAR == "TT_METAL_INSPECTOR"
+
+
 def test_inspector_log_path_is_absolute_and_under_the_log_root(tmp_path):
     env = runner_environ(tmp_path / "logs", base={})
     value = env[LOG_ROOT_VAR]

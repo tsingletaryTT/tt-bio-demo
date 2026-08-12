@@ -132,6 +132,47 @@ def test_frames_appear_between_the_stages_and_the_completion(monkeypatch):
     assert kinds.index("frame") < kinds.index("job_done")
 
 
+def test_frame_index_and_decimation_are_pinned_without_hardware(monkeypatch):
+    """The unit fixture everywhere else in this file uses n_step=1 (e.g.
+    test_frames_appear_between_the_stages_and_the_completion above), which
+    makes select_frame_steps(n_step + 1, target=30) collapse `keep` down to
+    {0, 1} -- every raw step survives regardless of the two lines this test
+    exists to pin, so neither is ever observed to matter at that size:
+
+    - `index = step + 1` in Folder.fold()'s on_frame: dump_fn's raw step
+      range is -1..n_step-1 (-1 is the initial noise draw); the wire's
+      frame.step must be 0..n_step. Only the +1 mapping can ever produce a
+      frame at step == n_step -- dropping it caps the reachable wire index
+      at n_step-1, one short forever.
+    - `if index in keep:` in the same function: without it, all n_step+1
+      raw steps reach the wire instead of the ~30 select_frame_steps()
+      keeps -- bandwidth for no visual gain, the whole reason this exists.
+
+    This drives a full 201-callback fold (n_step=200, tt-bio's real per-fold
+    denoising step count) through the real on_frame closure -- no card
+    needed, since _run_fold is monkeypatched the same way every other test
+    in this file already does it -- so both lines are pinned at the size
+    they actually run at.
+    """
+    dump_steps = [(step, np.full((2, 3), float(step), dtype=np.float32))
+                  for step in range(-1, 200)]   # raw steps -1..199: 201 total
+    folder = _folder_with_fake_fold(monkeypatch, dump_steps=dump_steps)
+    events = _fold(folder, n_step=200)
+    frames = [e for e in events if e["type"] == "frame"]
+
+    assert 25 <= len(frames) <= 32, (
+        f"expected ~30 frames via select_frame_steps' decimation, got "
+        f"{len(frames)} -- the `if index in keep:` guard may be gone")
+    steps = [f["step"] for f in frames]
+    assert steps == sorted(steps), "frames must arrive in increasing step order"
+    assert steps[0] == 0, (
+        "the initial noise draw (raw step -1) must be wire index 0")
+    assert steps[-1] == 200, (
+        "the final denoising step (raw step 199) must be wire index 200 -- "
+        "only reachable via index = step + 1; dropping the +1 caps the max "
+        "reachable index at 199")
+
+
 def test_all_six_protocol_stages_are_emitted_in_order(monkeypatch):
     folder = _folder_with_fake_fold(
         monkeypatch,
@@ -321,10 +362,10 @@ def test_a_failed_load_releases_the_device_it_already_opened(monkeypatch, fail_a
     guard (`if not self._loaded: return`) treats that indistinguishably from
     "load() was never called," so it never called cleanup() and never
     released the device or its host-local DeviceLease. A daemon that catches
-    this startup failure and keeps running (runner/daemon.py's main() does
-    exactly that, serving a `not_ready` screen instead of exiting) would then
-    hold a card it can neither use nor release for the rest of the process's
-    life.
+    this startup failure and keeps running (runner/daemon.py's Daemon.run()
+    does exactly that, retrying load() and serving `not_ready` in the
+    meantime instead of exiting) would then hold a card it can neither use
+    nor release for the rest of the process's life.
 
     This forces each of the three fallible steps to raise in turn, without
     hardware, and asserts the device was actually released -- cleanup()

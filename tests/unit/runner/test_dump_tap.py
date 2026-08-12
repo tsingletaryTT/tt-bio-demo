@@ -65,9 +65,21 @@ def test_tap_receives_every_step_as_an_n_by_3_float32_array(monkeypatch):
         remove_trajectory_tap(handle)
 
     assert [(s, st) for s, st, _ in seen] == [(0, -1), (0, 0)]
-    for _, _, coords in seen:
+    for _, st, coords in seen:
         assert coords.shape == (2, 3)
         assert coords.dtype == np.float32
+        # The relay must preserve the actual values, not just shape/dtype --
+        # nothing else in this file checks that. The fake source coordinates
+        # are `np.full(..., float(step))`, so step -1's array is all -1.0;
+        # a mutation that e.g. multiplied the relayed array by 0.0 would
+        # pass every assertion above (0.0 has the right shape and dtype
+        # too) while silently corrupting every frame the UI ever draws.
+        # Checking step -1 specifically (not just step 0, whose expected
+        # value already happens to be 0.0 and so can't tell a real zero
+        # apart from an accidentally-zeroed one) is what actually catches
+        # that.
+        assert np.allclose(coords, float(st)), (
+            f"relay must preserve coordinate values, got {coords} for step {st}")
 
 
 def test_tap_intercepts_even_when_the_caller_passes_dump_fn_itself(monkeypatch):
