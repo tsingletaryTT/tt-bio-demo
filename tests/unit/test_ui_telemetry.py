@@ -68,6 +68,31 @@ def test_one_unreadable_card_does_not_blind_the_panel_to_the_others():
     assert len(parse_snapshot(snapshot)) == 1
 
 
+def test_a_non_finite_temperature_is_treated_as_unparseable():
+    """Regression (fix round 1 review): float() happily parses "nan"/"inf",
+    so without a finiteness check a NaN telemetry value would sail through
+    as a genuine-looking CardReading -- rendering as a plausible card
+    showing "nan °C" instead of being skipped like every other unreadable
+    value (tt-smi's own "n/a", a missing key, ...) already is."""
+    snapshot = {"device_info": [
+        {"board_info": {"board_type": "p300c"},
+         "telemetry": {"asic_temperature": "nan", "power": "18.0", "aiclk": "800"}},
+        SNAPSHOT["device_info"][0],
+    ]}
+    cards = parse_snapshot(snapshot)
+    assert len(cards) == 1, "the non-finite card must be skipped, not kept as a fake reading"
+    assert cards[0].temperature_c == pytest.approx(43.7), "the OTHER card must still come through"
+
+
+@pytest.mark.parametrize("bad_value", ["nan", "inf", "-inf", "Infinity"])
+def test_non_finite_variants_are_all_treated_as_unparseable(bad_value):
+    snapshot = {"device_info": [
+        {"board_info": {"board_type": "p300c"},
+         "telemetry": {"asic_temperature": bad_value, "power": "18.0", "aiclk": "800"}},
+    ]}
+    assert parse_snapshot(snapshot) == []
+
+
 def test_latest_is_none_before_the_first_sample():
     assert TelemetrySampler().latest() is None
 

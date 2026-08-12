@@ -1,5 +1,6 @@
-"""Tests for ui/panels.py: the pure decisions (`card_color`, `stage_rows`)
-and the two widgets built on top of them (`TelemetryPanel`, `PipelinePanel`).
+"""Tests for ui/panels.py: the pure decisions (`card_color`, `stage_rows`,
+`contrast_ratio`) and the two widgets built on top of them (`TelemetryPanel`,
+`PipelinePanel`).
 
 Constructing either widget needs a live display (both build real
 Gtk.Label/Gtk.Box/Gtk.ProgressBar children in __init__, unlike
@@ -9,10 +10,26 @@ WAYLAND_DISPLAY=wayland-0 per the task's environment notes), so these run
 against the real thing rather than a fake.
 """
 
+import gi
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Gdk", "4.0")
+
 import pytest
+from gi.repository import Gdk, Gtk
 
 from protocol.events import STAGE_ORDER, within_stage_frac
-from ui.panels import PipelinePanel, STALE_AFTER_S, TelemetryPanel, card_color, stage_rows
+from ui.panels import (
+    MIN_CONTRAST_RATIO,
+    PipelinePanel,
+    STALE_AFTER_S,
+    TelemetryPanel,
+    _BACKGROUND_BY_CLASS,
+    card_color,
+    contrast_ratio,
+    relative_luminance,
+    stage_rows,
+)
 from ui.telemetry import CardReading
 
 STAGES = ("msa", "prep", "trunk", "diffusion", "confidence", "saving")
@@ -84,6 +101,19 @@ def test_card_color_respects_a_custom_threshold():
     assert card_color(30.0, max_temp_c=40.0) != card_color(50.0, max_temp_c=40.0)
 
 
+def test_card_color_of_a_non_finite_temperature_is_hot_not_normal():
+    """Fix round 1 minor: a NaN temperature must not read as a healthy
+    green/neutral card -- there are only two buckets, and "we don't have a
+    real number" must land in the alarming one, never the reassuring one.
+    ui/telemetry.py's parse_snapshot is the primary defense (a non-finite
+    value is now treated as unparseable at the source), but card_color
+    stays defensive on its own too."""
+    assert card_color(float("nan")) == card_color(90.0)
+    assert card_color(float("nan")) != card_color(45.0)
+    assert card_color(float("inf")) == card_color(90.0)
+    assert card_color(float("-inf")) == card_color(90.0)
+
+
 # ---------------------------------------------------------------------------
 # The third tuple element ("done"/"active"/"pending"): the brief's signature
 # is `list[tuple[str, float, str]]` and never says what the third element
@@ -114,6 +144,19 @@ def test_done_rows_precede_active_which_precedes_pending():
     rows = stage_rows("diffusion", 0.5)
     states = [state for _name, _frac, state in rows]
     assert states == ["done", "done", "done", "active", "pending", "pending"]
+
+
+def test_stage_rows_of_a_non_finite_frac_reads_as_empty_not_full():
+    """Fix round 1 minor: Python's own `min(1.0, float('nan'))` silently
+    keeps 1.0 -- so an unmeasured "how far in" used to render as a FULLY
+    filled bar, claiming the active stage was done when nothing of the sort
+    is known. A non-finite frac must read as empty (0.0) instead; the row
+    stays "active" (this IS still the current stage -- NaN is a
+    progress-measurement problem, not a stage-position problem)."""
+    rows = {name: frac for name, frac, _ in stage_rows("diffusion", float("nan"))}
+    assert rows["diffusion"] == 0.0
+    states = {name: state for name, _frac, state in stage_rows("diffusion", float("nan"))}
+    assert states["diffusion"] == "active"
 
 
 # ---------------------------------------------------------------------------
@@ -296,3 +339,221 @@ def test_a_fresh_good_reading_after_a_stale_one_clears_the_stale_flag():
     assert panel._status_label.has_css_class("telemetry-stale")
     panel.update([_reading()], 0.05)
     assert not panel._status_label.has_css_class("telemetry-stale")
+
+
+# ---------------------------------------------------------------------------
+# Important 3 (fix round 1 review): cards must not accumulate. A previous
+# implementation was CORRECT (it already called `_clear_cards()`), but
+# nothing pinned that behavior -- replacing `_clear_cards()`'s body with
+# `pass` left the whole suite green. These two tests exist specifically to
+# make that mutation red; see this section's own mutation-verification note
+# in the task report.
+# ---------------------------------------------------------------------------
+
+def _count_children(box):
+    count = 0
+    child = box.get_first_child()
+    while child is not None:
+        count += 1
+        child = child.get_next_sibling()
+    return count
+
+
+def test_two_consecutive_nonempty_updates_yield_exactly_n_cards_not_more():
+    panel = TelemetryPanel()
+    panel.update([_reading(0), _reading(1)], 0.1)
+    assert _count_children(panel._cards_box) == 2
+    panel.update([_reading(0), _reading(1), _reading(2)], 0.1)
+    assert _count_children(panel._cards_box) == 3, (
+        "a second update must REPLACE the card set, not add to it")
+
+
+def test_nonempty_to_empty_transition_leaves_zero_cards():
+    """A `[readings] -> []` transition must not leave the old cards sitting
+    on screen underneath the "no cards detected" banner -- that would look
+    exactly like a real reading, contradicting the banner right above it."""
+    panel = TelemetryPanel()
+    panel.update([_reading(0), _reading(1)], 0.1)
+    assert _count_children(panel._cards_box) == 2
+    panel.update([], 0.1)
+    assert panel._cards_box.get_first_child() is None
+    assert _count_children(panel._cards_box) == 0
+
+
+# ---------------------------------------------------------------------------
+# Important 5 (fix round 1 review): PipelinePanel.set_stage_from_wire is the
+# structurally-safe entry point for the daemon-driven wiring layer -- it
+# does the within_stage_frac conversion internally, so the raw-wire-fraction
+# path is never reachable from that caller at all.
+# ---------------------------------------------------------------------------
+
+def test_set_stage_from_wire_matches_manual_conversion_plus_set_stage():
+    panel_a = PipelinePanel()
+    panel_a.set_stage_from_wire("diffusion", 0.55)
+
+    panel_b = PipelinePanel()
+    panel_b.set_stage("diffusion", within_stage_frac("diffusion", 0.55))
+
+    assert panel_a.last_rows == panel_b.last_rows
+    diffusion_frac = {name: frac for name, frac, _ in panel_a.last_rows}["diffusion"]
+    assert diffusion_frac == pytest.approx(0.5)
+
+
+def test_set_stage_from_wire_never_leaks_the_raw_wire_value():
+    """Negative control, mirroring test_within_stage_frac_leaking_the_raw_
+    wire_value_would_be_wrong above but through the widget entry point a
+    real caller would actually use: calling set_stage_from_wire with the
+    wire's raw 0.55 must NOT produce the same row set as calling set_stage
+    directly with 0.55 -- if it did, the conversion would not actually be
+    happening internally."""
+    panel = PipelinePanel()
+    panel.set_stage_from_wire("diffusion", 0.55)
+    via_wire = panel.last_rows
+
+    panel.set_stage("diffusion", 0.55)  # the WRONG thing a caller could do
+    via_raw = panel.last_rows
+
+    assert via_wire != via_raw
+
+
+def test_within_stage_frac_warns_when_the_wire_value_is_outside_its_band(caplog):
+    """Important 5: within_stage_frac logs a warning when a stage event's
+    wire fraction falls outside that stage's own band -- this should never
+    happen from a correctly-behaving daemon, so it must be loud when it
+    does, not silently clamped with nothing to diagnose it by."""
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="protocol.events"):
+        within_stage_frac("trunk", 0.5)  # trunk's band is (0.10, 0.15)
+    assert any("trunk" in r.message and "outside" in r.message for r in caplog.records)
+
+
+def test_within_stage_frac_does_not_warn_for_a_value_inside_the_band(caplog):
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="protocol.events"):
+        within_stage_frac("trunk", 0.12)  # inside (0.10, 0.15)
+    assert not any("outside" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Important 2 (fix round 1 review): a small, tested, pure WCAG contrast
+# helper -- not a magic number buried in the legibility walker below.
+# ---------------------------------------------------------------------------
+
+def test_contrast_ratio_of_black_on_white_is_the_wcag_maximum():
+    assert contrast_ratio("#000000", "#FFFFFF") == pytest.approx(21.0, abs=0.01)
+
+
+def test_contrast_ratio_of_identical_colors_is_one():
+    assert contrast_ratio("#1B8EB1", "#1B8EB1") == pytest.approx(1.0, abs=1e-9)
+
+
+def test_contrast_ratio_is_symmetric_in_its_arguments():
+    a, b = "#092221", "#F1F8F8"
+    assert contrast_ratio(a, b) == pytest.approx(contrast_ratio(b, a))
+
+
+def test_contrast_ratio_matches_an_independently_computed_reference_value():
+    # Cross-checked against a second, independently written implementation
+    # of the same WCAG formula (see this task's report) -- not just "the
+    # function agrees with itself."
+    assert contrast_ratio("#1B8EB1", "#092221") == pytest.approx(4.397, abs=0.01)
+    assert contrast_ratio("#F1F8F8", "#092221") == pytest.approx(15.465, abs=0.01)
+    assert contrast_ratio("#FA512E", "#092221") == pytest.approx(4.976, abs=0.01)
+
+
+def test_relative_luminance_of_black_is_zero_and_white_is_one():
+    assert relative_luminance("#000000") == pytest.approx(0.0, abs=1e-9)
+    assert relative_luminance("#FFFFFF") == pytest.approx(1.0, abs=1e-6)
+
+
+def test_min_contrast_ratio_is_the_wcag_aa_normal_text_floor():
+    assert MIN_CONTRAST_RATIO == 4.5
+
+
+# ---------------------------------------------------------------------------
+# Critical 1 / Important 4 (fix round 1 review): a GENERALIZED legibility
+# guard, not a one-off assertion about the specific labels the review named.
+# Walks every real Gtk.Label descendant of a constructed, real (not faked)
+# panel, reads its ACTUALLY-RESOLVED foreground colour via the real GTK CSS
+# engine (`Gtk.Widget.get_color()` -- not a re-implementation of CSS
+# cascade rules), and checks it against the nearest ancestor carrying an
+# explicitly-set background (from `ui.panels._BACKGROUND_BY_CLASS`, the
+# SAME dict the panel's own stylesheet is generated from -- not a second,
+# independently-maintained copy of that knowledge that could silently
+# drift from the real CSS).
+#
+# This is deliberately NOT a skip-on-no-display test: per this project's
+# own rule against a silently-empty/no-op test half being reported as a
+# pass, a legibility check that quietly opts out on the one machine where
+# legibility matters would be worse than not having it at all -- so a
+# missing display is a hard pytest.fail, never a skip.
+# ---------------------------------------------------------------------------
+
+def _iter_labels(widget):
+    if isinstance(widget, Gtk.Label):
+        yield widget
+    child = widget.get_first_child()
+    while child is not None:
+        yield from _iter_labels(child)
+        child = child.get_next_sibling()
+
+
+def _rgba_to_hex(rgba):
+    def channel(c):
+        return round(max(0.0, min(1.0, c)) * 255)
+    return f"#{channel(rgba.red):02X}{channel(rgba.green):02X}{channel(rgba.blue):02X}"
+
+
+def _nearest_explicit_background_hex(widget):
+    node = widget
+    while node is not None:
+        for css_class, bg_hex in _BACKGROUND_BY_CLASS.items():
+            if node.has_css_class(css_class):
+                return bg_hex
+        node = node.get_parent()
+    raise AssertionError(
+        f"no ancestor of {widget!r} carries a class in "
+        "ui.panels._BACKGROUND_BY_CLASS -- a new background tier was added "
+        "without teaching the legibility walker about it")
+
+
+def _assert_every_label_is_legible(root, *, context):
+    if Gdk.Display.get_default() is None:
+        # Loud, not a skip -- see this section's own docstring above.
+        pytest.fail(
+            f"[{context}] no default display: cannot resolve real GTK "
+            "colors, and a legibility test that silently no-ops on a "
+            "headless run would be worse than not having one")
+    failures = []
+    for label in _iter_labels(root):
+        fg_hex = _rgba_to_hex(label.get_color())
+        bg_hex = _nearest_explicit_background_hex(label)
+        ratio = contrast_ratio(fg_hex, bg_hex)
+        if ratio < MIN_CONTRAST_RATIO:
+            failures.append(
+                f"[{context}] label {label.get_label()!r}: fg={fg_hex} "
+                f"bg={bg_hex} ratio={ratio:.2f} < {MIN_CONTRAST_RATIO}")
+    assert not failures, "\n".join(failures)
+
+
+def test_telemetry_panel_labels_are_legible_in_every_state():
+    panel = TelemetryPanel()
+    panel.update(None, None)
+    _assert_every_label_is_legible(panel, context="unknown")
+    panel.update([], 0.1)
+    _assert_every_label_is_legible(panel, context="empty")
+    panel.update([_reading(0, 45.0), _reading(1, 90.0)], 0.1)
+    _assert_every_label_is_legible(panel, context="ok (normal + hot card)")
+    panel.update([_reading()], STALE_AFTER_S + 5.0)
+    _assert_every_label_is_legible(panel, context="stale")
+
+
+def test_pipeline_panel_labels_are_legible_at_every_stage():
+    panel = PipelinePanel()
+    for stage in STAGE_ORDER:
+        panel.set_stage(stage, 0.5)
+        _assert_every_label_is_legible(panel, context=stage)
+    panel.reset()
+    _assert_every_label_is_legible(panel, context="reset")

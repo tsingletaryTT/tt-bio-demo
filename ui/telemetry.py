@@ -64,6 +64,7 @@ and the tests that pin it down.
 
 import json
 import logging
+import math
 import subprocess
 import threading
 import time
@@ -94,8 +95,24 @@ def _number(value):
     verified real `tt-smi -s` sample quoted in this task's brief) -- hence
     strip-then-float rather than a bare `float()`. Matches
     runner/cards.py:_number on purpose; see the module docstring.
+
+    A non-finite result (NaN, +-inf) is not a reading -- `float()` itself
+    happily parses `"nan"`/`"inf"` (and `json.loads` happily produces a
+    literal `nan`/`inf` from non-standard-but-permitted JSON tokens), and
+    without this check a non-finite value would sail through parse_snapshot
+    as a genuine-looking CardReading: a NaN temperature would render as a
+    plausible card showing "nan °C" instead of being caught by the
+    "unreadable card" handling every other bad value already goes through
+    (tt-smi's own "n/a" sentinel, a missing key, ...). Raising ValueError
+    here routes it through that exact same path -- parse_snapshot's
+    per-card try/except already treats a ValueError as "skip this one
+    card, don't blind the panel to the others" -- rather than adding a
+    second, parallel notion of "bad telemetry."
     """
-    return float(str(value).strip())
+    parsed = float(str(value).strip())
+    if not math.isfinite(parsed):
+        raise ValueError(f"non-finite telemetry value: {value!r}")
+    return parsed
 
 
 def parse_snapshot(snapshot):

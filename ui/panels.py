@@ -8,6 +8,21 @@ tt_bio -- both are plain functions over numbers and strings, tested directly
 in tests/unit/test_panels.py. The widgets are thin assembly on top of them:
 they own layout, CSS classes, and text formatting, and nothing else.
 
+Visual design (fix round 1): built on the dark base (`_DARK_BASE`), not the
+light backgrounds -- the brand's light tints (`_TEAL`/`_YELLOW`/`_RED`/
+`_GREEN`) are designed to sit there (see the docs-site theme this palette
+comes from), and putting them where they belong is what makes them both
+legible (WCAG AA, >=4.5:1 -- see `contrast_ratio`/`MIN_CONTRAST_RATIO`
+below) and on-brand at the same time, instead of fighting the palette with
+hand-darkened one-off variants. Colour is spent sparingly: only the pipeline
+panel's ACTIVE row and a card that has crossed the quarantine line ever get
+a saturated accent -- everything else reads by weight, fill, and text
+content, which is also what keeps the tri-state (see `TelemetryPanel`)
+distinguishable without relying on colour alone. Numbers are the largest,
+brightest thing in the telemetry panel, in a monospace face (falls back to
+whatever's installed if the named brand mono isn't present) so a value does
+not visibly jitter column-to-column as it ticks.
+
 Base class note: the brief's produces line types these as
 `TelemetryPanel(Gtk.Widget)` / `PipelinePanel(Gtk.Widget)`. Both are
 implemented here as `Gtk.Box` subclasses instead -- `Gtk.Box` IS a
@@ -23,6 +38,7 @@ reason.
 """
 
 import logging
+import math
 
 import gi
 
@@ -31,7 +47,7 @@ gi.require_version("Gdk", "4.0")
 
 from gi.repository import Gdk, Gtk
 
-from protocol.events import STAGE_ORDER
+from protocol.events import STAGE_ORDER, within_stage_frac
 
 log = logging.getLogger(__name__)
 
@@ -51,14 +67,75 @@ _YELLOW = "#F6BC42"
 _RED = "#FF9E8A"
 _ORANGE = "#FA512E"
 
-# card_color()'s two possible outputs. Green reads as healthy at a glance;
-# orange is the "something's wrong" register runner/cards.py's own
-# "quarantined" card state already uses conceptually. Deliberately distinct
-# from `_RED`, which TelemetryPanel reserves for its own "no telemetry at
-# all" status text below -- a hot card and a dead sampler must not read as
-# the same kind of trouble.
-_CARD_NORMAL_COLOR = _GREEN
+# `_ACCENT` itself measures 4.40:1 against `_DARK_BASE` -- just UNDER the
+# 4.5:1 AA floor this module holds itself to (see MIN_CONTRAST_RATIO below),
+# so it cannot be used as TEXT on the dark ground even though it reads fine
+# as a decorative fill (the pipeline panel's active progress bar uses the
+# pure brand hex; fills are exempt, see the legibility test's own docstring
+# in tests/unit/test_panels.py). This is a minimally-lightened tint of the
+# exact same hue -- +10% toward white -- computed once and pinned here
+# rather than derived at runtime, so `contrast_ratio(_ACCENT_TEXT,
+# _DARK_BASE)` is a fixed, testable number (5.06:1, comfortable margin above
+# 4.5). Used ONLY where accent colour is asked for as TEXT (the active
+# pipeline row's label).
+_ACCENT_TEXT = "#3299B9"
+
+# card_color()'s two possible outputs. Colour is spent sparingly here too:
+# a card under the line gets a neutral, unremarkable reading (`_BG_ALT` --
+# nothing to see); a card AT OR OVER `max_temp_c` is the one place this
+# panel's own colour is meant to say something, so it gets the same
+# "something's wrong" register `runner/cards.py`'s "quarantined" card state
+# already uses conceptually.
+_CARD_NORMAL_COLOR = _BG_ALT
 _CARD_HOT_COLOR = _ORANGE
+
+
+# ---------------------------------------------------------------------------
+# Pure decision: WCAG 2.x contrast, so the legibility guarantee is a real,
+# tested calculation rather than an eyeballed palette choice. Used by
+# tests/unit/test_panels.py's generalized "every label must be legible"
+# check (which walks the real, rendered widget tree) and by the design note
+# above `_ACCENT_TEXT`.
+# ---------------------------------------------------------------------------
+
+def relative_luminance(hex_color):
+    """WCAG 2.x relative luminance of a `#RRGGBB` colour, in [0.0, 1.0].
+
+    Standard formula (see W3C's WCAG 2.x "Relative Luminance" definition):
+    sRGB channels are linearized, then combined with the fixed 0.2126 /
+    0.7152 / 0.0722 weights that approximate human luminance sensitivity
+    (green contributes most, blue least).
+    """
+    hex_color = hex_color.lstrip("#")
+    r, g, b = (int(hex_color[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
+
+    def _linearize(channel):
+        return channel / 12.92 if channel <= 0.03928 else ((channel + 0.055) / 1.055) ** 2.4
+
+    r, g, b = _linearize(r), _linearize(g), _linearize(b)
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def contrast_ratio(hex_a, hex_b):
+    """WCAG 2.x contrast ratio between two `#RRGGBB` colours.
+
+    Ranges from 1.0 (no contrast at all -- identical luminance) to 21.0
+    (pure black on pure white). Symmetric: which colour is "foreground" and
+    which is "background" does not matter, matching the WCAG formula's own
+    definition (lighter luminance over darker, regardless of argument
+    order).
+    """
+    l_a, l_b = relative_luminance(hex_a), relative_luminance(hex_b)
+    lighter, darker = max(l_a, l_b), min(l_a, l_b)
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+# WCAG 2.x "AA, normal-size text" floor. Named here, not left as a magic
+# number in the test that enforces it (tests/unit/test_panels.py), because
+# production colour choices in this module (`_ACCENT_TEXT` above) were
+# picked specifically to clear it -- the constant is part of the design,
+# not just the check.
+MIN_CONTRAST_RATIO = 4.5
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +155,18 @@ def card_color(temperature_c, max_temp_c=85.0):
     quarantined there (`CardPool.update`: `self._hot[...] = temperature_c >=
     self.max_temp_c`), not merely "warm" -- so this uses the same `>=`, not
     `>`, to stay consistent with the fact this color is describing.
+
+    A non-finite `temperature_c` (NaN, +-inf) is not a healthy reading --
+    `ui.telemetry.parse_snapshot` is the primary defense (a non-finite
+    telemetry value is now treated as unparseable at the source, the same
+    as tt-smi's own "n/a" sentinel, so a real CardReading should never carry
+    one) but this function stays defensive on its own too: a NaN reads as
+    the HOT color, never the normal one. There are only two buckets here,
+    and "we don't have a real number" must never land in the one that looks
+    healthy.
     """
+    if not math.isfinite(temperature_c):
+        return _CARD_HOT_COLOR
     return _CARD_HOT_COLOR if temperature_c >= max_temp_c else _CARD_NORMAL_COLOR
 
 
@@ -99,10 +187,13 @@ def stage_rows(current, frac):
     property, restarting at 0.0 for every stage. Converting one into the
     other is `protocol.events.within_stage_frac`'s job, not this function's
     -- call `within_stage_frac(current, wire_frac)` first and pass ITS
-    result in here. (Passing the raw wire fraction straight through would
-    make `current`'s own row appear to start already-partway-done and never
-    visibly reach 100% -- exactly the kind of bug the task brief warns is
-    "invisible until a bar sits at 15% through the whole of diffusion.")
+    result in here, or use `PipelinePanel.set_stage_from_wire`, which does
+    exactly that and is the entry point the daemon-driven wiring should
+    actually call (see its docstring). (Passing the raw wire fraction
+    straight through here would make `current`'s own row appear to start
+    already-partway-done and never visibly reach 100% -- exactly the kind
+    of bug the task brief warns is "invisible until a bar sits at 15%
+    through the whole of diffusion.")
 
     Per row, in `STAGE_ORDER`'s own order:
 
@@ -110,7 +201,10 @@ def stage_rows(current, frac):
     - `current` itself: `(stage, frac, "active")` -- `frac` is clamped to
       [0.0, 1.0] so a wire glitch (or a caller that forgot the
       `within_stage_frac` conversion above) can't overflow/underflow a
-      progress bar.
+      progress bar. A non-finite `frac` (NaN, +-inf) reads as 0.0 -- an
+      unmeasured "how far in" must look empty, not (per Python's own
+      `min(1.0, float('nan'))`, which silently keeps 1.0) a fully-filled
+      bar claiming the stage is done when nothing of the sort is known.
     - a stage strictly AFTER `current`: `(stage, 0.0, "pending")`.
 
     An unrecognized `current` (a future protocol stage this build's copy of
@@ -133,7 +227,8 @@ def stage_rows(current, frac):
         elif index < current_index:
             rows.append((stage, 1.0, "done"))
         elif index == current_index:
-            clamped = max(0.0, min(1.0, float(frac)))
+            frac_value = float(frac)
+            clamped = 0.0 if not math.isfinite(frac_value) else max(0.0, min(1.0, frac_value))
             rows.append((stage, clamped, "active"))
         else:
             rows.append((stage, 0.0, "pending"))
@@ -148,96 +243,138 @@ def stage_rows(current, frac):
 # panel never hard-requires one -- matching the rest of this codebase's
 # convention that GTK object construction alone should not need a live
 # display (see tests/unit/test_app_handle_event.py's module docstring).
+#
+# `_BACKGROUND_BY_CLASS` is the single source of truth for "which CSS class
+# carries an explicitly-set background": both panel roots below reference
+# `_DARK_BASE` directly (the same constant this dict maps them to, not a
+# second hand-copied literal), and tests/unit/test_panels.py's generalized
+# legibility check reads THIS SAME dict to find "the nearest explicitly-set
+# background" for any given label, rather than a second, independently
+# maintained copy of this knowledge that could silently drift from the real
+# stylesheet. Everything in this module now sits on one background tier
+# (the dark ground) -- no nested card/chip backgrounds -- which is also why
+# both entries map to the same colour; if a future redesign adds a second
+# tier, add its class here and the legibility test picks it up for free.
 # ---------------------------------------------------------------------------
 _CSS_INSTALLED = False
 
+_BACKGROUND_BY_CLASS = {
+    "telemetry-panel": _DARK_BASE,
+    "pipeline-panel": _DARK_BASE,
+}
+
+# A very low-opacity hairline, used to separate cards/rows on the dark
+# ground without falling back to the "chunky 2px border, big radius" card
+# look this redesign moves away from. Literal rgba() (not GTK's `alpha()`
+# CSS function) so the exact value is visible here rather than computed by
+# the CSS engine at load time.
+_HAIRLINE = "rgba(199, 217, 216, 0.18)"  # _BG_ALT at 18% opacity
+_TROUGH_TRACK = "rgba(199, 217, 216, 0.12)"  # _BG_ALT at 12% opacity
+
 _PANEL_CSS = f"""
 .telemetry-panel {{
-    background-color: {_BG};
-    padding: 10px;
+    background-color: {_BACKGROUND_BY_CLASS["telemetry-panel"]};
+    padding: 12px 16px;
     border-radius: 6px;
 }}
 .telemetry-status {{
-    font-weight: bold;
-    color: {_DARK_BASE};
+    font-weight: 600;
+    color: {_BG_ALT};
 }}
 .telemetry-status.telemetry-unknown {{
     color: {_RED};
 }}
 .telemetry-status.telemetry-empty {{
-    color: {_ACCENT};
+    color: {_BG_ALT};
+}}
+.telemetry-status.telemetry-ok {{
+    color: {_BG};
 }}
 .telemetry-status.telemetry-stale {{
     color: {_YELLOW};
     font-style: italic;
 }}
-.telemetry-card {{
-    background-color: {_BG_ALT2};
-    padding: 6px 10px;
-    border-radius: 4px;
-    border: 2px solid {_BG_ALT};
+.telemetry-card-cell {{
+    padding: 0 14px;
 }}
-.telemetry-card-normal {{
-    border-color: {_CARD_NORMAL_COLOR};
+.telemetry-card-cell-divider {{
+    border-left: 1px solid {_HAIRLINE};
 }}
-.telemetry-card-hot {{
-    border-color: {_CARD_HOT_COLOR};
+.telemetry-field-label {{
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    color: {_BG_ALT};
 }}
-.telemetry-card-title {{
-    font-weight: bold;
-    color: {_DARK_BASE};
+.telemetry-hero-number {{
+    font-family: "Berkeley Mono", monospace;
+    font-size: 26px;
+    font-weight: 500;
+    color: {_BG};
+}}
+.telemetry-hero-number.telemetry-hero-hot {{
+    color: {_ORANGE};
+}}
+.telemetry-field-value {{
+    font-family: "Berkeley Mono", monospace;
+    font-size: 12px;
+    color: {_BG_ALT};
 }}
 .pipeline-panel {{
-    background-color: {_BG};
-    padding: 10px;
+    background-color: {_BACKGROUND_BY_CLASS["pipeline-panel"]};
+    padding: 12px 16px;
     border-radius: 6px;
 }}
-.pipeline-stage-name {{
-    min-width: 90px;
+.pipeline-row {{
+    padding-bottom: 6px;
+    margin-bottom: 6px;
 }}
-/* Label text color per row state. */
+.pipeline-row-divider {{
+    border-bottom: 1px solid {_HAIRLINE};
+}}
+.pipeline-stage-name {{
+    min-width: 96px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+}}
+/* Label text colour per row state -- weight carries as much of the
+   distinction as hue here (per this redesign's "spend colour sparingly"
+   direction): only the ACTIVE row's text gets the accent tint. */
 .stage-done {{
-    color: {_GREEN};
+    color: {_BG};
 }}
 .stage-active {{
-    color: {_ACCENT};
-    font-weight: bold;
+    color: {_ACCENT_TEXT};
+    font-weight: 800;
 }}
 .stage-pending {{
     color: {_BG_ALT};
 }}
 /* Gtk.ProgressBar's FILL lives on a nested `progress` node inside `trough`
    (see GTK4's widget node tree for progressbar) -- a plain `color:` rule on
-   the progressbar widget itself (the block above) only affects text, which
-   Gtk.ProgressBar doesn't draw any of, so the three states would otherwise
-   be visually IDENTICAL bars (all default theme blue) despite the correct
-   CSS classes being applied. These descendant-selector rules are what
-   actually paints each row a different color.
-   confidence/saving may report at 0.0 through most of a fold and so
-   otherwise show no fill at all -- give trough itself a state color too
-   (a very light one for pending, invisible against the panel background
-   for done/active since progress covers the trough at fraction 1.0/partial
-   anyway) so a viewer can still tell the three ROWS apart even before any
-   fill is visible. */
-.stage-done trough {{
-    background-color: {_BG_ALT2}; /* barely-there track under a full green fill */
+   the progressbar widget itself only affects text, which Gtk.ProgressBar
+   doesn't draw any of. These descendant-selector rules are what actually
+   paint the bar. Decorative, not text -- exempt from this module's own
+   >=4.5:1 text-legibility rule (see tests/unit/test_panels.py), so the
+   ACTIVE fill uses the pure, saturated brand accent (`_ACCENT`, not the
+   lightened `_ACCENT_TEXT` reserved for text) -- the one genuinely bright
+   thing in either panel, on purpose. */
+.pipeline-progress trough {{
+    min-height: 6px;
+    border-radius: 3px;
+    background-color: {_TROUGH_TRACK};
 }}
-.stage-done trough progress {{
-    background-color: {_GREEN};
+.stage-done.pipeline-progress trough progress {{
+    background-color: {_BG_ALT};
 }}
-.stage-active trough {{
-    background-color: {_BG_ALT2};
-}}
-.stage-active trough progress {{
+.stage-active.pipeline-progress trough progress {{
     background-color: {_ACCENT};
 }}
-.stage-pending trough {{
-    background-color: {_BG_ALT};
+.stage-pending.pipeline-progress trough progress {{
+    background-color: {_TROUGH_TRACK};
 }}
-.stage-pending trough progress {{
-    background-color: {_BG_ALT};
-}}
-""".encode("utf-8")
+"""
 
 
 def _ensure_css_installed():
@@ -249,22 +386,28 @@ def _ensure_css_installed():
         log.debug("no default display; skipping panel CSS install")
         return
     provider = Gtk.CssProvider()
-    provider.load_from_data(_PANEL_CSS)
+    # load_from_string (not the bytes-taking load_from_data, deprecated in
+    # GTK 4.12+ and noisy on every test run): _PANEL_CSS is already a plain
+    # str.
+    provider.load_from_string(_PANEL_CSS)
     Gtk.StyleContext.add_provider_for_display(
         display, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
     _CSS_INSTALLED = True
 
 
-# One CSS class per possible telemetry-status/card/stage state -- listed
-# once here so both widgets can reset ("remove every state class") without
+# One CSS class per possible telemetry-status/stage state -- listed once
+# here so both widgets can reset ("remove every state class") without
 # re-deriving the class name from the state string, and without a stale
-# class from a previous render leaking into the next one (e.g. a card that
-# was hot on the last update reads normal now, but GTK doesn't remove CSS
-# classes on its own just because a caller stopped adding them).
+# class from a previous render leaking into the next one (e.g. a row that
+# was active on the last render reads pending now, but GTK doesn't remove
+# CSS classes on its own just because a caller stopped adding them).
+# `telemetry-ok` is listed even though nothing currently distinguishes it
+# from the base style beyond brightness -- kept as an explicit state name
+# (not folded away) so a future addition has a slot to hook without
+# reshaping this tuple.
 _TELEMETRY_STATUS_CLASSES = (
     "telemetry-unknown", "telemetry-empty", "telemetry-ok", "telemetry-stale",
 )
-_CARD_STATE_CLASSES = ("telemetry-card-normal", "telemetry-card-hot")
 _STAGE_STATE_CLASSES = ("stage-done", "stage-active", "stage-pending")
 
 # How long a reading may go un-refreshed before the panel calls it stale
@@ -283,9 +426,10 @@ class TelemetryPanel(Gtk.Box):
     `age_s()` as one card per device, via `.update(readings, age_s)`.
 
     The tri-state (see ui/telemetry.py's module docstring) is rendered as
-    three states a visitor -- not just an operator reading logs -- can tell
-    apart on sight, per this task's controller ruling ("no telemetry is not
-    fake telemetry"):
+    three states distinguishable by TEXT CONTENT (never colour alone) --
+    a visitor, not just an operator reading logs, can tell apart on sight,
+    per this task's controller ruling ("no telemetry is not fake
+    telemetry"):
 
     - `readings is None`: `tt-smi` has never produced a usable answer (or
       every device in its very first snapshot was unreadable). No cards are
@@ -296,7 +440,10 @@ class TelemetryPanel(Gtk.Box):
       devices. Also no cards drawn, but a visually distinct, calmer status
       line -- this is real information ("no cards detected"), not a
       failure.
-    - `readings` non-empty: one card per reading, colored via `card_color`.
+    - `readings` non-empty: one card per reading. Temperature is the hero
+      number (largest, brightest); it turns the alarm colour only if the
+      card is at or over `card_color`'s quarantine threshold -- the one
+      place either panel spends saturated colour on a "normal" card.
 
     Independently of which of the three states above applies, `age_s`
     (seconds since the last successful sample, or `None` if there has never
@@ -309,7 +456,7 @@ class TelemetryPanel(Gtk.Box):
     """
 
     def __init__(self):
-        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         _ensure_css_installed()
         self.add_css_class("telemetry-panel")
 
@@ -317,7 +464,7 @@ class TelemetryPanel(Gtk.Box):
         self._status_label.add_css_class("telemetry-status")
         self.append(self._status_label)
 
-        self._cards_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self._cards_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
         self.append(self._cards_box)
 
         # Rendered state, kept for tests and diagnostics -- not read by GTK
@@ -362,8 +509,8 @@ class TelemetryPanel(Gtk.Box):
         self._status_label.add_css_class("telemetry-ok")
         if stale:
             self._status_label.add_css_class("telemetry-stale")
-        for reading in readings:
-            self._cards_box.append(self._build_card(reading))
+        for index, reading in enumerate(readings):
+            self._cards_box.append(self._build_card(reading, first=(index == 0)))
 
     @staticmethod
     def _with_staleness_note(text, age_s, stale):
@@ -372,54 +519,80 @@ class TelemetryPanel(Gtk.Box):
         return f"{text} — stale, last heard {age_s:.0f}s ago"
 
     def _clear_cards(self):
+        """Remove every previously-rendered card. Load-bearing, not
+        cosmetic: without this, a 2s sampler tick would grow a fresh row of
+        cards every poll for as long as the booth is open, and a
+        `[readings] -> []` transition would leave the LAST good cards
+        sitting on screen underneath a "no cards detected" banner --
+        exactly the kind of stale-looking display Task 4/5's tri-state work
+        exists to prevent. See tests/unit/test_panels.py's dedicated tests
+        for both of those, verified against a `pass`-body mutation of this
+        method."""
         child = self._cards_box.get_first_child()
         while child is not None:
             following = child.get_next_sibling()
             self._cards_box.remove(child)
             child = following
 
-    def _build_card(self, reading):
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-        box.add_css_class("telemetry-card")
+    def _build_card(self, reading, *, first):
+        cell = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        cell.add_css_class("telemetry-card-cell")
+        if not first:
+            cell.add_css_class("telemetry-card-cell-divider")
         color = card_color(reading.temperature_c)
-        box.add_css_class(
-            "telemetry-card-hot" if color == _CARD_HOT_COLOR else "telemetry-card-normal")
+        is_hot = color == _CARD_HOT_COLOR
+        cell.add_css_class("telemetry-card-hot" if is_hot else "telemetry-card-normal")
 
-        title = Gtk.Label(xalign=0.0, label=f"card {reading.index} · {reading.board_type}")
-        title.add_css_class("telemetry-card-title")
-        temp = Gtk.Label(xalign=0.0, label=f"{reading.temperature_c:.1f} °C")
-        power = Gtk.Label(xalign=0.0, label=f"{reading.power_w:.0f} W")
-        clock = Gtk.Label(xalign=0.0, label=f"{reading.aiclk_mhz:.0f} MHz")
-        for widget in (title, temp, power, clock):
-            box.append(widget)
-        return box
+        title = Gtk.Label(
+            xalign=0.0, label=f"CARD {reading.index} · {reading.board_type}".upper())
+        title.add_css_class("telemetry-field-label")
+
+        hero = Gtk.Label(xalign=0.0, label=f"{reading.temperature_c:.1f}°C")
+        hero.add_css_class("telemetry-hero-number")
+        if is_hot:
+            hero.add_css_class("telemetry-hero-hot")
+
+        secondary = Gtk.Label(
+            xalign=0.0, label=f"{reading.power_w:.0f}W · {reading.aiclk_mhz:.0f}MHz")
+        secondary.add_css_class("telemetry-field-value")
+
+        for widget in (title, hero, secondary):
+            cell.append(widget)
+        return cell
 
 
 class PipelinePanel(Gtk.Box):
-    """One row per protocol stage, driven by `.set_stage(stage, frac)`.
+    """One row per protocol stage, driven by `.set_stage(stage, frac)` (or,
+    for the daemon-driven wiring layer, `.set_stage_from_wire(stage,
+    wire_frac)` -- see that method's docstring for why it, not `set_stage`,
+    is the intended entry point once a real daemon is driving this panel).
 
     Thin assembly over `stage_rows`: this class owns no progress logic of
     its own, only the mapping from each `(name, fraction, state)` row to a
-    label + progress bar and a CSS class for `state`. `frac` here is the
-    WITHIN-STAGE fraction `stage_rows` expects -- see its docstring; this
-    panel does not call `protocol.events.within_stage_frac` itself, that is
-    the wiring layer's job (the daemon-driven caller has the wire's raw
-    whole-fold fraction and the stage name; this panel only ever sees
-    already-converted numbers).
+    label + progress bar and a CSS class for `state`. Colour is spent
+    sparingly (per this redesign's direction): only the ACTIVE row's label
+    and fill get the brand accent; done/pending are distinguished from it
+    by weight and fill amount, not a second and third hue.
     """
 
     def __init__(self):
-        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         _ensure_css_installed()
         self.add_css_class("pipeline-panel")
 
         self._rows = {}
-        for stage in STAGE_ORDER:
-            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-            label = Gtk.Label(label=stage, xalign=0.0)
+        stages = list(STAGE_ORDER)
+        for index, stage in enumerate(stages):
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+            row.add_css_class("pipeline-row")
+            if index < len(stages) - 1:
+                row.add_css_class("pipeline-row-divider")
+            label = Gtk.Label(label=stage.upper(), xalign=0.0)
             label.add_css_class("pipeline-stage-name")
             bar = Gtk.ProgressBar()
+            bar.add_css_class("pipeline-progress")
             bar.set_hexpand(True)
+            bar.set_valign(Gtk.Align.CENTER)
             row.append(label)
             row.append(bar)
             self.append(row)
@@ -433,7 +606,10 @@ class PipelinePanel(Gtk.Box):
 
     def set_stage(self, stage, frac):
         """Render one `stage` event's worth of progress. `frac` must
-        already be the WITHIN-STAGE fraction (see the class docstring)."""
+        already be the WITHIN-STAGE fraction (see the class docstring) --
+        the daemon-driven wiring layer should call `set_stage_from_wire`
+        instead, which takes the wire's raw fraction and converts it
+        internally."""
         rows = stage_rows(stage, frac)
         self.last_rows = rows
         for name, value, state in rows:
@@ -445,6 +621,24 @@ class PipelinePanel(Gtk.Box):
             new_class = f"stage-{state}"
             label.add_css_class(new_class)
             bar.add_css_class(new_class)
+
+    def set_stage_from_wire(self, stage, wire_frac):
+        """Render one `stage` event straight off the wire.
+
+        Ruling 2's letter ("stage_rows takes a within-stage fraction") is
+        satisfied by `set_stage` alone, but nothing about that signature
+        stops a caller from passing the raw wire fraction anyway --
+        `stage_rows` clamps to [0, 1], so a raw `0.55` mid-diffusion still
+        renders a plausible-looking (wrong) 55% bar with no error anywhere.
+        This method is what makes that mistake structurally unreachable for
+        the wiring layer: it calls `protocol.events.within_stage_frac`
+        itself and only ever hands `set_stage` an already-converted value,
+        so the daemon-driven caller (Task 9) never touches the raw-frac
+        path at all. Call THIS from the wiring layer; call `set_stage`
+        directly only when you already have a within-stage fraction in
+        hand (tests, `reset()`, manual/demo control).
+        """
+        self.set_stage(stage, within_stage_frac(stage, wire_frac))
 
     def reset(self):
         """Back to "nothing has happened yet": every stage pending, every

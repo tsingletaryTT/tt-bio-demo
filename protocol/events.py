@@ -7,8 +7,11 @@ venv, and any richer dependency would have to exist in both.
 
 import base64
 import json
+import logging
 
 import numpy as np
+
+log = logging.getLogger(__name__)
 
 PROTOCOL_VERSION = 1
 
@@ -111,12 +114,27 @@ def within_stage_frac(stage, wire_frac):
     is passed through unchanged (still clamped to [0, 1]) rather than
     raising -- symmetric with `stage_rows`' own "an unknown stage must not
     raise" contract.
+
+    A `wire_frac` that falls OUTSIDE the named stage's own band (e.g. a
+    `trunk` event reporting 0.5, when trunk's band is 0.10-0.15) is not
+    something this function can refuse -- clamping still has to produce
+    *something* renderable -- but it is never supposed to happen in a
+    correctly-behaving daemon (bands are contiguous and each stage event
+    should only ever report a frac inside its own band), so it is logged at
+    warning level here: the one place both the runner and UI import, so
+    catching it here catches it regardless of which side's bug produced it.
     """
     band = STAGE_BANDS.get(stage)
     if band is None:
         return max(0.0, min(1.0, float(wire_frac)))
     start, end = band
-    return max(0.0, min(1.0, (float(wire_frac) - start) / (end - start)))
+    wire_frac = float(wire_frac)
+    if wire_frac < start or wire_frac > end:
+        log.warning(
+            "wire frac %.4f for stage %r falls outside its own band "
+            "(%.4f, %.4f) -- clamping, but this should not happen from a "
+            "correctly-behaving daemon", wire_frac, stage, start, end)
+    return max(0.0, min(1.0, (wire_frac - start) / (end - start)))
 
 
 class ProtocolError(Exception):
