@@ -33,6 +33,14 @@ log = logging.getLogger("tt-bio-demod")
 QUARANTINE_AFTER = 3          # consecutive failures before a target is dropped
 TELEMETRY_PERIOD_S = 2.0
 
+# How long run() waits between retrying a failed Folder.load() (e.g. the
+# device already leased by another process). Matches the "no schedulable
+# cards" backoff already used elsewhere in this loop -- long enough not to
+# spin a tight retry loop against a condition that needs a human or another
+# process to clear, short enough that a transient conflict clearing quickly
+# doesn't leave the booth dark for long.
+LOAD_RETRY_PERIOD_S = 5.0
+
 # tt-metal wrote 121 MB of Inspector logs for two folds during the spike, and
 # caps nothing itself. At a fold every ~45s for a conference day that is tens of
 # gigabytes, so the daemon enforces its own budget between folds. 2 GB keeps
@@ -74,6 +82,28 @@ class DaemonConfig:
     weights_dir: str
     playlist_dir: str
     log_root: str
+    # Not exposed as a CLI flag. This phase's main() used to accept
+    # `--device` and thread it into both CardPool([device_id]) and
+    # Folder(device_id=...), but tt_bio.tenstorrent.get_device() takes no
+    # device-selecting argument at all -- its own docstring says "Open (or
+    # return cached) TT device 0" and the physical chip that maps to is
+    # decided by TT_VISIBLE_DEVICES *before ttnn is ever imported*, which
+    # for this process happens well before argv is even parsed into a
+    # device index (runner/preflight.py's own tap check already imports
+    # tt_bio.protenix -- and therefore ttnn -- before a Daemon is
+    # constructed at all). The flag was therefore accepted but inert:
+    # CardPool would track whichever index an operator passed while the
+    # fold always ran on whatever get_device() actually opened, silently
+    # decoupling the thermal guard from the hardware doing the work.
+    # Deleted rather than "fixed" by threading TT_VISIBLE_DEVICES through,
+    # since that needs verifying on real multi-card hardware that ttnn's
+    # logical-device-0 mapping lines up with tt-smi's own physical
+    # indexing -- not something to get wrong on a shared machine. This
+    # phase is card-0 only; the field stays (rather than being deleted too)
+    # because Folder and CardPool are already exercised against other
+    # values in their own unit tests and take a plain constructor
+    # parameter either way -- it is the CLI surface that is card-0 only,
+    # not these two classes.
     device_id: int = 0
     max_temp_c: float = 85.0
     log_budget_bytes: int = DEFAULT_LOG_BUDGET_BYTES
@@ -91,6 +121,11 @@ class Daemon:
         self._failures = {}
         self._quarantined = set()
         self._telemetry_thread = None
+        # Flips True only after Folder.load() has actually succeeded once.
+        # _hello() checks this so a client connecting during the retry
+        # window run() now has (see run()'s docstring) gets a `not_ready`
+        # greeting instead of a `hello` claiming readiness it doesn't have.
+        self._folder_ready = False
         # The last PROTECTED_STRUCTURE_COUNT .cif paths this daemon has
         # actually emitted via job_done, oldest dropped automatically as new
         # ones arrive (deque(maxlen=...)) -- see that constant's comment for
@@ -101,8 +136,21 @@ class Daemon:
         self._started = False
 
     def _hello(self):
+        if not self._folder_ready:
+            # A UI connecting before Folder.load() has ever succeeded (either
+            # the very first attempt, or a retry after a transient failure --
+            # see run()'s docstring) must not be told the daemon is ready.
+            # Shaped like preflight's own not_ready_event() (same "type" and
+            # "missing" keys) so the UI's eventual handling of one covers
+            # both without a second code path.
+            return {"type": "not_ready",
+                    "missing": ["device: Folder.load() has not succeeded yet"]}
         return {"type": "hello", "version": PROTOCOL_VERSION,
-                "cards": self.cards.schedulable(),
+                # Full inventory, not schedulable() -- a card legitimately
+                # busy mid-fold has not stopped existing, and must not
+                # vanish from the greeting just because it isn't free at
+                # this exact instant. See CardPool.all_indices()'s docstring.
+                "cards": self.cards.all_indices(),
                 "models": ["protenix-v2"], "preflight": "ok"}
 
     def _emit(self, event):
@@ -114,12 +162,32 @@ class Daemon:
                 self._emit(event)
 
     def _enqueue_playlist(self):
+        # Imported here, not at module scope: tt_bio pulls in torch/ttnn,
+        # which this module's own unit tests must not need (same discipline
+        # runner/folder.py's load()/_run_fold() already follow).
+        from tt_bio.main import _read_bio_chains
+
         for target in sorted(Path(self.config.playlist_dir).glob("*.yaml")):
             if target.stem in self._quarantined:
                 continue
+            # n_residues is cosmetic -- job_start carries it purely for the
+            # UI's display label -- so a target this daemon cannot even
+            # parse must not crash the enqueue loop over it. It will still
+            # fail loudly and safely later, inside _run_one's own FoldError
+            # handling, the same way a bad target always has; this is
+            # best-effort only, and 0 is the same "unknown" default the
+            # field already had before this fix.
+            n_residues = 0
+            try:
+                chains = _read_bio_chains(target)
+                n_residues = sum(len(seq) for _cid, seq, _msa, mol_type in chains
+                                 if mol_type != "ligand")
+            except Exception:
+                log.warning("could not determine residue count for %s; "
+                            "defaulting n_residues to 0", target, exc_info=True)
             self.queue.submit(Job(job_id=uuid.uuid4().hex[:8],
                                   target_id=target.stem,
-                                  input_path=str(target)))
+                                  input_path=str(target), n_residues=n_residues))
 
     def run(self):
         """Run the fold loop until stop() is called.
@@ -132,6 +200,19 @@ class Daemon:
         open a second real device on it. Not reachable from main() today
         (it constructs one Daemon and calls run() once) -- this guard exists
         so that stays true if this is ever wired up differently later.
+
+        Folder.load() failing is retried here rather than allowed to
+        propagate. Verified live (this fix wave): with card 0 already
+        leased by another process, load() raised straight out of this
+        method and killed the daemon with a traceback -- systemd would
+        restart the unit, but between the crash and that restart the booth
+        was a dead socket with no UI to even show a "preparing" screen on.
+        A transient lease conflict, a checkpoint download hiccup, anything
+        load() can fail on and later succeed at deserves a daemon that
+        stays up and keeps trying, the same as a fold failure already gets
+        (see the module docstring's failure policy) -- so this loop retries
+        with a backoff instead of exiting, and `_hello()` reports
+        `not_ready` for as long as no load() attempt has yet succeeded.
         """
         if self._started:
             raise RuntimeError(
@@ -156,7 +237,23 @@ class Daemon:
             # the fakes track their own load() calls too.
             if self.folder is None:
                 self.folder = Folder(device_id=self.config.device_id)
-            self.folder.load()
+            while not self._stop.is_set():
+                try:
+                    self.folder.load()
+                    break
+                except Exception:
+                    log.exception(
+                        "Folder.load() failed; serving not_ready and "
+                        "retrying in %.0fs", LOAD_RETRY_PERIOD_S)
+                    self._stop.wait(LOAD_RETRY_PERIOD_S)
+            else:
+                # The while/else above: this only runs if the loop ended via
+                # _stop being set (stop() called during a retry wait) rather
+                # than via the `break` on a successful load() -- nothing was
+                # ever loaded, so there is nothing to fold. Fall straight
+                # through to the shared teardown in `finally` below.
+                return
+            self._folder_ready = True
             # Stored (rather than fire-and-forget) so the finally below can
             # join it before closing the folder and server: without a
             # handle, shutdown order between "telemetry thread still
@@ -280,9 +377,19 @@ class Daemon:
                         "target_id": job.target_id, "message": str(exc)})
             self._record_failure(job.target_id)
         finally:
-            event = self.cards.mark_idle(card)
-            if event is not None:
-                self._emit(event)
+            # Guarded like _prune_logs/_prune_structures just below: nothing
+            # in this finally may raise out of the fold loop (this method's
+            # own contract, same as Folder.fold()'s). Left unguarded until
+            # this fix wave -- a bug in CardPool.mark_idle would have
+            # escaped here even though the two janitor calls two lines down
+            # were already protected.
+            try:
+                event = self.cards.mark_idle(card)
+                if event is not None:
+                    self._emit(event)
+            except Exception:
+                log.exception("cards.mark_idle(%d) raised; the card's state "
+                              "on the wire may now be stale", card)
             # Between folds, not during: pruning walks the tree, and the gap
             # between jobs is when nothing is competing for the disk.
             self._prune_logs()
@@ -342,7 +449,12 @@ def main(argv=None):
     parser.add_argument("--weights", required=True)
     parser.add_argument("--playlist", required=True)
     parser.add_argument("--log-root", required=True)
-    parser.add_argument("--device", type=int, default=0)
+    # No --device flag: this phase is card-0 only. See DaemonConfig.device_id's
+    # comment for why -- get_device() (tt_bio.tenstorrent) has no way to select
+    # a specific card, so a flag here would have looked like it worked while
+    # silently decoupling CardPool's thermal guard from whatever hardware
+    # actually ran the fold. Delete this comment along with adding the flag
+    # back if that ever gets fixed at the tt_bio layer, not before.
     parser.add_argument("--max-temp", type=float, default=85.0)
     parser.add_argument("--log-budget-gb", type=float, default=2.0,
                         help="cap on tt-metal's log root; oldest files pruned first")
@@ -403,7 +515,7 @@ def main(argv=None):
     daemon = Daemon(DaemonConfig(
         socket_path=args.socket, weights_dir=args.weights,
         playlist_dir=args.playlist, log_root=args.log_root,
-        device_id=args.device, max_temp_c=args.max_temp,
+        max_temp_c=args.max_temp,
         log_budget_bytes=int(args.log_budget_gb * 1024**3),
         structures_budget_bytes=int(args.structures_budget_gb * 1024**3)))
     signal.signal(signal.SIGTERM, lambda *_: daemon.stop())

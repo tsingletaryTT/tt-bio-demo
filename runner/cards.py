@@ -140,6 +140,20 @@ class CardPool:
         """Indices that are neither busy nor hot — safe to hand a job to."""
         return sorted(i for i in self._indices if not self._busy[i] and not self._hot[i])
 
+    def all_indices(self):
+        """Every card this pool tracks, regardless of busy/hot state.
+
+        Distinct from schedulable() on purpose: the daemon's `hello` greeting
+        (runner/daemon.py's Daemon._hello) needs to describe what hardware
+        exists, not what happens to be free at the instant a UI connects — a
+        card that is mid-fold has not stopped existing, and schedulable()
+        exists for the dispatch decision, not for describing inventory. Used
+        to be the one call site (_hello) that reported schedulable() instead,
+        which meant a card busy mid-fold silently vanished from every UI that
+        connected while it was working.
+        """
+        return sorted(self._indices)
+
     def mark_busy(self, index):
         """Reserve a card for a job.
 

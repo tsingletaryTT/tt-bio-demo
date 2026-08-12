@@ -1,3 +1,6 @@
+import sys
+import threading
+import types
 from pathlib import Path
 
 import pytest
@@ -44,12 +47,21 @@ class _FakeCards:
 
     def __init__(self, available=(0,), quarantine_on_claim=False):
         self._available = list(available)
+        # A separate, fixed snapshot of the pool's full inventory -- mirrors
+        # the real CardPool, where schedulable() (busy/hot-filtered) and the
+        # underlying set of indices it tracks are two different things.
+        # _available above mutates in some scenarios (e.g. _RaceCards below
+        # sets it to [] on quarantine); the inventory does not.
+        self._all = list(available)
         self.quarantine_on_claim = quarantine_on_claim
         self.busy_calls = []
         self.idle_calls = []
 
     def schedulable(self):
         return list(self._available)
+
+    def all_indices(self):
+        return list(self._all)
 
     def mark_busy(self, index):
         self.busy_calls.append(index)
@@ -135,6 +147,41 @@ def test_a_non_fold_error_exception_is_still_reported_and_does_not_crash_the_loo
     assert cards.idle_calls == [0], "the card must still be released"
 
 
+class _ExplodingIdleCards(_FakeCards):
+    """mark_idle raises unconditionally -- stands in for a bug in
+    CardPool.mark_idle, which used to sit unguarded in _run_one's finally
+    right next to _prune_logs/_prune_structures, both of which already were
+    guarded (Task 9 review flagged the gap and deferred it)."""
+
+    def mark_idle(self, index):
+        raise RuntimeError("mark_idle blew up")
+
+
+def test_a_mark_idle_failure_does_not_escape_run_one(tmp_path):
+    """Same 'nothing may raise out of the fold loop' constraint _run_one's
+    two janitor calls already respect. A successful fold still must not let
+    a CardPool bug take the daemon down with it.
+    """
+    daemon = _daemon(tmp_path, _FakeFolder(), _ExplodingIdleCards())
+    daemon._run_one(Job("j1", "t", "/tmp/t.yaml"), card=0)   # must not raise
+
+
+def test_a_mark_idle_failure_does_not_prevent_the_janitors_from_running(tmp_path, monkeypatch):
+    """The guard around mark_idle must not accidentally swallow the rest of
+    the finally block too -- pruning must still run even if mark_idle blew
+    up just before it.
+    """
+    from runner import daemon as mod
+
+    pruned = []
+    monkeypatch.setattr(
+        mod, "prune_log_root",
+        lambda root, budget, protect=None: (pruned.append(root), (0, []))[1])
+    daemon = _daemon(tmp_path, _FakeFolder(), _ExplodingIdleCards())
+    daemon._run_one(Job("j1", "t", "/tmp/t.yaml"), card=0)
+    assert daemon.config.log_root in pruned
+
+
 def test_a_target_is_quarantined_after_three_consecutive_failures(tmp_path):
     folder = _FakeFolder({"bad": FoldError("boom")})
     daemon = _daemon(tmp_path, folder, _FakeCards())
@@ -168,7 +215,77 @@ def test_a_quarantined_target_is_not_re_enqueued(tmp_path):
     assert [j.target_id for j in daemon.queue.pending] == ["good"]
 
 
+def _fake_tt_bio_main_read_bio_chains(monkeypatch, chains_or_exc):
+    """Install a stand-in tt_bio.main with only _read_bio_chains faked --
+    same style as tests/unit/runner/test_folder_events.py's tt_bio fakes,
+    so this pins daemon.py's *use* of the return value (or of a raised
+    exception) without depending on tt_bio's real YAML schema, and without
+    paying for a real torch import in every test that doesn't care about
+    residue counting specifically.
+    """
+    main_mod = types.ModuleType("tt_bio.main")
+
+    def _read_bio_chains(path):
+        if isinstance(chains_or_exc, BaseException):
+            raise chains_or_exc
+        return chains_or_exc
+
+    main_mod._read_bio_chains = _read_bio_chains
+    pkg = types.ModuleType("tt_bio")
+    pkg.main = main_mod
+    monkeypatch.setitem(sys.modules, "tt_bio", pkg)
+    monkeypatch.setitem(sys.modules, "tt_bio.main", main_mod)
+
+
+def test_enqueue_playlist_populates_n_residues_from_the_target(tmp_path, monkeypatch):
+    """job_start carries n_residues purely for the UI's display label (see
+    runner/folder.py's fold()); before this fix it was always 0, because
+    _enqueue_playlist never set it on the Job it submitted. The real count
+    comes from tt_bio's own chain reader -- the same one
+    Folder._run_fold() already calls to build features -- summing every
+    non-ligand chain's sequence length, matching
+    tests/fixtures/streams/capture_real_fold.py's own formula.
+    """
+    _fake_tt_bio_main_read_bio_chains(monkeypatch, [
+        ("A", "NLYIQWLKDGGPSSGRPPPS", None, "protein"),   # 20 residues
+        ("B", "CCD_ATP", None, "ligand"),                  # excluded
+    ])
+    playlist = tmp_path / "playlist"
+    playlist.mkdir()
+    (playlist / "trpcage.yaml").write_text("version: 1\n")
+
+    daemon = _daemon(tmp_path, _FakeFolder(), _FakeCards())
+    daemon._enqueue_playlist()
+
+    assert [j.n_residues for j in daemon.queue.pending] == [20], (
+        "n_residues must count protein/RNA/DNA residues, excluding ligands")
+
+
+def test_enqueue_playlist_defaults_n_residues_to_zero_on_a_read_failure(tmp_path, monkeypatch):
+    """A malformed or unreadable playlist target must not crash the enqueue
+    loop: n_residues is cosmetic, and a target this daemon truly cannot
+    parse will still fail loudly and safely later, inside _run_one's own
+    FoldError handling, the same way a bad target always has.
+    """
+    _fake_tt_bio_main_read_bio_chains(monkeypatch, ValueError("malformed yaml"))
+    playlist = tmp_path / "playlist"
+    playlist.mkdir()
+    (playlist / "bad.yaml").write_text("not: [valid\n")
+
+    daemon = _daemon(tmp_path, _FakeFolder(), _FakeCards())
+    daemon._enqueue_playlist()   # must not raise
+
+    assert [j.n_residues for j in daemon.queue.pending] == [0]
+
+
 def test_logs_are_pruned_after_a_job(tmp_path, monkeypatch):
+    """Mirrors test_structures_are_pruned_after_a_job's specificity on
+    purpose: the previous form of this test asserted only `pruned` truthy,
+    which _prune_structures's call alone already satisfies (both janitors
+    call this same monkeypatched prune_log_root and append to the same
+    list) -- deleting the _prune_logs() call entirely left this test green.
+    Asserting the log root specifically is what closes that gap.
+    """
     pruned = []
     from runner import daemon as mod
     monkeypatch.setattr(
@@ -176,17 +293,34 @@ def test_logs_are_pruned_after_a_job(tmp_path, monkeypatch):
         lambda root, budget, protect=None: (pruned.append(root), (0, []))[1])
     daemon = _daemon(tmp_path, _FakeFolder(), _FakeCards())
     daemon._run_one(Job("j1", "t", "/tmp/t.yaml"), card=0)
-    assert pruned, "the log budget is never enforced if pruning is not called"
+    assert daemon.config.log_root in pruned, (
+        "the log budget is never enforced if pruning is not called against "
+        "the log root specifically")
 
 
 def test_a_pruning_failure_does_not_stop_the_daemon(tmp_path, monkeypatch):
+    """Deliberately distinguished from
+    test_a_structures_pruning_failure_does_not_stop_the_daemon just below:
+    the previous versions of these two tests both monkeypatched
+    prune_log_root to explode unconditionally and both just asserted
+    _run_one doesn't raise -- same symbol patched, same call driven,
+    nothing to tell them apart, so neither could fail without the other
+    (if _prune_logs's own guard broke but _prune_structures's did not, both
+    tests were equally green or equally red; there was no way for one to
+    catch a regression the other didn't). Making the explosion specific to
+    *this* janitor's root (the log root, not the structures dir) means only
+    _prune_logs's own try/except is on the hook here.
+    """
     from runner import daemon as mod
 
-    def explode(root, budget, protect=None):
-        raise OSError("disk gone strange")
+    def explode_only_for_the_log_root(root, budget, protect=None):
+        if root == log_root:
+            raise OSError("disk gone strange")
+        return (0, [])
 
-    monkeypatch.setattr(mod, "prune_log_root", explode)
     daemon = _daemon(tmp_path, _FakeFolder(), _FakeCards())
+    log_root = daemon.config.log_root
+    monkeypatch.setattr(mod, "prune_log_root", explode_only_for_the_log_root)
     daemon._run_one(Job("j1", "t", "/tmp/t.yaml"), card=0)   # must not raise
 
 
@@ -260,13 +394,22 @@ def test_the_protected_structures_set_is_bounded_to_the_most_recent_few(tmp_path
 
 
 def test_a_structures_pruning_failure_does_not_stop_the_daemon(tmp_path, monkeypatch):
+    """The companion half of the pair described in
+    test_a_pruning_failure_does_not_stop_the_daemon above: this one only
+    explodes for the structures root, so only _prune_structures's own
+    try/except is on the hook, independent of whatever _prune_logs does.
+    """
     from runner import daemon as mod
 
-    def explode(root, budget, protect=None):
-        raise OSError("disk gone strange")
+    folder = _FakeFolder()
 
-    monkeypatch.setattr(mod, "prune_log_root", explode)
-    daemon = _daemon(tmp_path, _FakeFolder(), _FakeCards())
+    def explode_only_for_the_structures_dir(root, budget, protect=None):
+        if root == folder.structures_dir:
+            raise OSError("disk gone strange")
+        return (0, [])
+
+    monkeypatch.setattr(mod, "prune_log_root", explode_only_for_the_structures_dir)
+    daemon = _daemon(tmp_path, folder, _FakeCards())
     daemon._run_one(Job("j1", "t", "/tmp/t.yaml"), card=0)   # must not raise
 
 
@@ -458,3 +601,179 @@ def test_a_claim_race_with_the_telemetry_thread_requeues_the_job_and_continues(
         "a job that loses the claim race must be requeued, not dropped"
     )
     assert folder.folded == [], "a quarantined claim must never reach fold()"
+
+
+# --- Daemon.run()'s loop body, driven end to end -----------------------
+#
+# Every test above either pre-stops the daemon before the loop body ever runs
+# (test_run_may_not_be_called_twice_on_one_instance) or deliberately loses the
+# card-claim race before fold() is ever reached
+# (test_a_claim_race_with_the_telemetry_thread_requeues_the_job_and_continues),
+# or calls _run_one() directly rather than through run(). None of them would
+# notice self.server.start(), self.folder.load(), or
+# self._run_one(job, card=card) being deleted from run()'s body -- verified
+# by mutating each in turn (see final-fix-report.md).
+
+class _StoppingFolder(_FakeFolder):
+    """Like _FakeFolder, but stops the daemon from inside fold() -- the same
+    technique _RaceCards above uses to end run()'s otherwise-unbounded loop
+    deterministically -- and, before folding, asserts the UI socket file
+    already exists. Checking for the file's existence (rather than
+    connecting a client and reading `hello`) keeps this test decoupled from
+    the daemon's greeting machinery, which is exercised directly by the
+    _hello() tests further below; it only needs to confirm server.start()
+    actually ran before any fold does.
+    """
+
+    def __init__(self, daemon_holder):
+        super().__init__()
+        self._daemon_holder = daemon_holder
+
+    def fold(self, job_id, input_path, emit, **kwargs):
+        daemon = self._daemon_holder["daemon"]
+        assert Path(daemon.config.socket_path).exists(), (
+            "the UI socket must already be serving by the time a fold runs")
+        try:
+            super().fold(job_id, input_path, emit, **kwargs)
+        finally:
+            daemon.stop()
+
+
+def test_run_drives_the_real_loop_body_end_to_end(tmp_path, monkeypatch):
+    """Drives Daemon.run() itself (not _run_one) through one full, ordinary
+    iteration: server.start(), folder.load(), claim a card, fold the
+    playlist's one target, then stop. Verified (final-fix-report.md) to go
+    red against each of three mutations: deleting self.folder.load(),
+    deleting self.server.start(), and replacing
+    self._run_one(job, card=card) with `pass`.
+    """
+    from runner import daemon as mod
+    monkeypatch.setattr(mod, "sample_tt_smi", lambda timeout=5.0: [])
+
+    playlist = tmp_path / "playlist"
+    playlist.mkdir()
+    (playlist / "trpcage.yaml").write_text("version: 1\n")
+
+    daemon_holder = {}
+    folder = _StoppingFolder(daemon_holder)
+    daemon = _daemon(tmp_path, folder, _FakeCards())
+    daemon_holder["daemon"] = daemon
+
+    # Safety net, not the mechanism under test: if the mutation being
+    # checked for is `_run_one(...)` replaced with `pass`, fold() -- and
+    # therefore this test's own daemon.stop() call inside it -- never runs.
+    # Without an independent bound the loop would then spin forever (the
+    # fake CardPool's schedulable() never reflects a claimed-but-never-
+    # released card the way the real CardPool would), pegging the CPU
+    # instead of failing. A external watchdog, not the fold-triggered stop,
+    # is what makes that failure mode finite. Cancelled well before it
+    # would ever fire on the passing path (fold() stops the daemon almost
+    # immediately), so it costs nothing when nothing is wrong.
+    watchdog = threading.Timer(2.0, daemon.stop)
+    watchdog.start()
+    try:
+        daemon.run()
+    finally:
+        watchdog.cancel()
+
+    assert folder.loads == 1, "the model must actually be loaded before folding"
+    assert [t for _j, t, _c in folder.folded] == ["trpcage"], (
+        "the daemon must actually have folded the playlist's one target")
+
+
+# --- Daemon._hello() ------------------------------------------------------
+#
+# Nothing above ever calls _hello() -- every test constructs its daemon via
+# _daemon(), which stubs Daemon._emit but leaves _hello untouched, and then
+# either calls _run_one() directly or drives run() without any UI client
+# ever connecting (so EventServer's accept loop never calls the
+# hello_factory it was given). test_runner_server.py's own tests exercise
+# EventServer's hello-calling *mechanism* with a locally defined _hello()
+# fixture, never the daemon's real one -- so a bug in Daemon._hello itself
+# (e.g. a wrong "version") had zero coverage anywhere in the suite.
+
+def test_hello_reports_the_protocol_version(tmp_path):
+    from protocol.events import PROTOCOL_VERSION
+    daemon = _daemon(tmp_path, _FakeFolder(), _FakeCards())
+    daemon._folder_ready = True   # simulate a daemon that has already loaded
+    hello = daemon._hello()
+    assert hello["type"] == "hello"
+    assert hello["version"] == PROTOCOL_VERSION
+
+
+def test_hello_reports_the_full_card_inventory_not_only_schedulable_cards(tmp_path):
+    """A card busy mid-fold must not vanish from a UI's greeting just
+    because it is not currently schedulable -- `hello.cards` describes what
+    hardware exists, not what happens to be free at this instant (that's
+    what card_state events are for). Using a real CardPool (not
+    _FakeCards) so this exercises the actual precedence/inventory logic,
+    not a test double that could trivially get this right by accident.
+    """
+    from runner.cards import CardPool
+
+    cards = CardPool([0, 1])
+    cards.mark_busy(0)
+    daemon = _daemon(tmp_path, _FakeFolder(), cards)
+    daemon._folder_ready = True
+    hello = daemon._hello()
+    assert sorted(hello["cards"]) == [0, 1], (
+        "a busy card must still appear in hello's card inventory")
+
+
+def test_hello_reports_not_ready_before_the_first_successful_load(tmp_path):
+    daemon = _daemon(tmp_path, _FakeFolder(), _FakeCards())
+    assert daemon._hello() == {
+        "type": "not_ready",
+        "missing": ["device: Folder.load() has not succeeded yet"],
+    }
+
+
+# --- A transient Folder.load() failure ------------------------------------
+
+class _FlakyLoadFolder(_FakeFolder):
+    """load() raises for the first `fail_times` calls, then succeeds --
+    stands in for a transient condition clearing on retry (e.g. the device
+    lease the reviewer verified live: card 0 already held by another
+    process).
+    """
+
+    def __init__(self, fail_times):
+        super().__init__()
+        self._fail_times = fail_times
+
+    def load(self):
+        self.loads += 1
+        if self.loads <= self._fail_times:
+            raise RuntimeError("device 0 already leased by another process")
+
+
+def test_a_transient_folder_load_failure_serves_not_ready_and_retries(
+    tmp_path, monkeypatch
+):
+    """Verified live by the reviewer: with card 0 already leased by another
+    process, Folder.load() raising used to propagate straight out of
+    run() and kill the daemon with a traceback. An unattended booth cannot
+    recover from a dead process on its own -- run() must retry instead.
+    """
+    from runner import daemon as mod
+    monkeypatch.setattr(mod, "sample_tt_smi", lambda timeout=5.0: [])
+    monkeypatch.setattr(mod, "LOAD_RETRY_PERIOD_S", 0.01)   # keep the test fast
+
+    folder = _FlakyLoadFolder(fail_times=2)
+    daemon = _daemon(tmp_path, folder, _FakeCards())
+
+    assert daemon._hello()["type"] == "not_ready", (
+        "before the first successful load, hello must not claim readiness")
+
+    # Bounded externally: once load() succeeds there is an empty playlist,
+    # so run() idles (self._stop.wait(10.0)) rather than returning on its
+    # own. threading.Event.wait() returns as soon as the event is set, so
+    # this ends the test promptly rather than actually waiting out 10s.
+    watchdog = threading.Timer(1.0, daemon.stop)
+    watchdog.start()
+    try:
+        daemon.run()   # must not raise
+    finally:
+        watchdog.cancel()
+
+    assert folder.loads == 3, "two failures, then a successful third load"

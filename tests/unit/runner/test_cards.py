@@ -141,3 +141,15 @@ def test_mark_busy_on_a_quarantined_card_raises():
     pool.update([_card(0, 91.0)])
     with pytest.raises(ValueError):
         pool.mark_busy(0)
+
+
+def test_all_indices_reports_every_card_regardless_of_busy_or_hot_state():
+    """Distinct from schedulable(): a busy or quarantined card must still
+    appear here -- see runner/daemon.py's Daemon._hello, the call site this
+    exists for.
+    """
+    pool = CardPool([0, 1])
+    pool.mark_busy(0)
+    pool.update([_card(1, 91.0)])
+    assert pool.schedulable() == []            # neither card is free
+    assert pool.all_indices() == [0, 1]        # both still exist
