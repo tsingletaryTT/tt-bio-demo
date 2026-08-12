@@ -115,13 +115,27 @@ fi
 # contradict it: you would get a green "OVERALL: PASS" that had proved
 # strictly less than the last one, with nothing on screen saying so. Instead
 # the skip is announced up front and restated in the combined result.
+#
+# --hw is accepted in ANY argument position, not just first. Everything else
+# here is passed through to pytest, so the natural thing to type is
+# `./scripts/test.sh -k telemetry --hw` -- and a first-arg-only check would
+# silently ignore the flag there and report a green software-only run to
+# someone who had just asked for hardware coverage. Filtering it out of the
+# list wherever it appears costs three lines and removes that whole class of
+# mistake.
 RUN_HW=0
-if [[ "${1:-}" == "--hw" ]]; then
-  RUN_HW=1
-  shift
-elif [[ "${TT_BIO_DEMO_HW_TESTS:-0}" == "1" ]]; then
+if [[ "${TT_BIO_DEMO_HW_TESTS:-0}" == "1" ]]; then
   RUN_HW=1
 fi
+_passthrough=()
+for _arg in "$@"; do
+  if [[ "$_arg" == "--hw" ]]; then
+    RUN_HW=1
+  else
+    _passthrough+=("$_arg")
+  fi
+done
+set -- ${_passthrough[@]+"${_passthrough[@]}"}
 
 # Matches setup-venvs.sh's default; override with --prefix there and
 # TT_BIO_DEMO_PREFIX here if you built the venvs somewhere else.
