@@ -187,6 +187,32 @@ def test_a_run_fold_failure_is_wrapped_in_fold_error(monkeypatch):
         _fold(folder)
 
 
+def test_a_broken_trajectory_tap_is_wrapped_in_fold_error(monkeypatch):
+    """install_trajectory_tap() calls check_tap_supported(), which raises
+    TapUnavailable -- not FoldError -- when tt-bio's internals no longer
+    match what the tap expects (see runner/dump_tap.py). fold()'s own
+    docstring promises "Raises FoldError on failure"; that must hold
+    regardless of which step inside fold() is the one that goes wrong.
+
+    Regression: install_trajectory_tap() used to be called before fold()'s
+    own try block began, so TapUnavailable escaped fold() directly instead
+    of being wrapped -- exactly the kind of exception the daemon's fold loop
+    relies on FoldError-only handling to catch.
+    """
+    # A tt_bio.protenix with no edm_sample at all: check_tap_supported's own
+    # definition of "the tap cannot work" (see test_dump_tap.py).
+    mod = types.ModuleType("tt_bio.protenix")
+    pkg = types.ModuleType("tt_bio")
+    pkg.protenix = mod
+    monkeypatch.setitem(sys.modules, "tt_bio", pkg)
+    monkeypatch.setitem(sys.modules, "tt_bio.protenix", mod)
+
+    folder = Folder()
+    folder._loaded = True
+    with pytest.raises(FoldError, match="edm_sample"):
+        _fold(folder)
+
+
 def test_an_unexpected_progress_stage_is_dropped_not_fatal(monkeypatch):
     """tt-bio only ever reports trunk/diffusion today, but progress_fn is
     external instrumentation this module doesn't control -- an unrecognized

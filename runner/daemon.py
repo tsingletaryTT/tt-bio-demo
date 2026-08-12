@@ -60,6 +60,10 @@ class Daemon:
         self._stop = threading.Event()
         self._failures = {}
         self._quarantined = set()
+        self._telemetry_thread = None
+        # run() opens the device; guards against a second call reopening
+        # one on an already-closed Folder (see run()'s docstring).
+        self._started = False
 
     def _hello(self):
         return {"type": "hello", "version": PROTOCOL_VERSION,
@@ -83,6 +87,22 @@ class Daemon:
                                   input_path=str(target)))
 
     def run(self):
+        """Run the fold loop until stop() is called.
+
+        May be called at most once per Daemon instance. The device is opened
+        exactly once per daemon lifetime (a global constraint on this whole
+        module), and this method is what opens it; a second call would find
+        self.folder already closed from the first call's teardown and, since
+        Folder.load() is written to reopen after a close(), would silently
+        open a second real device on it. Not reachable from main() today
+        (it constructs one Daemon and calls run() once) -- this guard exists
+        so that stays true if this is ever wired up differently later.
+        """
+        if self._started:
+            raise RuntimeError(
+                "Daemon.run() may only be called once per instance; "
+                "construct a new Daemon to run again")
+        self._started = True
         self.server.start()
         try:
             # NOTE (deviation from the brief, safety-critical): the brief
@@ -102,7 +122,15 @@ class Daemon:
             if self.folder is None:
                 self.folder = Folder(device_id=self.config.device_id)
             self.folder.load()
-            threading.Thread(target=self._telemetry_loop, daemon=True).start()
+            # Stored (rather than fire-and-forget) so the finally below can
+            # join it before closing the folder and server: without a
+            # handle, shutdown order between "telemetry thread still
+            # running" and "device/socket being torn out from under it" was
+            # whatever the OS scheduler happened to do, not something this
+            # code chose.
+            self._telemetry_thread = threading.Thread(
+                target=self._telemetry_loop, daemon=True)
+            self._telemetry_thread.start()
 
             while not self._stop.is_set():
                 # Spec §6: when no card may take work (all quarantined, or the
@@ -138,9 +166,32 @@ class Daemon:
 
                 self._run_one(job, card=card)
         finally:
+            # Set unconditionally (not just when stop() was already called
+            # externally): if something above raised past the while loop
+            # without _stop ever being set, the telemetry thread's own
+            # `while not self._stop.wait(TELEMETRY_PERIOD_S)` would otherwise
+            # never see a reason to end, and the join below would just sit
+            # out its timeout instead of returning promptly.
+            self._stop.set()
+            if self._telemetry_thread is not None:
+                self._telemetry_thread.join(timeout=TELEMETRY_PERIOD_S + 1.0)
             if self.folder is not None:
                 self.folder.close()
             self.server.stop()
+
+    def _record_failure(self, target_id):
+        """Count one more failure for `target_id`; quarantine at the threshold.
+
+        Shared by both except branches in _run_one: a target that fails is a
+        target that fails, whether the exception was FoldError (fold()'s own
+        documented contract) or something else entirely (the backstop below).
+        """
+        count = self._failures.get(target_id, 0) + 1
+        self._failures[target_id] = count
+        if count >= QUARANTINE_AFTER:
+            self._quarantined.add(target_id)
+            log.error("target %s failed %d times; quarantined for this session",
+                      target_id, count)
 
     def _run_one(self, job, card):
         # The card is already claimed by the caller — claiming here would
@@ -155,12 +206,26 @@ class Daemon:
             log.exception("fold failed for %s", job.target_id)
             self._emit({"type": "job_error", "job_id": job.job_id,
                         "target_id": job.target_id, "message": str(exc)})
-            count = self._failures.get(job.target_id, 0) + 1
-            self._failures[job.target_id] = count
-            if count >= QUARANTINE_AFTER:
-                self._quarantined.add(job.target_id)
-                log.error("target %s failed %d times; quarantined for this session",
-                          job.target_id, count)
+            self._record_failure(job.target_id)
+        except Exception as exc:
+            # Backstop, deliberately separate from the branch above: fold()
+            # documents "raises FoldError on failure", but this loop must not
+            # bet the whole booth on every collaborator always keeping that
+            # promise (see runner/folder.py's fix for one place it didn't:
+            # TapUnavailable used to escape fold() directly). Anything that
+            # is not BaseException-level control flow (KeyboardInterrupt,
+            # SystemExit -- neither of which subclasses Exception, so bare
+            # `except Exception` already leaves them alone) gets treated
+            # exactly like a fold failure for counting and quarantine
+            # purposes, but logged distinctly so an operator can tell "a
+            # normal fold failure" apart from "something violated its own
+            # contract and needs a real fix".
+            log.exception("unexpected (non-FoldError) exception folding %s; "
+                          "treating as a fold failure so the daemon keeps going",
+                          job.target_id)
+            self._emit({"type": "job_error", "job_id": job.job_id,
+                        "target_id": job.target_id, "message": str(exc)})
+            self._record_failure(job.target_id)
         finally:
             event = self.cards.mark_idle(card)
             if event is not None:

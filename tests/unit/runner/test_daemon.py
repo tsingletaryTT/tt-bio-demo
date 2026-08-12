@@ -107,6 +107,26 @@ def test_a_failed_fold_does_not_propagate_out_of_run_one(tmp_path):
     daemon._run_one(Job("j1", "bad", "/tmp/b.yaml"), card=0)   # must not raise
 
 
+def test_a_non_fold_error_exception_is_still_reported_and_does_not_crash_the_loop(tmp_path):
+    """Folder.fold() is documented to raise only FoldError, but the daemon's
+    loop must not bet the whole booth on every collaborator keeping that
+    promise -- see runner/folder.py's own fix, where TapUnavailable used to
+    escape fold() directly instead of being wrapped. This pins the daemon
+    side's backstop independently of whether Folder.fold() itself is correct
+    today: _FakeFolder here raises a plain RuntimeError, something FoldError
+    handling alone would not catch.
+    """
+    folder = _FakeFolder({"bad": RuntimeError("tap fell over unexpectedly")})
+    cards = _FakeCards()
+    daemon = _daemon(tmp_path, folder, cards)
+    daemon._run_one(Job("j1", "bad", "/tmp/b.yaml"), card=0)   # must not raise
+
+    errors = [e for e in daemon.events if e["type"] == "job_error"]
+    assert len(errors) == 1
+    assert errors[0]["target_id"] == "bad"
+    assert cards.idle_calls == [0], "the card must still be released"
+
+
 def test_a_target_is_quarantined_after_three_consecutive_failures(tmp_path):
     folder = _FakeFolder({"bad": FoldError("boom")})
     daemon = _daemon(tmp_path, folder, _FakeCards())
@@ -187,6 +207,19 @@ def test_main_reports_preflight_failure_and_exits_non_zero(tmp_path, capsys, mon
     assert code == 2
     out = capsys.readouterr().out
     assert "missing:" in out, "an operator needs the list, not just an exit code"
+
+
+def test_run_may_not_be_called_twice_on_one_instance(tmp_path):
+    """The device is opened exactly once per daemon lifetime, and run() is
+    what opens it. A second call would find self.folder already closed by
+    the first call's teardown and (Folder.load() being written to reopen
+    after a close()) would silently open a second real device on it.
+    """
+    daemon = _daemon(tmp_path, _FakeFolder(), _FakeCards())
+    daemon.stop()          # pre-stop so the first run() returns immediately
+    daemon.run()
+    with pytest.raises(RuntimeError, match="once"):
+        daemon.run()
 
 
 class _RaceCards(_FakeCards):

@@ -174,13 +174,26 @@ class Folder:
             emit({"type": "stage", "job_id": job_id, "stage": stage,
                   "frac": _progress_frac(stage, step, total)})
 
-        handle = install_trajectory_tap(on_frame)
+        # install_trajectory_tap() itself can fail -- it calls
+        # check_tap_supported(), which raises TapUnavailable if tt-bio's
+        # internals no longer match what the tap expects (see dump_tap.py).
+        # That call used to sit *before* this try block, so TapUnavailable
+        # escaped fold() directly instead of becoming a FoldError -- breaking
+        # this method's own documented contract ("Raises FoldError on
+        # failure") for exactly the caller (the daemon's fold loop) that
+        # relies on it to catch every way a fold can go wrong. `handle`
+        # starts as None so the finally below can tell "never installed"
+        # apart from "installed, then _run_fold raised" without calling
+        # remove_trajectory_tap on a name that was never bound.
+        handle = None
         try:
+            handle = install_trajectory_tap(on_frame)
             result = self._run_fold(input_path, on_progress, n_step)
         except Exception as exc:
             raise FoldError(f"fold failed for {target_id}: {exc}") from exc
         finally:
-            remove_trajectory_tap(handle)
+            if handle is not None:
+                remove_trajectory_tap(handle)
 
         emit({"type": "stage", "job_id": job_id, "stage": "confidence",
               "frac": _bracket_frac("confidence")})
