@@ -368,27 +368,61 @@ _PANEL_CSS = f"""
    muted brand `_GREEN` (`#6FABA0`) instead -- a completed stage reads as
    settled, not as the loudest thing on screen -- while `_ACCENT` stays the
    ONE hue reserved exclusively for the row actually moving. ACTIVE also
-   gets a taller trough (8px vs the 6px DONE/PENDING share) so the moving
-   row carries a little extra weight that isn't hue-dependent -- the same
-   "don't rely on colour alone" principle this module's own tri-state
-   already leans on via label text and font-weight, extended to the bar
-   itself for a colour-blind viewer. */
+   gets a taller trough AND a taller fill (10px vs the 6px DONE/PENDING
+   share) so the moving row carries a little extra weight that isn't
+   hue-dependent -- the same "don't rely on colour alone" principle this
+   module's own tri-state already leans on via label text and font-weight,
+   extended to the bar itself for a colour-blind viewer.
+
+   Second pass, found only by profiling the RENDERED PIXELS vertically
+   (not by sampling one centre pixel, and not by reading this CSS): the
+   desktop GTK theme draws its OWN 1px border on the `progress` node
+   independently of anything set here, and a bare `min-height` on `trough`
+   does NOT propagate to the `progress` node nested inside it -- so the
+   fill itself stayed the theme's ~2px default regardless of trough
+   height, wrapped in a theme-coloured (not brand-palette) border on each
+   side. At a 2px fill, that border was HALF the bar's visual mass, so
+   every row still read as the theme's blue outline colour, not `_GREEN`
+   or `_ACCENT` -- the DONE/ACTIVE distinction this section exists for was
+   invisible in practice even though the CSS "worked" and a single pixel
+   sample at bar centre "confirmed" the right hex. Fixed by (1) setting an
+   explicit `min-height` on the `progress` node itself, not just `trough`,
+   so the fill has real substance instead of inheriting whatever the theme
+   defaults to, and (2) `border: none; box-shadow: none;` on BOTH `trough`
+   and `progress` -- GTK themes draw outlines with either property, so
+   both are killed -- leaving zero theme-owned pixels anywhere in the bar's
+   vertical extent. Verified after the fix with a full vertical pixel
+   profile through the centre of every row, not a single sample (see this
+   task's report). */
 .pipeline-progress trough {{
     min-height: 6px;
     border-radius: 3px;
+    border: none;
+    box-shadow: none;
+    padding: 0;
     background-color: {_TROUGH_TRACK};
 }}
 .stage-active.pipeline-progress trough {{
-    min-height: 8px;
-    border-radius: 4px;
+    min-height: 10px;
+    border-radius: 5px;
+}}
+.pipeline-progress trough progress {{
+    border: none;
+    box-shadow: none;
+    margin: 0;
+    border-radius: 3px;
 }}
 .stage-done.pipeline-progress trough progress {{
+    min-height: 6px;
     background-color: {_GREEN};
 }}
 .stage-active.pipeline-progress trough progress {{
+    min-height: 10px;
+    border-radius: 5px;
     background-color: {_ACCENT};
 }}
 .stage-pending.pipeline-progress trough progress {{
+    min-height: 6px;
     background-color: {_TROUGH_TRACK};
 }}
 """
