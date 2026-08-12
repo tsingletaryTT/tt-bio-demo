@@ -15,12 +15,15 @@ Two of these encode findings from the Phase 3a spike:
 
 import numpy as np
 
-from protocol.events import pack_coords
-
-# The full vocabulary the protocol promises. tt-bio itself only ever reports
-# `trunk` and `diffusion`; the other four are emitted by the daemon bracketing
-# the work it does around the fold.
-STAGE_ORDER = ("msa", "prep", "trunk", "diffusion", "confidence", "saving")
+# STAGE_ORDER lives in protocol/events.py now, not here -- that module is
+# the one both the UI venv (system python3, no torch/tt-bio) and this venv
+# can import, so it is the shared source of truth for the stage vocabulary.
+# Re-exported (a bare import, not a copy) so every existing `from
+# runner.shaping import STAGE_ORDER` -- including this module's own test,
+# tests/unit/runner/test_shaping.py -- keeps working unchanged. See
+# protocol/events.py's own comment above STAGE_ORDER for the full story of
+# why this moved.
+from protocol.events import STAGE_ORDER, pack_coords  # noqa: F401
 
 
 def select_frame_steps(total, target=30):
