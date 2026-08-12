@@ -213,6 +213,29 @@ def test_a_broken_trajectory_tap_is_wrapped_in_fold_error(monkeypatch):
         _fold(folder)
 
 
+def test_a_malformed_run_fold_result_is_wrapped_in_fold_error(monkeypatch):
+    """fold()'s tail end used to read result["cif_path"] and
+    result["mean_plddt"] *after* the try/except that wraps _run_fold, so a
+    _run_fold that returned something not shaped like the documented
+    {'cif_path': str, 'mean_plddt': float} raised a raw KeyError/TypeError
+    straight out of fold() -- breaking the "Raises FoldError on failure"
+    contract for exactly the failure mode most likely once _run_fold talks
+    to real tt-bio (an upstream return-shape change, a missing key). Both a
+    missing key and a value plddt_to_percent can't coerce to float must
+    become FoldError, not whatever exception the malformed access happens
+    to raise.
+    """
+    missing_key = _folder_with_fake_fold(monkeypatch, result={"cif_path": "/tmp/x.cif"})
+    with pytest.raises(FoldError, match="mean_plddt"):
+        _fold(missing_key)
+
+    bad_value = _folder_with_fake_fold(
+        monkeypatch, result={"cif_path": "/tmp/x.cif", "mean_plddt": "not-a-number"},
+    )
+    with pytest.raises(FoldError, match="not-a-number|could not convert"):
+        _fold(bad_value)
+
+
 def test_an_unexpected_progress_stage_is_dropped_not_fatal(monkeypatch):
     """tt-bio only ever reports trunk/diffusion today, but progress_fn is
     external instrumentation this module doesn't control -- an unrecognized
