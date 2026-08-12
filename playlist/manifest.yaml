@@ -1,0 +1,33 @@
+# The booth's playlist: which fold targets a visitor can pick, and where each
+# one's input spec lives. Loaded by ui/playlist.py (see that module's
+# docstring for the manifest format and, in particular, for why every
+# relative path below resolves against THIS FILE'S OWN DIRECTORY -- not the
+# process's working directory, which differs between the daemon and the UI.
+#
+# One target ships today: Trp-cage, vendored into examples/ in Phase 3a
+# specifically to remove a cross-repo absolute path
+# (~/code/tt-boltz/examples/trpcage_no_msa.yaml) that this project does not
+# control -- see that file's own header comment. Phase 4 owns growing this
+# list with curated targets, pre-cached MSAs, and thumbnail art; this phase
+# ships only the machinery and this one real entry.
+#
+# `model` is omitted here on purpose so this entry exercises
+# ui/playlist.py's DEFAULT_MODEL fallback (protenix-v2, this project's
+# default model everywhere else) for real, rather than only in a synthetic
+# unit test. `thumbnail` is omitted because Phase 4 owns the art; the
+# gallery (ui/gallery.py) renders a placeholder for any target without one.
+- id: trpcage
+  input: ../examples/trpcage_no_msa.yaml
+  name: Trp-cage
+  blurb: >-
+    At just 20 amino acids, Trp-cage is one of the smallest proteins known
+    to reliably fold into a stable shape on its own, snapping into place in
+    only a few microseconds -- fast enough that scientists use it as a
+    stripped-down test case for studying how any protein finds its shape at
+    all.
+  # Measured on this booth's own hardware (docs/followups.md, 30-fold soak):
+  # 5.7s cold (first fold after the model loads), 4.35-4.45s warm once the
+  # model is resident on the card. The attract loop keeps a fold running
+  # continuously, so a visitor's own pick almost always lands warm; 4.4s is
+  # the midpoint of the warm range and the representative number to show.
+  expected_s: 4.4
