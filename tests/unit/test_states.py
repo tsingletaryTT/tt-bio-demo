@@ -158,3 +158,126 @@ def test_leaving_showcase_clears_the_selected_target():
     sm.tick(now=3.0)
     assert sm.state == "attract"
     assert sm.selected_target is None
+
+
+# ---------------------------------------------------------------------------
+# CONTROLLER RULING (fix round 1, Task 7 review): not_ready is the one
+# deliberate exception to "nothing but tick(now) can end a showcase" --
+# a daemon that just told us it cannot fold must surface that immediately,
+# not after up to showcase_dwell_s of admiring a finished structure. This
+# was previously true in the code but false in the docstring, and pinned by
+# nothing; this test locks the chosen behavior in.
+# ---------------------------------------------------------------------------
+
+def test_not_ready_ends_a_showcase_immediately_even_mid_dwell():
+    """Mutation this catches: guarding the not_ready handler to skip while
+    `state == "showcase"` (i.e. resurrecting the discarded "let the dwell
+    finish first" alternative) -- that would leave state at "showcase"
+    here instead of "preparing"."""
+    sm = _showcased_sm(dwell_s=3.0)
+    assert sm.on_event({"type": "not_ready", "missing": ["x"]}) == "preparing"
+
+
+# ---------------------------------------------------------------------------
+# Robustness paths named by review fix round 1: on_pick/job_error from
+# states where they are not the "expected" caller, job_done arriving while
+# preparing, and tick(now) fed a non-monotonic clock. None of these are
+# hypothetical -- a GTK caller, a racy daemon, or a wall-clock adjustment can
+# all produce them, and "verified by hand, not tested" is exactly the gap
+# that let nineteen defects through in the previous phase.
+# ---------------------------------------------------------------------------
+
+def test_on_pick_from_attract_is_ignored():
+    """A pick with no gallery open is not a thing the real UI can produce,
+    but a caller bug (or a race between on_touch and on_pick) could still
+    fire one. Mutation this catches: dropping the `state == GALLERY` guard
+    in on_pick, so a pick from attract silently starts a fold with no
+    visible gallery behind it."""
+    sm = _sm()
+    assert sm.on_pick("x") == "attract"
+    assert sm.selected_target is None
+
+
+def test_on_pick_from_folding_does_not_restart_or_reassign():
+    """A double-tap on a gallery card, arriving after the first pick already
+    moved the booth to folding, must not reassign the in-flight target.
+    Mutation this catches: on_pick accepting from any state instead of only
+    `gallery`, which would let a second, different target_id overwrite
+    selected_target mid-fold."""
+    sm = _sm()
+    sm.on_touch()
+    sm.on_pick("first")
+    assert sm.on_pick("second") == "folding"
+    assert sm.selected_target == "first"
+
+
+def test_job_error_from_attract_does_not_change_state():
+    """An attract-loop fold failing (no visitor pick was ever made) has
+    nothing to unstick. Mutation this catches: job_error unconditionally
+    moving to `gallery` regardless of current state, which would yank the
+    ambient attract screen out from under nobody's request."""
+    sm = _sm()
+    assert sm.on_event({"type": "job_error", "job_id": "j", "target_id": "t",
+                        "message": "boom"}) == "attract"
+
+
+def test_job_error_while_preparing_does_not_recover():
+    """A job_error for work that was already in flight when not_ready fired
+    must not be mistaken for the daemon recovering -- only job_start does
+    that (see test_recovery_from_preparing_returns_to_attract_...).
+    Mutation this catches: treating job_error the same as job_start inside
+    the preparing branch (a plausible-looking "any daemon activity means
+    it's back" shortcut), which would flip this to "attract" instead of
+    leaving the not_ready message on screen."""
+    sm = _sm()
+    sm.on_event({"type": "not_ready", "missing": ["x"]})
+    assert sm.on_event({"type": "job_error", "job_id": "j", "target_id": "t",
+                        "message": "boom"}) == "preparing"
+
+
+def test_job_done_while_preparing_does_not_leak_into_showcase():
+    """A job_done for work that was already in flight when not_ready fired
+    must not paper over the degrade message with a showcase. Mutation this
+    catches: removing the preparing branch's unconditional early return for
+    non-job_start events, letting a stray job_done fall through to its own
+    handler below and flip the state to "showcase" mid-degrade."""
+    sm = _sm()
+    sm.on_event({"type": "not_ready", "missing": ["x"]})
+    assert sm.on_event({"type": "job_done", "job_id": "j1"}) == "preparing"
+
+
+def test_a_backwards_clock_does_not_prematurely_end_a_showcase():
+    """tick(now) takes the clock as a plain argument; a caller will
+    eventually hand it a non-monotonic value (wall-clock adjustment, NTP
+    step, a restarted GLib source). Mutation this catches: computing
+    elapsed dwell time as `abs(now - entered_at)` instead of
+    `now - entered_at` (a plausible-looking "defensive" fix for backwards
+    clocks that actually makes them WORSE) -- abs() of a large negative
+    jump reads as dwell-elapsed and ends the showcase instantly instead of
+    just not advancing it."""
+    sm = _showcased_sm(dwell_s=3.0)          # entered_at stamped at now=0.0
+    assert sm.tick(now=-100.0) == "showcase"
+
+
+def test_a_backwards_clock_does_not_prematurely_trigger_the_idle_timeout():
+    """Same non-monotonic-clock robustness, for the idle timer. Mutation
+    this catches: the same `abs()` mistake applied to the idle baseline
+    comparison, which would time out to attract on a large backwards jump
+    instead of simply not accumulating negative elapsed time."""
+    sm = _sm()
+    sm.on_touch()
+    sm.tick(now=100.0)                        # baseline stamped at 100.0
+    assert sm.tick(now=-1000.0) == "gallery"
+
+
+def test_repeated_identical_tick_calls_do_not_advance_the_showcase_dwell():
+    """A GLib source firing twice for the same clock reading (or any caller
+    calling tick() more than once per frame) must be idempotent -- it must
+    not look like time passed twice. Mutation this catches: re-stamping
+    `_showcase_entered_at` on every tick instead of only the first one
+    after job_done, which would make the dwell perpetually "just started"
+    and never elapse."""
+    sm = _showcased_sm(dwell_s=2.0)            # entered_at stamped at now=0.0
+    for _ in range(5):
+        assert sm.tick(now=0.0) == "showcase"
+    assert sm.tick(now=2.0) == "attract"

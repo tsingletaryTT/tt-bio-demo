@@ -35,10 +35,17 @@ the demo's headline defect for a booth whose whole premise is "watch it
 fold".
 
 `showcase_dwell_s` is the fix: once a structure finishes, the booth is
-guaranteed to hold on it for at least this long, and NOTHING -- not a new
-`job_start`, not a `job_error`, not a touch -- can cut that short. Only
-`tick(now)` can end a showcase, and only once the dwell has actually
-elapsed.
+guaranteed to hold on it for at least this long. Within the normal
+visitor loop, nothing -- not a new `job_start`, not a `job_error`, not a
+touch -- can cut that short; only `tick(now)` ends a showcase, and only
+once the dwell has actually elapsed. The ONE deliberate exception is
+`not_ready`: a degrading daemon overrides a showcase in progress exactly
+as it overrides everything else (see `on_event`), on the CONTROLLER
+RULING that a daemon which can no longer fold must be surfaced to the
+visitor immediately -- hiding that behind a decorative dwell serves
+nobody. `test_not_ready_ends_a_showcase_immediately_even_mid_dwell`
+(tests/unit/test_states.py) pins this choice down so a future edit
+cannot silently flip it either way.
 
 Default: 3.0 seconds. The measured warm fold time is 4.35-4.45s (cold
 5.7s) and the idle timeout is 45s, so 3.0s sits well inside both: long
@@ -128,7 +135,12 @@ class StateMachine:
 
         # not_ready is the daemon's degrade path. It must be visible to a
         # visitor immediately -- that is what `preparing` is for -- and it
-        # overrides whatever the visitor was doing, unconditionally.
+        # overrides whatever the visitor was doing, unconditionally --
+        # INCLUDING an in-progress `showcase`, deliberately: this is the one
+        # documented exception to the dwell guarantee (see module
+        # docstring). A daemon that just told us it cannot fold must not be
+        # hidden behind up to `showcase_dwell_s` of "look at this finished
+        # structure" first.
         if etype == "not_ready":
             self.state = BoothState.PREPARING
             self.selected_target = None
@@ -178,6 +190,15 @@ class StateMachine:
             # earlier showcase is still being held (rare, but possible if
             # the daemon runs ahead) starts a fresh dwell for the NEW
             # ribbon rather than extending the old one.
+            #
+            # This fires from ANY state, including `gallery` -- a stale or
+            # late job_done (e.g. for a job a visitor never picked, or one
+            # whose job_error/job_done ordering raced) would interrupt a
+            # visitor actively browsing the gallery. This is believed
+            # unreachable while the protocol stays strictly serial (one
+            # fold in flight at a time, one job_done per job_start), but it
+            # is a real consequence of "every job_done gets a full dwell"
+            # and is flagged here rather than silently relied upon.
             self.state = BoothState.SHOWCASE
             self._showcase_entered_at = None
             return self.state
