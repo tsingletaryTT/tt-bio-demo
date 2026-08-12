@@ -12,9 +12,26 @@ import pytest
 from protocol.events import EVENT_TYPES, unpack_coords
 from runner.folder import Folder
 
-INPUT = pathlib.Path.home() / "code/tt-boltz/examples/trpcage_no_msa.yaml"
-
-pytestmark = pytest.mark.skipif(not INPUT.exists(), reason=f"missing input {INPUT}")
+# Vendored in this repo (examples/trpcage_no_msa.yaml), not read from a
+# sibling tt-boltz checkout. This module used to point at
+# ~/code/tt-boltz/examples/trpcage_no_msa.yaml -- an absolute path into a
+# different repository this one does not control -- and skipped the whole
+# module (all 7 tests) via pytest.mark.skipif if that path was ever
+# missing. That is a silent-pass hazard: the runner half of scripts/test.sh
+# still collects its other ~120 unit tests either way, so the "zero tests
+# matched" exit-5 guard never fires, and the suite prints OVERALL: PASS
+# with zero coverage of the demo's headline mechanism (a real fold actually
+# condensing out of noise) if that sibling path ever moved. Vendoring the
+# input removes the cross-repo dependency outright, so the file existing is
+# now a fact about this repo, not about the environment it happens to run
+# in -- if it is ever missing, that is a real problem with this checkout,
+# not a legitimate reason to skip quietly, hence the loud assert (not
+# skipif) below. The legitimate skip reason that remains -- no card present
+# -- is still handled, by the `tt_device` fixture in conftest.py.
+INPUT = pathlib.Path(__file__).resolve().parent.parent.parent / "examples" / "trpcage_no_msa.yaml"
+assert INPUT.is_file(), (
+    f"vendored integration-test input is missing: {INPUT} -- this should "
+    "be tracked in git; see this module's own comment above")
 
 
 @pytest.fixture(scope="module")
