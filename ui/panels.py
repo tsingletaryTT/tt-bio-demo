@@ -359,14 +359,31 @@ _PANEL_CSS = f"""
    >=4.5:1 text-legibility rule (see tests/unit/test_panels.py), so the
    ACTIVE fill uses the pure, saturated brand accent (`_ACCENT`, not the
    lightened `_ACCENT_TEXT` reserved for text) -- the one genuinely bright
-   thing in either panel, on purpose. */
+   thing in either panel, on purpose.
+
+   Design tweak (booth legibility pass): DONE's fill used to be `_BG_ALT`
+   (near-white, `#C7D9D8`) -- at full width, that made every finished stage
+   the single brightest, highest-contrast element in the panel, out-pulling
+   the ACTIVE row it was supposed to defer to. DONE now fills with the
+   muted brand `_GREEN` (`#6FABA0`) instead -- a completed stage reads as
+   settled, not as the loudest thing on screen -- while `_ACCENT` stays the
+   ONE hue reserved exclusively for the row actually moving. ACTIVE also
+   gets a taller trough (8px vs the 6px DONE/PENDING share) so the moving
+   row carries a little extra weight that isn't hue-dependent -- the same
+   "don't rely on colour alone" principle this module's own tri-state
+   already leans on via label text and font-weight, extended to the bar
+   itself for a colour-blind viewer. */
 .pipeline-progress trough {{
     min-height: 6px;
     border-radius: 3px;
     background-color: {_TROUGH_TRACK};
 }}
+.stage-active.pipeline-progress trough {{
+    min-height: 8px;
+    border-radius: 4px;
+}}
 .stage-done.pipeline-progress trough progress {{
-    background-color: {_BG_ALT};
+    background-color: {_GREEN};
 }}
 .stage-active.pipeline-progress trough progress {{
     background-color: {_ACCENT};
@@ -571,8 +588,14 @@ class PipelinePanel(Gtk.Box):
     its own, only the mapping from each `(name, fraction, state)` row to a
     label + progress bar and a CSS class for `state`. Colour is spent
     sparingly (per this redesign's direction): only the ACTIVE row's label
-    and fill get the brand accent; done/pending are distinguished from it
-    by weight and fill amount, not a second and third hue.
+    and fill get the brand accent (`_ACCENT`), reserved exclusively for it;
+    DONE reads settled in the muted brand green (`_GREEN`) rather than a
+    bright neutral, and PENDING stays the dim, near-invisible track it
+    always was. All three are also distinguishable without hue at all --
+    fill extent (full / partial / empty) and weight (ACTIVE's trough is
+    taller, its label bolder) -- so the row that is actually moving is the
+    one the eye lands on, from across a booth, even for a colour-blind
+    viewer.
     """
 
     def __init__(self):
