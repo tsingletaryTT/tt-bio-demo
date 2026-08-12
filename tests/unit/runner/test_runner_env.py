@@ -140,3 +140,89 @@ def test_refuses_a_root_that_is_not_a_directory(tmp_path):
     f.write_text("x")
     freed, removed = prune_log_root(f, max_bytes=0)
     assert freed == 0 and removed == []
+
+
+def test_a_protected_path_survives_even_when_it_is_the_oldest(tmp_path):
+    """Added for runner/daemon.py's structures budget (Task 10 review): a
+    .cif the UI may not have read yet must never be deleted just because
+    oldest-first ordering would otherwise pick it first -- pruning must
+    skip a protected entry and move on to the next candidate rather than
+    stopping.
+
+    Protecting the *oldest* file (rather than the newest, which is the
+    real daemon's actual usage -- see the "recent path" test below) is
+    deliberately the harder case: since prune_log_root still needs to
+    reach budget without touching `old`, it has no choice but to delete
+    `new` too, even though `new` is younger than `old`. That is the
+    correct, if initially surprising, consequence of "protected" meaning
+    "never delete this one," not "this one is exempt from being the reason
+    something younger gets deleted instead."
+    """
+    old = _file(tmp_path, "old.yaml", 1000, age_s=900)
+    _file(tmp_path, "mid.yaml", 1000, age_s=600)
+    _file(tmp_path, "new.yaml", 1000, age_s=1)
+    freed, removed = prune_log_root(tmp_path, max_bytes=1500, protect={str(old)})
+    assert old.exists(), "a protected path must survive regardless of age"
+    assert freed == 2000
+    assert sorted(os.path.basename(p) for p in removed) == ["mid.yaml", "new.yaml"]
+
+
+def test_a_protected_recent_path_survives_a_tight_budget(tmp_path):
+    """The daemon's actual usage: the protected path is the *newest* one
+    (the structure just emitted). Here oldest-first ordering would never
+    have picked it anyway before hitting budget -- so protecting it and
+    protecting nothing should behave identically, which is the case this
+    exercises directly.
+    """
+    _file(tmp_path, "old.yaml", 1000, age_s=900)
+    _file(tmp_path, "mid.yaml", 1000, age_s=600)
+    new = _file(tmp_path, "new.yaml", 1000, age_s=1)
+    freed, removed = prune_log_root(tmp_path, max_bytes=1000, protect={str(new)})
+    assert new.exists(), "the protected (most recent) path must survive"
+    assert not (tmp_path / "old.yaml").exists()
+    assert not (tmp_path / "mid.yaml").exists()
+    assert freed == 2000
+    assert sorted(os.path.basename(p) for p in removed) == ["mid.yaml", "old.yaml"]
+
+
+def test_protecting_everything_can_leave_the_root_over_budget(tmp_path):
+    """The documented tradeoff: protection is a correctness floor ("never
+    delete this"), not a budget guarantee. If the protected set alone
+    exceeds max_bytes, prune_log_root must leave the root over budget
+    rather than deleting something it was told to keep.
+    """
+    a = _file(tmp_path, "a.yaml", 1000, age_s=900)
+    b = _file(tmp_path, "b.yaml", 1000, age_s=1)
+    freed, removed = prune_log_root(
+        tmp_path, max_bytes=500, protect={str(a), str(b)})
+    assert freed == 0 and removed == []
+    assert a.exists() and b.exists()
+
+
+def test_protecting_some_files_still_prunes_the_rest_toward_budget(tmp_path):
+    """A budget that is reachable once the protected files are set aside
+    must still get reached -- protection should not make pruning give up
+    on the files it's actually allowed to delete.
+    """
+    protected = _file(tmp_path, "keep.yaml", 1000, age_s=1)
+    _file(tmp_path, "old.yaml", 1000, age_s=900)
+    _file(tmp_path, "mid.yaml", 1000, age_s=600)
+    freed, removed = prune_log_root(
+        tmp_path, max_bytes=1000, protect={str(protected)})
+    assert protected.exists()
+    assert not (tmp_path / "old.yaml").exists()
+    assert not (tmp_path / "mid.yaml").exists()
+    assert freed == 2000
+    assert sorted(os.path.basename(p) for p in removed) == ["mid.yaml", "old.yaml"]
+
+
+def test_no_protect_argument_behaves_exactly_as_before(tmp_path):
+    """The default (protect=None) must be a true no-op -- prune_log_root's
+    pre-existing callers (the tt-metal log root) pass no protect argument
+    at all and must see identical behavior to before this parameter existed.
+    """
+    _file(tmp_path, "old.yaml", 1000, age_s=900)
+    _file(tmp_path, "new.yaml", 1000, age_s=1)
+    freed, removed = prune_log_root(tmp_path, max_bytes=1500)
+    assert freed == 1000
+    assert removed == [str(tmp_path / "old.yaml")]

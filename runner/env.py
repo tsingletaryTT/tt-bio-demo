@@ -111,6 +111,16 @@ pointless -- kernels.yaml/programs_log.yaml/mesh_devices_log.yaml still
 accumulate slowly across a long-running daemon's many distinct kernel
 compilations and still benefit from the budget sweep -- it removes the one
 file class the sweep could not actually touch while the daemon runs.
+
+NOT FREE, though: `strings` on the same libtt_metal.so contains this
+verbatim (found while double-checking the fix rather than taking the
+"Inspector is safe to disable" conclusion above on faith): "Running
+without Inspector logger will impact tt-triage functionality." Nothing in
+this project uses tt-triage today, so the trade is made deliberately, but
+an operator debugging with that tool elsewhere on the same tt-metal build
+needs to know this daemon disables the thing it depends on by default --
+set TT_METAL_INSPECTOR=1 before launching (README's "Running it today"
+section says the same).
 """
 
 import logging
@@ -164,7 +174,7 @@ def log_root_size(log_root):
     return total
 
 
-def prune_log_root(log_root, max_bytes, *, dry_run=False):
+def prune_log_root(log_root, max_bytes, *, dry_run=False, protect=None):
     """Delete oldest log files until the root fits in `max_bytes`.
 
     Returns (bytes_freed, paths_removed).
@@ -175,10 +185,26 @@ def prune_log_root(log_root, max_bytes, *, dry_run=False):
     nothing at all if the root is missing or is not a directory. Oldest-first by
     mtime, so the newest logs -- the ones useful for diagnosing whatever just
     happened -- are the last to go.
+
+    `protect`, if given, is an iterable of path strings (matching `str(path)`
+    for a file found under `log_root`) that must never be deleted regardless
+    of age or budget pressure -- added for runner/daemon.py's structures
+    budget (Task 10 review finding): tt-metal's own log files are never read
+    back by anything in this codebase once written, but a `.cif` the UI has
+    not gotten around to reading yet (dispatched via GLib.idle_add, behind
+    whatever else is queued on the GTK main loop) is a real, referenced file,
+    and "oldest first" alone has no notion of "still in use." Protected
+    files still count toward the total this function is deciding whether to
+    prune at all -- so a root can end up parked above `max_bytes` if the
+    protected set alone exceeds it. That is a correctness floor (never
+    delete something a caller told you not to), not a budget guarantee, and
+    is deliberate: the alternative is deleting a file a caller explicitly
+    asked to keep.
     """
     root = Path(log_root)
     if not root.is_dir():
         return 0, []
+    protect = frozenset(protect) if protect else frozenset()
 
     entries = []
     for path in root.rglob("*"):
@@ -199,6 +225,8 @@ def prune_log_root(log_root, max_bytes, *, dry_run=False):
     for _, size, path in entries:
         if total - freed <= max_bytes:
             break
+        if str(path) in protect:
+            continue
         if not dry_run:
             try:
                 path.unlink()

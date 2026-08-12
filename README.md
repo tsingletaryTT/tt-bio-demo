@@ -28,10 +28,11 @@ the Blackhole cards in the room. Native GTK4, no browser.
 - **Mock runner** — replays a recorded fold trajectory (`runner/mock.py`) at the protocol's
   real pace, still used by the UI-side test suite so those tests don't need hardware.
 - **Renderer** — a GTK4 `GtkGLArea` (`ui/`) that streams the diffusion point cloud in real
-  time, then cross-fades into a pLDDT-colored ribbon once the fold completes, and
-  reconnects automatically (keeping the last structure rotating) if the daemon disappears
-  and returns — verified against the real daemon, not just the mock, including a hard
-  `SIGKILL` mid-fold.
+  time, then cross-fades into a pLDDT-colored ribbon once the fold completes. Its socket
+  client (`ui/client.py`) reconnects on any disconnect — a graceful daemon shutdown, a
+  restart, or a hard kill all look the same to it, a `FileNotFoundError`/
+  `ConnectionRefusedError` it retries on a timer — and keeps the last structure rotating
+  rather than blanking while it waits for the daemon to come back.
 - **`scripts/run-demo.sh`** — the turnkey launcher: starts both processes in their own
   venvs, wires them by socket, and tears the daemon down on Ctrl-C so a leaked device
   handle can't block the next run.
@@ -70,7 +71,15 @@ this phase, with tt-metal's Inspector subsystem disabled outright by default, si
 found to hold one log file open and appending for the daemon's entire life, which no
 directory sweep can actually reclaim while the process runs; see `runner/env.py`'s module
 docstring for the measured growth rate before that fix), and the daemon's own `.cif`
-output (swept the same way against `--structures-budget-gb`, default 200 MB).
+output (swept the same way against `--structures-budget-gb`, default 200 MB, per device,
+and never deleting the handful of most-recently-emitted structures the UI may not have
+read yet).
+
+Disabling Inspector is not free: tt-metal's own build warns that `tt-triage` (its
+diagnostic tool) degrades without it. Nothing in this project uses `tt-triage` today, so
+the default trades that away for a bounded log root — set `TT_METAL_INSPECTOR=1` yourself
+before launching (`runner_environ()` only fills the gap with `setdefault`, never overrides
+an operator's own choice) if you need Inspector output for a `tt-triage` session.
 
 ## Intended install
 

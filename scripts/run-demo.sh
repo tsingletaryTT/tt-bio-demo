@@ -83,7 +83,13 @@ if [[ -n "${TT_BIO_DEMO_PLAYLIST:-}" ]]; then
 fi
 
 usage() {
-  sed -n '2,45p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  # Print every leading "#"-comment line after the shebang, stopping at the
+  # first non-comment line (`set -euo pipefail`) -- so this never needs its
+  # end-line hand-updated again when the header comment above grows. It
+  # already went stale once this way: a hardcoded `sed -n '2,45p'` shipped
+  # --structures-budget-gb invisibly to --help, because the flag's
+  # documentation landed past line 45 and nobody had a reason to notice.
+  awk 'NR==1 {next} /^#/ {sub(/^# ?/, ""); print; next} {exit}' "${BASH_SOURCE[0]}"
 }
 
 while [[ $# -gt 0 ]]; do

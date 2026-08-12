@@ -51,12 +51,22 @@ _WEIGHTS_CACHE = Path.home() / ".boltz"
 # Every successful fold writes one uuid-named .cif here (see _run_fold below)
 # and nothing has ever deleted one -- flagged during Task 5b as a booth-
 # longevity risk in the same class as the tt-metal log growth runner/env.py
-# bounds, deferred to Task 10 to actually fix. Exposed as a module constant
-# (rather than left as a literal inside _run_fold) so runner/daemon.py can
-# prune it with the same oldest-file-first budget it already applies to the
-# tt-metal log root, without this module and the daemon needing to agree on
-# the path by copying it into two places.
-STRUCTURES_DIR = Path(tempfile.gettempdir()) / "tt-bio-demo" / "structures"
+# bounds, fixed in Task 10 (runner/daemon.py's _prune_structures, reusing
+# runner/env.py's prune_log_root against a separate budget).
+#
+# Namespaced by device_id (Task 10 review, Minor #2), not a single bare path
+# shared by every Folder regardless of which device it holds: that was inert
+# while nothing pruned it, but the moment pruning started deleting files
+# here, a second daemon on the same machine -- already possible today by
+# operator error, and the eventual point of CardPool/multi-card scheduling
+# -- could delete a structure the *other* daemon's UI had not read yet. One
+# directory per device removes the collision without any new cross-process
+# coordination. A function, not a constant, so each Folder instance can
+# expose its own path via the `structures_dir` property below without this
+# module and runner/daemon.py needing to agree on a bare path by copying it
+# into two places.
+def _structures_dir_for(device_id):
+    return Path(tempfile.gettempdir()) / "tt-bio-demo" / "structures" / f"device-{device_id}"
 
 
 class FoldError(Exception):
@@ -120,6 +130,13 @@ class Folder:
         self._device = None
         self._model_obj = None
         self._mol_dir = None
+
+    @property
+    def structures_dir(self):
+        """Where this instance's folds write .cif output. See the comment
+        above _structures_dir_for for why this is namespaced by device_id
+        rather than one bare path shared by every Folder."""
+        return _structures_dir_for(self.device_id)
 
     def load(self):
         """Open the device and load model weights. Call once, at startup.
@@ -341,8 +358,8 @@ class Folder:
         # which runner/env.py already treats as something the daemon may
         # not pollute) plus a uuid per fold keeps concurrent/successive
         # folds from ever colliding on a filename.
-        STRUCTURES_DIR.mkdir(parents=True, exist_ok=True)
-        cif_path = STRUCTURES_DIR / f"{uuid.uuid4().hex}.cif"
+        self.structures_dir.mkdir(parents=True, exist_ok=True)
+        cif_path = self.structures_dir / f"{uuid.uuid4().hex}.cif"
         _write_protenix_structure(coords[0], feats, None, cif_path, "cif",
                                   b_factors=conf["plddt_atom"] * 100.0)
 
