@@ -11,6 +11,7 @@ failure — an unattended booth needs it to keep trying.
 """
 
 import argparse
+import collections
 import logging
 import os
 import signal
@@ -38,6 +39,34 @@ TELEMETRY_PERIOD_S = 2.0
 # enough recent history to diagnose a failure without threatening the disk.
 DEFAULT_LOG_BUDGET_BYTES = 2 * 1024**3
 
+# Task 5b flagged runner/folder.py's STRUCTURES_DIR (now a per-device
+# `Folder.structures_dir`) as the same class of problem: every fold writes
+# one .cif, forever, with nothing pruning old ones. Measured at ~16 KB for a
+# 20-residue target (tests/fixtures/streams/real_fold_trpcage.cif); the
+# curated playlist's real targets will run larger, so this budgets by bytes
+# rather than by a fold count that would mean something different for every
+# target. 200 MB is small next to the 2 GB log budget on purpose -- once the
+# UI has read a job_done's cif_path and built its ribbon mesh, nothing in
+# this codebase reads that file again (no gallery exists yet; see
+# docs/followups.md), so there is little reason to keep more than a handful
+# of recent structures around for a human to inspect after the fact.
+DEFAULT_STRUCTURES_BUDGET_BYTES = 200 * 1024**2
+
+# How many of the daemon's own most-recently-emitted .cif paths
+# _prune_structures refuses to delete, no matter how old they look to
+# prune_log_root. Review finding (Task 10): the file a fold *just* wrote is
+# never actually at risk from oldest-first pruning -- it is the newest thing
+# on disk -- but the one from a fold or two before it can be, and job_done
+# is dispatched to the UI over a socket and a GLib.idle_add queued behind
+# whatever else is on the GTK main loop; ribbon_from_cif alone measured up
+# to ~1.22s on a 3000-residue structure (docs/followups.md). Without this
+# floor, once the curated playlist's larger targets make the byte budget
+# bind on every fold instead of every few hundred, a structure the UI has
+# not gotten around to reading yet could be deleted out from under it. 3
+# protects the current fold's own output plus the two before it -- multiple
+# whole fold-durations of margin over the ~1.2s worst case above.
+PROTECTED_STRUCTURE_COUNT = 3
+
 
 @dataclass
 class DaemonConfig:
@@ -48,6 +77,7 @@ class DaemonConfig:
     device_id: int = 0
     max_temp_c: float = 85.0
     log_budget_bytes: int = DEFAULT_LOG_BUDGET_BYTES
+    structures_budget_bytes: int = DEFAULT_STRUCTURES_BUDGET_BYTES
 
 
 class Daemon:
@@ -61,6 +91,11 @@ class Daemon:
         self._failures = {}
         self._quarantined = set()
         self._telemetry_thread = None
+        # The last PROTECTED_STRUCTURE_COUNT .cif paths this daemon has
+        # actually emitted via job_done, oldest dropped automatically as new
+        # ones arrive (deque(maxlen=...)) -- see that constant's comment for
+        # why _prune_structures must never delete anything in here.
+        self._recent_structures = collections.deque(maxlen=PROTECTED_STRUCTURE_COUNT)
         # run() opens the device; guards against a second call reopening
         # one on an already-closed Folder (see run()'s docstring).
         self._started = False
@@ -193,11 +228,29 @@ class Daemon:
             log.error("target %s failed %d times; quarantined for this session",
                       target_id, count)
 
+    def _emit_and_track(self, event):
+        """Forward `event` and, for job_done, remember its cif_path.
+
+        The only reason this exists rather than passing self._emit straight
+        into Folder.fold(): _prune_structures needs to know which .cif paths
+        the daemon has actually told a UI about recently, so it can refuse
+        to delete them (see PROTECTED_STRUCTURE_COUNT's comment). Watching
+        job_done here -- the one event Folder.fold() emits with a cif_path
+        -- is cheaper and more direct than having Folder.fold() return
+        something new or having the daemon re-derive it from
+        Folder.structures_dir after the fact.
+        """
+        if event.get("type") == "job_done":
+            cif_path = event.get("cif_path")
+            if cif_path:
+                self._recent_structures.append(cif_path)
+        self._emit(event)
+
     def _run_one(self, job, card):
         # The card is already claimed by the caller — claiming here would
         # duplicate the busy event and re-open the race the caller guards.
         try:
-            self.folder.fold(job.job_id, job.input_path, self._emit,
+            self.folder.fold(job.job_id, job.input_path, self._emit_and_track,
                              target_id=job.target_id,
                              n_residues=job.n_residues, card=card)
             self._failures.pop(job.target_id, None)
@@ -233,6 +286,7 @@ class Daemon:
             # Between folds, not during: pruning walks the tree, and the gap
             # between jobs is when nothing is competing for the disk.
             self._prune_logs()
+            self._prune_structures()
 
     def _prune_logs(self):
         """Keep tt-metal's log output inside its budget. Never fatal."""
@@ -246,6 +300,37 @@ class Daemon:
         except Exception:
             # A janitor failure must never stop the demo folding.
             log.exception("log pruning failed; continuing")
+
+    def _prune_structures(self):
+        """Keep accumulated .cif output inside its budget. Never fatal.
+
+        Same unbounded-growth shape as _prune_logs above, just a different
+        root (this Folder's own `structures_dir`, namespaced by device_id --
+        see runner/folder.py) and a different (smaller) budget -- see
+        DEFAULT_STRUCTURES_BUDGET_BYTES's comment for why the numbers
+        differ. Still reuses prune_log_root rather than forking a second
+        copy of its deletion logic: "delete oldest regular files under a
+        root until it fits a byte budget, without touching a protected set"
+        is exactly the same operation here as it is for tt-metal's log root
+        -- the `protect` argument (added for this call site) is a property
+        of the *files*, not of *this root*, so the underlying mechanism
+        still belongs in one place. What's structures-specific is only
+        which paths go into `protect`: the daemon's own record of what it
+        has recently told a UI about (self._recent_structures, populated by
+        _emit_and_track), so a fold or two of GTK-main-loop lag can never
+        turn into a deleted-out-from-under-it .cif once real targets make
+        the budget bind on every fold instead of every few hundred.
+        """
+        try:
+            freed, removed = prune_log_root(
+                self.folder.structures_dir, self.config.structures_budget_bytes,
+                protect=set(self._recent_structures))
+            if removed:
+                log.info("structures pruned: %d file(s), %.1f MB freed",
+                         len(removed), freed / 1e6)
+        except Exception:
+            # A janitor failure must never stop the demo folding.
+            log.exception("structure pruning failed; continuing")
 
     def stop(self):
         self._stop.set()
@@ -261,6 +346,8 @@ def main(argv=None):
     parser.add_argument("--max-temp", type=float, default=85.0)
     parser.add_argument("--log-budget-gb", type=float, default=2.0,
                         help="cap on tt-metal's log root; oldest files pruned first")
+    parser.add_argument("--structures-budget-gb", type=float, default=0.2,
+                        help="cap on accumulated .cif output; oldest pruned first")
     parser.add_argument("--preflight-only", action="store_true",
                         help="check readiness and exit; opens no device")
     args = parser.parse_args(argv)
@@ -317,7 +404,8 @@ def main(argv=None):
         socket_path=args.socket, weights_dir=args.weights,
         playlist_dir=args.playlist, log_root=args.log_root,
         device_id=args.device, max_temp_c=args.max_temp,
-        log_budget_bytes=int(args.log_budget_gb * 1024**3)))
+        log_budget_bytes=int(args.log_budget_gb * 1024**3),
+        structures_budget_bytes=int(args.structures_budget_gb * 1024**3)))
     signal.signal(signal.SIGTERM, lambda *_: daemon.stop())
     signal.signal(signal.SIGINT, lambda *_: daemon.stop())
     daemon.run()

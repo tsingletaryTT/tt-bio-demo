@@ -68,6 +68,59 @@ The public surface (`LOG_ROOT_VAR`, `runner_environ`, `log_root_size`,
 Do not assume these variables mean what their names suggest -- verify each one on
 the actual installed build before depending on it, the same way this module's
 LOG_ROOT_VAR itself turned out to need correcting.
+
+UPDATE, Task 10 (first sustained multi-fold run in a single long-lived daemon
+process): TT_METAL_LOGS_PATH correctly relocates `generated/`, and
+runner/daemon.py's prune_log_root sweep correctly deletes the oldest files
+under it once the budget is exceeded -- but for one specific file, that sweep
+turns out not to free anything real. tt-metal's Inspector opens
+`generated/inspector/mesh_workloads_log.yaml` exactly once, at device
+bring-up, and holds that file descriptor open and appending for the rest of
+the daemon's life -- it is never closed and reopened between folds the way
+the earlier (short-lived, two-fold, then-exit) validation runs would have
+exercised. Unlinking an open file on Linux removes its name from the
+directory but does not free its blocks; the process holding the fd keeps
+writing to the now-nameless inode until it closes that fd (i.e. until the
+daemon itself exits). The practical effect, measured directly against a
+running daemon via `lsof` rather than trusted from the daemon's own
+`log_root_size()` (which walks the directory tree and therefore cannot see
+an unlinked-but-open file at all): after a prune, `log_root_size()` reports
+the log root as ~0 bytes while `lsof -p <daemon-pid>` shows the "deleted"
+mesh_workloads_log.yaml still open and growing -- 938 MB to 1.79 GB in the
+60 seconds after one such prune, ~13-14 MB/s sustained, entirely invisible
+to the metric the daemon logs and trusts. At that rate a conference day
+would consume several hundred GB, and since this script's own default log
+root lives under $XDG_RUNTIME_DIR (tmpfs, i.e. RAM) rather than persistent
+disk, the failure mode is an OOM, not a full disk. The other Inspector/
+Watcher files (kernels.yaml, programs_log.yaml, mesh_devices_log.yaml,
+watcher/kernel_names.txt, watcher/kernel_elf_paths.txt) were checked the
+same way and do NOT reproduce this: their fds stay a constant size across
+repeated folds (spot-checked over 20s of continuous folding with no
+growth), consistent with them being written once at device/kernel bring-up
+rather than appended to per-fold. mesh_workloads_log.yaml is therefore the
+only file in this tree with unbounded-while-open growth, and it is also the
+one TT_METAL_INSPECTOR=0 removes entirely (per the probe two paragraphs up:
+"generated/inspector/ disappears entirely ... watcher/'s 2 files still land
+... but the Inspector subsystem specifically is silenced"). Nothing in this
+codebase reads generated/inspector/ programmatically, so disabling it costs
+nothing here. runner_environ now sets TT_METAL_INSPECTOR=0 by the same
+setdefault discipline as LOG_ROOT_VAR, so an operator who deliberately wants
+Inspector output for debugging (by setting TT_METAL_INSPECTOR themselves
+before launching) keeps that choice. This does not make prune_log_root
+pointless -- kernels.yaml/programs_log.yaml/mesh_devices_log.yaml still
+accumulate slowly across a long-running daemon's many distinct kernel
+compilations and still benefit from the budget sweep -- it removes the one
+file class the sweep could not actually touch while the daemon runs.
+
+NOT FREE, though: `strings` on the same libtt_metal.so contains this
+verbatim (found while double-checking the fix rather than taking the
+"Inspector is safe to disable" conclusion above on faith): "Running
+without Inspector logger will impact tt-triage functionality." Nothing in
+this project uses tt-triage today, so the trade is made deliberately, but
+an operator debugging with that tool elsewhere on the same tt-metal build
+needs to know this daemon disables the thing it depends on by default --
+set TT_METAL_INSPECTOR=1 before launching (README's "Running it today"
+section says the same).
 """
 
 import logging
@@ -82,16 +135,27 @@ log = logging.getLogger(__name__)
 # not read by this tt-metal build at all (verified empirically and via `strings`).
 LOG_ROOT_VAR = "TT_METAL_LOGS_PATH"
 
+# Silences tt-metal's Inspector subsystem outright. See the "UPDATE, Task 10"
+# section of the module docstring above for why this is on by default: the
+# one file Inspector writes that grows without bound for the daemon's entire
+# life (generated/inspector/mesh_workloads_log.yaml, opened once at device
+# bring-up and never closed until the process exits) cannot be bounded by
+# prune_log_root while the daemon keeps running -- unlinking an open file
+# does not free it. Nothing in this codebase reads Inspector's output.
+INSPECTOR_VAR = "TT_METAL_INSPECTOR"
+
 
 def runner_environ(log_root, base=None):
     """Return an environment mapping with tt-metal's log output pinned.
 
     `log_root` may be relative; it is resolved against the current directory so
     the daemon's own CWD can never leak into where gigabytes get written. An
-    operator who has already set LOG_ROOT_VAR keeps their choice.
+    operator who has already set LOG_ROOT_VAR (or INSPECTOR_VAR) keeps their
+    choice -- both are filled in with setdefault, never overwritten.
     """
     env = dict(os.environ if base is None else base)
     env.setdefault(LOG_ROOT_VAR, str(Path(log_root).resolve()))
+    env.setdefault(INSPECTOR_VAR, "0")
     return env
 
 
@@ -110,7 +174,7 @@ def log_root_size(log_root):
     return total
 
 
-def prune_log_root(log_root, max_bytes, *, dry_run=False):
+def prune_log_root(log_root, max_bytes, *, dry_run=False, protect=None):
     """Delete oldest log files until the root fits in `max_bytes`.
 
     Returns (bytes_freed, paths_removed).
@@ -121,10 +185,26 @@ def prune_log_root(log_root, max_bytes, *, dry_run=False):
     nothing at all if the root is missing or is not a directory. Oldest-first by
     mtime, so the newest logs -- the ones useful for diagnosing whatever just
     happened -- are the last to go.
+
+    `protect`, if given, is an iterable of path strings (matching `str(path)`
+    for a file found under `log_root`) that must never be deleted regardless
+    of age or budget pressure -- added for runner/daemon.py's structures
+    budget (Task 10 review finding): tt-metal's own log files are never read
+    back by anything in this codebase once written, but a `.cif` the UI has
+    not gotten around to reading yet (dispatched via GLib.idle_add, behind
+    whatever else is queued on the GTK main loop) is a real, referenced file,
+    and "oldest first" alone has no notion of "still in use." Protected
+    files still count toward the total this function is deciding whether to
+    prune at all -- so a root can end up parked above `max_bytes` if the
+    protected set alone exceeds it. That is a correctness floor (never
+    delete something a caller told you not to), not a budget guarantee, and
+    is deliberate: the alternative is deleting a file a caller explicitly
+    asked to keep.
     """
     root = Path(log_root)
     if not root.is_dir():
         return 0, []
+    protect = frozenset(protect) if protect else frozenset()
 
     entries = []
     for path in root.rglob("*"):
@@ -145,6 +225,8 @@ def prune_log_root(log_root, max_bytes, *, dry_run=False):
     for _, size, path in entries:
         if total - freed <= max_bytes:
             break
+        if str(path) in protect:
+            continue
         if not dry_run:
             try:
                 path.unlink()
