@@ -134,3 +134,66 @@ def test_stop_ends_the_thread_promptly(monkeypatch):
     _wait(lambda: s.latest() is not None, 3.0)
     s.stop()
     assert s.thread_alive is False
+
+
+# --- Fix round 1: tri-state latest() (see review Critical finding) --------
+#
+# A well-formed, exit-0 snapshot where EVERY device's telemetry is
+# unparseable must not be treated as a successful "zero cards" reading: it
+# is tt-smi telling us hardware exists and none of it could be read, which
+# is a failed sample. It must leave a prior good reading in place (and let
+# it age), exactly like a missing binary or a timeout would. Only a
+# genuinely empty device_info is a truthful zero-cards reading.
+
+_ALL_UNREADABLE_NONEMPTY_SNAPSHOT = json.dumps({
+    "device_info": [{"board_info": {}, "telemetry": {"asic_temperature": "n/a"}}],
+})
+
+
+def test_an_all_unparseable_nonempty_snapshot_preserves_the_prior_reading(monkeypatch):
+    calls = {"n": 0}
+
+    def stub(timeout):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return json.dumps(SNAPSHOT)  # one good sample to seed a real reading
+        return _ALL_UNREADABLE_NONEMPTY_SNAPSHOT  # every call after: unreadable
+
+    monkeypatch.setattr("ui.telemetry._run_tt_smi", stub)
+    s = TelemetrySampler(period_s=0.01)
+    s.start()
+    try:
+        _wait(lambda: s.latest() is not None, 3.0)
+        first_reading = s.latest()
+        first_age = s.age_s()
+        # Let several more poll cycles run, all hitting the "seen but
+        # unreadable" branch, then let real time pass so age_s() has room
+        # to visibly separate from first_age -- a bare `>` comparison right
+        # after the first read could pass on clock-resolution noise alone.
+        _wait(lambda: s.samples_attempted >= 8, 3.0)
+        time.sleep(0.1)
+    finally:
+        s.stop()
+
+    # Identity, not truthiness: a bug that clobbered the reading with some
+    # *other* non-empty list (e.g. zeros, or a stale placeholder) would
+    # still pass `latest() is not None` or `len(latest()) > 0`.
+    assert s.latest() == first_reading
+    assert s.latest()[0].temperature_c == pytest.approx(43.7)
+    assert s.age_s() > first_age + 0.05, (
+        "age_s() must keep growing while every subsequent sample fails, "
+        "not reset because a fresh (empty) reading was recorded"
+    )
+
+
+def test_a_well_formed_empty_snapshot_is_a_truthful_zero_card_reading(monkeypatch):
+    monkeypatch.setattr("ui.telemetry._run_tt_smi",
+                        lambda timeout: json.dumps({"device_info": []}))
+    s = TelemetrySampler(period_s=0.01)
+    s.start()
+    try:
+        _wait(lambda: s.samples_attempted >= 2, 3.0)
+    finally:
+        s.stop()
+    assert s.latest() == [], "an empty device_info is a real reading, not a failure"
+    assert s.age_s() is not None and s.age_s() < 2.0

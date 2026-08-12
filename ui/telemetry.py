@@ -35,8 +35,31 @@ static, but for a different reason) -- exactly the distinction the brief
 calls out as `age_s()`'s reason to exist. The panel is expected to combine
 `latest()` with `age_s()` itself (e.g. treat anything older than a couple of
 sample periods as unknown) rather than this module silently deciding that
-threshold. What `latest()` guarantees on its own is narrower and absolute:
-before the first sample ever succeeds, it is None, never a placeholder.
+threshold.
+
+`latest()` is therefore a genuine tri-state, not a boolean-plus-payload:
+
+- `None` -- we could not get a usable answer out of `tt-smi` at all. This
+  covers a missing binary, a timeout, a non-zero exit, junk instead of
+  JSON, AND one more case that is easy to miss: well-formed JSON reporting
+  one or more devices, none of which we could parse. That last one still
+  counts as a failed sample, not a reading of zero cards -- tt-smi told us
+  hardware exists and we simply couldn't read it, which is exactly the kind
+  of incident a booth operator needs `latest()` to keep looking unresolved
+  about (the previous good reading, if any, is left untouched and visibly
+  ages via `age_s()`).
+- `[]` -- `tt-smi` answered successfully and truthfully reported *no
+  devices at all* (`device_info` empty or absent). That is real information
+  worth showing ("no cards detected"), not a failure, so it lands as a
+  fresh sample with a new timestamp like any other success.
+- A non-empty list -- the normal case.
+
+Collapsing the first two into one falsy-ish state was an earlier bug in
+this module: a snapshot with N devices, all unreadable, silently clobbered
+a real prior reading with a fresh-timestamped `[]` -- indistinguishable
+from "these cards were just unplugged" one second after a real temperature
+was on screen. See task-4-report.md's Fix Round 1 for how this was caught
+and the tests that pin it down.
 """
 
 import json
@@ -191,12 +214,14 @@ class TelemetrySampler:
             self._thread = None
 
     def latest(self):
-        """The most recent successfully-parsed reading, or None.
+        """The most recent reading. Tri-state -- see the module docstring:
 
-        None means exactly one thing: no sample has ever succeeded (either
-        because none has been attempted yet, or because every attempt so
-        far has failed). It is never a stand-in for "the last good reading,
-        but old" -- that distinction is what `age_s()` is for.
+        - `None`: no sample has ever succeeded, including the case where
+          `tt-smi` answered but every device in it was unreadable. Never a
+          stand-in for "the last good reading, but old" -- that distinction
+          is what `age_s()` is for.
+        - `[]`: `tt-smi` succeeded and truthfully reported zero devices.
+        - non-empty list: the normal case.
         """
         with self._lock:
             return self._latest
@@ -227,20 +252,53 @@ class TelemetrySampler:
             self.samples_attempted += 1
         try:
             raw = _run_tt_smi(self.timeout_s)
-            readings = parse_snapshot(json.loads(raw))
+            snapshot = json.loads(raw)
+            readings = parse_snapshot(snapshot)
+        except subprocess.CalledProcessError as exc:
+            # A more specific case of the "anything at all" handling below:
+            # tt-smi ran and exited non-zero. exc's own str/repr is just
+            # "returned non-zero exit status N" -- exc_info=True's traceback
+            # does not include the child process's stderr, so without this
+            # a genuinely informative message from tt-smi (e.g. "no such
+            # device") would leave nothing useful in the log. Logged only --
+            # never surfaced on screen, per the UI's no-raw-errors rule.
+            stderr = (exc.stderr or "").strip() if exc.stderr else ""
+            log.warning(
+                "tt-smi exited non-zero; treating as no telemetry this round%s",
+                f" (stderr: {stderr})" if stderr else "",
+                exc_info=True,
+            )
+            return
         except Exception:
-            # Anything at all -- missing binary, timeout, non-zero exit,
-            # junk instead of JSON, a JSON value shaped nothing like a
-            # tt-smi snapshot -- is "no telemetry this round," never a
-            # reason to stop trying. Logged (not raised) so this survives
-            # unattended for a whole conference day: see the module
-            # docstring and the class docstring's `thread_alive` note.
-            # Deliberately does NOT touch self._latest / self._latest_at:
-            # a previous good reading (if any) stays exactly as it was,
-            # and its growing age_s() is how the panel notices staleness.
+            # Anything else -- missing binary, timeout, junk instead of
+            # JSON, a JSON value shaped nothing like a tt-smi snapshot --
+            # is "no telemetry this round," never a reason to stop trying.
+            # Logged (not raised) so this survives unattended for a whole
+            # conference day: see the module docstring and the class
+            # docstring's `thread_alive` note. Deliberately does NOT touch
+            # self._latest / self._latest_at: a previous good reading (if
+            # any) stays exactly as it was, and its growing age_s() is how
+            # the panel notices staleness.
             log.warning("tt-smi sample failed; treating as no telemetry this round",
                         exc_info=True)
             return
+
+        # Well-formed JSON and parse_snapshot didn't raise -- but that
+        # alone isn't "success". See the module docstring's tri-state note:
+        # a non-empty device_info from which NOTHING parsed means tt-smi
+        # saw hardware and none of it was readable, which is a failed
+        # sample (leave the previous reading in place; let it age), not a
+        # truthful "zero cards" reading. Only an EMPTY device_info (or none
+        # at all) is the truthful zero-cards case, and that's worth
+        # recording as a fresh, genuine sample.
+        devices_seen = len(snapshot.get("device_info") or [])
+        if devices_seen and not readings:
+            log.warning(
+                "tt-smi reported %d device(s) but none were readable; "
+                "treating as no telemetry this round", devices_seen,
+            )
+            return
+
         with self._lock:
             self._latest = readings
             self._latest_at = time.monotonic()
