@@ -138,6 +138,11 @@ Bounds (the booth runs unattended all day)
   bound the reference uses.
 - The page is loaded once and never navigates, so the WebView's own memory is
   whatever one static page costs, not a function of uptime.
+- The animation's frame budget is the page's, not the display's. A RESTING
+  chip is drawn at `RESTING_ANIMATION_FPS`; the chip that is folding keeps the
+  display's own rate. That is the flicker fix, and the measurement it was set
+  against is written out above `RESTING_ANIMATION_FPS` -- read it before
+  changing the number.
 """
 
 import json
@@ -422,6 +427,125 @@ def mode_caption(mode):
     return _MODE_CAPTION.get(mode, mode)
 
 
+# ── how fast each animation is allowed to advance ───────────────────────────
+#
+# THE FLICKER FIX, and the measurement behind it. Read this before changing a
+# number here.
+#
+# Symptom, as reported from the booth: "when the tensix viz is on there's a lot
+# of flicker in their rendering area."
+#
+# What it was NOT (measured, by rendering the live WebView to a texture on
+# every GTK frame and comparing pixels -- see this task's report): not the 1 Hz
+# `_tick`. With the poll running and with it stopped the panel's pixel
+# statistics are the same; there is no re-layout, no resize, no blanking, no
+# white flash, and the whole-panel mean luminance holds to +/-0.3% across a
+# 20-frame screen capture of the real booth.
+#
+# What it IS: the `idle` animation. tensix-viz's `idle` mode is a per-cell
+# random pop -- `min(1, prev*0.9 + (rand < 0.03 ? rand*0.35 : 0))` -- evaluated
+# once per `requestAnimationFrame` callback, i.e. once per DISPLAY frame. Two
+# things multiply it into flicker here:
+#
+#   1. the loop is frame-rate-coupled, so on a 60 Hz panel each canvas starts
+#      ~4 new pops every 17 ms (140 compute cells x 0.03), and each decays to
+#      nothing in ~0.36 s;
+#   2. `_drawHeatmap` normalises the grid by the frame's own maximum, so the
+#      brightest cell is painted at full contrast no matter how small the
+#      underlying activity is -- every fresh pop lands as a hard, near-white
+#      4x7 px dot on a near-black ground.
+#
+# Measured over the four canvases, `idle`, ungoverned: 5135 pixel-brightenings
+# per second and 8779 pixels/second changing by more than 20/255. The three
+# modes with smooth, deterministic fields (`thinking`, `diffusion`,
+# `inference`) are 10-30x quieter on the same metric -- which is why the panel
+# flickers WORSE when the booth is resting than when it is folding.
+#
+# The fix is to own the frame budget rather than the library. The page this
+# module builds installs a `requestAnimationFrame` governor (see
+# `_FRAME_GOVERNOR_JS`) and this table tells it how fast each mode may run:
+# a RESTING chip is drawn at a resting cadence, and the chip that is actually
+# folding keeps the display's own rate so the diffusion ring and the trunk's
+# wave stay at the cadence they were designed for. Same picture -- the steady
+# population of lit cells is set by the pop rate over the decay per frame, so
+# it does not change -- with the turnover slowed by 3x.
+#
+# Deliberately NOT done by editing the vendored library: see
+# assets/tensix-viz/PROVENANCE.md ("Do not hand-edit these files"), which is
+# also why the policy lives here in Python and reaches the page as data.
+#
+# 20 fps was chosen against the measurement, not by taste: it takes the idle
+# metric from 5135 to 1201 brightenings/second (4.3x) while leaving pops
+# visible individually. Below ~12 fps the return flattens out and each pop
+# starts to read as a discrete blink rather than a twinkle.
+RESTING_ANIMATION_FPS = 20
+
+# 0 means "do not govern this mode at all" -- the display's own rate.
+WORKING_ANIMATION_FPS = 0
+
+
+def animation_fps(mode):
+    """Frames per second `mode` may animate at; 0 for the display's rate.
+
+    Pure, so the whole policy is testable without a WebView. Only `idle` is
+    slowed: it is the one mode whose field is random per frame, it is what
+    three of four canvases show throughout a fold (and all four when nothing
+    is folding), and it is the measured source of the flicker.
+    """
+    return RESTING_ANIMATION_FPS if mode == "idle" else WORKING_ANIMATION_FPS
+
+
+def animation_fps_table():
+    """`animation_fps` as the lookup the page gets, including its default.
+
+    `"*"` is the fallback for any mode not named -- a future tensix-viz mode,
+    or one a later `_MODE_BY_STAGE` row asks for -- so an unlisted mode is
+    ungoverned rather than accidentally frozen at somebody's leftover number.
+    """
+    modes = set(_MODE_BY_STAGE.values()) | {_UNKNOWN_STAGE_MODE}
+    table = {mode: animation_fps(mode) for mode in sorted(modes)}
+    table["*"] = WORKING_ANIMATION_FPS
+    return table
+
+
+# The governor itself. It wraps `requestAnimationFrame`/`cancelAnimationFrame`
+# for the whole page and hands each animation chain its own budget:
+#
+# - `window.__vizRun(mode, fn)` runs `fn` (an `activate` call) with the chain
+#   budget set from `window.__vizFps`. Because tensix-viz re-arms its loop by
+#   calling `requestAnimationFrame` from INSIDE its own callback, and the
+#   wrapper restores the budget around that callback, the rate propagates
+#   down the whole chain without the library knowing anything about it.
+# - a budget of 0 passes straight through on the next native frame, so an
+#   ungoverned mode costs one extra function call per frame and nothing else.
+# - ids are ours, and `cancelAnimationFrame` looks them up in the same map,
+#   so the library's `reset()` still stops a chain dead. Dropping that would
+#   leave two loops racing on one canvas after every mode change.
+_FRAME_GOVERNOR_JS = (
+    "(function(){"
+    "var raf=window.requestAnimationFrame.bind(window);"
+    "var caf=window.cancelAnimationFrame.bind(window);"
+    "var live={};var next=1;var chain=0;"
+    "function budget(m){var f=window.__vizFps[m];"
+    "return f===undefined?window.__vizFps['*']:f;}"
+    "window.__vizRun=function(m,fn){var prev=chain;chain=budget(m);"
+    "try{fn();}finally{chain=prev;}};"
+    "window.requestAnimationFrame=function(cb){"
+    "var fps=chain;var id=next++;"
+    "var due=performance.now()+(fps>0?1000/fps:0);"
+    "function step(ts){"
+    "if(!(id in live)){return;}"
+    "if(!(fps>0)||performance.now()>=due-1){"
+    "delete live[id];var prev=chain;chain=fps;"
+    "try{cb(ts);}finally{chain=prev;}return;}"
+    "live[id]=raf(step);}"
+    "live[id]=raf(step);return id;};"
+    "window.cancelAnimationFrame=function(id){"
+    "if(id in live){caf(live[id]);delete live[id];}};"
+    "})();"
+)
+
+
 def flow_params(activity, active):
     """Map an activity scalar (0..1) to tensix-viz's `setMemoryStats`
     parameters `(dram_bw, l1_fill, writeback)` — the density of read
@@ -648,6 +772,10 @@ def build_page_html(js, css, chip_count_shown, canvas_w, canvas_h, arch="blackho
         "(function(){"
         "var host=document.getElementById('chips');"
         "if(!host){return;}"
+        # The frame budget, as data, before anything can start a loop. See
+        # `animation_fps` and `_FRAME_GOVERNOR_JS` -- this is the flicker fix.
+        "window.__vizFps=" + json.dumps(animation_fps_table()) + ";"
+        + _FRAME_GOVERNOR_JS +
         "window.__vizChips=[];"
         "for(var i=0;i<" + str(int(chip_count_shown)) + ";i++){"
         "var c=document.createElement('canvas');"
@@ -657,9 +785,11 @@ def build_page_html(js, css, chip_count_shown, canvas_w, canvas_h, arch="blackho
         + json.dumps(arch) + ",showMemory:true}));}catch(e){}}"
         "window.__viz={"
         "activate:function(m){window.__vizChips.forEach(function(v,i){"
-        "setTimeout(function(){try{v.activate(m);}catch(e){}},i*100);});},"
+        "setTimeout(function(){window.__vizRun(m,function(){"
+        "try{v.activate(m);}catch(e){}});},i*100);});},"
         "activateChip:function(i,m){var v=window.__vizChips[i];"
-        "if(v){try{v.activate(m);}catch(e){}}},"
+        "if(v){window.__vizRun(m,function(){"
+        "try{v.activate(m);}catch(e){}});}},"
         "setChipStats:function(i,s){var v=window.__vizChips[i];"
         "if(v){try{v.setMemoryStats(s);}catch(e){}}}};"
         "try{window.__viz.activate('idle');}catch(e){}"

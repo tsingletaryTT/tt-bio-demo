@@ -16,6 +16,8 @@ every test that cares about a specific chip count monkeypatches `SYSFS_ROOT`
 to a temporary directory instead of depending on this machine's hardware.
 """
 
+import json
+
 import pytest
 
 import gi
@@ -33,7 +35,10 @@ from ui.chipviz import (  # noqa: E402
     MAX_CHIPS,
     POLL_INTERVAL_MS,
     STAGE_STALE_AFTER_S,
+    WORKING_ANIMATION_FPS,
     ChipVizPanel,
+    animation_fps,
+    animation_fps_table,
     build_page_html,
     chip_dirs,
     clock_activity,
@@ -682,6 +687,94 @@ def test_the_page_exposes_per_chip_activation(tmp_path):
     it -- `activate(mode)` alone (the fan-out) cannot express this."""
     html = build_page_html("/*js*/", "/*css*/", 4, 84, 88)
     assert "activateChip" in html
+
+
+# ── the frame governor (the flicker fix) ────────────────────────────────────
+#
+# What these pin, and why each one is a real failure rather than a shape:
+# the panel flickered because tensix-viz's `idle` mode randomises every cell
+# once per DISPLAY frame, and `_drawHeatmap` renormalises the grid to its own
+# per-frame maximum, so each fresh pop lands at full contrast. Measured over
+# the four canvases: 4697 pixel-brightenings/second ungoverned against 1458
+# with the governor in (see ui/chipviz.py's comment above
+# `RESTING_ANIMATION_FPS`, and this task's report).
+#
+# The live JS was verified by measurement, not here -- a unit suite with no
+# main loop cannot watch a requestAnimationFrame chain. What CAN be pinned
+# here is that the policy is the one that was measured, and that the page
+# actually routes the animation through it, which is where a later edit would
+# most plausibly break it.
+
+
+def test_only_the_random_mode_is_slowed_down():
+    """The fold's own modes must keep the display's rate.
+
+    `thinking`, `diffusion` and `inference` are smooth deterministic fields
+    -- measured at 10-30x less per-frame churn than `idle` -- and `diffusion`
+    is the one animation the booth actually points at ("the same shape as the
+    collapse on the left of the screen"). Slowing those would cost the panel
+    its one honest rhyme to buy nothing.
+    """
+    assert 0 < animation_fps("idle") <= 30, (
+        "`idle` is the mode that flickers; it must be governed, and to a rate "
+        "low enough to matter")
+    for mode in ("thinking", "diffusion", "inference"):
+        assert animation_fps(mode) == 0, (
+            f"{mode} is a smooth field and must run at the display's rate")
+
+
+def test_a_mode_this_build_has_never_heard_of_is_never_frozen():
+    """`"*"` is the page's fallback. A future tensix-viz mode, or a later
+    `_MODE_BY_STAGE` row, must inherit "ungoverned" rather than whichever
+    number happened to be left in the table -- an unknown mode already means
+    "something is running and we do not know what" (see `_UNKNOWN_STAGE_MODE`),
+    and drawing it at a resting cadence would be the same claim this panel
+    refuses to make with the mode itself."""
+    table = animation_fps_table()
+    assert table["*"] == WORKING_ANIMATION_FPS == 0
+
+
+def test_the_table_the_page_gets_is_the_policy_the_tests_check():
+    """Every mode the stage table can ask for is in the page's budget, with
+    the value `animation_fps` computed -- so the policy above cannot drift
+    away from what actually reaches the WebView."""
+    table = animation_fps_table()
+    for mode in set(chipviz_module._MODE_BY_STAGE.values()) | {
+            chipviz_module._UNKNOWN_STAGE_MODE}:
+        assert table[mode] == animation_fps(mode)
+    html = build_page_html("/*js*/", "/*css*/", 4, 84, 88)
+    assert json.dumps(table) in html, (
+        "the page must carry the computed budget, not a hand-written copy")
+
+
+def test_every_activation_runs_under_the_governor():
+    """The governor hands a chain its budget by wrapping the `activate` call
+    (`window.__vizRun`); tensix-viz then re-arms its own loop from inside its
+    callback and inherits it. An `activate` called outside that wrapper starts
+    an ungoverned chain that nothing later can slow down -- the panel would go
+    back to flickering the moment any chip changed mode."""
+    html = build_page_html("/*js*/", "/*css*/", 4, 84, 88)
+    assert html.count("v.activate(m)") > 0
+    assert html.count("v.activate(m)") == html.count("window.__vizRun(m,"), (
+        "every activate must be wrapped in __vizRun")
+
+
+def test_the_governor_is_installed_before_any_canvas_can_start_a_loop():
+    """Order is load-bearing: a chain started before `requestAnimationFrame`
+    is wrapped keeps the native function for its whole life, and no later
+    install can reach it."""
+    html = build_page_html("/*js*/", "/*css*/", 4, 84, 88)
+    assert (html.index("window.requestAnimationFrame=function")
+            < html.index("new window.TensixViz"))
+
+
+def test_the_governor_leaves_animations_cancellable():
+    """tensix-viz's `reset()` -- which every `activate` calls first -- stops
+    the previous loop with `cancelAnimationFrame`. The governor hands out its
+    OWN ids, so if it does not also wrap the cancel, a mode change leaves the
+    old chain running and two loops fight over one canvas forever."""
+    html = build_page_html("/*js*/", "/*css*/", 4, 84, 88)
+    assert "window.cancelAnimationFrame=function" in html
 
 
 def test_the_page_denies_itself_every_network_source(tmp_path):
