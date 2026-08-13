@@ -62,9 +62,27 @@
 # default model everywhere else) for real, rather than only in a synthetic
 # unit test. `thumbnail` is omitted because Phase 4 owns the art; the
 # gallery (ui/gallery.py) renders a placeholder for any target without one.
+# `tagline` is the caption under the LIVE RENDER (ui/app.py's
+# `_build_target_info`), not gallery-card copy. One short sentence, written
+# to be read at two metres by someone walking past -- which is why it is a
+# separate field from `blurb` rather than a truncation of it: `blurb` is for
+# a visitor who has already stopped and is choosing, and runs several
+# sentences. Every tagline below states the same facts as its own blurb, in
+# one line.
+#
+# `thumbnail` points at a picture of a REAL fold of that target, produced by
+# `scripts/make-thumbnails.py` -- it folds each entry on the card and draws
+# the result with the booth's own renderer, so a card shows the molecule
+# pressing it actually produces. Re-run it when the playlist grows. Both
+# fields stay OPTIONAL: a target added before anyone has folded or described
+# it still loads, and the gallery still renders a placeholder for it.
 - id: trpcage
   input: ../examples/trpcage_no_msa.yaml
   name: Trp-cage
+  thumbnail: thumbnails/trpcage.png
+  tagline: >-
+    Twenty amino acids — one of the smallest proteins that folds itself,
+    and it does it in microseconds.
   blurb: >-
     At just 20 amino acids, Trp-cage is one of the smallest proteins known
     to reliably fold into a stable shape on its own, snapping into place in
@@ -81,6 +99,10 @@
 - id: fkbp12
   input: ../examples/affinity_fkg.yaml
   name: FKBP12
+  thumbnail: thumbnails/fkbp12.png
+  tagline: >-
+    The molecular lock that anti-rejection drugs are shaped to pick, so a
+    transplanted organ survives.
   blurb: >-
     FKBP12 is the molecular lock that a whole class of anti-rejection drugs
     was built to pick: organ-transplant patients take a daily drug called
@@ -102,6 +124,10 @@
 - id: dhfr
   name: Dihydrofolate Reductase
   input: ../examples/affinity_dhfr.yaml
+  thumbnail: thumbnails/dhfr.png
+  tagline: >-
+    Every dividing cell needs it to build new DNA — which is why a classic
+    cancer drug jams it shut.
   blurb: >-
     Every dividing cell relies on this enzyme, DHFR, to help build the raw
     material for new DNA -- which is exactly why one of the oldest cancer
@@ -122,6 +148,12 @@
 - id: trypsin
   input: ../examples/affinity_tryp.yaml
   name: Trypsin
+  thumbnail: thumbnails/trypsin.png
+  # "the cow's version" tracks the blurb's own correction below: the
+  # sequence this booth folds is BOVINE pancreatic trypsin, not human.
+  tagline: >-
+    Built switched off by the pancreas, armed in the gut, where it cuts up
+    the protein in your meal.
   # Two factual errors fixed here (whole-branch review, Critical 6): trypsin
   # is made by the PANCREAS -- as inactive trypsinogen, only switched on
   # once it reaches the small intestine -- not by the intestine itself; and

@@ -14,6 +14,8 @@ trees under test (`_build_help_overlay`, `_build_side_rail`) rather than a
 whole window.
 """
 
+from pathlib import Path
+
 import gi
 
 gi.require_version("Gtk", "4.0")
@@ -30,6 +32,7 @@ from ui import panels as panels_module
 from ui.app import DemoApp
 from ui.geometry import PLDDT_STOPS
 from ui.panels import MIN_CONTRAST_RATIO, contrast_ratio
+from ui.playlist import Target
 from ui.telemetry import ChipReading
 
 # The wiring tests' fakes are the right ones here too -- reusing them is
@@ -695,6 +698,116 @@ def test_the_tensix_panel_is_in_the_rail_and_never_expands_it():
     assert rail.get_size_request()[0] == app_module._SIDE_RAIL_WIDTH_PX
 
 
+def _rail_width_request(rail):
+    """The rail's (minimum, natural) WIDTH, as `GtkBoxLayout` reports it.
+
+    `natural` is the number that matters and the one nothing else in this
+    file looks at: `gtk_distribute_natural_allocation` grows a
+    non-`hexpand` child from its minimum toward its natural BEFORE handing
+    what is left to the `hexpand` children, so a rail whose natural width
+    moves takes the extra out of the hero slot -- i.e. out of the protein.
+    """
+    measurement = rail.measure(Gtk.Orientation.HORIZONTAL, -1)
+    return measurement.minimum, measurement.natural
+
+
+def test_the_rails_natural_width_does_not_grow_when_a_child_wants_more():
+    """The invariant behind the `T`-twitch fix, stated directly.
+
+    `set_size_request` is only a FLOOR -- it pins the rail's MINIMUM and
+    says nothing about its natural width. Measured on the booth's own
+    1920x1080 fullscreen window before the fix, pressing `T` moved:
+
+        rail        552 -> 584 px, left edge x 1350 -> 1318
+        hero slot   1332 -> 1300 px      <- the protein, twitching 32px
+
+    because the Tensix panel's WebView reports a natural width 32px past
+    the rail's inner width. This test uses a plain over-wide label instead
+    of the WebView, so it pins the RULE ("nothing in this column may widen
+    it") rather than one widget's current measurements, and so it is
+    deterministic in a test process where WebKit may not even load.
+
+    Mutation this catches: building the rail as a plain `Gtk.Box` in
+    `_build_side_rail` (i.e. dropping `_FixedWidthBox`) -- the natural
+    width then follows the greedy child and this assertion goes red.
+    """
+    app = _app()
+    rail = app._build_side_rail()
+    minimum_before, natural_before = _rail_width_request(rail)
+
+    # The shape that matters, and the shape the WebView actually has: a
+    # SMALL minimum with a LARGE natural. A wrapping label can always fall
+    # back to its longest word, so its minimum stays tiny while its natural
+    # is the whole unwrapped line -- which is exactly the gap the old rail
+    # handed over to itself. (An unwrappable single long "word" would be
+    # the wrong probe: it raises the minimum too, which the rail is
+    # supposed to honour by growing.)
+    greedy = Gtk.Label(label="wide " * 200)
+    greedy.set_wrap(True)
+    assert greedy.measure(Gtk.Orientation.HORIZONTAL, -1).natural > natural_before
+    assert greedy.measure(Gtk.Orientation.HORIZONTAL, -1).minimum < natural_before
+    rail.append(greedy)
+
+    minimum_after, natural_after = _rail_width_request(rail)
+    assert natural_after == natural_before, (
+        f"a child that WANTS {natural_after - natural_before}px more widened "
+        "the rail; the hero slot pays for that out of the protein")
+    assert minimum_after == minimum_before
+
+
+def test_a_rail_child_appearing_does_not_change_the_rails_width():
+    """The same invariant on the SHOW path -- a widget becoming visible is
+    what `T` actually does, and it is a different code path from appending
+    one.
+
+    The probe is a stand-in, not the real `ChipVizPanel`, and that is
+    deliberate. Measured in this test process the real panel reports
+    (minimum=516, natural=516); measured in the live booth, realized and
+    with its animation loaded, the same panel reports (516, 584). The 68px
+    of natural that causes the bug only exists once the WebView has a
+    surface and content, which a unit test has no way to give it -- so a
+    test driven off the real panel here passes just as happily against the
+    broken rail as the fixed one. (Confirmed: it did, against the mutation
+    below.) The stand-in carries the panel's live-measured SHAPE instead:
+    a minimum that fits the rail, a natural that does not.
+
+    Mutation this catches: building the rail as a plain `Gtk.Box` in
+    `_build_side_rail`.
+    """
+    app = _app()
+    rail = app._build_side_rail()
+
+    # ui.chipviz.RAIL_INNER_WIDTH_PX + the panel's own 2x16px padding is the
+    # 516 the real panel reports as its minimum; the wrapping text supplies
+    # the oversized natural the loaded WebView has.
+    stand_in = Gtk.Label(label="tensix core grid " * 12)
+    stand_in.set_wrap(True)
+    stand_in.set_size_request(chipviz_module.RAIL_INNER_WIDTH_PX + 32, -1)
+    stand_in.set_visible(False)
+    rail.append(stand_in)
+
+    hidden = _rail_width_request(rail)
+    stand_in.set_visible(True)
+    # Read the probe's own appetite WHILE IT IS VISIBLE: `gtk_widget_measure`
+    # short-circuits an invisible widget to (0, 0), which is both why hiding
+    # the panel takes its width demand away entirely and why this assertion
+    # has to happen here rather than after the widget is hidden again.
+    probe_natural = stand_in.measure(Gtk.Orientation.HORIZONTAL, -1).natural
+    shown = _rail_width_request(rail)
+    stand_in.set_visible(False)
+    hidden_again = _rail_width_request(rail)
+
+    # The probe is only meaningful if it really does want more room than the
+    # rail has -- otherwise this test would pass by measuring nothing.
+    assert probe_natural > hidden[1]
+
+    assert shown == hidden, (
+        f"a panel appearing moved the rail's width request from {hidden} to "
+        f"{shown}; on the booth's 1920x1080 screen that is the hero slot "
+        "going 1332 -> 1300px and the protein jumping 32px sideways")
+    assert hidden_again == hidden
+
+
 def test_the_tensix_panel_sits_directly_below_the_telemetry_panel():
     """The correspondence that makes the animation legible as "these four
     chips, right here" rather than as decoration: animation N is under chip
@@ -824,6 +937,134 @@ def test_every_label_on_the_held_structure_caption_is_legible():
     _assert_legible(overlay, context="held-structure caption")
 
 
+# ---------------------------------------------------------------------------
+# The protein caption under the render: what the molecule actually IS.
+# ---------------------------------------------------------------------------
+
+def _target(target_id, name, tagline):
+    """A playlist Target with only the fields this caption reads."""
+    return Target(id=target_id, input_path=Path("/nonexistent.yaml"),
+                  model="protenix-v2", name=name, blurb=f"{name} blurb",
+                  tagline=tagline)
+
+
+def test_the_caption_describes_the_protein_that_is_on_screen():
+    app = _app()
+    app.targets = [_target("trpcage", "Trp-cage", "Twenty amino acids.")]
+    app._shown_target_id = "trpcage"
+    app._sync_target_info()
+    assert app._target_info == ("Trp-cage", "Twenty amino acids.")
+
+
+def test_the_caption_names_the_fold_in_flight_before_anything_is_on_screen():
+    """The first fold of the day: nothing has been shown yet, so there is no
+    picture for the caption to contradict and naming what is coming beats
+    naming nothing."""
+    app = _app()
+    app.targets = [_target("dhfr", "Dihydrofolate Reductase", "Builds DNA.")]
+    app._shown_target_id = None
+    app._current_target_id = "dhfr"
+    app._sync_target_info()
+    assert app._target_info == ("Dihydrofolate Reductase", "Builds DNA.")
+
+
+def test_the_caption_keeps_describing_the_held_protein_during_a_silent_fold():
+    """The coexistence rule, and the reason this caption is bound to
+    `_shown_target_id` rather than `_current_target_id`.
+
+    While a new fold is in its silent stages the picture is still the
+    PREVIOUS protein, and the hold caption at the top of the hero slot is
+    already saying so ("Previous fold: Trp-cage / Now folding Trypsin").
+    This caption sits under that picture, so it must keep describing the
+    picture -- describing Trypsin underneath a rendering of Trp-cage is
+    exactly the confusion the hold caption exists to prevent.
+
+    Mutation this catches: flipping `target_info_subject`'s precedence to
+    `folding_target_id or shown_target_id`.
+    """
+    app = _app()
+    app.targets = [_target("trpcage", "Trp-cage", "Twenty amino acids."),
+                   _target("trypsin", "Trypsin", "Cuts up your meal.")]
+    app._shown_target_id = "trpcage"
+    app._current_target_id = "trypsin"
+    app._awaiting_first_frame = True
+    app._viewer_has_structure = True
+    app._sync_viewer_hold()
+
+    # The two captions, reconciled in the same pass, saying different things
+    # about different subjects -- and agreeing about both.
+    assert app._caption == ("Previous fold: Trp-cage", "Now folding Trypsin")
+    assert app._target_info == ("Trp-cage", "Twenty amino acids.")
+
+
+def test_the_caption_follows_the_new_protein_once_its_first_frame_lands():
+    """The other half of the rule above: the caption is not stuck on the old
+    protein, it switches at the moment the PICTURE switches."""
+    app = _app()
+    app.targets = [_target("trpcage", "Trp-cage", "Twenty amino acids."),
+                   _target("trypsin", "Trypsin", "Cuts up your meal.")]
+    app._shown_target_id = "trpcage"
+    app._current_target_id = "trypsin"
+    app._sync_target_info()
+    assert app._target_info[0] == "Trp-cage"
+
+    # What the frame drain does when the new fold's first frame arrives.
+    app._shown_target_id = app._current_target_id
+    app._sync_target_info()
+    assert app._target_info == ("Trypsin", "Cuts up your meal.")
+
+
+def test_a_target_with_no_tagline_is_captioned_with_its_name_alone():
+    """`tagline` is optional in the manifest, so the caption must degrade to
+    the name rather than inventing copy or rendering a blank second line."""
+    app = _app()
+    app.targets = [_target("newthing", "New Thing", None)]
+    app._shown_target_id = "newthing"
+    info = app._build_target_info()
+    assert info is not None
+    assert app._target_info == ("New Thing", None)
+    assert app._target_info_name_label.get_label() == "New Thing"
+    assert app._target_info_tagline_label.get_visible() is False
+
+
+def test_a_protein_the_playlist_cannot_name_gets_no_caption_at_all():
+    """`_target_name` returns None rather than the raw wire id for an
+    unknown target. The caption follows it: the strip disappears rather than
+    showing `trpcage_no_msa` to a visitor."""
+    app = _app()
+    app.targets = []
+    app._shown_target_id = "some_id_the_playlist_never_heard_of"
+    info = app._build_target_info()
+    assert app._target_info is None
+    assert info.get_visible() is False
+
+
+def test_target_info_subject_prefers_what_is_on_screen():
+    """The pure decision, with no widgets and no playlist."""
+    assert app_module.target_info_subject(
+        shown_target_id="a", folding_target_id="b") == "a"
+    assert app_module.target_info_subject(
+        shown_target_id=None, folding_target_id="b") == "b"
+    assert app_module.target_info_subject(
+        shown_target_id=None, folding_target_id=None) is None
+
+
+def test_every_label_on_the_protein_caption_is_legible():
+    """The caption a visitor reads to learn what the molecule is has to be
+    readable at booth distance.
+
+    Measured on the #092221 ground: `.target-info-name` #74C5DF = 8.55:1,
+    `.target-info-tagline` #C7D9D8 = 11.36:1. Both clear the 4.5:1 AA floor
+    this project holds every label to.
+    """
+    app = _app()
+    app.targets = [_target("trpcage", "Trp-cage",
+                           "Twenty amino acids — one of the smallest "
+                           "proteins that folds itself.")]
+    app._shown_target_id = "trpcage"
+    _assert_legible(app._build_target_info(), context="protein caption")
+
+
 def test_every_label_on_the_preparing_overlay_is_legible():
     """Extending the guard to this file's widgets caught a real, shipped
     defect: `.preparing-message` was the raw brand accent #1B8EB1, which
@@ -858,6 +1099,11 @@ def _widget_trees_this_file_builds():
     app._caption_title_label.set_label("Previous fold: Trp-cage")
     app._caption_sub_label.set_label("Now folding Trypsin")
     yield "held-structure caption", caption
+
+    app = _app()
+    app.targets = [_target("trpcage", "Trp-cage", "Twenty amino acids.")]
+    app._shown_target_id = "trpcage"
+    yield "protein caption under the render", app._build_target_info()
 
 
 def test_every_label_this_file_builds_carries_an_explicit_colour_rule():
@@ -900,7 +1146,8 @@ def test_every_help_card_class_has_an_explicit_colour_rule():
     rules = _legibility.color_rules_from_css(app_module._APP_CSS)
     for css_class in ("help-title", "help-body", "help-section", "help-key",
                       "help-desc", "help-note", "booth-hint", "booth-hint-key",
-                      "viewer-caption-title", "viewer-caption-sub"):
+                      "viewer-caption-title", "viewer-caption-sub",
+                      "target-info-name", "target-info-tagline"):
         assert frozenset({css_class}) in rules, f"{css_class} has no color: rule"
 
 

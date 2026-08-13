@@ -416,8 +416,8 @@ def _ensure_css_installed():
 _CAPTION_TITLE = "What this booth folds"
 _CAPTION_BODY = (
     "It works through these one after another, all day, on the Tenstorrent "
-    "chips in this room. Tap anything to go back and watch the fold that is "
-    "running right now — asking for one on demand isn't wired up yet."
+    "chips a few feet away. Tap anything to go back and watch the fold that "
+    "is running right now — asking for one on demand isn't wired up yet."
 )
 
 # The per-card line, in the same place the old "TAP TO FOLD" sat. A

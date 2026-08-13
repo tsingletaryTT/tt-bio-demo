@@ -95,6 +95,77 @@ def test_a_missing_thumbnail_is_tolerated(tmp_path):
     assert by_id["has-thumb"].thumbnail == thumb.resolve()
 
 
+def test_every_shipped_thumbnail_points_at_a_file_that_exists():
+    """The gallery falls back to a placeholder for a target with NO
+    thumbnail, which is by design -- but a target that names one and whose
+    file is missing is a typo shipping as a silent placeholder. That path
+    must stay loud here, where it fails CI rather than at the booth.
+    """
+    named = [t for t in load_playlist("playlist/manifest.yaml") if t.thumbnail]
+    # Guards this test against becoming vacuous the day someone drops the
+    # thumbnails: "all zero of them exist" must not read as a pass.
+    assert named, "no shipped target names a thumbnail at all"
+    for t in named:
+        assert t.thumbnail.is_file(), (
+            f"{t.id} names a missing thumbnail: {t.thumbnail}")
+
+
+def test_shipped_thumbnails_are_small_enough_to_ship():
+    """Thumbnails go into the repo AND into the .deb, so a stray multi-MB
+    render is a packaging regression. 400 KB each is the packaging plan's
+    assertion; a ribbon on a flat ground compresses far below it."""
+    named = [t for t in load_playlist("playlist/manifest.yaml") if t.thumbnail]
+    assert named, "no shipped target names a thumbnail at all"
+    for t in named:
+        size = t.thumbnail.stat().st_size
+        assert size < 400_000, f"{t.id}: {t.thumbnail.name} is {size} bytes"
+
+
+def test_a_missing_tagline_is_tolerated(tmp_path):
+    """`tagline` is optional the same way `thumbnail` is: a target added
+    before anyone has written one must still load, and the caption under
+    the render then shows its name alone.
+
+    Loads BOTH shapes and checks both, so an implementation that always
+    sets `tagline = None` (satisfying only the "missing" half) fails here.
+    """
+    (tmp_path / "a.yaml").write_text("version: 1\n")
+    m = tmp_path / "m.yaml"
+    m.write_text(
+        "- id: no-tagline\n"
+        "  input: a.yaml\n"
+        "  name: No Tagline\n"
+        "  blurb: this one has no tagline\n"
+        "- id: has-tagline\n"
+        "  input: a.yaml\n"
+        "  name: Has Tagline\n"
+        "  blurb: this one has a tagline\n"
+        "  tagline: one short sentence\n"
+        # Whitespace-only is the third spelling of "nothing was said" and
+        # must land on None too -- otherwise the caption renders a blank
+        # second line under the name.
+        "- id: blank-tagline\n"
+        "  input: a.yaml\n"
+        "  name: Blank Tagline\n"
+        "  blurb: this one has a whitespace tagline\n"
+        "  tagline: '   '\n"
+    )
+
+    by_id = {t.id: t for t in load_playlist(m)}
+    assert by_id["no-tagline"].tagline is None
+    assert by_id["blank-tagline"].tagline is None
+    assert by_id["has-tagline"].tagline == "one short sentence"
+
+
+def test_every_shipped_target_has_a_tagline():
+    """Not a schema requirement (the loader tolerates its absence, and must
+    -- see above) but a content one: every target currently in the booth's
+    rotation should say what it is under the render. A new entry failing
+    this is a reminder to write one, not a crash."""
+    for t in load_playlist("playlist/manifest.yaml"):
+        assert t.tagline, f"{t.id} has no tagline for the caption"
+
+
 def test_expected_s_absent_means_not_yet_measured(tmp_path):
     """Omitting `expected_s` entirely is not an error -- it means this
     target has not been folded on real hardware yet (this task's brief).
