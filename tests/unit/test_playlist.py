@@ -37,7 +37,8 @@ but non-numeric value is still a loud PlaylistError -- the leniency is for
 
 import pytest
 
-from ui.playlist import PlaylistError, Target, load_playlist
+from ui.playlist import PlaylistError, Target, load_playlist, select_targets
+from ui.playlist import main as playlist_main
 
 
 def test_loads_the_shipped_manifest():
@@ -176,3 +177,77 @@ def test_duplicate_ids_are_rejected(tmp_path):
     bad.write_text(manifest_text("dup"))
     with pytest.raises(PlaylistError, match="dup"):
         load_playlist(bad)
+
+
+# ---------------------------------------------------------------------------
+# select_targets + the module's CLI face.
+#
+# Both exist for scripts/run-demo.sh, which builds the daemon's fold inputs
+# from the same manifest (and the same selection) the UI's gallery is built
+# from -- see this module's docstring and tests/unit/test_run_demo_sh.py for
+# the defect that motivated it.
+# ---------------------------------------------------------------------------
+
+def _two_target_manifest(tmp_path):
+    (tmp_path / "a.yaml").write_text("stub\n")
+    (tmp_path / "b.yaml").write_text("stub\n")
+    manifest = tmp_path / "manifest.yaml"
+    manifest.write_text(
+        "- id: alpha\n"
+        "  input: a.yaml\n"
+        "  name: Alpha\n"
+        "  blurb: the first target\n"
+        "- id: beta\n"
+        "  input: b.yaml\n"
+        "  name: Beta\n"
+        "  blurb: the second target\n"
+    )
+    return manifest
+
+
+def test_select_targets_with_no_ids_keeps_everything(tmp_path):
+    targets = load_playlist(_two_target_manifest(tmp_path))
+    assert [t.id for t in select_targets(targets, None)] == ["alpha", "beta"]
+    assert [t.id for t in select_targets(targets, [])] == ["alpha", "beta"]
+
+
+def test_select_targets_keeps_manifest_order_not_argument_order(tmp_path):
+    """The gallery reads top-to-bottom off the file an operator edits;
+    `--targets beta,alpha` must not silently reorder the grid."""
+    targets = load_playlist(_two_target_manifest(tmp_path))
+    assert [t.id for t in select_targets(targets, ["beta", "alpha"])] == \
+        ["alpha", "beta"]
+
+
+def test_select_targets_drops_the_ones_not_asked_for(tmp_path):
+    targets = load_playlist(_two_target_manifest(tmp_path))
+    assert [t.id for t in select_targets(targets, ["beta"])] == ["beta"]
+
+
+def test_an_unknown_target_id_is_loud(tmp_path):
+    """Not a smaller playlist: a typo that silently shipped a subset is how
+    the two processes drift apart in the first place. The message names both
+    the bad id and what the manifest actually holds, because the reader is
+    an operator at a venue."""
+    targets = load_playlist(_two_target_manifest(tmp_path))
+    with pytest.raises(PlaylistError) as exc:
+        select_targets(targets, ["alpha", "gamma"])
+    assert "gamma" in str(exc.value)
+    assert "alpha" in str(exc.value)
+
+
+def test_the_cli_prints_id_and_resolved_input_path(tmp_path, capsys):
+    manifest = _two_target_manifest(tmp_path)
+    assert playlist_main([str(manifest), "beta"]) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert out == [f"beta\t{tmp_path / 'b.yaml'}"]
+
+
+def test_the_cli_fails_with_one_line_and_no_traceback(tmp_path, capsys):
+    """scripts/run-demo.sh prints this straight to an operator. A traceback
+    would be exactly the raw-error-text this project bans everywhere else."""
+    assert playlist_main([str(tmp_path / "nope.yaml")]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert len(captured.err.strip().splitlines()) == 1
+    assert "not found" in captured.err

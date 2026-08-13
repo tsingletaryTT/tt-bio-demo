@@ -52,8 +52,19 @@ text to a visitor; a `PlaylistError` always names the offending entry (its
 `id`, or its 1-based position in the file if `id` itself is what's
 missing) so an operator staring at fifteen targets and one bad line does
 not have to bisect the file by hand.
+
+This module also has a tiny COMMAND-LINE face (`python3 -m ui.playlist
+MANIFEST [id ...]`, see `main` at the bottom), which exists for exactly
+one caller: `scripts/run-demo.sh`. The launcher has to hand the daemon a
+directory of fold inputs and the UI a manifest, and those two used to be
+chosen independently -- the gallery advertised four targets the daemon had
+no input file for, so tapping "Trypsin - ~74.9s" got you a 20-residue
+Trp-cage in four seconds. Now the launcher builds the daemon's directory
+FROM this manifest, through this CLI, so the two cannot disagree: one
+parser, one validation pass, one answer to "what can this booth fold".
 """
 
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -224,3 +235,60 @@ def load_playlist(path):
         ))
 
     return targets
+
+
+def select_targets(targets, ids):
+    """The subset of `targets` named by `ids`, in the manifest's own order.
+
+    `ids` may be `None` or empty, which means "all of them" -- the booth's
+    ordinary case. An id that is not in the manifest is a `PlaylistError`,
+    loudly, rather than a silently smaller playlist: this is what
+    scripts/run-demo.sh uses to decide which targets BOTH processes get, so
+    a typo in an operator's `--targets` must not quietly ship a booth that
+    advertises one thing and folds another (see the module docstring).
+
+    Manifest order, not the caller's: the gallery reads top to bottom off
+    the file an operator edits, and `--targets trypsin,trpcage` reordering
+    the grid would be a surprise nobody asked for.
+    """
+    if not ids:
+        return list(targets)
+    wanted = list(ids)
+    known = {target.id for target in targets}
+    unknown = [target_id for target_id in wanted if target_id not in known]
+    if unknown:
+        raise PlaylistError(
+            f"no such target(s) in the playlist: {', '.join(unknown)} "
+            f"(this manifest has: {', '.join(sorted(known))})")
+    return [target for target in targets if target.id in set(wanted)]
+
+
+def main(argv=None):
+    """`python3 -m ui.playlist MANIFEST [id ...]` -> one `id<TAB>input_path`
+    line per selected target.
+
+    For scripts/run-demo.sh, which turns those lines into the symlink
+    directory the daemon folds from -- see the module docstring. Tab
+    separated (never spaces): a path may contain spaces, an id may not
+    (nothing here forbids it, but the manifest is ours and does not).
+
+    A bad manifest exits 2 with ONE line on stderr -- no traceback. The
+    launcher prints that line to an operator, and this is the same rule the
+    UI itself follows: a raw exception is never the user-facing artifact.
+    """
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if not argv:
+        print("usage: python3 -m ui.playlist MANIFEST [id ...]", file=sys.stderr)
+        return 2
+    try:
+        targets = select_targets(load_playlist(argv[0]), argv[1:])
+    except PlaylistError as exc:
+        print(f"playlist: {exc}", file=sys.stderr)
+        return 2
+    for target in targets:
+        print(f"{target.id}\t{target.input_path}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

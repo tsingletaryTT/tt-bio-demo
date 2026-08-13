@@ -695,3 +695,53 @@ def test_the_not_ready_message_never_carries_wire_detail(caplog):
     assert app.display_message.strip() != ""
     assert "/w/secret.pt" not in app.display_message
     assert any("/w/secret.pt" in record.message for record in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# The gallery only ever offers what the daemon was given.
+#
+# scripts/run-demo.sh hands the SAME --playlist and --targets to both
+# processes (tests/unit/test_run_demo_sh.py pins the launcher end of that);
+# these two pin the UI end -- that `--targets` is honoured at all, and that
+# the unrestricted case still shows everything.
+# ---------------------------------------------------------------------------
+
+class _NamingStack:
+    """A Gtk.Stack stand-in that records add_named, which `_build_gallery`
+    needs and FakeStack (a `_sync_to_state` recorder) deliberately lacks."""
+
+    def __init__(self):
+        self.named = {}
+        self.visible = None
+
+    def add_named(self, child, name):
+        self.named[name] = child
+
+    def set_visible_child_name(self, name):
+        self.visible = name
+
+
+def _gallery_ids(target_ids):
+    import pathlib
+    manifest = (pathlib.Path(__file__).resolve().parent.parent.parent
+                / "playlist" / "manifest.yaml")
+    app = DemoApp(socket_path=None, playlist_path=str(manifest),
+                  target_ids=target_ids)
+    app.screens = _NamingStack()
+    app._build_gallery()
+    return [target.id for target in app.targets]
+
+
+def test_the_gallery_shows_only_the_targets_this_run_was_given():
+    """A card for a target the daemon has no input file for can never be
+    folded -- it is a promise the booth cannot keep (whole-branch review,
+    Critical 1)."""
+    assert _gallery_ids(["trpcage"]) == ["trpcage"]
+
+
+def test_no_target_selection_means_the_whole_manifest():
+    """The mutation guard for the test above: an implementation that always
+    returned one target, or always dropped the selection, fails one of these
+    two."""
+    ids = _gallery_ids(None)
+    assert len(ids) > 1 and "trpcage" in ids

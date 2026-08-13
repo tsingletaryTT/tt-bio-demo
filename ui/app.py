@@ -96,7 +96,7 @@ from ui.diagnostics import KIND_MARK, DiagnosticsLog, DiagnosticsPanel
 from ui.gallery import Gallery
 from ui.geometry import PLDDT_STOPS, ribbon_from_cif
 from ui.panels import PipelinePanel, TelemetryPanel
-from ui.playlist import PlaylistError, load_playlist
+from ui.playlist import PlaylistError, load_playlist, select_targets
 from ui.states import (
     StateMachine, points_are_visible, ribbon_may_be_revealed, showcase_ended,
 )
@@ -509,10 +509,17 @@ def _ensure_app_css_installed():
 
 
 class DemoApp(Gtk.Application):
-    def __init__(self, socket_path=None, playlist_path=None, clock=None):
+    def __init__(self, socket_path=None, playlist_path=None, target_ids=None,
+                 clock=None):
         super().__init__(application_id="com.tenstorrent.ttbiodemo")
         self.socket_path = socket_path
         self.playlist_path = playlist_path
+        # Which manifest entries this run actually offers. None/empty means
+        # "all of them". scripts/run-demo.sh passes the SAME selection here
+        # that it uses to build the daemon's fold directory, which is what
+        # stops the gallery advertising a target the daemon has no input
+        # file for -- see ui/playlist.py's module docstring.
+        self.target_ids = list(target_ids) if target_ids else []
 
         # The booth's one source of truth for what is on screen. Everything
         # else in this class either feeds it (events, touches, the clock) or
@@ -858,7 +865,7 @@ class DemoApp(Gtk.Application):
         """
         path = self.playlist_path or _DEFAULT_PLAYLIST
         try:
-            self.targets = load_playlist(path)
+            self.targets = select_targets(load_playlist(path), self.target_ids)
         except PlaylistError:
             log.exception("playlist %s could not be loaded; the booth will "
                           "run without a gallery", path)
@@ -1751,9 +1758,18 @@ def main(argv=None):
                         help="runner socket path; omit to show an empty viewer")
     parser.add_argument("--playlist", default=None,
                         help=f"playlist manifest (default: {_DEFAULT_PLAYLIST})")
+    parser.add_argument("--targets", default=None,
+                        help="comma-separated manifest ids to offer; omit for "
+                             "every target in the manifest. MUST match what "
+                             "the daemon was given (scripts/run-demo.sh does "
+                             "this for you) -- a gallery card whose target the "
+                             "daemon has no input file for can never be folded")
     args = parser.parse_args(argv)
+    target_ids = [part.strip() for part in (args.targets or "").split(",")
+                  if part.strip()]
     return DemoApp(socket_path=args.socket,
-                   playlist_path=args.playlist).run([])
+                   playlist_path=args.playlist,
+                   target_ids=target_ids).run([])
 
 
 if __name__ == "__main__":

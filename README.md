@@ -73,10 +73,15 @@ failure, `2` runner venv built but non-functional.
 ./scripts/run-demo.sh
 ```
 
-This starts the compute daemon in `venv-runner` and the GTK4 UI in `venv-ui`, wires them
-over a Unix socket, and folds every `.yaml` target it finds in a playlist directory. A
-protein renders driven entirely by live computation on a chip — no recorded fixture
-anywhere in this path.
+This starts the compute daemon in `venv-runner` and the GTK4 UI in `venv-ui` and wires them
+over a Unix socket. A protein renders driven entirely by live computation on a chip — no
+recorded fixture anywhere in this path.
+
+**One playlist drives both processes.** The launcher reads `playlist/manifest.yaml`,
+expands the selected entries into the directory of fold inputs the daemon reads, and hands
+the UI the same manifest and the same selection. That is deliberate and it is load-bearing:
+before this, the daemon got one target and the UI defaulted to the full four-target
+manifest, so the gallery advertised proteins the daemon had no input file for.
 
 Every option has an environment-variable equivalent; `./scripts/run-demo.sh --help` prints
 the authoritative list. The ones you are most likely to want:
@@ -84,13 +89,21 @@ the authoritative list. The ones you are most likely to want:
 | Flag | Default | What it does |
 |---|---|---|
 | `--socket PATH` | `${XDG_RUNTIME_DIR:-/tmp}/tt-bio-demo/runner.sock` | Socket the daemon serves and the UI connects to |
-| `--playlist DIR` | a directory it builds itself, holding this repo's `examples/trpcage_no_msa.yaml` | Directory of `.yaml` fold targets |
+| `--playlist FILE` | `playlist/manifest.yaml` | The playlist **manifest** both processes are driven from |
+| `--targets a,b` | `trpcage` | Which manifest ids to run, for both processes |
+| `--all-targets` | off | Run every target in the manifest instead |
 | `--log-root PATH` | `<runtime-dir>/logs` | Where tt-metal's own log output is pinned |
 | `--log-budget-gb` | 2 | Sweep budget for tt-metal logs between folds |
 | `--structures-budget-gb` | 0.2 | Sweep budget for emitted `.cif` structures, per device |
 
-The default target is Trp-cage (20 residues), chosen because it needs no MSA server. Most
-curated tt-bio playlist entries do.
+The default target is Trp-cage (20 residues), chosen because it needs no MSA server and
+folds in ~4.4 s. Most curated tt-bio playlist entries need an MSA server.
+
+> **`--all-targets` is not yet validated end to end.** The other three shipped targets
+> (FKBP12, DHFR, Trypsin) are measured 62–75 s folds, and their long callback-free windows —
+> host featurization, then the confidence head and mmCIF write — have never been run through
+> the socket into the UI, whose read timeout is 5 s. Watch a full cycle yourself before
+> leaving one of them running unattended in front of the public.
 
 ### 3. Run the tests
 
