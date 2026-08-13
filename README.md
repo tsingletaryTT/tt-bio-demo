@@ -209,6 +209,10 @@ imported, and it is load-bearing for the booth rather than a development conveni
   pLDDT-colored ribbon. Ribbon geometry is built off the GTK main loop, and multi-chain
   structures are splined per chain rather than as one continuous tube. The socket client
   reconnects on any disconnect and keeps the last structure rotating rather than blanking.
+- **The booth itself** — a five-state machine (attract, gallery, folding, showcase,
+  preparing) with a 45 s idle reset, a curated playlist with visitor-facing blurbs and
+  measured fold times, the `?` help card and the `D` diagnostics panel, and a "preparing"
+  screen for when the daemon reports it is not ready.
 - **Telemetry sampler** (`ui/telemetry.py`) — samples `tt-smi` independently of the daemon,
   so a wedged daemon still leaves the silicon visibly breathing. Reports a genuine
   tri-state: a reading, an honest "no devices", or "no usable answer" — never fabricated
@@ -226,12 +230,56 @@ message does not exist yet. The gallery and the `?` help card both say so on scr
 a visitor reads claims otherwise. When the protocol grows that message, `ui/app.py`'s
 `_on_pick` and the copy in `ui/gallery.py` are what change together.
 
+## What is on screen
+
+```
+┌──────────────────────────────┬───────────────────────┐
+│                              │ Folding on Blackhole  │
+│                              │ PIPELINE  ▓▓▓░░ stage │
+│      the protein, or         │ CHIPS  °C · W · MHz   │
+│      the gallery             │ TENSIX ACTIVITY  ▞▚▞▚ │
+│                              │ ▸ DIAGNOSTICS · ? HELP│
+│                              │ (diagnostics log)     │
+└──────────────────────────────┴───────────────────────┘
+```
+
+- **The hero slot** holds either the live fold — the diffusion point cloud cross-fading
+  into a pLDDT-coloured ribbon — or the gallery. The side rail stays put across both, so
+  the silicon keeps visibly breathing while someone is reading.
+- **Pipeline panel** — one row per fold stage (msa, prep, trunk, diffusion, confidence,
+  saving); the bright row is the one running now. Clears itself if nothing reports progress
+  for 20 s, so a dead daemon cannot leave a progress bar frozen mid-fold all day.
+- **Chips panel** — temperature, power and clock per chip, from a `tt-smi` snapshot every
+  two seconds on the UI's own thread. Never from the socket: a wedged daemon still leaves
+  the hardware readout live. Reports a genuine tri-state and marks itself stale.
+- **Tensix activity panel** — one animated core grid per chip
+  ([the WebKit exception](#the-one-webkit-exception)). Only the chip actually running the
+  fold animates the work; the header names it (`CHIP 0 · DENOISING`) and the AICLK figure
+  beside it is read from the driver once a second.
+- **Diagnostics panel** (`D`) — the live protocol log, in the rail: every event as it
+  arrives, with a one-line explanation of each stage the first time it appears. For us and
+  for the curious visitor; it closes itself after five minutes of no input.
+- **Help card** (`?`) — what the booth is, what every key does, what each panel means, and
+  the pLDDT legend. Works from any screen without pausing the fold, and closes itself after
+  a minute of no input.
+
+### Key bindings
+
+| Key | What it does |
+|---|---|
+| `?` or `F1` | the help card, from any screen |
+| `D` | show/hide the diagnostics panel |
+| `Esc` | close the help card, or the diagnostics panel |
+| any other key, or a tap anywhere | wake the booth and show what it folds |
+| `Ctrl` + `F` | leave/return to fullscreen — for the operator |
+| `Ctrl` + `Q` | quit — for the operator |
+
 ## Not yet built
 
-The visitor-facing gallery, the four-state attract-loop machine, the curated playlist
-(today it is whatever `.yaml` files a directory is pointed at — no blurbs, no pre-cached
-MSAs, no thumbnails), and Debian packaging. See
-[`docs/followups.md`](docs/followups.md) for known gotchas and
+Debian packaging, thumbnail art for the gallery cards, pre-cached MSAs (every shipped
+target is `msa: empty` today), and the client→server protocol message a visitor's pick
+would need — see [What it deliberately does not do yet](#what-it-deliberately-does-not-do-yet).
+See [`docs/followups.md`](docs/followups.md) for known gotchas and
 [`docs/superpowers/plans/`](docs/superpowers/plans/) for the phase plans.
 
 ## Troubleshooting

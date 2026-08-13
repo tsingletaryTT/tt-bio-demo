@@ -201,6 +201,55 @@ projects on this box depend on. And a tested patch for upstream tt-bio lives in
 [`docs/upstream/protenix-dump-fn/`](docs/upstream/protenix-dump-fn/) — adding the
 public `dump_fn` that `OpenDDE.fold` already has and `Protenix.fold` lacks.
 
+### 2026-08-12 — Phase 3b built (the booth: panels, gallery, help, diagnostics)
+
+The UI became a booth rather than a renderer. Ten tasks, subagent-driven with a
+review gate each, then a whole-branch review and its fix wave. **634 tests**
+(500 UI-side + 134 runner-side; 593 at review time, the rest added by the fix
+wave). This file said 224 until now, which is its own small lesson about
+documents of record — the same lesson the review found in three other places.
+
+What shipped: the two rail panels (pipeline + per-chip telemetry), the gallery and
+its curated playlist, the five-state machine with the showcase dwell, the `?` help
+card, the `D` diagnostics log, a live Tensix core-grid animation per chip, and the
+"preparing" screen for a daemon that is not ready.
+
+**Key decisions**
+
+- **The showcase dwell, set against a measurement rather than taste.** The daemon
+  never pauses — it starts fold N+1 the instant fold N finishes — so a dwell does
+  not extend the cycle, it *displaces* live diffusion second for second. Measured
+  against the recorded 3.69 s cycle: a 3.0 s dwell leaves 13% of the collapse
+  visible, 2.0 s leaves 47%. 2.0 s, and the reasoning is in `ui/app.py` where the
+  constant lives.
+- **A WebView, for one 430 px panel.** See the amended decision above. Worth
+  restating why it was allowed: it is optional, scoped, fail-soft, and already
+  proven in `tt-local-generator`. What it is NOT allowed to be is the 3D view.
+- **Measured fold times on the cards, or nothing.** Trp-cage **4.4 s** warm;
+  FKBP12 **62.6 s**, DHFR **69.1 s**, trypsin **74.9 s** (107/187/223 residues —
+  the cost is dominated by the fixed ~200 denoising steps, not by residue count).
+  A target nobody has folded here shows "not yet timed", never a guessed number.
+- **Unattended for 29 folds, hands-off**, recorded end to end — the thing the
+  brief actually asks for.
+
+**Notable moments in prompting**
+
+- The timing pass was blocked by a board-reset fault: every device open failed on
+  an ethernet-core error until the boards were reset, and only then did the three
+  new targets get real numbers. Until that point the manifest deliberately shipped
+  with `expected_s` omitted rather than estimated — the machinery for "not yet
+  measured" exists because of exactly this, not as a hypothetical.
+- The whole-branch review ran **57 mutations**. 38 of the 47 in the main battery
+  went red (3a managed 2 of 15), and the three survivors were each a test asserting
+  on something *adjacent* to the behaviour rather than the behaviour — see
+  [`docs/followups.md`](docs/followups.md), which now names the pattern.
+- The same review's headline finding was not a crash but a **lie**: the turnkey
+  launcher advertised four targets over a daemon that could fold one, and every
+  visitor-facing string called the gallery a chooser when a pick could not reach
+  the daemon at all. Both are fixed by making the copy and the launcher tell the
+  truth, not by inventing the capability. That is the standard this project is
+  holding itself to, and it is worth re-reading before writing any booth copy.
+
 ## Conventions
 
 - Spec-first: brainstormed design → committed spec → implementation plan → code.
