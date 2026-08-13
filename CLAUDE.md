@@ -252,6 +252,19 @@ card, the `D` diagnostics log, a live Tensix core-grid animation per chip, and t
 
 ## Conventions
 
+- **Keep the README's screenshots current.** The README claims every image on it is the
+  live application on real silicon; `scripts/refresh-screenshots.sh` is what keeps that
+  true. Run it whenever the UI changes visibly, look at the output, and commit the images
+  with the change that caused them. A screenshot that no longer matches the app is worse
+  than no screenshot — it is a confident lie on the landing page.
+  - Capture on this box is **Spectacle only**. `ffmpeg x11grab` records pure black on
+    KWin/Wayland (verified: one unique colour in the output frame) and `wf-recorder`
+    refuses outright ("compositor doesn't support wlr-screencopy-unstable-v1"). `grim`
+    does not work either. Keys are driven with `xdotool`, which needs the window
+    activated first or they land in whatever terminal has focus.
+  - Spectacle sustains ~5.9 fps, which is also why the demo video is assembled from
+    stills rather than recorded.
+
 - Spec-first: brainstormed design → committed spec → implementation plan → code.
 - tt-bio is pinned to a **release tag**, never `main` (upstream nightly moves fast) —
   same rule applies to the `TT_BIO_VERSION` pin in `scripts/setup-venvs.sh`.

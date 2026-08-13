@@ -7,6 +7,68 @@ Watch a protein condense out of noise into its folded structure, in real time, c
 the Blackhole chips in the room. Native GTK4 and OpenGL — with [one scoped
 exception](#the-one-webkit-exception) for a small hardware-activity animation.
 
+<video src="docs/screenshots/booth-loop-30s.mp4" autoplay loop muted playsinline width="100%"></video>
+
+<!-- GitHub renders the <video> above. Anywhere that strips HTML falls back to this GIF,
+     which is the same footage cut shorter to keep it a sane size. -->
+[![The booth folding proteins on Tenstorrent Blackhole](docs/screenshots/booth-loop.gif)](docs/screenshots/booth-loop-30s.mp4)
+
+*Thirty seconds of the booth, captured at 1920×1080 · 60 fps from the running application —
+FKBP12, Trp-cage, trypsin and DHFR in turn on a Blackhole p300c. Those dots are the model's
+actual denoising trajectory, streamed one step at a time and condensing into structure; the
+right-hand rail is the live protocol tap showing the same events arrive. Every image on this
+page is the real thing on real silicon — no mockups, no reconstructions.*
+
+---
+
+## What it looks like
+
+<table>
+<tr>
+<td width="50%">
+
+![Live diffusion](docs/screenshots/02-live-diffusion.png)
+
+**The fold, in flight.** 865 atoms mid-collapse. The point cloud is the model's actual
+denoising trajectory, streamed a step at a time — not an animation of a finished result.
+Press <kbd>T</kbd> for the Tensix core grid, <kbd>D</kbd> for the protocol tap.
+
+</td>
+<td width="50%">
+
+![Diagnostics](docs/screenshots/03-diagnostics-detail.png)
+
+**What it is actually doing.** The live protocol tap, with a plain-language line for each
+stage. Bounded ring buffer — the booth runs unattended all day.
+
+</td>
+</tr>
+<tr>
+<td width="50%">
+
+![Panels](docs/screenshots/04-panels-detail.png)
+
+**The instrument.** Pipeline stages and per-chip telemetry, sampled independently of the
+compute daemon so the silicon keeps visibly breathing even if the daemon wedges.
+
+![The folded structure](docs/screenshots/01-folded-structure.png)
+
+**The reveal.** Trp-cage, coloured by the model's own per-residue confidence.
+
+</td>
+<td width="50%">
+
+**Four chips on two boards.** A p300c carries two chips, so `tt-smi`'s four entries are
+four chips — not four boards. The panel says so, because a visitor reading "4 cards"
+would picture the wrong machine.
+
+Folds are timed on this hardware, warm: Trp-cage **4.4 s**, FKBP12 **11.7 s**,
+DHFR **19.7 s**, trypsin **22.3 s**.
+
+</td>
+</tr>
+</table>
+
 ---
 
 ## Quick start
@@ -97,8 +159,13 @@ the authoritative list. The ones you are most likely to want:
 | `--log-budget-gb` | 2 | Sweep budget for tt-metal logs between folds |
 | `--structures-budget-gb` | 0.2 | Sweep budget for emitted `.cif` structures, per device |
 
-The default target is Trp-cage (20 residues), chosen because it needs no MSA server and
-folds in ~4.4 s. Most curated tt-bio playlist entries need an MSA server.
+**The default is every target in the manifest** — the booth shows what it can do rather
+than the one safe thing. A full cycle is ~58 s: Trp-cage 4.4 s, FKBP12 11.7 s, DHFR 19.7 s,
+trypsin 22.3 s, all measured warm on this hardware. Use `--targets trpcage` to fold a
+single target while iterating, which is much faster.
+
+All four ship because they need no MSA server; most curated tt-bio playlist entries do need
+one, and the venue is offline.
 
 > **`--all-targets` is not yet validated end to end.** The other three shipped targets
 > (FKBP12, DHFR, Trypsin) are measured 62–75 s folds, and their long callback-free windows —

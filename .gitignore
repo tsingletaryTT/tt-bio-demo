@@ -24,6 +24,11 @@ debian/tt-bio-demo*/
 # committed by accident.
 generated/
 
-# Recorded booth demo video (Task 10 deliverable). Large binary; kept out of
-# git but left in the repo root so it is easy to find.
+# Recorded booth demo video. Large binaries stay out of git -- masters live in
+# recordings/ (also ignored) for recutting. The ONE exception is the short
+# web-sized loop the README embeds, which has to be in the repo to render.
 *.mp4
+!docs/screenshots/*.mp4
+
+# Recording masters: large local binaries, kept for recutting.
+recordings/
