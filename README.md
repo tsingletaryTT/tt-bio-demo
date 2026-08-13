@@ -148,8 +148,13 @@ the authoritative list. The ones you are most likely to want:
 | `--log-budget-gb` | 2 | Sweep budget for tt-metal logs between folds |
 | `--structures-budget-gb` | 0.2 | Sweep budget for emitted `.cif` structures, per device |
 
-The default target is Trp-cage (20 residues), chosen because it needs no MSA server and
-folds in ~4.4 s. Most curated tt-bio playlist entries need an MSA server.
+**The default is every target in the manifest** — the booth shows what it can do rather
+than the one safe thing. A full cycle is ~58 s: Trp-cage 4.4 s, FKBP12 11.7 s, DHFR 19.7 s,
+trypsin 22.3 s, all measured warm on this hardware. Use `--targets trpcage` to fold a
+single target while iterating, which is much faster.
+
+All four ship because they need no MSA server; most curated tt-bio playlist entries do need
+one, and the venue is offline.
 
 > **`--all-targets` is not yet validated end to end.** The other three shipped targets
 > (FKBP12, DHFR, Trypsin) are measured 62–75 s folds, and their long callback-free windows —

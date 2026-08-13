@@ -180,13 +180,19 @@ def test_the_ui_and_the_daemon_are_driven_from_the_same_playlist(tmp_path):
     assert _ui_target_ids(tmp_path) == _daemon_target_ids(tmp_path)
 
 
-def test_the_default_playlist_stays_the_conservative_one(tmp_path):
-    """Default is Trp-cage alone -- 20 residues, ~4.4s, the only target
-    whose whole path has been run end to end. The three 62-75s targets are
-    opt-in (`--all-targets`) precisely because that path has not."""
+def test_the_default_playlist_is_everything_the_booth_can_do(tmp_path):
+    """The default shows the whole manifest, not one safe target.
+
+    It was Trp-cage alone while the longer targets were unvalidated over the
+    socket. That validation happened -- a 320s live run, 21 folds across all
+    four, zero client drops -- so the conservative default was costing a
+    visitor three of the four proteins for no remaining reason. A full cycle
+    is ~58s. Use `--targets trpcage` to fold one target while iterating."""
     _launch(tmp_path)
-    assert _ui_target_ids(tmp_path) == ["trpcage"]
-    assert _daemon_target_ids(tmp_path) == ["trpcage"]
+    every_id = sorted(target.id for target in load_playlist(MANIFEST))
+    assert _ui_target_ids(tmp_path) == every_id
+    assert _daemon_target_ids(tmp_path) == every_id
+    assert len(every_id) > 1, "the manifest should ship more than one target"
 
 
 def test_all_targets_opens_the_whole_manifest_to_both_processes(tmp_path):
