@@ -38,7 +38,11 @@
 # never becomes an on-screen fact for the visitor to check the blurb
 # against, so a blurb should not promise seeing it.
 #
-# `expected_s` on the three new entries was MEASURED on this booth's own
+# `expected_s` on the three new entries is the WARM time a visitor actually
+# meets, measured from a live run of the real daemon+UI over the socket
+# (2026-08-12) -- NOT the cold-start number the timing harness prints. See
+# each entry for its own measurement. Original note follows: measured on
+# this booth's own
 # hardware (2026-08-12) by tests/integration/test_new_targets_timing.py,
 # after a board reset cleared an ethernet-core fault that had been failing
 # every device open. The numbers are a booth-planning fact, not a detail:
@@ -80,13 +84,17 @@
     tacrolimus specifically because it clicks onto FKBP12 and, together,
     the two jam shut a signal that would otherwise tell the immune system
     to attack the new organ.
-  # Measured on this booth's own hardware by
-  # tests/integration/test_new_targets_timing.py: 62.6s wall for 107
-  # residues. Note this is an order of magnitude slower than Trp-cage's
-  # 4.4s, and that the three new targets sit within 12s of each other
-  # despite spanning 107-223 residues -- the cost is dominated by the
-  # fixed ~200 denoising steps, not by residue count.
-  expected_s: 62.6
+  # Measured on this booth's own hardware, in the WARM state a visitor
+  # actually meets: mean of 5 folds (11.7s) from a live run of the real
+  # daemon+UI over the socket, with the model resident across folds.
+  #
+  # NOT the 62.6s that tests/integration/test_new_targets_timing.py
+  # reports: that harness reloads the model per target, so it measures a
+  # COLD fold. The booth's attract loop keeps the model resident, so a
+  # visitor's pick lands warm -- the same cold/warm distinction already
+  # spelled out on the Trp-cage entry above, and the reason the warm
+  # number is the honest one to print on a gallery card.
+  expected_s: 11.7
 
 - id: dhfr
   name: Dihydrofolate Reductase
@@ -96,13 +104,17 @@
     material for new DNA -- which is exactly why one of the oldest cancer
     drugs, methotrexate, is shaped to jam it shut instead, starving
     fast-dividing cancer cells of what they need to keep copying themselves.
-  # Measured on this booth's own hardware by
-  # tests/integration/test_new_targets_timing.py: 69.1s wall for 187
-  # residues. Note this is an order of magnitude slower than Trp-cage's
-  # 4.4s, and that the three new targets sit within 12s of each other
-  # despite spanning 107-223 residues -- the cost is dominated by the
-  # fixed ~200 denoising steps, not by residue count.
-  expected_s: 69.1
+  # Measured on this booth's own hardware, in the WARM state a visitor
+  # actually meets: mean of 6 folds (19.7s) from a live run of the real
+  # daemon+UI over the socket, with the model resident across folds.
+  #
+  # NOT the 69.1s that tests/integration/test_new_targets_timing.py
+  # reports: that harness reloads the model per target, so it measures a
+  # COLD fold. The booth's attract loop keeps the model resident, so a
+  # visitor's pick lands warm -- the same cold/warm distinction already
+  # spelled out on the Trp-cage entry above, and the reason the warm
+  # number is the honest one to print on a gallery card.
+  expected_s: 19.7
 
 - id: trypsin
   input: ../examples/affinity_tryp.yaml
@@ -122,10 +134,14 @@
     This is the cow's version, one of the most-studied protein shapes in
     science and often the very first real structure a biochemistry student
     ever examines up close.
-  # Measured on this booth's own hardware by
-  # tests/integration/test_new_targets_timing.py: 74.9s wall for 223
-  # residues. Note this is an order of magnitude slower than Trp-cage's
-  # 4.4s, and that the three new targets sit within 12s of each other
-  # despite spanning 107-223 residues -- the cost is dominated by the
-  # fixed ~200 denoising steps, not by residue count.
-  expected_s: 74.9
+  # Measured on this booth's own hardware, in the WARM state a visitor
+  # actually meets: mean of 5 folds (22.3s) from a live run of the real
+  # daemon+UI over the socket, with the model resident across folds.
+  #
+  # NOT the 74.9s that tests/integration/test_new_targets_timing.py
+  # reports: that harness reloads the model per target, so it measures a
+  # COLD fold. The booth's attract loop keeps the model resident, so a
+  # visitor's pick lands warm -- the same cold/warm distinction already
+  # spelled out on the Trp-cage entry above, and the reason the warm
+  # number is the honest one to print on a gallery card.
+  expected_s: 22.3
