@@ -118,8 +118,9 @@ _BG_ALT = "#C7D9D8"
 # ui/panels.py's own lightened accent tint (that module's comment explains
 # the derivation: pure #1B8EB1 measures 4.40:1 on _DARK_BASE, just under the
 # 4.5:1 AA floor, so a +10%-toward-white tint is used for TEXT instead).
-# Duplicated here for the identical reason: this module's own "tap to fold"
-# hint sits on the same dark ground and needs the same fix.
+# Duplicated here for the identical reason: this module's own per-card hint
+# line ("IN THE ROTATION" -- see `_CARD_HINT`) sits on the same dark ground
+# and needs the same fix.
 _ACCENT_TEXT = "#3299B9"
 _HAIRLINE = "rgba(199, 217, 216, 0.18)"  # _BG_ALT at 18% opacity, matches ui/panels.py
 
