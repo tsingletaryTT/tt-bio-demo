@@ -440,7 +440,15 @@ class _FakeFolder:
         emit({"type": "job_start", "job_id": job_id, "target_id": target_id,
               "model": "protenix-v2", "card": card, "n_residues": n_residues})
         outcome = self.outcomes.pop(0) if self.outcomes else "ok"
-        if isinstance(outcome, Exception):
+        # BaseException, not Exception. KeyboardInterrupt and SystemExit do NOT
+        # subclass Exception, so an `isinstance(outcome, Exception)` check here
+        # silently declines to raise them -- and the test that asks "is the
+        # device released when a worker is killed mid-fold?" then falls through
+        # to a normal job_done and passes against every possible
+        # implementation. That is not a hypothetical: it shipped in this plan
+        # and Task 2's implementer found it with `DID NOT RAISE
+        # KeyboardInterrupt`, having had zero coverage of the release path.
+        if isinstance(outcome, BaseException):
             raise outcome
         emit({"type": "job_done", "job_id": job_id, "cif_path": f"/tmp/{job_id}.cif",
               "wall_s": 4.4, "mean_plddt": 95.3})
