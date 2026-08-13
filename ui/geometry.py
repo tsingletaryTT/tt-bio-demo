@@ -86,7 +86,14 @@ def load_ca_trace(cif_path):
 
 # AlphaFold's confidence ramp. Domain visitors read these colors fluently, so
 # we use the convention rather than inventing a brand-consistent one.
-_PLDDT_STOPS = (
+#
+# Public (no leading underscore) because the `?` help overlay explains this
+# ramp to visitors and builds its swatches from THIS tuple rather than from a
+# second, hand-copied list of hexes in ui/app.py -- a legend that can drift
+# from the ribbon it describes is worse than no legend, and a hand-copy is
+# exactly how that drift happens. tests/unit/test_app_interaction.py pins the
+# two together.
+PLDDT_STOPS = (
     (90.0, (0x00, 0x53, 0xD6)),   # very high
     (70.0, (0x65, 0xCB, 0xF3)),   # confident
     (50.0, (0xFF, 0xDB, 0x13)),   # low
@@ -230,11 +237,29 @@ def plddt_colors(plddt):
     v = np.asarray(plddt, dtype=np.float64).ravel()
     out = np.zeros((len(v), 3), dtype=np.float32)
     claimed = np.zeros(len(v), dtype=bool)
-    for threshold, rgb in _PLDDT_STOPS:
+    for threshold, rgb in PLDDT_STOPS:
         mask = (v >= threshold) & ~claimed
         out[mask] = np.asarray(rgb, dtype=np.float32) / 255.0
         claimed |= mask
     return out
+
+
+def _chain_runs(chain_ids):
+    """Yield (chain_id, start, stop) for each contiguous run of one chain id.
+
+    Grouped by *contiguity*, not by name: two residues carrying the same
+    chain id but separated in the trace by a different chain are two
+    physically separate pieces of backbone, and splining through the
+    intervening chain is exactly the artifact this splitting exists to
+    prevent. (gemmi hands us chains contiguously for every file we produce,
+    so in practice this is one run per chain -- but the geometry is wrong,
+    not merely surprising, if that ever stops being true.)
+    """
+    start = 0
+    for i in range(1, len(chain_ids) + 1):
+        if i == len(chain_ids) or chain_ids[i] != chain_ids[start]:
+            yield chain_ids[start], start, i
+            start = i
 
 
 def ribbon_from_cif(cif_path, samples_per_segment=8, radius=1.6, sides=10):
@@ -242,14 +267,85 @@ def ribbon_from_cif(cif_path, samples_per_segment=8, radius=1.6, sides=10):
 
     Returns (vertices, normals, colors, indices) with one color per vertex,
     interpolated from per-residue pLDDT along the spline.
+
+    Each chain is splined and tubed *separately*, then the per-chain buffers
+    are concatenated into the single set of arrays the renderer uploads. A
+    single spline through every C-alpha of every chain would draw a tube leg
+    from one chain's C-terminus to the next chain's N-terminus -- and since
+    that gap is often an ordinary C-alpha--C-alpha distance, the spurious leg
+    looks exactly like real backbone. On a complex (the interesting booth
+    content) it is the difference between "two subunits" and "one impossible
+    protein".
     """
     trace = load_ca_trace(cif_path)
-    centerline = catmull_rom(trace.coords, samples_per_segment)
-    verts, norms, indices = tube_mesh(centerline, radius=radius, sides=sides)
 
-    # One pLDDT value per centerline sample, then repeated around each ring.
-    along = resample_scalar(trace.plddt, len(centerline))
-    ring_colors = plddt_colors(along)
-    colors = np.repeat(ring_colors, sides, axis=0).astype(np.float32)
+    verts_parts, norms_parts, colors_parts, index_parts = [], [], [], []
+    vertex_offset = 0  # running vertex count -- see the index rebase below
 
-    return verts, norms, colors, indices
+    for _chain_id, start, stop in _chain_runs(trace.chain_ids):
+        coords = trace.coords[start:stop]
+
+        # A chain with a single resolved C-alpha has no centerline to sweep:
+        # catmull_rom returns that lone point and tube_mesh rightly refuses
+        # anything shorter than two points. Skip it -- deliberately not
+        # fatal, and deliberately not a zero-length stub tube: one stray
+        # single-residue chain (a ligand-like entity, a truncated subunit)
+        # should not cost the visitor the rest of the structure, and the
+        # alternative "draw something anyway" produces a degenerate ring
+        # whose tangent is undefined, i.e. NaNs handed to OpenGL.
+        #
+        # Note the limit of that, because this comment used to overstate it:
+        # this skip covers the SHORT-chain case only. It is not a general
+        # "one bad chain cannot cost the whole render" guarantee -- tube_mesh
+        # also raises GeometryError on a centerline whose leading or
+        # trailing points are bit-exactly coincident, and that raise is not
+        # caught here, so it aborts the whole ribbon (ui/app.py logs it and
+        # leaves the last frame on screen; nothing crashes and nothing
+        # reaches the visitor as an error). Left as-is on purpose after
+        # review: two C-alphas at bit-exact identical coordinates do not
+        # occur in real predicted structures, the cost if it ever happened
+        # is one fold with no ribbon, and it is already loud in the log --
+        # so the guard is not worth restructuring around a probability of
+        # roughly zero. The comment is what was wrong, not the code.
+        if len(coords) < 2:
+            continue
+
+        centerline = catmull_rom(coords, samples_per_segment)
+        chain_verts, chain_norms, chain_indices = tube_mesh(
+            centerline, radius=radius, sides=sides
+        )
+
+        # This chain's pLDDT, resampled against THIS chain's sample count --
+        # not the whole structure's. Slicing the trace but resampling
+        # globally (or vice versa) leaves every chain's colors shifted
+        # relative to its own residues, which no shape or dtype check sees.
+        along = resample_scalar(trace.plddt[start:stop], len(centerline))
+        chain_colors = np.repeat(plddt_colors(along), sides, axis=0)
+
+        verts_parts.append(chain_verts)
+        norms_parts.append(chain_norms)
+        colors_parts.append(chain_colors)
+
+        # tube_mesh indexes each chain from 0, so every chain after the first
+        # must be rebased by the number of vertices already emitted. Forget
+        # this and the later chains' triangles silently redraw the first
+        # chain's tube while their own vertices are never referenced.
+        index_parts.append(chain_indices.astype(np.uint32) + np.uint32(vertex_offset))
+        vertex_offset += len(chain_verts)
+
+    if not verts_parts:
+        # Every chain was too short to draw. Same class of failure as the
+        # "no C-alpha atoms" case in load_ca_trace: there is no geometry to
+        # be had, so say so with a GeometryError the UI already knows how to
+        # present, rather than returning empty buffers a renderer would
+        # happily and silently draw as nothing.
+        raise GeometryError(
+            f"{cif_path} has no chain with at least 2 C-alpha atoms to draw"
+        )
+
+    return (
+        np.concatenate(verts_parts).astype(np.float32),
+        np.concatenate(norms_parts).astype(np.float32),
+        np.concatenate(colors_parts).astype(np.float32),
+        np.concatenate(index_parts).astype(np.uint32),
+    )

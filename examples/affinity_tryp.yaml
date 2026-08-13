@@ -1,0 +1,37 @@
+# Vendored into this repo rather than read from a sibling tt-boltz checkout --
+# same rationale as examples/trpcage_no_msa.yaml (read that file's own header
+# first if you haven't): a manifest entry pointing at ~/code/tt-boltz/examples/
+# is an absolute path into a repository this one does not control, and a
+# moved file there would silently skip whatever test or booth entry names it
+# while the suite still prints PASS. Vendoring removes that dependency.
+#
+# This is bovine pancreatic trypsin, 223 residues, msa: empty like every
+# target this booth ships (no MSA server needed -- see
+# playlist/manifest.yaml). The upstream file also carries a `properties:
+# affinity:` block and a ligand entity (CCD code BAM = benzamidine, the
+# classic trypsin inhibitor) for tt-boltz's own affinity-prediction
+# workflow -- but this project's runner (runner/folder.py's Folder.fold(),
+# see its own comments) only ever reads the `sequences:` list via tt_bio's
+# _read_bio_chains(); the `properties:` block is silently ignored
+# (confirmed against tt_bio/main.py before shipping this file), so folding
+# this input through the booth predicts the protein+ligand complex
+# STRUCTURE only, never runs the affinity heads. The ligand chain is kept
+# below (folding it changes nothing about cost or risk over the protein
+# alone, and dropping it would make this a different input than the one
+# that was actually vetted) but it will not be VISIBLE in the booth's
+# ribbon renderer: benzamidine's CCD atom names contain no atom literally
+# named "CA", so ui/geometry.py's C-alpha extraction finds nothing for that
+# chain and silently omits it (verified directly against a real
+# Protenix-format ligand CIF for this exact ligand before this file was
+# added to the playlist -- see this task's report). The gallery blurb for
+# this target (playlist/manifest.yaml) describes only the protein for
+# exactly that reason.
+version: 1
+sequences:
+  - protein:
+      id: A
+      sequence: IVGGYTCGANTVPYQVSLNSGYHFCGGSLINSQWVVSAAHCYKSGIQVRLGEDNINVVEGNEQFISASKSIVHPSYNSNTLNNDIMLIKLKSAASLNSRVASISLPTSCASAGTQCLISGWGNTKSSGTSYPDVLKCLKAPILSDSSCKSAYPGQITSNMFCAGYLEGGKDSCQGDSGGPVVCSGKLQGIVSWGSGCAQKNKPGVYTKVCNYVSWIKQTIASN
+      msa: empty
+  - ligand:
+      id: B
+      ccd: BAM

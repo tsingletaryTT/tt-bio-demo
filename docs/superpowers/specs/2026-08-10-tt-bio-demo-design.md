@@ -17,6 +17,17 @@ Electron. The 3D protein, the live hardware telemetry, and the fold pipeline all
 as parts of one GTK scene graph, so the demo reads as a single integrated system rather
 than a web page bolted onto a terminal.
 
+> **Amendment, 2026-08-12 (Phase 3b).** This document is a historical record and the text
+> above is left as it was approved, but "no embedded WebKit" is no longer accurate as built.
+> The Tensix activity panel (`ui/chipviz.py`) is a `WebKit.WebView` holding a vendored
+> tensix-viz animation in the 430 px side rail. What this paragraph was actually deciding —
+> that the 3D protein view is not a browser — holds unchanged: it is a `GtkGLArea` with this
+> project's own shaders. The exception is optional (the panel hides itself when WebKit is
+> absent), scoped to one local `about:blank` page that never navigates, and locked down with
+> `default-src 'none'`. See `ui/chipviz.py`'s "Why there is a WebView in a project that chose
+> 'no browser'" section and the README's "The one WebKit exception", which also record why
+> `WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS` is load-bearing on Ubuntu 24.04.
+
 It is installed with `apt install tt-bio-demo-all`, which brings tt-bio itself, the model
 weights (including the OpenFold3 checkpoint), the curated content, and the application.
 

@@ -33,8 +33,9 @@ import time
 import uuid
 from pathlib import Path
 
+from protocol.events import STAGE_BANDS, STAGE_ORDER
 from runner.dump_tap import install_trajectory_tap, remove_trajectory_tap
-from runner.shaping import STAGE_ORDER, frame_event, plddt_to_percent, select_frame_steps
+from runner.shaping import frame_event, plddt_to_percent, select_frame_steps
 
 log = logging.getLogger(__name__)
 
@@ -73,50 +74,42 @@ class FoldError(Exception):
     """A fold could not be completed. The message is for logs, never the screen."""
 
 
-# The fraction-of-progress-bar band each stage owns, in STAGE_ORDER. Bands are
-# contiguous -- each starts exactly where the previous one ends -- so the
-# fraction reported to the UI is monotonically non-decreasing across an entire
-# fold. That matters because a naive per-stage fraction (each stage restarting
-# its own 0.0 -> 1.0) makes the bar visibly jump backward at every stage
-# transition: trunk climbing to "40%" and then diffusion's first callback
-# reporting under 1%, in front of a live audience, on every single fold. See
-# task-5-report.md, "Finding 2" for the incident this replaced.
+# The fraction-of-progress-bar band each stage owns, in STAGE_ORDER, now
+# defined in protocol/events.py (STAGE_BANDS) -- see that module's comment
+# above STAGE_BANDS for the full design rationale (contiguous bands so the
+# bar never runs backward; why diffusion gets the bulk of it) and for why it
+# moved out of this module (the UI's pipeline panel needs the same table and
+# cannot import runner.*).
 #
-# tt-bio's progress_fn reports real (step, total) counts for exactly two
-# stages: trunk (10 refinement cycles) and diffusion (200 denoising steps).
-# The other four are synthetic brackets this module owns and fires once, at
-# the end of their own band, the instant it reaches that point -- there is no
-# partial progress to report for work this module doesn't itself perform.
-# diffusion gets the bulk of the bar deliberately: it is 20x trunk's step
-# count, so most of a fold's wall-clock time is spent there.
-_STAGE_BANDS = {
-    "msa": (0.00, 0.05),
-    "prep": (0.05, 0.10),
-    "trunk": (0.10, 0.15),
-    "diffusion": (0.15, 0.95),
-    "confidence": (0.95, 0.98),
-    "saving": (0.98, 1.00),
-}
-# Enforced at import time, not just by convention: if a stage is ever added to
-# or removed from the protocol's STAGE_ORDER without updating this table (or
-# vice versa), this fails loudly here rather than silently dropping a stage
-# from the wire the way "msa" was silently dropped before this fix (Finding 3).
-assert tuple(_STAGE_BANDS) == STAGE_ORDER, (
-    "_STAGE_BANDS must list exactly the stages in runner.shaping.STAGE_ORDER, "
-    "in the same order"
+# This module still owns FIRING stage events at the right band boundaries
+# (_bracket_frac, _progress_frac below) -- that behavior is unchanged by the
+# move. Only the table itself relocated.
+#
+# Enforced at import time, not just by convention: if a stage is ever added
+# to or removed from STAGE_ORDER without updating STAGE_BANDS (or vice
+# versa), this fails loudly here rather than silently dropping a stage from
+# the wire the way "msa" was silently dropped before this fix (Finding 3).
+# protocol/events.py carries its own copy of this same assert, checked at
+# the point both literals are defined; this one guards the same invariant a
+# second time, at the point THIS module binds those two names -- e.g. a
+# future edit that changes one of them via a different import path than the
+# other, or a bad merge, would still be caught here even if it somehow slid
+# past the first assert.
+assert tuple(STAGE_BANDS) == STAGE_ORDER, (
+    "STAGE_BANDS must list exactly the stages in STAGE_ORDER, in the same order"
 )
 
 
 def _bracket_frac(stage):
     """The frac reported for a synthetic bracket stage: its band's end."""
-    return _STAGE_BANDS[stage][1]
+    return STAGE_BANDS[stage][1]
 
 
 def _progress_frac(stage, step, total):
     """Map tt-bio's own (step, total) progress within `stage` onto that
     stage's band, so the result is continuous with the bands before and after
     it instead of restarting at 0.0 on every stage transition."""
-    start, end = _STAGE_BANDS[stage]
+    start, end = STAGE_BANDS[stage]
     return start + (end - start) * (min(step, total) / total)
 
 
@@ -264,7 +257,7 @@ class Folder:
         def on_progress(stage, step=None, total=None):
             if not total:
                 return
-            if stage not in _STAGE_BANDS:
+            if stage not in STAGE_BANDS:
                 # tt-bio reporting a stage name this module doesn't know about
                 # is a telemetry mismatch, not a reason to crash a fold that
                 # is otherwise fine -- drop it, loudly, and keep going.

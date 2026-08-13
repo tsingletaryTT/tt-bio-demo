@@ -28,24 +28,41 @@
 #                                 whatever directory you happened to launch
 #                                 this script from. (TT_BIO_DEMO_LOG_ROOT)
 #                                 Default: <runtime-dir>/logs
-#   --playlist DIR                Directory of .yaml fold targets; the
-#                                 daemon folds every .yaml it finds there.
-#                                 (TT_BIO_DEMO_PLAYLIST) Default: a small
-#                                 directory this script builds itself under
-#                                 <runtime-dir>/playlist, containing only a
-#                                 symlink to this repo's own
-#                                 examples/trpcage_no_msa.yaml (20 residues,
-#                                 no MSA server needed) — vendored here
-#                                 rather than pointed at a sibling tt-boltz
-#                                 checkout (this script used to default to
-#                                 ~/code/tt-boltz/examples/trpcage_no_msa.yaml;
-#                                 an absolute path into a different repository
-#                                 that this one has no control over, with no
-#                                 loud failure if it ever moved) — and
-#                                 deliberately NOT a curated tt-boltz
-#                                 playlist, most of which need a running MSA
-#                                 server or are far bigger than a booth demo
-#                                 needs.
+#   --playlist FILE               The playlist MANIFEST (a YAML file, format
+#                                 in ui/playlist.py) that both processes are
+#                                 driven from. (TT_BIO_DEMO_PLAYLIST)
+#                                 Default: this repo's playlist/manifest.yaml.
+#                                 NOTE this takes a FILE, not the directory
+#                                 of .yaml fold inputs it used to take: the
+#                                 daemon's directory is now BUILT from this
+#                                 manifest (see --targets), so the gallery
+#                                 can only ever show what the daemon can
+#                                 actually fold.
+#   --targets a,b,c               Which manifest ids to run, as one
+#                                 comma-separated list handed to BOTH
+#                                 processes. (TT_BIO_DEMO_TARGETS)
+#                                 Default: trpcage — 20 residues, no MSA
+#                                 server needed, ~4.4s a fold, and the only
+#                                 target whose whole path (fold -> socket ->
+#                                 ribbon on screen) has been run end to end.
+#   --all-targets                 Run every target in the manifest instead.
+#                                 (TT_BIO_DEMO_ALL_TARGETS=1)
+#                                 NOT YET VALIDATED END TO END: the other
+#                                 three shipped targets are 62–75s folds
+#                                 (measured), and their long callback-free
+#                                 windows — host featurization, then the
+#                                 confidence head and mmCIF write — have
+#                                 never been run through the socket into the
+#                                 UI, whose read timeout is 5s. Expect to
+#                                 watch it before pointing the public at it.
+#
+# Why a manifest and not a directory: the daemon folds .yaml inputs and the
+# UI shows a gallery built from the manifest, and until this fix those two
+# were chosen INDEPENDENTLY. The turnkey launcher therefore shipped a
+# gallery of four targets, each stamped with a measured fold time, over a
+# daemon that had exactly one input file — tap "Trypsin · ~74.9s" and a
+# 20-residue Trp-cage arrived four seconds later. One manifest, one target
+# list, both processes.
 #   --weights DIR                 tt-bio's weights cache. (TT_BIO_DEMO_WEIGHTS)
 #                                 Default: ~/.boltz
 #   --log-budget-gb N             Forwarded to the daemon's own
@@ -64,28 +81,33 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-VENV_RUNNER="${REPO_ROOT}/.venvs/venv-runner"
-VENV_UI="${REPO_ROOT}/.venvs/venv-ui"
+# Matches scripts/test.sh's own PREFIX handling (and setup-venvs.sh's
+# --prefix): production builds these under /opt/tt-bio-demo, and the
+# launcher's own test harness points it at a pair of stub interpreters that
+# record their argv instead of opening a device.
+PREFIX="${TT_BIO_DEMO_PREFIX:-${REPO_ROOT}/.venvs}"
+VENV_RUNNER="${PREFIX}/venv-runner"
+VENV_UI="${PREFIX}/venv-ui"
 
 RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}/tt-bio-demo"
 
 SOCKET="${TT_BIO_DEMO_SOCKET:-${RUNTIME_DIR}/runner.sock}"
 LOG_ROOT="${TT_BIO_DEMO_LOG_ROOT:-${RUNTIME_DIR}/logs}"
 WEIGHTS="${TT_BIO_DEMO_WEIGHTS:-${HOME}/.boltz}"
-PLAYLIST="${TT_BIO_DEMO_PLAYLIST:-${RUNTIME_DIR}/playlist}"
+MANIFEST="${TT_BIO_DEMO_PLAYLIST:-${REPO_ROOT}/playlist/manifest.yaml}"
+TARGETS="${TT_BIO_DEMO_TARGETS:-trpcage}"
 LOG_BUDGET_GB="${TT_BIO_DEMO_LOG_BUDGET_GB:-2.0}"
 STRUCTURES_BUDGET_GB="${TT_BIO_DEMO_STRUCTURES_BUDGET_GB:-0.2}"
 
-# Tracked separately from PLAYLIST itself so a later `--playlist` argument
-# (or the env var above) can be told apart from "nobody asked for anything
-# in particular, so build the small default playlist" — comparing PLAYLIST
-# against its own default string would also match a user who happened to
-# pass that exact path back in, which is a needless footgun to leave lying
-# around.
-PLAYLIST_IS_DEFAULT=1
-if [[ -n "${TT_BIO_DEMO_PLAYLIST:-}" ]]; then
-  PLAYLIST_IS_DEFAULT=0
+if [[ "${TT_BIO_DEMO_ALL_TARGETS:-0}" == "1" ]]; then
+  TARGETS=""
 fi
+
+# The fold inputs the daemon reads. Always OURS, never an operator's
+# directory: it is generated from the manifest below, every run, so there is
+# no path by which it can hold something the UI's gallery does not also
+# show.
+PLAYLIST_DIR="${RUNTIME_DIR}/playlist"
 
 usage() {
   # Print every leading "#"-comment line after the shebang, stopping at the
@@ -101,7 +123,9 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --socket)               SOCKET="$2"; shift 2 ;;
     --log-root)             LOG_ROOT="$2"; shift 2 ;;
-    --playlist)             PLAYLIST="$2"; PLAYLIST_IS_DEFAULT=0; shift 2 ;;
+    --playlist)             MANIFEST="$2"; shift 2 ;;
+    --targets)              TARGETS="$2"; shift 2 ;;
+    --all-targets)          TARGETS=""; shift ;;
     --weights)              WEIGHTS="$2"; shift 2 ;;
     --log-budget-gb)        LOG_BUDGET_GB="$2"; shift 2 ;;
     --structures-budget-gb) STRUCTURES_BUDGET_GB="$2"; shift 2 ;;
@@ -130,27 +154,62 @@ mkdir -p "$(dirname "$SOCKET")"
 SOCKET="$(cd "$(dirname "$SOCKET")" && pwd)/$(basename "$SOCKET")"
 mkdir -p "$LOG_ROOT"
 LOG_ROOT="$(cd "$LOG_ROOT" && pwd)"
-mkdir -p "$PLAYLIST"
-PLAYLIST="$(cd "$PLAYLIST" && pwd)"
+mkdir -p "$PLAYLIST_DIR"
+PLAYLIST_DIR="$(cd "$PLAYLIST_DIR" && pwd)"
+MANIFEST="$(cd "$(dirname "$MANIFEST")" && pwd)/$(basename "$MANIFEST")"
 
-# Vendored in this repo (examples/trpcage_no_msa.yaml) rather than pointed
-# at a sibling tt-boltz checkout -- this used to default to
-# ~/code/tt-boltz/examples/trpcage_no_msa.yaml, an absolute path into a
-# different repository this one does not control, with nothing here to
-# notice if it ever moved (see tests/integration/test_real_fold.py's own
-# fix for the matching hazard on the test side). This file always exists on
-# this branch, so the "input not found" warning below is now a real
-# problem with this checkout, not an expected day-one state.
-DEFAULT_PLAYLIST_INPUT="${REPO_ROOT}/examples/trpcage_no_msa.yaml"
-if [[ "$PLAYLIST_IS_DEFAULT" -eq 1 ]]; then
-  if [[ -f "$DEFAULT_PLAYLIST_INPUT" ]]; then
-    # -f (not -n): re-point the symlink every run rather than trusting a
-    # stale one left over from an old checkout.
-    ln -sf "$DEFAULT_PLAYLIST_INPUT" "${PLAYLIST}/trpcage_no_msa.yaml"
-  else
-    echo "WARNING: default playlist input not found at ${DEFAULT_PLAYLIST_INPUT}." >&2
-    echo "Pass --playlist DIR pointing at your own .yaml fold target(s)." >&2
+# Everything below runs modules out of this checkout (`-m ui.app`,
+# `-m runner.daemon`, `-m ui.playlist`), which needs the repo root on
+# sys.path. Python puts the CWD there for `-m`, so cd here rather than
+# depending on the operator having launched this from the right place --
+# and cd AFTER the path resolution above, so a relative --socket/--log-root
+# still means what the operator typed.
+cd "$REPO_ROOT"
+
+# ── the one playlist, expanded for both processes ───────────────────────────
+#
+# The manifest is the source of truth (see the header). This turns the
+# selected entries into the directory of .yaml inputs the daemon folds, one
+# symlink per target, NAMED BY MANIFEST ID -- runner/daemon.py derives its
+# target_id from the filename stem, so `trypsin.yaml -> examples/
+# affinity_tryp.yaml` is what makes the daemon's own `job_start
+# target_id=trypsin` line up with the id the gallery showed the visitor
+# (the diagnostics panel used to print "visitor picked trypsin" directly
+# above "▶ fold affinity_tryp").
+#
+# ui/playlist.py is the parser for both sides, so a manifest the UI would
+# refuse is one this script refuses too, here, before anything starts --
+# with the module's one-line message, never a traceback.
+if ! PLAYLIST_LINES="$("${VENV_UI}/bin/python3" -m ui.playlist "$MANIFEST" \
+                        ${TARGETS//,/ } 2>&1)"; then
+  echo "ERROR: ${PLAYLIST_LINES}" >&2
+  echo "run-demo.sh: --playlist must name a playlist MANIFEST (see ${REPO_ROOT}/playlist/manifest.yaml)," >&2
+  echo "and every --targets id must appear in it." >&2
+  exit 1
+fi
+
+# Wipe first: a target dropped from --targets between two runs must not keep
+# folding because last run's symlink is still lying there. Only symlinks are
+# removed, and only from a directory this script owns (see PLAYLIST_DIR).
+find "$PLAYLIST_DIR" -maxdepth 1 -type l -name '*.yaml' -delete
+PLAYLIST_COUNT=0
+while IFS=$'\t' read -r target_id input_path; do
+  [[ -n "$target_id" ]] || continue
+  if [[ ! -f "$input_path" ]]; then
+    echo "ERROR: playlist target '${target_id}' names an input that does not exist:" >&2
+    echo "  ${input_path}" >&2
+    echo "The gallery must never offer something the daemon cannot fold." >&2
+    exit 1
   fi
+  # -f (not -n): re-point every run rather than trusting a stale link left
+  # over from an older checkout.
+  ln -sf "$input_path" "${PLAYLIST_DIR}/${target_id}.yaml"
+  PLAYLIST_COUNT=$((PLAYLIST_COUNT + 1))
+done <<< "$PLAYLIST_LINES"
+
+if [[ "$PLAYLIST_COUNT" -eq 0 ]]; then
+  echo "ERROR: ${MANIFEST} selected no targets; there would be nothing to fold." >&2
+  exit 1
 fi
 
 DAEMON_LOG="${RUNTIME_DIR}/daemon.log"
@@ -158,8 +217,15 @@ DAEMON_LOG="${RUNTIME_DIR}/daemon.log"
 echo "run-demo.sh: tt-metal log root (Inspector/Watcher output): ${LOG_ROOT}"
 echo "run-demo.sh: daemon stderr log:                            ${DAEMON_LOG}"
 echo "run-demo.sh: socket:                                       ${SOCKET}"
-echo "run-demo.sh: playlist:                                     ${PLAYLIST}"
+echo "run-demo.sh: playlist manifest:                            ${MANIFEST}"
+echo "run-demo.sh: targets (${PLAYLIST_COUNT}):                              ${TARGETS:-<all>}"
+echo "run-demo.sh: fold inputs built for the daemon:             ${PLAYLIST_DIR}"
 echo "run-demo.sh: weights:                                      ${WEIGHTS}"
+if [[ -z "$TARGETS" || "$TARGETS" != "trpcage" ]]; then
+  echo "run-demo.sh: NOTE — targets other than trpcage are 62–75s folds whose" >&2
+  echo "run-demo.sh: end-to-end path (fold → socket → ribbon) has not been" >&2
+  echo "run-demo.sh: validated yet. Watch it before leaving it unattended." >&2
+fi
 
 DAEMON_PID=""
 
@@ -190,7 +256,7 @@ echo "run-demo.sh: starting daemon..." >&2
 "${VENV_RUNNER}/bin/python3" -m runner.daemon \
   --socket "$SOCKET" \
   --weights "$WEIGHTS" \
-  --playlist "$PLAYLIST" \
+  --playlist "$PLAYLIST_DIR" \
   --log-root "$LOG_ROOT" \
   --log-budget-gb "$LOG_BUDGET_GB" \
   --structures-budget-gb "$STRUCTURES_BUDGET_GB" \
@@ -206,4 +272,11 @@ echo "run-demo.sh: daemon pid ${DAEMON_PID}; tailing its own log at ${DAEMON_LOG
 # starting the UI immediately exercises it on every single run rather than
 # only when something goes wrong.
 echo "run-demo.sh: starting UI..." >&2
-"${VENV_UI}/bin/python3" -m ui.app --socket "$SOCKET"
+# The SAME manifest and the SAME target list the daemon's fold inputs were
+# built from, a few lines above. Passing only --socket here is what shipped
+# a four-card gallery over a one-target daemon; tests/unit/test_run_demo_sh.py
+# now fails if these two ever drift apart again.
+"${VENV_UI}/bin/python3" -m ui.app \
+  --socket "$SOCKET" \
+  --playlist "$MANIFEST" \
+  --targets "$TARGETS"

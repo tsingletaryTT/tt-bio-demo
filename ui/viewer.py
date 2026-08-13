@@ -41,6 +41,93 @@ _POINT_SIZE_FACTOR = _TARGET_POINT_PX * _CAMERA_DISTANCE_FACTOR
 
 _TWO_PI = 2.0 * math.pi
 
+# ── camera framing ───────────────────────────────────────────────────────
+#
+# Two numbers decide how the camera behaves while a fold streams in, and
+# they pull against each other:
+#
+#   * If the camera tracked the cloud exactly, the cloud would occupy the
+#     same fraction of the frame in every frame and the visitor would
+#     perceive NO contraction at all -- the single most important thing
+#     this demo has to show.
+#   * If it lags, the structure is small. Lag too much and it is a postage
+#     stamp: the shipped 0.8/0.2 *linear* ease did exactly that. Measured
+#     against the recorded Trp-cage trajectory (30 frames, spread 10364 A
+#     -> 10 A, tests/fixtures/streams/real_fold_trpcage.jsonl) it left the
+#     structure filling a median of 14% of the available height, and ended
+#     the fold with the camera at 43.9 against a true spread of 10.0.
+#
+# The fix is to ease in the LOG domain, asymmetrically:
+#
+#   log(extent) <- (1-a)*log(extent) + a*log(target)
+#
+# Log-domain easing is the right shape for this data because diffusion
+# contracts geometrically (~0.79x per frame here), so a constant weight
+# produces a constant *ratio* of lag rather than the runaway linear lag
+# above. The steady-state lag works out to (1-a)/a times the per-frame log
+# contraction rate, which is a genuinely nice property: the camera trails
+# in proportion to how fast the structure is currently collapsing. A fast
+# collapse is therefore still visible as a shrink, and a structure that has
+# settled ends up correctly framed with no special-casing.
+#
+# _EASE_IN is used when the structure is smaller than the current frame
+# (the normal case: the cloud is contracting) and _EASE_OUT when it is
+# bigger. Zooming out is deliberately made ~7x more reluctant than zooming
+# in: within one job the cloud only ever contracts, so an outward step is
+# almost always a noisy frame or a stray atom, and the cost of resisting is
+# one or two frames of slight overflow. A genuinely new, larger structure
+# never has to creep out through this ease at all -- clear_structure()
+# resets _camera_framed and the first frame of the new job snaps.
+#
+# Measured over the recorded trajectory's 30 frames with these values: the
+# camera trails the true spread by a median 1.37x and at worst 1.93x (the
+# shipped linear ease: median 6.58x, worst 18.87x), which puts the
+# structure at a median 68% of the frame height and never below 48% -- and
+# it still trails by up to ~1.9x during the fast collapse, which is what
+# keeps the contraction visible as a contraction rather than a blob that
+# changes texture. The fold ends with the camera at 10.58 against a true
+# spread of 9.99 (the shipped ease ended it at 43.86).
+_EASE_IN = 0.40
+_EASE_OUT = 0.06
+
+# The camera never zooms closer than this, so a tiny peptide (or a
+# collapsed-to-a-point degenerate frame) can't put the near plane inside
+# the structure.
+_MIN_EXTENT = 5.0
+
+# What counts as "how big is this thing" for a streaming diffusion frame.
+# `max` -- what this used to use unconditionally -- is the least robust
+# statistic available: one atom flung far from the rest (which early
+# diffusion frames genuinely produce) drags the whole camera out with it
+# and shrinks the real structure to nothing. A high percentile of the
+# per-atom Chebyshev radius ignores a handful of flyers; the headroom
+# factor then puts the framing back to roughly where a well-behaved cloud's
+# `max` would have been (measured: max/p96 is ~1.2 on average across the
+# recorded trajectory), so the ordinary case is framed the same as before
+# and only the outlier case differs.
+#
+# Deliberately NOT applied to the finished ribbon -- see set_ribbon(): that
+# is a compact mesh with no flyers, it is the hero image, and clipping even
+# 4% of it is a defect rather than a robustness win.
+_SPREAD_PERCENTILE = 96.0
+_SPREAD_HEADROOM = 1.2
+
+# Which structure the camera is currently framing. The viewer shows a point
+# cloud, then a finished ribbon, then (on the next job) a point cloud
+# again, and the camera must follow whatever is actually ON SCREEN.
+#
+# The bug this exists to kill: ui/app.py builds the ribbon on a worker
+# thread, so `job_done` for fold N routinely lands AFTER `job_start` for
+# fold N+1 (measured on the live daemon). The sequence is therefore
+# clear_structure() -> set_ribbon(fold N) -> a stream of set_points() calls
+# carrying fold N+1's initial NOISE, while fold N's finished ribbon is
+# still the only thing being drawn. Letting those point frames re-frame the
+# camera shrank the hero image to a postage stamp within one frame -- the
+# visitor watched the finished protein collapse to a dot, once per cycle,
+# forever.
+_SUBJECT_POINTS = "points"
+_SUBJECT_RIBBON = "ribbon"
+
 # A real GTK frame clock normally hands _on_tick a dt in the low tens of
 # milliseconds. Two situations can make it far larger instead: the very
 # first tick after start_animation() (nothing to diff against yet -- see
@@ -131,6 +218,10 @@ class StructureViewer(Gtk.GLArea):
         # job's first frame snaps fresh instead of easing in from this job's
         # leftover extent/center.
         self._camera_framed = False
+        # Which structure the camera is framing right now -- see the
+        # _SUBJECT_* constants above for the full argument. A new viewer has
+        # never been handed a ribbon, so the point cloud owns the camera.
+        self._camera_subject = _SUBJECT_POINTS
 
         self.connect("realize", self._on_realize)
         self.connect("unrealize", self._on_unrealize)
@@ -316,6 +407,26 @@ class StructureViewer(Gtk.GLArea):
         self._ribbon_buffers = None
         self._ribbon_index_count = 0
 
+        # The ribbon is gone, so the camera cannot still belong to it.
+        #
+        # This is not bookkeeping like the counts above -- it is the one line
+        # that keeps the postage-stamp bug fixed across a GL context loss.
+        # `set_points` only re-frames the camera while the subject is the
+        # point cloud (see `_SUBJECT_*` and `set_points`), so with the
+        # ribbon's buffers zeroed but `_camera_subject` still "ribbon",
+        # nothing on a re-realized context could ever frame the camera
+        # again: the next fold's diffusion cloud would be drawn at whatever
+        # extent the vanished ribbon had, i.e. a few pixels in the middle of
+        # the screen, for the rest of the day. Handing the camera back here
+        # matches what `clear_structure` and `set_blend(0)` already do at the
+        # other two points where a ribbon stops being displayed.
+        #
+        # `_camera_framed` goes with it: the next frame must SNAP to its own
+        # spread rather than easing in from the extent of a structure that no
+        # longer exists (`_frame_camera` only snaps while this is False).
+        self._camera_subject = _SUBJECT_POINTS
+        self._camera_framed = False
+
         self._ready = False
 
     # ── camera ───────────────────────────────────────────────────────────
@@ -338,14 +449,42 @@ class StructureViewer(Gtk.GLArea):
     # ── point cloud ──────────────────────────────────────────────────────
 
     def set_points(self, coords, opacity=1.0):
-        """Upload a diffusion frame. Safe to call before GL is realized."""
+        """Upload a diffusion frame. Safe to call before GL is realized.
+
+        The frame is ALWAYS uploaded -- it is what the cross-fade fades out
+        of, and dropping it would blank the cloud. Whether it also moves the
+        camera depends on what is currently on screen: a point frame may not
+        re-frame a finished ribbon that is still being displayed (see the
+        _SUBJECT_* constants for the ordering that makes this a live bug and
+        not a hypothetical one).
+        """
         arr = np.ascontiguousarray(coords, dtype=np.float32).reshape(-1, 3)
         self._pending_points = arr
         self._point_opacity = opacity
-        self._frame_camera(arr)
+        if self._camera_subject == _SUBJECT_POINTS:
+            self._frame_camera(arr)
         self.queue_render()
 
-    def _frame_camera(self, coords, snap=False):
+    @staticmethod
+    def _spread(coords, center, robust):
+        """How far the structure reaches from its center, in world units.
+
+        Chebyshev (per-axis max) rather than Euclidean radius because the
+        camera is fitting an axis-aligned box to the screen, not a sphere.
+
+        `robust=True` (a sampled, noisy diffusion frame) takes a high
+        percentile of the per-atom radius plus a headroom factor, so a
+        handful of flyers cannot dictate the zoom; `robust=False` (a
+        finished mesh) takes the true maximum so every last vertex of the
+        hero image is inside the frame. See _SPREAD_PERCENTILE.
+        """
+        offsets = np.abs(coords - center)
+        if not robust:
+            return float(offsets.max())
+        per_atom = offsets.max(axis=1)
+        return float(np.percentile(per_atom, _SPREAD_PERCENTILE)) * _SPREAD_HEADROOM
+
+    def _frame_camera(self, coords, snap=False, robust=True):
         """Center and scale the camera to fit the given coordinates.
 
         By default eases toward the new extent (right for a stream of
@@ -353,23 +492,43 @@ class StructureViewer(Gtk.GLArea):
         around as the cloud contracts). Pass `snap=True` for a one-shot
         upload -- e.g. the finished ribbon -- that will not be followed by
         further calls to ease the rest of the way in; see set_ribbon().
+
+        `robust` selects the spread statistic (see _spread) and is
+        deliberately independent of `snap`: it describes what KIND of data
+        this is (a noisy sampled cloud vs. a finished mesh), not when it
+        arrives. In particular the first frame of a job both snaps *and*
+        wants the robust statistic, or a single flyer atom in that one
+        frame would set the whole job's opening zoom.
         """
         if len(coords) == 0:
             return
         self._center = coords.mean(axis=0)
-        spread = float(np.abs(coords - self._center).max())
+        # Clamped here, before the ease, as well as after it. Clamping the
+        # target is what keeps log() away from a zero spread on a degenerate
+        # frame where every atom landed in the same place; the algebra then
+        # says the weighted *geometric* mean of two values that are both
+        # >= _MIN_EXTENT is itself >= _MIN_EXTENT, so the second clamp is
+        # only mopping up float rounding -- exp(log(5.0)) is 4.999999999999999
+        # on this stack, and an _extent one ulp under the floor every frame
+        # is exactly the kind of thing that goes unnoticed until it doesn't.
+        target = max(self._spread(coords, self._center, robust), _MIN_EXTENT)
+
         if snap or not self._camera_framed:
             # Either explicitly requested, or no frame has ever been framed
             # yet (this is the constructor's placeholder _extent=20.0, not a
             # real prior frame) -- easing from it would frame the very first
             # frame against an arbitrary default instead of its actual
             # spread. Snap straight to the real spread instead.
-            self._extent = max(spread, 5.0)
+            self._extent = target
             self._camera_framed = True
-        else:
-            # Ease toward the new extent so a noisy frame doesn't snap the
-            # camera around as the cloud contracts.
-            self._extent = max(self._extent * 0.8 + spread * 0.2, 5.0)
+            return
+
+        # Asymmetric, log-domain ease: quick to close in on a contracting
+        # structure, reluctant to give ground back. See _EASE_IN/_EASE_OUT.
+        weight = _EASE_IN if target < self._extent else _EASE_OUT
+        self._extent = max(math.exp(
+            math.log(self._extent) * (1.0 - weight) + math.log(target) * weight),
+            _MIN_EXTENT)
 
     def _upload_points(self):
         coords = self._pending_points
@@ -420,13 +579,33 @@ class StructureViewer(Gtk.GLArea):
             np.ascontiguousarray(indices, dtype=np.uint32),
         )
         # Unlike set_points(), this is called exactly once per job -- there
-        # is no subsequent frame to ease the rest of the way in. _frame_camera
-        # defaults to an 80/20 ease meant for a stream; a single eased step
-        # here would leave the camera framed against a blend of the last
-        # diffusion frame's extent and the ribbon's own, permanently (the
-        # finished structure is what stays on screen for the rest of the
-        # attract cycle). Snap straight to the ribbon's actual spread instead.
-        self._frame_camera(self._pending_ribbon[0], snap=True)
+        # is no subsequent frame to ease the rest of the way in.
+        # _frame_camera defaults to the asymmetric log-domain ease meant for
+        # a stream (_EASE_IN 0.40 / _EASE_OUT 0.06 -- and it is _EASE_OUT
+        # that applies here, since a ribbon is SMALLER than the noise cloud
+        # that preceded it only in the contracting direction; growing back
+        # out is the reluctant one). A single eased step would leave the
+        # camera framed against a blend of the last diffusion frame's extent
+        # and the ribbon's own, permanently -- the finished structure is
+        # what stays on screen for the rest of the attract cycle. Snap
+        # straight to the ribbon's actual spread instead.
+        #
+        # (This comment used to say "an 80/20 ease", naming the LINEAR
+        # `_extent*0.8 + spread*0.2` this module was rewritten to remove --
+        # i.e. it described, by name, the exact bug the camera fix deleted.)
+        #
+        # robust=False for the same reason: this mesh is the hero image and
+        # every vertex of it must be inside the frame, so it is fitted with
+        # a true max rather than the percentile used for noisy point frames.
+        self._frame_camera(self._pending_ribbon[0], snap=True, robust=False)
+        # The ribbon is now what the viewer is about, and it holds the
+        # camera until the next job explicitly starts (clear_structure) or a
+        # caller forces points-only (set_blend(0)). Without this, the very
+        # next diffusion frame -- which in production belongs to the NEXT
+        # fold and arrives while this ribbon is still the only thing drawn
+        # -- would immediately re-frame the camera around a noise cloud
+        # hundreds of times this structure's size.
+        self._camera_subject = _SUBJECT_RIBBON
         self.queue_render()
 
     def clear_structure(self):
@@ -453,6 +632,13 @@ class StructureViewer(Gtk.GLArea):
           into an empty ribbon-shaped hole instead of showing it. This is
           exactly the bug the brief calls out by name; the fix is resetting
           both fields here, together, every time.
+        - `_camera_subject`: back to the point cloud. This is the ONE place
+          a ribbon gives the camera back (see set_ribbon), and it is the
+          right one: a job_start is the app's own statement that the ribbon
+          on screen is finished with and the incoming diffusion frames are
+          the subject now. Paired with the `_camera_framed` reset just
+          above, the next job's first frame snaps to its own spread rather
+          than either easing from, or being locked out by, the last job.
         """
         self._point_count = 0
         self._ribbon_index_count = 0
@@ -461,6 +647,7 @@ class StructureViewer(Gtk.GLArea):
         self._blend = 0.0
         self._blend_target = 0.0
         self._camera_framed = False
+        self._camera_subject = _SUBJECT_POINTS
         self.queue_render()
 
     def _upload_ribbon(self):
@@ -528,8 +715,17 @@ class StructureViewer(Gtk.GLArea):
         undo this jump by continuing to chase whatever target was set
         before -- see clear_structure() for why a stale target is exactly
         the bug that would reintroduce.
+
+        t == 0 means "points only, the ribbon is not being displayed", so it
+        also hands the camera back to the point cloud -- the invariant this
+        viewer keeps is that the camera frames whatever is actually on
+        screen. A non-zero t only ever makes a ribbon *more* visible, and
+        ownership already moved to the ribbon when set_ribbon() supplied it,
+        so nothing needs to change in that direction.
         """
         self._blend = self._blend_target = float(np.clip(t, 0.0, 1.0))
+        if self._blend == 0.0:
+            self._camera_subject = _SUBJECT_POINTS
         self.queue_render()
 
     def _on_render(self, _area, _context):

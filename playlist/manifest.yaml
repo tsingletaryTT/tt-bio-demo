@@ -1,0 +1,150 @@
+# The booth's playlist: which fold targets a visitor can pick, and where each
+# one's input spec lives. Loaded by ui/playlist.py (see that module's
+# docstring for the manifest format and, in particular, for why every
+# relative path below resolves against THIS FILE'S OWN DIRECTORY -- not the
+# process's working directory, which differs between the daemon and the UI.
+#
+# Four targets ship today. Trp-cage shipped first (Phase 3a), vendored into
+# examples/ specifically to remove a cross-repo absolute path
+# (~/code/tt-boltz/examples/trpcage_no_msa.yaml) that this project does not
+# control -- see that file's own header comment; the three below it were
+# added in the same spirit (this task), chosen out of six `msa: empty`
+# candidates found in the upstream tt-boltz checkout.
+#
+# Why these three and not the other two candidates (see this task's own
+# report for the fuller reasoning):
+#   - `prot_no_msa.yaml` (117 residues) was EXCLUDED: its protein could not
+#     be confidently identified against known structural-biology proteins,
+#     and this booth's blurbs must be accurate to the actual molecule, not
+#     a plausible-sounding guess.
+#   - `hsa_no_msa.yaml` (585 residues, human serum albumin) was EXCLUDED for
+#     THIS pass on pacing grounds: it is ~29x Trp-cage's residue count with
+#     no measured fold time on this hardware to bound how long that actually
+#     runs, and a booth attract loop a visitor watches must not gamble a
+#     multi-minute stall on an unmeasured target. Worth reconsidering once a
+#     hardware pass (see tests/integration/test_new_targets_timing.py) has
+#     real numbers for it.
+# The three shipped below (107 / 187 / 223 residues) still span a real
+# range from Trp-cage's 20, without that open-ended risk.
+#
+# All three new entries are protein+ligand complexes in their *upstream*
+# form (each pairs the protein with a small-molecule ligand for tt-boltz's
+# own affinity-prediction workflow) but this booth's runner ignores the
+# `properties:` block entirely and folds the ligand purely as part of the
+# STRUCTURE (see each examples/affinity_*.yaml's own header comment) -- and
+# none of the three ligands is actually visible in the rendered ribbon (each
+# examples/affinity_*.yaml explains why for its own ligand). The blurbs
+# below describe the protein only, for that reason: the CCD ligand itself
+# never becomes an on-screen fact for the visitor to check the blurb
+# against, so a blurb should not promise seeing it.
+#
+# `expected_s` is the WARM time a visitor actually meets: measured
+# 2026-08-12 from a live run of the real daemon and UI over the socket, with
+# the model resident across folds, which is the state the attract loop keeps
+# the booth in. Trp-cage 4.45s, FKBP12 11.7s, DHFR 19.7s, trypsin 22.3s.
+#
+# These are deliberately NOT the numbers
+# tests/integration/test_new_targets_timing.py prints (62.6 / 69.1 / 74.9s).
+# That harness reloads the model per target, so it measures a COLD fold. The
+# three new entries were first filled in from its output without applying
+# the cold/warm distinction the Trp-cage entry had spelled out since it was
+# written -- which would have shipped a gallery card promising ~74.9s for a
+# fold a visitor watches finish in 22s. Publish what the visitor experiences.
+#
+# The "not yet measured" machinery stays in place even though every entry now
+# has a number: ui/playlist.py treats a missing `expected_s` as unmeasured
+# and ui/gallery.py renders it as an explicit "not yet timed" note rather
+# than a fabricated time, so a future target can be added honestly before
+# anyone has folded it.
+#
+# `model` is omitted here on purpose so the Trp-cage entry exercises
+# ui/playlist.py's DEFAULT_MODEL fallback (protenix-v2, this project's
+# default model everywhere else) for real, rather than only in a synthetic
+# unit test. `thumbnail` is omitted because Phase 4 owns the art; the
+# gallery (ui/gallery.py) renders a placeholder for any target without one.
+- id: trpcage
+  input: ../examples/trpcage_no_msa.yaml
+  name: Trp-cage
+  blurb: >-
+    At just 20 amino acids, Trp-cage is one of the smallest proteins known
+    to reliably fold into a stable shape on its own, snapping into place in
+    only a few microseconds -- fast enough that scientists use it as a
+    stripped-down test case for studying how any protein finds its shape at
+    all.
+  # Measured on this booth's own hardware (docs/followups.md, 30-fold soak):
+  # 5.7s cold (first fold after the model loads), 4.35-4.45s warm once the
+  # model is resident on the card. The attract loop keeps a fold running
+  # continuously, so a visitor's own pick almost always lands warm; 4.4s is
+  # the midpoint of the warm range and the representative number to show.
+  expected_s: 4.4
+
+- id: fkbp12
+  input: ../examples/affinity_fkg.yaml
+  name: FKBP12
+  blurb: >-
+    FKBP12 is the molecular lock that a whole class of anti-rejection drugs
+    was built to pick: organ-transplant patients take a daily drug called
+    tacrolimus specifically because it clicks onto FKBP12 and, together,
+    the two jam shut a signal that would otherwise tell the immune system
+    to attack the new organ.
+  # Measured on this booth's own hardware, in the WARM state a visitor
+  # actually meets: mean of 5 folds (11.7s) from a live run of the real
+  # daemon+UI over the socket, with the model resident across folds.
+  #
+  # NOT the 62.6s that tests/integration/test_new_targets_timing.py
+  # reports: that harness reloads the model per target, so it measures a
+  # COLD fold. The booth's attract loop keeps the model resident, so a
+  # visitor's pick lands warm -- the same cold/warm distinction already
+  # spelled out on the Trp-cage entry above, and the reason the warm
+  # number is the honest one to print on a gallery card.
+  expected_s: 11.7
+
+- id: dhfr
+  name: Dihydrofolate Reductase
+  input: ../examples/affinity_dhfr.yaml
+  blurb: >-
+    Every dividing cell relies on this enzyme, DHFR, to help build the raw
+    material for new DNA -- which is exactly why one of the oldest cancer
+    drugs, methotrexate, is shaped to jam it shut instead, starving
+    fast-dividing cancer cells of what they need to keep copying themselves.
+  # Measured on this booth's own hardware, in the WARM state a visitor
+  # actually meets: mean of 6 folds (19.7s) from a live run of the real
+  # daemon+UI over the socket, with the model resident across folds.
+  #
+  # NOT the 69.1s that tests/integration/test_new_targets_timing.py
+  # reports: that harness reloads the model per target, so it measures a
+  # COLD fold. The booth's attract loop keeps the model resident, so a
+  # visitor's pick lands warm -- the same cold/warm distinction already
+  # spelled out on the Trp-cage entry above, and the reason the warm
+  # number is the honest one to print on a gallery card.
+  expected_s: 19.7
+
+- id: trypsin
+  input: ../examples/affinity_tryp.yaml
+  name: Trypsin
+  # Two factual errors fixed here (whole-branch review, Critical 6): trypsin
+  # is made by the PANCREAS -- as inactive trypsinogen, only switched on
+  # once it reaches the small intestine -- not by the intestine itself; and
+  # the sequence this booth actually folds is BOVINE (see
+  # examples/affinity_tryp.yaml's own header: bovine pancreatic trypsin,
+  # 223 residues), so "your own" was wrong about the molecule on screen.
+  # Both are the kind of thing a biochemist at the booth catches in the
+  # first sentence, which is exactly the audience this playlist is for.
+  blurb: >-
+    Your pancreas builds trypsin switched off, then releases it into the
+    small intestine where it is armed -- and it spends the next few hours
+    cutting the protein in your meal into pieces small enough to absorb.
+    This is the cow's version, one of the most-studied protein shapes in
+    science and often the very first real structure a biochemistry student
+    ever examines up close.
+  # Measured on this booth's own hardware, in the WARM state a visitor
+  # actually meets: mean of 5 folds (22.3s) from a live run of the real
+  # daemon+UI over the socket, with the model resident across folds.
+  #
+  # NOT the 74.9s that tests/integration/test_new_targets_timing.py
+  # reports: that harness reloads the model per target, so it measures a
+  # COLD fold. The booth's attract loop keeps the model resident, so a
+  # visitor's pick lands warm -- the same cold/warm distinction already
+  # spelled out on the Trp-cage entry above, and the reason the warm
+  # number is the honest one to print on a gallery card.
+  expected_s: 22.3

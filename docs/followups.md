@@ -5,14 +5,23 @@ the time. Recorded here because the review scratch space they came from is not
 version controlled. Each names why it was deferred, so a future reader can judge
 whether the reasoning still holds.
 
-## From Phase 3a — blocks Phase 3b
+## Fixed in Phase 3b — kept here so a reader knows they are closed
 
-**The UI has no `not_ready` branch.** `ui/app.py` logs `unhandled event type
-'not_ready'`. The daemon now serves that event correctly whenever preflight
-fails or the model has not loaded yet, but nothing renders the "preparing"
-screen the spec calls for — so today the degrade path is invisible to a visitor,
-who sees the last structure rotating with no explanation. The daemon half is
-done; only the rendering is missing.
+This file is read first (CLAUDE.md says so), so an item that has been fixed and
+left sitting under a "blocks" heading is worse than no entry at all. These three
+were closed by the Phase 3b branch:
+
+- **The UI's `not_ready` branch** (was "blocks Phase 3b"). `ui/app.py` renders
+  the "preparing" overlay, with operator-neutral copy and the `missing` detail
+  going to the log only. Task 1; see `_PREPARING_MESSAGE`.
+- **`ribbon_from_cif` on the GTK main loop** (was "blocks Phase 3"). It now runs
+  on a background worker with a generation stamp, applied to the viewer from the
+  main loop via `_drain_pending_ribbon`. Task 2; see `ui/app.py`'s "ribbon
+  construction off the main loop" section and `tests/unit/test_ribbon_async.py`.
+- **Multi-chain structures splined as one continuous tube** (was "blocks Phase
+  3"). `ribbon_from_cif` splines per chain via `_chain_runs`, so a complex no
+  longer gets a spurious leg joining one chain's C-terminus to the next chain's
+  N-terminus. Task 2; see `ui/geometry.py`.
 
 ## From Phase 3a — worth doing, not urgent
 
@@ -44,26 +53,15 @@ done; only the rendering is missing.
   device and its lease are still held. Bounded by tt-bio's own `atexit` handler
   and the flock lease dying with the process.
 
-## From Phase 1–2 — blocks Phase 3
+## From Phase 1–2 — measurements worth keeping
 
-These are fine against the recorded fixture but not against real folds.
-
-**`ribbon_from_cif` runs synchronously on the GTK main loop.**
-`ui/app.py`, inside the `job_done` handler. `catmull_rom` and `tube_mesh` are
-Python double loops. Measured on the QB2 dev box: **78 ms at 150 residues,
-163 ms at 400, 407 ms at 1000, 1221 ms at 3000**. That freezes the spin and the
-cross-fade at exactly the reveal moment, and it scales badly with the sequence
-lengths tt-bio advertises. Harmless against the 5-residue test fixture; must be
-threaded or vectorized before real folds are attached.
-
-**Multi-chain structures are splined as one continuous tube.**
-`load_ca_trace` records `chain_ids` (`ui/geometry.py`) but `ribbon_from_cif`
-ignores them and runs a single Catmull-Rom through every C-alpha of every chain.
-A complex — the interesting booth targets — gets a spurious tube leg joining one
-chain's C-terminus to the next chain's N-terminus. `minimal.cif` contains exactly
-this chain break and no test asserts anything about it, because the two chains
-happen to sit 3.8 Å apart so the artifact looks like a normal bond. `chain_ids`
-is currently dead outside tests.
+**`ribbon_from_cif`'s cost, measured on the QB2 dev box: 78 ms at 150 residues,
+163 ms at 400, 407 ms at 1000, 1221 ms at 3000.** `catmull_rom` and `tube_mesh`
+are Python double loops. This is why the build was moved off the GTK main loop
+(see "Fixed in Phase 3b" above) rather than left inline in the `job_done`
+handler, and it is the number the daemon's `PROTECTED_STRUCTURE_COUNT` is sized
+against — the UI can be more than a second behind the socket in reading a
+`.cif` it has been told about.
 
 ## Worth doing, not urgent
 
@@ -161,6 +159,24 @@ tests suggested.
 standard here. The wave that fixed the above still introduced one new test that
 could not fail, caught only because a reviewer invented a mutation nobody had
 asked for. This is a bias to keep checking for, not a bug you fix once.
+
+Phase 3b's whole-branch review ran 57 mutations; 38 of the 47 in the main
+battery went red, which is a real improvement on 3a's 2-of-15 — and the three
+that survived were all the same shape as before:
+
+- a **constant** delay in the ribbon-worker fixture, which made "newest
+  generation wins" indistinguishable from "last writer wins" (deleting the
+  generation counter entirely left 459 tests green);
+- `thread_alive` reading `self._thread is not None and ...`, so the assertion
+  was satisfied by the `self._thread = None` line alone and deleting
+  `stop()`'s join changed nothing;
+- a legibility guard that checked a hardcoded list of class NAMES against a
+  stylesheet, which no widget edit can affect — building a label with no CSS
+  class at all stayed green.
+
+Note what those three have in common: each asserted on something ADJACENT to
+the behaviour (a fixture's symmetry, a field's nullity, a stylesheet's text)
+rather than on the behaviour itself. That is the pattern to look for.
 
 **Short runs cannot see unbounded growth.** Two separate tasks "verified log
 containment" with two-fold sessions. A 28-fold run found tt-metal's Inspector

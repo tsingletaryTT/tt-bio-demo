@@ -103,6 +103,40 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
+# --- hardware opt-in -------------------------------------------------------
+# tests/integration opens every Tenstorrent card on the box. This machine is
+# SHARED: other people's training runs hold the same four devices, and a suite
+# that grabs them on every invocation is antisocial -- mutation testing alone
+# re-runs the suite a dozen times per task. So the hardware half is OPT-IN.
+#
+# Deliberately noisy, never silent. This script's whole design treats a
+# silently-empty half as a failure (see the zero-tests-matched check in
+# run_half), so an opt-out that quietly dropped the hardware tests would
+# contradict it: you would get a green "OVERALL: PASS" that had proved
+# strictly less than the last one, with nothing on screen saying so. Instead
+# the skip is announced up front and restated in the combined result.
+#
+# --hw is accepted in ANY argument position, not just first. Everything else
+# here is passed through to pytest, so the natural thing to type is
+# `./scripts/test.sh -k telemetry --hw` -- and a first-arg-only check would
+# silently ignore the flag there and report a green software-only run to
+# someone who had just asked for hardware coverage. Filtering it out of the
+# list wherever it appears costs three lines and removes that whole class of
+# mistake.
+RUN_HW=0
+if [[ "${TT_BIO_DEMO_HW_TESTS:-0}" == "1" ]]; then
+  RUN_HW=1
+fi
+_passthrough=()
+for _arg in "$@"; do
+  if [[ "$_arg" == "--hw" ]]; then
+    RUN_HW=1
+  else
+    _passthrough+=("$_arg")
+  fi
+done
+set -- ${_passthrough[@]+"${_passthrough[@]}"}
+
 # Matches setup-venvs.sh's default; override with --prefix there and
 # TT_BIO_DEMO_PREFIX here if you built the venvs somewhere else.
 PREFIX="${TT_BIO_DEMO_PREFIX:-${REPO_ROOT}/.venvs}"
@@ -181,8 +215,16 @@ run_half() {
 run_half UI "${VENV_UI}/bin/python3" tests/unit --ignore=tests/unit/runner
 
 RUNNER_PATHS=(tests/unit/runner)
+HW_NOTE="not present"
 if [[ -d "${REPO_ROOT}/tests/integration" ]]; then
-  RUNNER_PATHS+=(tests/integration)
+  if [[ "$RUN_HW" -eq 1 ]]; then
+    RUNNER_PATHS+=(tests/integration)
+    HW_NOTE="INCLUDED (--hw) -- this opens every Tenstorrent card on the box"
+  else
+    HW_NOTE="SKIPPED -- pass --hw (or TT_BIO_DEMO_HW_TESTS=1) to run them"
+  fi
+  echo
+  echo "hardware tests (tests/integration): ${HW_NOTE}"
 fi
 run_half RUNNER "${VENV_RUNNER}/bin/python3" "${RUNNER_PATHS[@]}"
 
@@ -201,8 +243,18 @@ else
   echo "runner half: FAILED (exit ${RUNNER_RC})   (${RUNNER_SUMMARY})"
   overall_rc=1
 fi
+if [[ -d "${REPO_ROOT}/tests/integration" ]]; then
+  # Restated here, not only above: by the time the suite finishes, the opt-in
+  # line has scrolled past. A reader glancing at the verdict must not mistake
+  # a software-only pass for a pass that also exercised the silicon.
+  echo "hardware:    ${HW_NOTE}"
+fi
 if [[ "$overall_rc" -eq 0 ]]; then
-  echo "OVERALL: PASS (both halves green)"
+  if [[ "$RUN_HW" -eq 1 ]]; then
+    echo "OVERALL: PASS (both halves green, hardware tests included)"
+  else
+    echo "OVERALL: PASS (both halves green, hardware tests NOT run)"
+  fi
 else
   echo "OVERALL: FAIL -- see the half(s) marked FAILED above"
 fi

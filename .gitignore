@@ -12,3 +12,15 @@ debian/tt-bio-demo*/
 *.buildinfo
 *.changes
 .superpowers/
+
+# tt-metal writes its Inspector/Watcher output to ./generated/ relative to the
+# process CWD unless TT_METAL_LOGS_PATH is pinned. The daemon and the
+# integration conftest both pin it (runner/env.py:runner_environ), but an
+# ad-hoc script that constructs a Folder directly does not -- and that lands
+# tens of MB per fold in the working tree. Ignored so it can never be
+# committed by accident.
+generated/
+
+# Recorded booth demo video (Task 10 deliverable). Large binary; kept out of
+# git but left in the repo root so it is easy to find.
+*.mp4
