@@ -107,11 +107,21 @@
 - id: trypsin
   input: ../examples/affinity_tryp.yaml
   name: Trypsin
+  # Two factual errors fixed here (whole-branch review, Critical 6): trypsin
+  # is made by the PANCREAS -- as inactive trypsinogen, only switched on
+  # once it reaches the small intestine -- not by the intestine itself; and
+  # the sequence this booth actually folds is BOVINE (see
+  # examples/affinity_tryp.yaml's own header: bovine pancreatic trypsin,
+  # 223 residues), so "your own" was wrong about the molecule on screen.
+  # Both are the kind of thing a biochemist at the booth catches in the
+  # first sentence, which is exactly the audience this playlist is for.
   blurb: >-
-    Trypsin is a digestive enzyme your own small intestine makes to cut the
-    protein in a meal into smaller, absorbable pieces, and it is also one
-    of the most-studied protein shapes in science -- often the very first
-    real structure a biochemistry student ever examines up close.
+    Your pancreas builds trypsin switched off, then releases it into the
+    small intestine where it is armed -- and it spends the next few hours
+    cutting the protein in your meal into pieces small enough to absorb.
+    This is the cow's version, one of the most-studied protein shapes in
+    science and often the very first real structure a biochemistry student
+    ever examines up close.
   # Measured on this booth's own hardware by
   # tests/integration/test_new_targets_timing.py: 74.9s wall for 223
   # residues. Note this is an order of magnitude slower than Trp-cage's
