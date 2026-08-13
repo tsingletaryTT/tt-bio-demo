@@ -16,8 +16,13 @@ from protocol.events import (
 )
 
 
-def test_protocol_version_is_one():
-    assert PROTOCOL_VERSION == 1
+def test_protocol_version_is_the_one_this_build_speaks():
+    # Was `== 1` until the socket gained its client->server direction. The
+    # authoritative pin now lives in tests/unit/test_protocol_is_frozen.py
+    # and its runner-half twin, which assert the number in BOTH venvs -- a
+    # bump applied to one checkout and not the other is the failure that
+    # actually happens, and this file only ever runs under venv-ui.
+    assert PROTOCOL_VERSION == 2
 
 
 def test_all_spec_event_types_present():

@@ -1,4 +1,4 @@
-{"type":"hello","version":1,"cards":[0,1,2,3],"models":["protenix-v2"],"preflight":"ok","_delay_ms":0}
+{"type":"hello","version":2,"cards":[0,1,2,3],"models":["protenix-v2"],"preflight":"ok","_delay_ms":0}
 {"type":"job_start","job_id":"j1","target_id":"synthetic","model":"protenix-v2","card":0,"n_residues":12,"_delay_ms":50}
 {"type":"stage","job_id":"j1","stage":"trunk","frac":0.3,"_delay_ms":50}
 {"type":"frame","job_id":"j1","step":1,"total":6,"n_atoms":12,"coords_b64":"Gr5FwVzL2j6LDp5A3D2xvu9DuECEXZtB+rUuwW6zyUCbuDHB6FvEP4WkWsByMw1BaBLGwIOmXUDc8gbBfrtowYp8OUBb4jhB8p5nQJ3L1cD6/OQ/mzWyQFYj/kAQ6vbAMsisQHjsFUB3SV2+gAGTPxrokMBSYYTAedAjQSLg3D/ibk3AzR9vwRIAu8AUr1fA","_delay_ms":100}
