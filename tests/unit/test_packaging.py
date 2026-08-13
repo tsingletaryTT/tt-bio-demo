@@ -55,3 +55,39 @@ def test_no_package_ships_a_venv_or_weights(built):
         assert "/venv-runner/" not in contents, f"{deb.name} ships a venv"
         assert ".safetensors" not in contents, f"{deb.name} ships weights"
         assert ".ckpt" not in contents, f"{deb.name} ships weights"
+
+
+# --- Task 2: the container harness -----------------------------------------
+#
+# Every later task's most important assertion is behavioural -- did a
+# postinst really run (or really not run) a given command -- and without a
+# real disposable install to observe, those assertions degrade into
+# grepping a maintainer script for a string, which proves a default was
+# *written down*, not honoured. See tests/unit/conftest_container.py.
+#
+# Tests 1 and 2 below are a matched pair on purpose: a harness that always
+# reports "it ran" and one that always reports "it didn't" would each pass
+# a single-sided test. Task 5's negative assertion ("install-deps did NOT
+# run") is only trustworthy because test 1 here proves the same mechanism
+# can see a positive.
+
+def test_the_harness_detects_a_command_that_ran(container):
+    """Prove the shim mechanism works before trusting it to prove a negative."""
+    r = container.run("tt-bio install-deps --yes", shim="tt-bio")
+    assert r.shim_called_with("install-deps")
+    assert r.shim_call_count("install-deps") == 1
+
+
+def test_the_harness_detects_a_command_that_did_not_run(container):
+    r = container.run("echo doing nothing", shim="tt-bio")
+    assert not r.shim_called_with("install-deps")
+
+
+def test_the_harness_never_passes_a_tenstorrent_device():
+    s = (REPO / "scripts" / "deb-container.sh").read_text()
+    assert "/dev/tenstorrent" not in s
+
+
+def test_the_harness_always_removes_its_container():
+    s = (REPO / "scripts" / "deb-container.sh").read_text()
+    assert "--rm" in s
