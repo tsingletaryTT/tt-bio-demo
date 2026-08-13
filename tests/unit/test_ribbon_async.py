@@ -195,3 +195,68 @@ def test_a_second_fold_supersedes_a_slow_first_one(monkeypatch):
     assert app.viewer.last_ribbon[0] == "/tmp/b.cif", (
         "the ribbon that landed must be the second (newest) fold's "
         "('/tmp/b.cif'), not the first's ('/tmp/a.cif')")
+
+
+class _VariableGeometry:
+    """Like `_SlowGeometry`, but with a per-CIF delay.
+
+    `_SlowGeometry`'s constant delay is what made the test above unable to
+    fail: with both folds equally slow, the newest fold is also the LAST to
+    finish, so "the newest generation wins" and "the last writer wins" are
+    indistinguishable -- and the whole-branch review confirmed it by
+    deleting `self._ribbon_generation += 1` from ui/app.py entirely and
+    watching all 459 UI tests stay green.
+
+    Delays are keyed by cif_path rather than by call order: the two workers
+    are separate threads, and which one reaches this callable first is not
+    something a test should be asserting on by accident.
+    """
+
+    def __init__(self, delays):
+        self.delays = dict(delays)
+        self.calls = 0
+
+    def __call__(self, cif_path, **kw):
+        self.calls += 1
+        time.sleep(self.delays[cif_path])
+        return (cif_path, "norms", "colors", "indices")
+
+
+def test_a_stale_first_fold_cannot_clobber_a_faster_newer_one(monkeypatch):
+    """The ordering the generation counter actually exists for: fold 1 is
+    slow (0.60s) and fold 2 is fast (0.02s), so the STALE result is the last
+    one to finish.
+
+    Without the generation stamp, the late straggler is simply the most
+    recent writer and lands on screen -- the booth would show fold 1's
+    structure while fold 2's is the current one. With it, worker 1 sees its
+    generation is no longer current and drops its own result.
+
+    Mutation this catches (verified): deleting `self._ribbon_generation += 1`
+    from `_spawn_ribbon_worker`.
+    """
+    from ui import app as mod
+    monkeypatch.setattr(mod, "ribbon_from_cif", _VariableGeometry(
+        {"/tmp/slow-first.cif": 0.60, "/tmp/fast-second.cif": 0.02}))
+
+    app = DemoApp(socket_path=None)
+    app.viewer = _FakeViewer()
+    app._handle_event({"type": "job_done", "job_id": "j1",
+                       "cif_path": "/tmp/slow-first.cif",
+                       "wall_s": 5.0, "mean_plddt": 95.0})
+    app._handle_event({"type": "job_done", "job_id": "j2",
+                       "cif_path": "/tmp/fast-second.cif",
+                       "wall_s": 5.0, "mean_plddt": 95.0})
+    _join_ribbon_worker(app, timeout=10.0)
+    # Drained once, AFTER both workers are done -- so the only thing that can
+    # decide which result is on screen is the generation check inside the
+    # workers themselves, not the order the main loop happened to run in.
+    app._drain_pending_ribbon()
+
+    assert app.viewer.ribbons == 1, (
+        "exactly one ribbon should land -- zero means every result was "
+        "dropped, which is not 'the newest fold won'")
+    assert app.viewer.last_ribbon[0] == "/tmp/fast-second.cif", (
+        "the superseded first fold clobbered the newest one: it finished "
+        "LAST (0.60s vs 0.02s), so nothing but the generation stamp can "
+        "stop it reaching the screen")

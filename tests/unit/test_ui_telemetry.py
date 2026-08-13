@@ -203,12 +203,36 @@ def test_age_reports_how_stale_the_reading_is(monkeypatch):
 
 
 def test_stop_ends_the_thread_promptly(monkeypatch):
+    """`stop()` must JOIN, not merely signal.
+
+    Asserting on `s.thread_alive` alone could not fail: the property is
+    `self._thread is not None and self._thread.is_alive()`, and `stop()`
+    sets `self._thread = None` on the line after the join -- so deleting
+    the join outright left this test green (whole-branch review). The
+    thread object is therefore captured BEFORE stop(), so the assertion is
+    about the OS thread rather than about the field having been cleared.
+
+    `samples_attempted` is checked too, because it is the other thing a
+    caller relies on after `stop()` returns: the sampler is not still
+    running `tt-smi` against a process that is tearing down. At
+    period_s=0.01 a thread left alive would tick ~10 times in the 0.1s
+    below, so a stale count is a real signal, not a race.
+    """
     monkeypatch.setattr("ui.telemetry._run_tt_smi",
                         lambda timeout: json.dumps(SNAPSHOT))
     s = TelemetrySampler(period_s=0.01)
     s.start()
+    thread = s._thread
+    assert thread is not None, "start() did not create a thread"
     _wait(lambda: s.latest() is not None, 3.0)
     s.stop()
+    assert not thread.is_alive(), (
+        "stop() returned while its sampler thread was still running -- it "
+        "signalled the stop event but never joined")
+    settled = s.samples_attempted
+    time.sleep(0.1)
+    assert s.samples_attempted == settled, (
+        "the sampler kept polling after stop() returned")
     assert s.thread_alive is False
 
 

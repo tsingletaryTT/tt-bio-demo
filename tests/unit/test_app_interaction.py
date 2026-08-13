@@ -801,12 +801,62 @@ def test_every_label_on_the_preparing_overlay_is_legible():
     _assert_legible(overlay, context="preparing overlay")
 
 
-def test_every_help_card_class_has_an_explicit_colour_rule():
+def _widget_trees_this_file_builds():
+    """Every tree this module's own widgets produce, for the per-label walk
+    below. One app instance per tree, matching how each test above builds
+    its own -- these are constructed, never activated, so no display is
+    involved."""
+    app = _app()
+    yield "help card", app._build_help_overlay()
+
+    app = _app()
+    rail = app._build_side_rail()
+    app.diagnostics_panel.refresh(app.diagnostics, force=True)
+    yield "side rail with diagnostics open", rail
+
+    app = _app()
+    overlay = app._build_preparing_overlay()
+    app._preparing_message_label.set_label("Getting the booth ready.")
+    yield "preparing overlay", overlay
+
+
+def test_every_label_this_file_builds_carries_an_explicit_colour_rule():
     """The structural half of the rule: an explicitly-set background implies
-    an explicitly-set foreground. A class added to the card with no `color:`
-    behind it inherits the desktop theme -- measured at ~1.01:1 on a dark
-    machine when this defect last happened (see _legibility.py's docstring)
-    -- and the contrast walk above cannot catch what a test never renders."""
+    an explicitly-set foreground. A label with no colour-bearing class
+    inherits the desktop theme -- measured at ~1.01:1 on a dark machine when
+    this defect last happened (see _legibility.py's docstring) -- and the
+    contrast walk above cannot catch what THIS machine's theme happens to
+    resolve to a passing colour.
+
+    This walks the real widgets (`iter_labels`), exactly as
+    test_panels.py:711, test_gallery.py:391 and test_chipviz.py:536 do.
+    It used to check a hardcoded list of class NAMES against `_APP_CSS`
+    instead -- which the whole-branch review's mutation testing showed is
+    not the same test at all: building a help-card label with NO CSS CLASS
+    AT ALL left the old assertion perfectly green, because nothing about a
+    list of names is affected by removing a class from a widget. The blind
+    spot is the one already on record for the panels, one surface later.
+
+    Rules come from the MERGED stylesheets for the same reason the contrast
+    walk's do: the side rail is one tree assembled from four modules' CSS.
+    """
+    rules = _legibility.color_rules_from_css(_MERGED_CSS_FN())
+    failures = []
+    for context, root in _widget_trees_this_file_builds():
+        for label in _legibility.iter_labels(root):
+            if not _legibility.label_has_an_explicit_color_rule(label, rules):
+                failures.append(
+                    f"[{context}] label {label.get_label()!r} carries classes "
+                    f"{sorted(label.get_css_classes())!r}, none of which has a "
+                    "matching `color:` rule in the real stylesheets")
+    assert not failures, "\n".join(failures)
+
+
+def test_every_help_card_class_has_an_explicit_colour_rule():
+    """The per-class half, kept alongside the per-label walk above: this one
+    fails when a rule is deleted from `_APP_CSS` even if no widget currently
+    carries that class, so a stylesheet edit cannot quietly disarm the
+    stylesheet the walk checks against."""
     rules = _legibility.color_rules_from_css(app_module._APP_CSS)
     for css_class in ("help-title", "help-body", "help-section", "help-key",
                       "help-desc", "help-note", "booth-hint", "booth-hint-key"):
