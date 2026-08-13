@@ -406,3 +406,47 @@ def test_gallery_background_map_registers_every_background_class_in_its_own_css(
     css_classes = _legibility.background_affecting_classes_from_css(
         ui_gallery._GALLERY_CSS)
     assert css_classes <= set(ui_gallery._BACKGROUND_BY_CLASS)
+
+
+# ---------------------------------------------------------------------------
+# The gallery must not promise a fold it cannot deliver.
+#
+# Whole-branch review, Critical 2: a visitor's pick never reaches the daemon
+# (the socket protocol is one-way -- see ui/gallery.py's module docstring),
+# and every string on this screen used to say otherwise. These pin the copy
+# so it cannot drift back before the capability exists.
+# ---------------------------------------------------------------------------
+
+def _all_text(widget):
+    """Every label and tooltip a visitor can read on this widget."""
+    texts = [label.get_label() or "" for label in _legibility.iter_labels(widget)]
+
+    def walk(node):
+        tooltip = node.get_tooltip_text()
+        if tooltip:
+            texts.append(tooltip)
+        child = node.get_first_child()
+        while child is not None:
+            walk(child)
+            child = child.get_next_sibling()
+
+    walk(widget)
+    return texts
+
+
+def test_no_card_tells_a_visitor_that_tapping_folds_it():
+    gallery = Gallery([_target(id="a", name="Trp-cage")], width_px=1280)
+    for text in _all_text(gallery):
+        lowered = text.lower()
+        assert "tap to fold" not in lowered, f"over-promising copy: {text!r}"
+        assert not lowered.startswith("fold "), f"over-promising copy: {text!r}"
+
+
+def test_the_screen_says_what_it_is_and_discloses_what_it_cannot_do():
+    """Both halves matter: an implementation that merely deleted the
+    over-promising strings would pass the test above while leaving a
+    visitor with an unexplained grid of proteins."""
+    gallery = Gallery([_target(id="a", name="Trp-cage")], width_px=1280)
+    joined = " ".join(_all_text(gallery)).lower()
+    assert "what this booth folds" in joined
+    assert "isn't wired up yet" in joined

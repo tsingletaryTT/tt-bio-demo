@@ -185,6 +185,16 @@ the event schema, the stage order, and the per-stage progress bands.
 - **`scripts/run-demo.sh`** — the turnkey launcher, tearing the daemon down on Ctrl-C so a
   leaked device handle cannot block the next run.
 
+## What it deliberately does not do yet
+
+**A visitor cannot choose what folds next.** The gallery is a catalogue of what the booth
+folds, not a queue you can jump: the socket protocol is one-way (the daemon broadcasts; the
+UI never sends), so a tap closes the gallery and returns to the fold already running. The
+daemon's priority queue exists and reserves a slot for exactly this, but the client→server
+message does not exist yet. The gallery and the `?` help card both say so on screen; nothing
+a visitor reads claims otherwise. When the protocol grows that message, `ui/app.py`'s
+`_on_pick` and the copy in `ui/gallery.py` are what change together.
+
 ## Not yet built
 
 The visitor-facing gallery, the four-state attract-loop machine, the curated playlist

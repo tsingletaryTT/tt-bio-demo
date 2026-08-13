@@ -1,4 +1,21 @@
-"""The booth's gallery: a visitor picks which target to fold.
+"""The booth's gallery: what this booth folds, and what tapping one does.
+
+WHAT A TAP ACTUALLY DOES TODAY -- read this before editing any copy in
+this file. A tap calls `on_pick(target_id)`, which ui/app.py logs and hands
+to the state machine, which closes the gallery and puts the live fold back
+on screen. It does NOT reach the daemon: the socket protocol is one-way
+(runner/server.py broadcasts; ui/client.py never sends), so the daemon's
+priority queue -- which exists, and reserves a higher priority for exactly
+this -- cannot be reached from here yet. The daemon keeps working through
+its playlist in its own order regardless.
+
+Every visitor-facing string in this module used to contradict that
+("TAP TO FOLD", a `Fold {name}` tooltip), which the whole-branch review
+called out as the booth promising a capability it does not have. The copy
+here now says what the screen genuinely is: a catalogue of what the booth
+folds, with a plainly-stated note that choosing one on demand is not wired
+up. When the protocol grows a client->server message, this is the copy to
+change back -- not before.
 
 Two things, kept deliberately separate per the task brief ("keep the pure
 part small and real: grid_shape decides layout and is tested; the widget
@@ -335,6 +352,18 @@ _GALLERY_CSS = f"""
     letter-spacing: 0.08em;
     color: {_ACCENT_TEXT};
 }}
+/* The one line that says what this screen IS. Same register as the side
+   rail's own title/subtitle pair (ui/app.py's `.booth-title`/`.booth-sub`)
+   so the gallery reads as the same product, not a different screen. */
+.gallery-caption-title {{
+    font-size: 19px;
+    font-weight: 700;
+    color: {_BG};
+}}
+.gallery-caption {{
+    font-size: 13px;
+    color: {_BG_ALT};
+}}
 /* The placeholder tile: NO fill of its own -- just a hairline border on
    the card's own dark ground, so an empty tile reads as a deliberate,
    quiet cutout rather than a competing light surface. See the design note
@@ -371,6 +400,28 @@ def _ensure_css_installed():
     Gtk.StyleContext.add_provider_for_display(
         display, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
     _CSS_INSTALLED = True
+
+
+# ---------------------------------------------------------------------------
+# Visitor-facing copy for the screen as a whole.
+#
+# True as written, and checked against what the code actually does -- see
+# this module's docstring: a tap closes this screen and returns to the live
+# fold, and nothing a visitor presses here changes what the daemon folds
+# next. The second sentence is the disclosure, deliberately stated as a
+# fact about the booth rather than as an apology; the invitation ("watch
+# it happen") is what a visitor is actually being offered, and it is real.
+# ---------------------------------------------------------------------------
+_CAPTION_TITLE = "What this booth folds"
+_CAPTION_BODY = (
+    "It works through these one after another, all day, on the Tenstorrent "
+    "chips in this room. Tap anything to go back and watch the fold that is "
+    "running right now — asking for one on demand isn't wired up yet."
+)
+
+# The per-card line, in the same place the old "TAP TO FOLD" sat. A
+# statement about the target, not an instruction that over-promises.
+_CARD_HINT = "IN THE ROTATION"
 
 
 # ---------------------------------------------------------------------------
@@ -418,7 +469,17 @@ class Gallery(Gtk.ScrolledWindow):
         self._grid.set_margin_bottom(16)
         self._grid.set_margin_start(16)
         self._grid.set_margin_end(16)
-        self.set_child(self._grid)
+
+        # Caption above the grid, inside the same scrolled viewport, so a
+        # visitor who has just walked up learns what this screen is before
+        # reading any card -- and so the disclosure about picking cannot be
+        # scrolled away from the cards it qualifies. `self._grid` stays the
+        # cards' parent (tests address it directly, and the grid is what
+        # `grid_shape` sizes); this box only stacks the two.
+        column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        column.append(self._build_caption())
+        column.append(self._grid)
+        self.set_child(column)
 
         # target.id -> the Gtk.Button card built for it. Not read by GTK
         # itself, but it lets a test tap a specific card by id, and lets
@@ -429,6 +490,31 @@ class Gallery(Gtk.ScrolledWindow):
         self.cards = {}
 
         self._build_cards()
+
+    def _build_caption(self):
+        """The screen's own two lines: what it is, and what tapping does.
+
+        Wrapped and width-capped rather than allowed to run the full width
+        of a 1490px hero slot: a single line of prose that long is not read
+        at a booth. See `_CAPTION_BODY` for why the copy says what it says.
+        """
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        box.set_margin_top(16)
+        box.set_margin_start(16)
+        box.set_margin_end(16)
+
+        title = Gtk.Label(label=_CAPTION_TITLE, xalign=0.0)
+        title.add_css_class("gallery-caption-title")
+        title.set_wrap(True)
+
+        body = Gtk.Label(label=_CAPTION_BODY, xalign=0.0)
+        body.add_css_class("gallery-caption")
+        body.set_wrap(True)
+        body.set_max_width_chars(84)
+
+        box.append(title)
+        box.append(body)
+        return box
 
     def _build_cards(self):
         cols, _rows = grid_shape(len(self.targets), self.width_px)
@@ -447,7 +533,10 @@ class Gallery(Gtk.ScrolledWindow):
         # module's own _GALLERY_CSS text, never the ambient desktop theme's).
         button.add_css_class("flat")
         button.add_css_class("gallery-card")
-        button.set_tooltip_text(f"Fold {target.name}")
+        # Not "Fold {name}": a tap does not fold this target (see the module
+        # docstring). The tooltip is for an operator with a mouse anyway --
+        # it still must not claim something the booth cannot do.
+        button.set_tooltip_text(f"{target.name} — one of the proteins this booth folds")
 
         content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         # A grid ROW is necessarily one height shared by every cell in it
@@ -486,7 +575,7 @@ class Gallery(Gtk.ScrolledWindow):
         time_label.add_css_class("gallery-card-time")
         content.append(time_label)
 
-        hint = Gtk.Label(label="TAP TO FOLD", xalign=0.0)
+        hint = Gtk.Label(label=_CARD_HINT, xalign=0.0)
         hint.add_css_class("gallery-card-tap-hint")
         content.append(hint)
 

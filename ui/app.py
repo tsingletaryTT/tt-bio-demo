@@ -436,7 +436,19 @@ _HELP_INTRO = (
 
     "It works by denoising: the model starts from a cloud of random atom "
     "positions and pulls it, over roughly 200 small steps, into a real "
-    "structure. Touch the screen to pick something to fold.",
+    "structure. Touch the screen to see everything this booth folds.",
+
+    # The disclosure, in the visitor's own words. The booth folds its
+    # playlist in its own order and a tap cannot change that: the socket
+    # protocol is one-way (runner/server.py broadcasts, ui/client.py never
+    # sends), so `_on_pick` reaches the state machine and nothing further.
+    # Stated as a fact rather than an apology, and paired with what IS on
+    # offer -- see ui/gallery.py's own module docstring, which carries the
+    # same rule for the copy on that screen.
+    "The booth works through its proteins one after another, all day. You "
+    "can look through them at any time; asking it to fold a particular one "
+    "on demand isn't wired up yet, so what you see next is whatever it "
+    "reaches next.",
 )
 
 # Every key the booth answers to, and what it does. This table is the ONE
@@ -450,7 +462,7 @@ _KEY_HELP = (
     ("D", "diagnostics: the live protocol log in the right-hand rail"),
     ("Esc", "close this card, or close the diagnostics panel"),
     ("any other key,\nor a tap anywhere",
-     "wake the booth and choose a protein to fold"),
+     "wake the booth and look through the proteins it folds"),
     ("Ctrl + F", "leave or return to fullscreen — for the booth operator"),
     ("Ctrl + Q", "quit the booth — for the booth operator"),
 )
@@ -1267,6 +1279,14 @@ class DemoApp(Gtk.Application):
         higher priority for exactly this -- cannot currently be reached
         from here. Logged, and recorded as a known gap in this task's
         report; the booth still shows the visitor the fold that is running.
+
+        Every visitor-facing string that used to contradict this paragraph
+        has been reworded (whole-branch review, Critical 2): the gallery
+        says what it is rather than "TAP TO FOLD", and the help card says
+        plainly that picking on demand is not wired up. If this method ever
+        DOES reach the daemon, that copy is what changes with it --
+        ui/gallery.py's module docstring and `_HELP_INTRO` above both point
+        back here.
         """
         log.info("visitor picked %s", target_id)
         self._note_input()
