@@ -38,6 +38,13 @@ class _FakeViewer:
     def clear_structure(self):
         self.cleared += 1
 
+    def set_held(self, held):
+        # Dimming a held structure (ui/viewer.py's `set_held`) is nothing
+        # to do with which ribbon lands, but the app reconciles it from
+        # `_sync_viewer_hold` on every event -- so this stub exists for the
+        # same reason the class's own docstring gives for the others.
+        self.held = bool(held)
+
     def begin_crossfade(self):
         self.crossfades += 1
 

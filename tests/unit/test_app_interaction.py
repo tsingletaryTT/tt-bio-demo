@@ -806,6 +806,24 @@ def test_every_label_in_the_side_rail_is_legible_including_the_new_ones():
     _assert_legible(rail, context="side rail with diagnostics open")
 
 
+def test_every_label_on_the_held_structure_caption_is_legible():
+    """The caption over a held structure (ui/app.py's
+    `_build_viewer_caption`) is the one thing standing between a visitor and
+    mistaking the PREVIOUS fold's protein for the one the pipeline panel is
+    reporting progress for -- so it has to be readable at booth distance,
+    not merely present.
+
+    Measured on the #092221 ground: `.viewer-caption-title` #74C5DF =
+    8.55:1, `.viewer-caption-sub` #C7D9D8 = 11.36:1. Both clear the 4.5:1
+    AA floor this project holds every label to.
+    """
+    app = _app()
+    overlay = app._build_viewer_caption()
+    app._caption_title_label.set_label("Previous fold: Trp-cage")
+    app._caption_sub_label.set_label("Now folding Trypsin")
+    _assert_legible(overlay, context="held-structure caption")
+
+
 def test_every_label_on_the_preparing_overlay_is_legible():
     """Extending the guard to this file's widgets caught a real, shipped
     defect: `.preparing-message` was the raw brand accent #1B8EB1, which
@@ -834,6 +852,12 @@ def _widget_trees_this_file_builds():
     overlay = app._build_preparing_overlay()
     app._preparing_message_label.set_label("Getting the booth ready.")
     yield "preparing overlay", overlay
+
+    app = _app()
+    caption = app._build_viewer_caption()
+    app._caption_title_label.set_label("Previous fold: Trp-cage")
+    app._caption_sub_label.set_label("Now folding Trypsin")
+    yield "held-structure caption", caption
 
 
 def test_every_label_this_file_builds_carries_an_explicit_colour_rule():
@@ -875,7 +899,8 @@ def test_every_help_card_class_has_an_explicit_colour_rule():
     stylesheet the walk checks against."""
     rules = _legibility.color_rules_from_css(app_module._APP_CSS)
     for css_class in ("help-title", "help-body", "help-section", "help-key",
-                      "help-desc", "help-note", "booth-hint", "booth-hint-key"):
+                      "help-desc", "help-note", "booth-hint", "booth-hint-key",
+                      "viewer-caption-title", "viewer-caption-sub"):
         assert frozenset({css_class}) in rules, f"{css_class} has no color: rule"
 
 

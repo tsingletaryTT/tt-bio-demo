@@ -61,9 +61,9 @@ screen properly for ~21% of the cycle. For a demo whose entire premise is
 The fix is the state machine's `showcase` dwell, carried out here in four
 places, none of which decide anything on their own:
 
-1. `job_start` during a showcase does NOT clear the screen; the clear is
-   deferred (`_deferred_clear`) until the dwell expires. Fold N's finished
-   structure keeps the screen it earned.
+1. `job_start` never clears the screen (see the next section -- this used
+   to be "does not clear DURING A SHOWCASE, defers it until the dwell
+   expires", which is the half-fix that left the viewer empty).
 2. Point frames arriving during a showcase are SUPPRESSED, not drawn --
    and not discarded either: they stay in the one-slot latest-wins buffer
    (`ui.client.LatestFrame`), which is what lets step 3 cut straight to
@@ -71,15 +71,62 @@ places, none of which decide anything on their own:
    the cross-fade honest: the points still on screen underneath the
    arriving ribbon are fold N's OWN final cloud, so the structure
    condenses out of the cloud it actually came from.
-3. When the dwell expires, `showcase_ended` fires once: apply the deferred
-   clear, then immediately drain the buffered frame so the next fold's
-   diffusion appears in the same instant the structure leaves.
+3. When the dwell expires, `showcase_ended` fires once and drains the
+   buffered frame, so the next fold's diffusion appears in the same instant
+   the structure stops being the booth's subject.
 4. A ribbon that arrives after its own dwell has expired is dropped
    (`ribbon_may_be_revealed`): by then the booth is showing the next fold's
    live diffusion, and cross-fading the previous structure over it is the
    same defect by another route.
 
 `_SHOWCASE_DWELL_S` below carries the measurement that sets the trade.
+
+Why the viewer is never cleared until it has something to replace with
+-----------------------------------------------------------------------
+The sequencing above was tuned against Trp-cage, a 4.4s fold. It does not
+survive the long targets, and the way it fails is the whole reason this
+section exists.
+
+Only the `diffusion` stage emits `frame` events. `msa`, `prep` and `trunk`
+emit progress and no coordinates at all, and trunk is ten refinement cycles
+-- about 15 seconds on a 223-residue target. Measured warm fold times on
+this booth: Trp-cage 4.4s, FKBP12 11.7s, DHFR 19.7s, trypsin 22.3s. So for
+three of the four shipped targets, most of the fold produces nothing to
+draw. Scanning a 91-second recording of the real booth frame by frame: 20
+of 45 sampled seconds had an EMPTY viewer, and across four proteins there
+was exactly one frame range showing a finished structure.
+
+Clearing the screen on `job_start` (immediately, or deferred to the end of
+a 2s dwell -- the difference is 2 seconds out of 15) is what produced that.
+The `_SHOWCASE_DWELL_S` hold was a fixed budget tuned to one target: 2s out
+of a 4.4s Trp-cage cycle is a fair share, 2s out of a 22.3s trypsin cycle
+is a glimpse.
+
+So the clear moved. It now happens in `_drain_frames`, at the instant the
+new fold's first real frame is about to be drawn -- never before. The
+previous structure keeps rotating through msa/prep/trunk and is replaced
+the moment there are genuine new coordinates to replace it with. The hold
+stops being a fixed number of seconds and becomes "until superseded", which
+scales with fold length by construction instead of being tuned to one
+target.
+
+What this deliberately does NOT do is invent anything. Nothing is
+interpolated, no motion is synthesised, no placeholder geometry is built
+for a stage that produced no coordinates. The only thing on screen is a
+structure that was really computed -- just an older one, and it is
+`set_held` (ui/viewer.py, which dims it) plus the caption overlay built by
+`_build_viewer_caption` below (which names it in words) that keep a visitor
+from reading it as the fold currently in progress. The pipeline panel is
+already reporting the live stage of the NEW fold next to it, so the two
+must not be allowed to look like the same claim.
+
+`_awaiting_first_frame` is the flag that carries all of this, and it is
+cleared by exactly three things: the new fold's first frame landing
+(superseded, the ordinary path), `job_error` (that fold will never produce
+one), and `not_ready` (the daemon has stopped folding entirely). The last
+two matter because the caption asserts "now folding X" -- an assertion that
+must stop the moment it stops being true, or a dead daemon leaves a stale
+structure under a permanent lie.
 """
 
 import argparse
@@ -120,6 +167,80 @@ log = logging.getLogger(__name__)
 # `missing` in any way.
 _PREPARING_MESSAGE = "Getting the booth ready. Please check back shortly."
 
+# ── the held-structure caption ──────────────────────────────────────────────
+#
+# Two lines over the 3D view, shown only while the viewer is holding
+# something the running fold has not yet superseded (see the module
+# docstring). Every string here is an assertion about what is on screen and
+# what the silicon is doing, so each one is written to be true in the exact
+# situation it appears in and in no other:
+#
+# * The empty case is the very first fold after launch -- there is genuinely
+#   nothing to hold, and a bare black field says nothing at all. It tells a
+#   visitor what is happening and, specifically, WHEN the view will fill,
+#   which is the one question an empty screen provokes. "Atoms" is literal:
+#   `dump_fn` streams per-step atom coordinates, and only the diffusion
+#   stage produces them (protocol/events.py's STAGE_ORDER).
+#
+# * The held case names the fold that is over and the fold that is running,
+#   in that order, one per line. "Previous fold" rather than "finished
+#   structure" because what is being held is not always a finished ribbon:
+#   if a CIF fails to parse (or a slow ribbon build misses its dwell) the
+#   thing on screen is that fold's last diffusion frame, which is a real
+#   computed state and genuinely the previous fold, but is not a finished
+#   anything. One phrase that is true for both beats two phrases where the
+#   wrong one can be shown.
+#
+# Neither line is ever composed from an exception, a path, or any other
+# runner-supplied detail -- only from a target name (or, failing that, no
+# name at all). The no-name fallbacks exist because `target_id` is wire
+# data: a daemon folding something that is not in this booth's playlist
+# must degrade to a caption that claims less, never to a caption that
+# claims something false.
+_CAPTION_EMPTY_SUB = "Atoms appear here when the diffusion stage begins"
+
+
+def viewer_hold_caption(*, awaiting_first_frame, has_structure, showcasing,
+                        folding_name, held_name):
+    """What the viewer should say about what it is showing, as
+    `(title, subtitle)` -- or None for "say nothing".
+
+    Pure, and separated from the widget for the usual reason this file
+    separates those: what the booth CLAIMS is a decision, and it is
+    testable with no display, no GTK and no fold. `_sync_viewer_hold` below
+    is the only caller and does nothing but carry the answer out.
+
+    The four arguments are the whole of the situation:
+
+    `awaiting_first_frame` -- a fold is running and has not yet produced a
+    single coordinate. False means either nothing is folding or the fold
+    that is running already owns the screen; in both cases the viewer is
+    showing the current thing and has nothing to explain. This is what makes
+    a `job_error` or a `not_ready` (both of which clear the flag) take the
+    "now folding X" claim down with them rather than leaving it up over a
+    daemon that has stopped.
+
+    `showcasing` -- the finished structure is inside its guaranteed dwell
+    (`_SHOWCASE_DWELL_S`). Deliberately silent then, and undimmed: that hold
+    is the payoff the whole booth is built around, the structure IS the
+    current subject for those two seconds, and a caption demoting it to a
+    leftover the instant it finishes fading in would be both ugly and
+    premature. The caption appears exactly where the old code went black.
+
+    `has_structure` -- whether the viewer has anything in it at all, which
+    picks between the two genuinely different situations: explaining a held
+    leftover, and explaining an empty screen on the first fold of the day.
+    """
+    if showcasing or not awaiting_first_frame:
+        return None
+    if not has_structure:
+        return (f"Folding {folding_name}" if folding_name else "Folding",
+                _CAPTION_EMPTY_SUB)
+    return (f"Previous fold: {held_name}" if held_name else "Previous fold",
+            f"Now folding {folding_name}" if folding_name
+            else "Now folding the next target")
+
+
 # ── booth timing ────────────────────────────────────────────────────────────
 #
 # How long a finished structure holds the screen. `ui.states` defaults this
@@ -149,6 +270,21 @@ _PREPARING_MESSAGE = "Getting the booth ready. Please check back shortly."
 # `StateMachine.on_structure_revealed`), so unlike the ~1.2s the old
 # sequencing left on screen it is not eaten by the ribbon build or the 0.8s
 # cross-fade.
+#
+# What this number no longer sets: how long the finished structure STAYS ON
+# SCREEN. That used to be the same question, and the arithmetic above only
+# ever worked for Trp-cage -- against a 22.3s trypsin fold, 2.0s is under
+# 10% of the cycle and the remaining 20 seconds were spent looking at black
+# (see the module docstring). The structure now holds the screen until the
+# next fold's first real frame supersedes it, which for a long target is
+# fifteen seconds or more and needs no tuning at all.
+#
+# So this is now a FLOOR on two much narrower things, both of which still
+# want a fixed number: how long the hero image is the booth's undimmed,
+# uncaptioned subject before it is demoted to a held leftover, and how long
+# the next fold's opening noise cloud is kept off the screen so it cannot
+# be drawn over a structure a visitor is still looking at. The 2.0s
+# measurement above is still the right answer to both.
 _SHOWCASE_DWELL_S = 2.0
 
 # How often the booth hands the state machine a clock reading. The machine
@@ -335,6 +471,13 @@ _BACKGROUND_BY_CLASS = {
     "booth-side": _DARK_BASE,
     "preparing-overlay": _DARK_BASE,
     "help-overlay": _DARK_BASE,
+    # The held-structure caption. Like the two overlays above it is a
+    # near-opaque wash OF the dark ground rather than a second surface
+    # colour, so the contrast its two labels really have is the contrast
+    # against `_DARK_BASE`. It is a small card rather than a full-screen
+    # wash for the obvious reason: the structure it is captioning has to
+    # stay visible behind it.
+    "viewer-caption": _DARK_BASE,
 }
 
 # The pLDDT legend's swatches, generated from the ONE ramp the ribbon itself
@@ -393,6 +536,30 @@ _APP_CSS = f"""
        file's own widgets (Task 10). */
     color: {_ACCENT_TEXT};
     font-size: 15px;
+}}
+/* The held-structure caption: what the viewer is showing, and what the
+   booth is actually computing, said in words next to each other so the two
+   cannot be confused. A card at the top of the hero slot, not a wash --
+   the structure it describes has to stay visible behind it. See
+   `_build_viewer_caption` and `viewer_hold_caption`. */
+.viewer-caption {{
+    background-color: rgba(9, 34, 33, 0.92); /* #092221, near-opaque */
+    border-radius: 8px;
+    padding: 10px 20px;
+}}
+.viewer-caption-title {{
+    /* _TEAL, 8.55:1 on #092221 -- the same colour and the same role as
+       `.preparing-title`: the one line that says what this screen is. */
+    color: {_TEAL};
+    font-size: 19px;
+    font-weight: bold;
+}}
+.viewer-caption-sub {{
+    /* _BG_ALT, 11.36:1 on #092221. Body weight deliberately: this line is
+       the live claim ("now folding X"), and it must read as a caption to
+       the title above it rather than compete with it at booth distance. */
+    color: {_BG_ALT};
+    font-size: 14px;
 }}
 window, .booth-root, .booth-side {{
     background-color: {_DARK_BASE};
@@ -699,11 +866,54 @@ class DemoApp(Gtk.Application):
         # another's (or into another test's).
         self._drop_counts = {}
 
-        # The `job_start` clear that a showcase deferred. See the module
-        # docstring: the clear belongs to `job_start`, not to the end of the
-        # dwell, so with no next fold in flight (an idle or dead daemon)
-        # nothing is cleared and the last structure keeps the screen.
-        self._deferred_clear = False
+        # ── what the viewer is holding, and what it is waiting for ───────
+        #
+        # See the module docstring's second section. Together these are the
+        # whole of "hold the previous structure until the new fold has
+        # something real to show":
+        #
+        # `_awaiting_first_frame` -- a fold has started and has not yet
+        # produced a single coordinate. True from `job_start` until that
+        # fold's first frame is DRAWN (not merely received: a frame
+        # suppressed during a showcase, or one that fails to decode, has not
+        # superseded anything). Also cleared by `job_error` and `not_ready`,
+        # which are the two ways a fold stops without ever producing one --
+        # the caption asserts "now folding X" and must not outlive the fold
+        # it names.
+        #
+        # `_current_job_id` -- which fold that is, so a straggling frame
+        # from the PREVIOUS fold cannot be mistaken for the new fold's first
+        # one and wipe a finished structure in favour of an older fold's
+        # noise. `frame` events carry `job_id` (runner/shaping.py's
+        # `frame_event`); a frame that carries none is accepted rather than
+        # dropped, since "cannot tell" must not mean "show nothing".
+        #
+        # `_current_target_id` / `_shown_target_id` -- what is being folded
+        # and whose coordinates are on screen, for the caption. Kept as ids
+        # and resolved to display names only at the moment of captioning
+        # (`_target_name`), so nothing here depends on the playlist having
+        # loaded.
+        #
+        # `_viewer_has_structure` -- whether the viewer has anything in it
+        # at all. Deliberately a separate flag from `_shown_target_id`
+        # rather than `is not None` on it: a `job_start` with no `target_id`
+        # is wire-shaped input we must tolerate, and conflating "no name for
+        # what is on screen" with "nothing is on screen" would put the booth
+        # back to captioning a populated viewer as an empty one.
+        self._awaiting_first_frame = False
+        self._current_job_id = None
+        self._current_target_id = None
+        self._shown_target_id = None
+        self._viewer_has_structure = False
+        # The caption's current copy, as `viewer_hold_caption` returns it
+        # (a (title, subtitle) pair, or None for "nothing to say"). Held as
+        # a plain field, not read back off the widgets, for the same reason
+        # `diagnostics_visible` is: the decision has to be testable with no
+        # display, and the widgets do not exist until `do_activate`.
+        self._caption = None
+        self._caption_box = None
+        self._caption_title_label = None
+        self._caption_sub_label = None
 
         # ribbon_from_cif costs up to ~1.2s at 3000 residues (measured,
         # docs/followups.md) and must never run on the thread that calls
@@ -764,10 +974,20 @@ class DemoApp(Gtk.Application):
         # has no dependency on the viewer ever having held a ribbon or even
         # a single frame of points, so it renders correctly from the very
         # first activate, before any fold (or even any connection) happens.
+        #
+        # Overlay ORDER is load-bearing: the caption goes on first and the
+        # preparing overlay second, so the preparing wash covers the caption
+        # rather than the other way round. `not_ready` takes the caption
+        # down on its own (it clears `_awaiting_first_frame`), so this is
+        # belt-and-braces for the one frame between the two -- but a
+        # visitor-facing "now folding X" printed on top of "the booth cannot
+        # fold right now" is exactly the contradiction worth two lines of
+        # care.
         viewer_page = Gtk.Overlay()
         viewer_page.set_hexpand(True)
         viewer_page.set_vexpand(True)
         viewer_page.set_child(self.viewer)
+        viewer_page.add_overlay(self._build_viewer_caption())
         viewer_page.add_overlay(self._build_preparing_overlay())
 
         # The hero slot holds either the protein or the gallery; the rail
@@ -1028,6 +1248,57 @@ class DemoApp(Gtk.Application):
         self._preparing_message_label = message
         return box
 
+    def _build_viewer_caption(self):
+        """The two lines that keep a held structure honest.
+
+        A small card pinned to the TOP-CENTRE of the hero slot, sized to its
+        content (`Align.CENTER` on both axes rather than `FILL`) -- unlike
+        the preparing overlay, this one must not cover the thing it is
+        talking about. Top rather than bottom: the booth's logo already owns
+        the bottom-right corner, and the protein is framed around the centre
+        of the slot (measured at a median 68% of frame height, see
+        ui/viewer.py's camera notes), so the top strip is the one place a
+        card can sit without landing on the structure.
+
+        Starts invisible and is driven only by `_sync_viewer_hold`. Both
+        labels take a colour-bearing class from `_APP_CSS` -- see that
+        stylesheet and the legibility guard in
+        tests/unit/test_app_interaction.py, which walks this tree.
+        """
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        box.add_css_class("viewer-caption")
+        box.set_halign(Gtk.Align.CENTER)
+        box.set_valign(Gtk.Align.START)
+        box.set_margin_top(24)
+        # Never grows the hero slot: the caption is chrome over the viewer,
+        # and an overlay child that expands would fight the GL area for it.
+        box.set_hexpand(False)
+        box.set_vexpand(False)
+        box.set_visible(False)
+
+        title = Gtk.Label()
+        title.add_css_class("viewer-caption-title")
+        title.set_halign(Gtk.Align.CENTER)
+
+        sub = Gtk.Label()
+        sub.add_css_class("viewer-caption-sub")
+        sub.set_halign(Gtk.Align.CENTER)
+        sub.set_wrap(True)
+        sub.set_justify(Gtk.Justification.CENTER)
+
+        box.append(title)
+        box.append(sub)
+
+        self._caption_box = box
+        self._caption_title_label = title
+        self._caption_sub_label = sub
+        # A tree built after the booth already had something to say (a
+        # re-activate, or a test constructing this in isolation) must not
+        # come up blank; `_sync_viewer_hold` is idempotent and re-applies
+        # whatever the current answer is.
+        self._sync_viewer_hold()
+        return box
+
     # ── the `?` card ─────────────────────────────────────────────────────
 
     def _build_help_overlay(self):
@@ -1184,23 +1455,30 @@ class DemoApp(Gtk.Application):
         the clock -- and idempotent, so calling it more often than
         necessary costs nothing.
 
-        This is where the deferred `job_start` clear finally happens (see
-        the module docstring, step 3): the moment the dwell expires, the
-        booth applies the clear it held back and immediately drains the
-        buffered diffusion frame, so the next fold's collapse appears in
-        the same instant the finished structure leaves rather than after a
-        blank gap.
+        The moment the dwell expires (module docstring, step 3) the booth
+        drains the buffered diffusion frame, so the next fold's collapse
+        appears in the same instant the finished structure stops being the
+        subject rather than after a blank gap. If there is no buffered frame
+        -- the long targets, where diffusion is fifteen seconds away -- the
+        drain is a no-op and the structure simply stays up, now dimmed and
+        captioned by `_sync_viewer_hold` below.
         """
         state = self.states.state
         previous, self._last_state = self._last_state, state
 
-        if showcase_ended(previous, state) and self._deferred_clear:
-            self._deferred_clear = False
-            self.viewer.clear_structure()
+        if showcase_ended(previous, state):
             # Not a fresh frame -- the newest SUPPRESSED one, still sitting
             # in the latest-wins buffer. This is the whole reason frames are
             # suppressed rather than dropped.
             self._drain_frames()
+
+        # BEFORE the early return below, not after: leaving a showcase is a
+        # state change, but so is the ordinary tick that finds nothing has
+        # moved, and the caption has to appear the instant the hold begins
+        # rather than at the next transition. Idempotent and cheap (it does
+        # nothing at all unless its own answer changed), so running it on
+        # every tick costs a comparison.
+        self._sync_viewer_hold()
 
         if state == previous and not force:
             return
@@ -1215,6 +1493,86 @@ class DemoApp(Gtk.Application):
             self._preparing_box.set_visible(is_preparing)
             if is_preparing:
                 self._preparing_message_label.set_label(self.display_message)
+
+    # ── holding the previous structure ───────────────────────────────────
+
+    def _target_name(self, target_id):
+        """A target's display name from the playlist, or None.
+
+        None, never the raw `target_id`, when the playlist does not know it:
+        ids are wire data and read like internals (`trpcage_no_msa`), and
+        `viewer_hold_caption` already has a claims-less fallback for every
+        line that would have used one. An operator who needs the id has the
+        log line `job_start` writes and the diagnostics tap, both of which
+        name it in full.
+        """
+        if not target_id:
+            return None
+        for target in self.targets:
+            if target.id == target_id:
+                return target.name
+        return None
+
+    def _end_fold_in_flight(self):
+        """The fold that was running has stopped without producing a frame
+        (`job_error`), or the daemon has stopped folding at all
+        (`not_ready`).
+
+        Takes down the "now folding X" claim and nothing else. What is on
+        screen is deliberately left alone: it is a real structure that was
+        really computed, and replacing it with an empty viewer is the defect
+        this file's second docstring section exists to remove -- a failed
+        fold is a reason to stop asserting, not a reason to blank the booth.
+        The next fold's first frame will supersede it in the ordinary way.
+        """
+        self._awaiting_first_frame = False
+        self._current_job_id = None
+        self._current_target_id = None
+        self._sync_viewer_hold()
+
+    def _sync_viewer_hold(self):
+        """Reconcile the two things that say "the structure on screen
+        belongs to a fold that is over, and a new one is being computed":
+        the viewer's dim, and the caption over it.
+
+        Idempotent and safe to call from anywhere -- it is called from
+        `_sync_to_state` (so every event, touch, pick and 100ms tick
+        reconciles it) and directly from the three branches that change the
+        answer without changing the booth's state: `job_start`, `job_error`
+        and the frame drain.
+
+        Tolerates every collaborator being absent, like the rest of this
+        file: headless tests substitute a viewer and build no caption at
+        all, and both halves below are independently guarded.
+        """
+        caption = viewer_hold_caption(
+            awaiting_first_frame=self._awaiting_first_frame,
+            has_structure=self._viewer_has_structure,
+            showcasing=self.states.state == "showcase",
+            folding_name=self._target_name(self._current_target_id),
+            held_name=self._target_name(self._shown_target_id),
+        )
+        self._caption = caption
+
+        if self.viewer is not None:
+            # Dim exactly when the caption explains why. Deriving both from
+            # the one decision is what stops a dimmed structure from ever
+            # appearing without the words that make it honest -- and, in the
+            # other direction, stops the caption from appearing over a
+            # viewer with nothing in it to dim (`caption` is truthy in the
+            # empty case too, hence the second term).
+            self.viewer.set_held(caption is not None
+                                 and self._viewer_has_structure)
+
+        if self._caption_box is None:
+            return
+        if caption is None:
+            self._caption_box.set_visible(False)
+            return
+        title, sub = caption
+        self._caption_title_label.set_label(title)
+        self._caption_sub_label.set_label(sub)
+        self._caption_box.set_visible(True)
 
     # ── visitor input ────────────────────────────────────────────────────
 
@@ -1598,14 +1956,25 @@ class DemoApp(Gtk.Application):
                          event.get("card"))
                 if self.pipeline_panel is not None:
                     self.pipeline_panel.reset()
-                if self.states.state == "showcase":
-                    # The daemon has started the next fold while a finished
-                    # structure is still being showcased -- the ordering
-                    # this whole file is arranged around. Defer the clear;
-                    # `_sync_to_state` applies it the moment the dwell ends.
-                    self._deferred_clear = True
-                else:
-                    self.viewer.clear_structure()
+                # NOT a clear. This branch used to blank the viewer here
+                # (or, during a showcase, arrange for it to be blanked two
+                # seconds later), and on a long target that is fifteen
+                # seconds of black screen: `msa`, `prep` and `trunk` emit
+                # progress and no coordinates, so there is nothing to draw
+                # until diffusion starts. The clear now belongs to the first
+                # frame that can replace what is on screen -- see
+                # `_drain_frames` and the module docstring's second section.
+                #
+                # Recorded, not applied: which fold this is, so a straggling
+                # frame from the previous one cannot pose as this fold's
+                # first, and what it is folding, for the caption.
+                self._awaiting_first_frame = True
+                self._current_job_id = event.get("job_id")
+                self._current_target_id = event.get("target_id")
+                # The state machine has already been driven and the screen
+                # already reconciled (both above, before this branch), so
+                # this is what puts the caption up for the flags just set.
+                self._sync_viewer_hold()
             elif kind == "not_ready":
                 # The daemon's preflight or model load hasn't finished.
                 # `missing` names exactly what's wrong (e.g. real filesystem
@@ -1617,6 +1986,13 @@ class DemoApp(Gtk.Application):
                     log.warning("booth not ready: %s", _format_missing(self.missing))
                 else:
                     log.warning("booth not ready (no detail given)")
+                # Nothing is folding any more, so nothing is coming to
+                # supersede what is on screen. Whatever the viewer holds
+                # stays (blanking it would only add an empty screen behind
+                # the preparing overlay), but the caption's "now folding X"
+                # is now false and comes down with the fold that made it
+                # true. See `viewer_hold_caption`.
+                self._end_fold_in_flight()
             elif kind == "stage":
                 log.info("stage %s %.0f%%", event.get("stage"),
                          100.0 * event.get("frac", 0.0))
@@ -1648,6 +2024,17 @@ class DemoApp(Gtk.Application):
                 # logs, which is all this branch does.
                 log.error("job %s failed: %s", event.get("job_id"),
                           event.get("message"))
+                # This fold will never produce a frame, so it can never
+                # supersede what is on screen. The held structure stays --
+                # it is real, it was really computed, and blanking it would
+                # trade an honest old protein for the empty viewer this
+                # whole change exists to remove -- but the caption stops
+                # claiming a fold is running, because one is not. A daemon
+                # that dies right here therefore leaves a structure with no
+                # in-flight claim over it, not a permanent lie; and the
+                # pipeline panel's own staleness check (ui/panels.py) takes
+                # the stage readout down beside it.
+                self._end_fold_in_flight()
             else:
                 # A future protocol addition should be visible in the logs,
                 # not silently dropped the way job_error was before this fix.
@@ -1945,6 +2332,13 @@ class DemoApp(Gtk.Application):
         straight to live diffusion. Taking it here and throwing it away
         would leave a blank screen for one frame interval at exactly the
         transition a visitor is watching.
+
+        This is also where the PREVIOUS structure is finally cleared -- see
+        the module docstring's second section. The clear used to live in
+        `job_start`, which on a long target meant blanking the viewer
+        fifteen seconds before there was anything to put in its place. Here
+        it is a single instant: clear, then draw, with a real frame already
+        decoded and in hand.
         """
         if not points_are_visible(self.states.state):
             return True
@@ -1952,6 +2346,28 @@ class DemoApp(Gtk.Application):
         frame = self._frames.take()
         if frame is None:
             return True
+
+        if self._awaiting_first_frame:
+            # Is this frame actually the new fold's, or a straggler from the
+            # one before it? The daemon does not stop the world between
+            # folds, so a frame emitted by fold N can arrive after fold
+            # N+1's `job_start`; treating it as N+1's first would replace a
+            # finished structure with the OLDER fold's noise cloud -- an
+            # honest picture of the wrong thing, and worse than what it
+            # replaced. `job_id` is on every frame (runner/shaping.py's
+            # `frame_event`), so this is a comparison, not a guess.
+            #
+            # A frame carrying NO job_id is accepted rather than dropped:
+            # "cannot tell" must not become "show nothing", which is the
+            # failure mode this whole change is about. That also keeps a
+            # recorded stream from before the field existed replayable.
+            frame_job = frame.get("job_id")
+            if frame_job is not None and frame_job != self._current_job_id:
+                log.debug("frame from job %r arrived while waiting for %r's "
+                          "first frame; holding the previous structure",
+                          frame_job, self._current_job_id)
+                return True
+
         # unpack_coords raises protocol.events.ProtocolError on truncated
         # base64 or a byte count that isn't a whole number of 3-vectors, and
         # decode() only validates that "type" is present and known -- so a
@@ -1966,7 +2382,29 @@ class DemoApp(Gtk.Application):
         # set_points() itself reshapes wire-shaped data too.
         try:
             coords = unpack_coords(frame["coords_b64"])
+            if self._awaiting_first_frame:
+                # Decoded FIRST, cleared second. A frame that fails to
+                # unpack must not be able to blank the booth: it raises
+                # above this line, the structure on screen survives, and the
+                # flag stays set so the next good frame does the handover
+                # instead.
+                #
+                # `clear_structure` is what hands the camera back from the
+                # outgoing ribbon to the point cloud and resets
+                # `_camera_framed` (ui/viewer.py), so the `set_points` just
+                # below snaps to this frame's own spread. That pairing is
+                # unchanged from when the clear lived in `job_start` -- it
+                # is only much closer together now, with no window at all in
+                # which the camera belongs to a structure that is gone.
+                self.viewer.clear_structure()
+                self._viewer_has_structure = False
             self.viewer.set_points(coords)
+            self._viewer_has_structure = True
+            if self._awaiting_first_frame:
+                # The handover is complete: this fold now owns the screen.
+                self._awaiting_first_frame = False
+                self._shown_target_id = self._current_target_id
+                self._sync_viewer_hold()
             # Logged where it is DRAWN, not where it arrives: the buffer
             # between socket and screen is latest-wins, so this is the only
             # place that can honestly say "a visitor saw this frame".

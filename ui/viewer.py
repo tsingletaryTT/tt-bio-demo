@@ -128,6 +128,28 @@ _SPREAD_HEADROOM = 1.2
 _SUBJECT_POINTS = "points"
 _SUBJECT_RIBBON = "ribbon"
 
+# How much of its brightness a HELD structure keeps -- see set_held().
+#
+# "Held" means: the structure on screen belongs to a fold that is already
+# over, and it is being kept there only because the fold now running has not
+# produced any coordinates yet (ui/app.py holds the previous structure
+# through msa/prep/trunk, which on a 223-residue target is ~15 seconds with
+# nothing else to show). The structure is real and really was computed --
+# nothing here fabricates or animates anything -- but it is no longer what
+# the booth is about, and it must not be mistaken for the fold whose
+# progress the pipeline panel is reporting.
+#
+# 0.55 was chosen against the two failure modes at booth distance: too high
+# and "finished" reads identically to "live", too low and the held structure
+# stops being legible at all, which puts us back at the empty viewer this
+# exists to fix. It composites against BACKGROUND (a near-black teal), so
+# 0.55 alpha is very close to 55% of the structure's own luminance.
+#
+# NOT applied by dropping the ribbon's depth writes: see _draw_ribbon, whose
+# depth-write decision is deliberately taken from the un-dimmed cross-fade
+# blend rather than from the alpha it is finally drawn at.
+_HELD_DIM = 0.55
+
 # A real GTK frame clock normally hands _on_tick a dt in the low tens of
 # milliseconds. Two situations can make it far larger instead: the very
 # first tick after start_animation() (nothing to diff against yet -- see
@@ -222,6 +244,13 @@ class StructureViewer(Gtk.GLArea):
         # _SUBJECT_* constants above for the full argument. A new viewer has
         # never been handed a ribbon, so the point cloud owns the camera.
         self._camera_subject = _SUBJECT_POINTS
+        # True while what is drawn belongs to a fold that is already over
+        # and is only being HELD until the running fold produces its first
+        # coordinates. Purely a presentation flag: it dims what is drawn
+        # (see _HELD_DIM and _on_render) and touches no geometry, no camera
+        # and no blend, so nothing about it can change WHAT is on screen --
+        # only how loudly it is stated.
+        self._held = False
 
         self.connect("realize", self._on_realize)
         self.connect("unrealize", self._on_unrealize)
@@ -608,6 +637,32 @@ class StructureViewer(Gtk.GLArea):
         self._camera_subject = _SUBJECT_RIBBON
         self.queue_render()
 
+    # ── holding a finished structure ─────────────────────────────────────
+
+    @property
+    def held(self):
+        """Is what's on screen a structure from a fold that is already over?"""
+        return self._held
+
+    def set_held(self, held):
+        """Mark (or unmark) what is drawn as a HELD structure -- one whose
+        own fold is finished, kept on screen only because the fold now
+        running has produced no coordinates yet.
+
+        Dims it (see `_HELD_DIM`) and nothing else. Deliberately NOT a
+        second way to change what is displayed: no geometry is touched, no
+        camera ownership moves, no blend is retargeted. A held structure is
+        the same real, really-computed structure it was a moment ago, drawn
+        more quietly so a visitor reads it as "this one is done" rather than
+        as the fold the pipeline panel is currently reporting progress for.
+        ui/app.py pairs it with an on-screen caption that says so in words.
+        """
+        held = bool(held)
+        if held == self._held:
+            return
+        self._held = held
+        self.queue_render()
+
     def clear_structure(self):
         """Drop whatever's currently shown so a new job starts from blank.
 
@@ -639,6 +694,11 @@ class StructureViewer(Gtk.GLArea):
           the subject now. Paired with the `_camera_framed` reset just
           above, the next job's first frame snaps to its own spread rather
           than either easing from, or being locked out by, the last job.
+        - `_held`: a viewer with nothing in it is holding nothing. ui/app.py
+          only ever calls this immediately before drawing the new fold's
+          first real frame, so leaving the flag set would dim that new
+          fold's opening cloud -- the live thing -- as though it were the
+          leftover it just replaced.
         """
         self._point_count = 0
         self._ribbon_index_count = 0
@@ -648,6 +708,7 @@ class StructureViewer(Gtk.GLArea):
         self._blend_target = 0.0
         self._camera_framed = False
         self._camera_subject = _SUBJECT_POINTS
+        self._held = False
         self.queue_render()
 
     def _upload_ribbon(self):
@@ -675,7 +736,21 @@ class StructureViewer(Gtk.GLArea):
         GL.glBindVertexArray(0)
         self._ribbon_index_count = len(indices)
 
-    def _draw_ribbon(self, mvp, model, opacity):
+    def _draw_ribbon(self, mvp, model, opacity, depth_write):
+        """`depth_write` is passed in rather than derived from `opacity`.
+
+        The two used to be the same question, and they stopped being the
+        same question when `set_held` gained the ability to draw a fully
+        cross-faded ribbon at a reduced alpha. What depth writes actually
+        depend on is whether anything else still has to show THROUGH this
+        ribbon -- i.e. whether the cross-fade is still running and the point
+        cloud underneath is still contributing -- not on the alpha the
+        ribbon happens to be drawn at. Deriving it from `opacity` would turn
+        depth writes off for the entire hold, and a closed tube drawn
+        without depth writes composites its own overlapping segments in
+        triangle-index order, so a helix crossing in front of another would
+        be resolved by mesh order instead of by depth. See the caller.
+        """
         if not self._ribbon_index_count or opacity <= 0.0:
             return
         GL.glUseProgram(self._ribbon_program)
@@ -690,17 +765,17 @@ class StructureViewer(Gtk.GLArea):
         # Depth *test* stays on (enabled once, globally, in _on_realize) so
         # the ribbon still respects whatever's already in the depth buffer.
         # Depth *write* is conditional: only latch depth when the ribbon is
-        # the sole, fully-opaque visual (opacity == 1, the steady state once
-        # begin_crossfade()'s fade-in reaches 1.0). While opacity < 1 -- the
-        # cross-fade itself -- a translucent ribbon must NOT write a solid
-        # depth value, or it would still fully occlude the points drawn
-        # right after it via the depth test, even though its own color
+        # the sole visual, i.e. once begin_crossfade()'s fade-in has reached
+        # 1.0 and the point cloud underneath contributes nothing. While the
+        # cross-fade is still running, a translucent ribbon must NOT write a
+        # solid depth value, or it would still fully occlude the points
+        # drawn right after it via the depth test, even though its own color
         # contribution is only partial. That would make the points vanish
         # behind a half-see-through ribbon instead of blending through it,
         # defeating the entire point of a cross-fade. Always restored to
         # GL_TRUE below so this doesn't leak into _draw_points or the next
         # frame.
-        GL.glDepthMask(GL.GL_TRUE if opacity >= 1.0 else GL.GL_FALSE)
+        GL.glDepthMask(GL.GL_TRUE if depth_write else GL.GL_FALSE)
         GL.glBindVertexArray(self._ribbon_vao)
         GL.glDrawElements(GL.GL_TRIANGLES, self._ribbon_index_count,
                           GL.GL_UNSIGNED_INT, None)
@@ -740,11 +815,23 @@ class StructureViewer(Gtk.GLArea):
             self._upload_ribbon()
 
         mvp, model = self._mvp()
+        # A held structure is drawn quieter, uniformly: the SAME factor
+        # multiplies both draws, so the cross-fade between them is
+        # unaffected and nothing about which structure is visible changes --
+        # only how brightly. See _HELD_DIM and set_held().
+        dim = _HELD_DIM if self._held else 1.0
         # Ribbon first, points second: translucent points should composite
         # over the ribbon's color. This ordering is safe with depth testing
-        # on because _draw_ribbon only writes depth while fully opaque (see
-        # its comment) -- so a translucent ribbon never hides points behind
-        # it via the depth test during a cross-fade, only via alpha.
-        self._draw_ribbon(mvp, model, self._blend)
-        self._draw_points(mvp, self._point_opacity * (1.0 - self._blend))
+        # on because _draw_ribbon only writes depth once the cross-fade is
+        # complete (see its comment) -- so a translucent ribbon never hides
+        # points behind it via the depth test during a cross-fade, only via
+        # alpha.
+        #
+        # The depth-write decision reads `_blend`, NOT the dimmed alpha the
+        # ribbon is actually drawn at: "is the cross-fade finished" and "how
+        # bright is this" are two different questions, and conflating them
+        # would drop depth writes for the whole hold. See _draw_ribbon.
+        self._draw_ribbon(mvp, model, self._blend * dim,
+                          depth_write=self._blend >= 1.0)
+        self._draw_points(mvp, self._point_opacity * (1.0 - self._blend) * dim)
         return True
