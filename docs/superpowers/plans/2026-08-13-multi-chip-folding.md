@@ -11,6 +11,8 @@
 **Spec:** [`../specs/2026-08-13-multi-chip-folding.md`](../specs/2026-08-13-multi-chip-folding.md) — it is authoritative and it is already grounded in a hardware spike run on 2026-08-13. Do not re-derive its findings; build on them.
 **Read before starting:** [`../../followups.md`](../../followups.md), especially "Short runs cannot see unbounded growth" and "Write tests that can fail". Both are load-bearing here: this phase multiplies every log writer by four and rewrites the most heavily-tested module in the runner.
 
+**Amended 2026-08-13, after the first draft was reviewed:** the first draft declared a deviation — the socket was one-way, so a visitor's pick could only *nominate* a target and take the focus when the attract loop reached it. That has been decided the other way: **a pick starts folding.** The protocol therefore gains a client→server message and `PROTOCOL_VERSION` goes `1` → `2`; the deviation is gone rather than deferred. Three tasks carry it — Task 3 (the message), Tasks 4 and 5 (the two directions of the socket), Task 9 (the daemon turning a pick into a dispatched fold) — and Task 17 connects the tap and rewrites every visitor-facing string that used to say a pick starts nothing. The tasks after Task 3 were renumbered accordingly; there is no Task 4 or 5 from the first draft still hiding under an old number.
+
 ---
 
 ## How this plan works, and why
@@ -36,13 +38,13 @@ So, exactly as in the Phase 3b plan:
 
 - **Do not shell out to `tt-bio predict`.** It returns finished structures; the booth's entire premise is the live per-denoising-step trajectory, which comes from the `dump_fn` tap on the Python API (`runner/dump_tap.py` → `runner/folder.py`). What this phase borrows from tt-bio is its *worker and device machinery*; the fold loop and the event stream stay ours. `runner/folder.py` does not change.
 - UI code never imports torch or tt-bio. `protocol/` stays stdlib + numpy only — both venvs import it.
-- `protocol/events.py` does not change in this phase. `PROTOCOL_VERSION` stays `1`; `EVENT_TYPES` gains nothing. Task 3 pins this.
+- `protocol/events.py` changes in exactly one way, in Task 3: it gains a client→server direction (`CLIENT_MESSAGE_TYPES`, `pick_message`, `encode_client_message`, `decode_client_message`) and `PROTOCOL_VERSION` goes `1` → `2`. `EVENT_TYPES` — the server→client vocabulary — gains nothing, and no worker control line may appear in either set. Task 3 makes the change and pins every part of it, in both venvs.
 - Runner-side tests go in `tests/unit/runner/`; everything else in `tests/unit/`. The split is by directory (see `scripts/test.sh`'s header).
 
 **Hardware**
 
 - Never `tt-smi -r`. Never leave a process holding a device.
-- The machine is shared. Hardware is available **today** and may be taken back at any time. Every task below is marked **[no device]** or **[hardware]**. All fourteen implementation tasks are **[no device]**; only Tasks 15 and 16 need silicon, and they are last on purpose.
+- The machine is shared. Hardware is available **today** and may be taken back at any time. Every task below is marked **[no device]** or **[hardware]**. All seventeen implementation tasks are **[no device]**; only Tasks 18 and 19 need silicon, and they are last on purpose.
 - The parent daemon opens **no device**, ever. It may import `ttnn` (it already does, via preflight's tap check) but it never calls `get_device()` and never holds a `DeviceLease`.
 
 **GTK**
@@ -68,19 +70,28 @@ So, exactly as in the Phase 3b plan:
 | `WORKER_STOP_GRACE_S` | `10.0` | `runner/pool.py` | SIGTERM→SIGKILL grace on shutdown. Long enough for `ttnn` teardown (measured ~1–2 s), short enough that a booth restart is not a wait. |
 | `WORKER_LOG_CAP_BYTES` | `64 * 1024**2` | `runner/pool.py` | Per-worker stdout/stderr cap, truncated in place. Four of these is 256 MB, comfortably inside the 2 GB `--log-budget-gb` default. |
 | `PROTECTED_STRUCTURE_COUNT` | `3` **per card** | `runner/daemon.py` | Unchanged in value; changed in scope — one deque per card, not one shared. |
-| `_SHOWCASE_DWELL_S` | `2.0` | `ui/app.py` | Unchanged. It is now a **per-slot** dwell (Task 9). |
+| `_SHOWCASE_DWELL_S` | `2.0` | `ui/app.py` | Unchanged. It is now a **per-slot** dwell (Task 12). |
 | worker log root | `<log-root>/card-<n>` | `runner/workers.py` | One `TT_METAL_LOGS_PATH` per worker, so four writers cannot interleave into one tree and a crash's logs are attributable. |
-| worker structures dir | `/tmp/tt-bio-demo/structures/device-<n>` | already in `runner/folder.py` | Already namespaced by `device_id`. No change; Task 8 makes the pruner walk all four. |
+| worker structures dir | `/tmp/tt-bio-demo/structures/device-<n>` | already in `runner/folder.py` | Already namespaced by `device_id`. No change; Task 11 makes the pruner walk all four. |
+| `PROTOCOL_VERSION` | `2` (was `1`) | `protocol/events.py` | The contract gained a direction. `hello` already carries the version and `ui/client.py` already refuses a mismatch — see Task 3's ruling for what that refusal does in each direction. |
+| `CLIENT_MESSAGE_TYPES` | `frozenset({"pick"})` | `protocol/events.py` | A **separate** vocabulary from `EVENT_TYPES`, so `encode` structurally cannot put a pick on the wire to a UI and `decode` structurally cannot accept one as an event. |
+| `MAX_TARGET_ID_LEN` | `64` | `protocol/events.py` | A `target_id` arrives from another process. Longer than the longest playlist stem by a wide margin, short enough that a hostile client cannot choose how much the daemon allocates. |
+| `CLIENT_LINE_MAX_BYTES` | `64 * 1024` | `runner/server.py` | The cap on one unterminated client line. Same reasoning, one layer down: without it, a client that never sends a newline decides the daemon's memory use. |
+| `OUTBOX_MAX` | `8` | `ui/client.py` | Picks queued while disconnected are dropped oldest-first. A pick means "fold this now"; one delivered ninety seconds later, to a visitor who has gone, is worse than none. |
+| `VISITOR_PRIORITY` | `10` | `runner/queue.py` | Any value above `0` works — the queue is already priority-ordered and has simply never been given one. `10` leaves room for a band between the playlist and a visitor without renumbering either. |
+| `MAX_PENDING_PICKS` | `1` | `runner/daemon.py` | One visitor, one pick — the same thing the UI tracks with a single `selected_target`. A new pick replaces the pending one, which is what bounds a child tapping forty targets in ten seconds. |
+| `DISPATCH_POLL_S` | `0.25` | `runner/daemon.py` | The busy-path poll. The 5 s and 10 s idle backoffs keep their numbers but become interruptible by `Daemon._wake`, so a pick is not discovered ten seconds late. |
+| `PICK_PENDING_WARN_S` | `10.0` | `ui/slots.py` | How long a pick may sit unstarted before the booth says more than "next up". Roughly two folds' worth of wait: long enough not to fire in the ordinary case, short enough to beat the twenty seconds after which a visitor concludes the booth is broken. |
 
 **Commit after every task**, with conventional-commit prefixes.
 
 ---
 
-## Two corrections to the spec, declared up front
+## One correction to the spec, declared up front
 
-A reviewer should judge these rather than report them as gaps.
+A reviewer should judge this rather than report it as a gap. (The first draft declared a second one — that a pick could not reach the daemon. It has been resolved rather than deferred; see the amendment note at the top and Tasks 3, 4, 5, 9 and 17.)
 
-**1. `tt_bio.main` is NOT importable without importing ttnn.** The spec says `tt_bio.runtime` is ttnn-free — that is **true and verified**:
+**`tt_bio.main` is NOT importable without importing ttnn.** The spec says `tt_bio.runtime` is ttnn-free — that is **true and verified**:
 
 ```
 tt_bio.runtime -> ttnn imported: False | torch: False
@@ -93,8 +104,6 @@ This does not break the design, and the reason is worth stating because it is wh
 
 Consequence: `runner/workers.py` imports tt-bio **lazily, inside functions**, the same discipline `runner/folder.py` and `runner/daemon.py` already follow — so the module itself, and the 134 existing runner tests, never pay for ttnn. Task 1 pins this with a test.
 
-**2. The gallery pick still cannot reach the daemon.** The spec says "a visitor's pick becomes the *hero* of the quad while the other three chips continue the attract playlist." The socket protocol is one-way (`runner/server.py` broadcasts; `ui/client.py` never sends), so a pick cannot cause a fold, and adding a client→server message is a separate piece of work with its own protocol-version implications. This plan therefore implements the honest half: **a pick nominates a target, and the cell that folds that target becomes the focus cell when the attract loop reaches it.** The visitor-facing copy already says picking on demand is not wired up (`_HELP_INTRO`, `ui/gallery.py`'s docstring) and stays true. Task 14 covers this and says so on screen. **If this is not acceptable, stop and say so before Task 14** — the alternative is a protocol change that belongs in its own phase.
-
 ---
 
 ## File Structure
@@ -106,17 +115,18 @@ Consequence: `runner/workers.py` imports tt-bio **lazily, inside functions**, th
 | `runner/pool.py` | **new** | `WorkerPool`: spawn, dispatch, multiplex, notice death, respawn, retire. The only module that owns subprocesses or reader threads. |
 | `runner/daemon.py` | rewritten | Parent: queue, `CardPool`, `EventServer`, pool. Owns no `Folder` and no device. |
 | `runner/folder.py` | unchanged | Now instantiated inside a worker instead of inside the daemon. Its `device_id` finally means something. |
-| `runner/cards.py` | unchanged | Already multi-index. Task 7 exercises it for the first time. |
-| `runner/queue.py` | unchanged | Already priority-ordered and thread-safe. |
-| `protocol/events.py` | **unchanged, pinned** | The wire does not move. |
-| `ui/slots.py` | **new** | Per-fold state, pure: `SlotState` (one cell's dwell), `SlotRouter` (job_id → slot, focus slot). No GTK. |
+| `runner/cards.py` | unchanged | Already multi-index. Task 10 exercises it for the first time. |
+| `runner/queue.py` | extended | Already priority-ordered and thread-safe. Task 9 gives it `VISITOR_PRIORITY` and `remove()`, makes its visitor path reachable for the first time, and rewrites the docstring that says it cannot be. |
+| `runner/server.py` | extended | Gains the client→server direction (Task 4): one reader thread per client, `on_client_message`, and a `broadcast` whose send loop is finally inside its lock. |
+| `protocol/events.py` | **extended, then pinned** | One client→server message and a version bump (Task 3). `EVENT_TYPES` does not move. |
+| `ui/slots.py` | **new** | Per-fold state, pure: `SlotState` (one cell's dwell), `SlotRouter` (job_id → slot, focus slot, the visitor's pick and how long it has waited). No GTK. |
 | `ui/quad.py` | **new** | `QuadView`: four `StructureViewer`s in a 2×2 grid with per-cell captions. Assembly only. |
 | `ui/viewer.py` | unchanged | Stays a **single-structure** renderer. That is the point: everything it learned about camera ownership, blend targets and per-job reset is per-cell machinery already. |
 | `ui/states.py` | narrowed | Keeps `attract`/`gallery`/`folding`/`preparing`, the deferred touch and the idle timeout. Its `showcase` now follows the **focus slot**. |
 | `ui/app.py` | rewritten in parts | Wiring: per-slot frame buffers, per-slot ribbon generations, per-slot deferred clears. Still makes no decisions of its own. |
-| `ui/client.py` | extended | Gains `LatestFrameByJob` beside `LatestFrame` — same latest-wins contract, one slot per `job_id`. |
+| `ui/client.py` | extended | Gains a send direction — a bounded outbox and a sender thread (Task 5) — and `LatestFrameByJob` beside `LatestFrame` (Task 15), same latest-wins contract, one slot per `job_id`. |
 | `ui/chipviz.py` | extended | Per-chip modes instead of one folding chip. |
-| `ui/gallery.py` | copy only | `_CAPTION_BODY` stops saying the booth folds "one after another". The disclosure that a pick starts nothing stays. |
+| `ui/gallery.py` | copy only | `_CAPTION_BODY` stops saying the booth folds "one after another"; `_CARD_HINT` and the module docstring stop saying a pick starts nothing, because it now does (Task 17). |
 | `ui/diagnostics.py` | copy only | `STAGE_TEACHING` stops saying the fold runs on one chip. Its log gains the card. |
 | `ui/panels.py` | unchanged | `TelemetryPanel` already shows all four chips and is already independent of the socket. Do not couple it to the pool. |
 | `tests/fixtures/streams/make_quad_fold.py` | **new** | Generates `quad_fold.jsonl`: four interleaved folds on four cards. The instrument that makes the whole UI half testable with no hardware. |
@@ -144,6 +154,7 @@ The brief calls this out because getting it wrong reintroduces defects that cost
 | Booth state (`attract`/`gallery`/`folding`/`preparing`) | global | **stays global** | One booth, one screen, one visitor. |
 | Booth `showcase` state | global | **stays global, but follows the focus slot** | It exists so the gallery, the idle timeout and the preparing overlay keep working. Frame suppression no longer reads it. |
 | Deferred touch (`_deferred_touch`) | global | **stays global** | It is about the visitor, not about a fold. |
+| The visitor's pick (`selected_target`) | global, and unreachable | **stays global**, in `SlotRouter` | One visitor, one pick. It *selects* a slot — the focus — but it is not per-slot state, and a second copy of it in `ui/app.py` is how the daemon and the screen end up disagreeing about what was asked for. |
 | 45 s idle timeout, `_last_input_at` | global | **stays global** | Ditto. |
 | Help / diagnostics / Tensix overlays and their idle timers | global | **stays global** | Chrome, laid over whatever the booth is doing. Unchanged. |
 | `TelemetrySampler` + `TelemetryPanel` | global, 4 chips | **stays global, unchanged** | It already shows all four chips and is already independent of the socket. Do not couple it to the pool. |
@@ -155,7 +166,7 @@ The brief calls this out because getting it wrong reintroduces defects that cost
 
 ## Task order and hardware exposure
 
-Tasks 1–14 need **no device** and can be completed if the hardware is taken away tomorrow. Tasks 15 and 16 are the only ones that need silicon, and they are deliberately last and self-contained: if hardware disappears mid-phase, everything up to Task 14 still lands, `./scripts/test.sh` is still green, and the branch is still mergeable behind the existing single-card `--devices 0` path.
+Tasks 1–17 need **no device** and can be completed if the hardware is taken away tomorrow. Tasks 18 and 19 are the only ones that need silicon, and they are deliberately last and self-contained: if hardware disappears mid-phase, everything up to Task 17 still lands, `./scripts/test.sh` is still green, and the branch is still mergeable behind the existing single-card `--devices 0` path.
 
 ---
 
@@ -474,8 +485,10 @@ def test_every_job_folds_on_this_workers_own_card():
 
 
 def test_protocol_events_are_forwarded_unchanged():
-    """The wire does not change. A worker that decorates its events is a
-    worker whose events the UI has to learn about."""
+    """The EVENT vocabulary does not change -- Task 3 moves the version and
+    adds a client->server message, and neither touches what a worker emits.
+    A worker that decorates its events is a worker whose events the UI has
+    to learn about."""
     folder = _FakeFolder()
     session, events, _c = _session(folder)
     session.run([_fold("j1"), json.dumps({"cmd": "stop"})])
@@ -572,49 +585,817 @@ def test_end_of_stdin_ends_the_worker_cleanly():
 
 - [ ] **Step 2: Implement, verify mutations, run `./scripts/test.sh`, commit**
 
-`main()` is thin: parse `--card`/`--event-fd`, build a `Folder(device_id=card)`, wrap `os.fdopen(event_fd, "w")`, and drive `WorkerSession` from `sys.stdin`. Do **not** call anything like tt-bio's `_silence_subprocess_output` — the parent (Task 4) owns where fd 1 and 2 go, and a worker that redirects them to `/dev/null` throws away the only diagnostic an operator has when a chip fails to come up.
+`main()` is thin: parse `--card`/`--event-fd`, build a `Folder(device_id=card)`, wrap `os.fdopen(event_fd, "w")`, and drive `WorkerSession` from `sys.stdin`. Do **not** call anything like tt-bio's `_silence_subprocess_output` — the parent (Task 6) owns where fd 1 and 2 go, and a worker that redirects them to `/dev/null` throws away the only diagnostic an operator has when a chip fails to come up.
 
 ---
 
-### Task 3: The wire does not change [no device]
+### Task 3: The wire moves exactly this far — one client→server message [no device]
 
-**Files:** Test only: `tests/unit/test_protocol_is_frozen.py` and `tests/unit/runner/test_protocol_is_frozen_runner.py`
+**Files:** Modify `protocol/events.py`. Regenerate `tests/fixtures/streams/short_fold.jsonl`, edit `tests/fixtures/streams/real_fold_trpcage.jsonl`. Tests: `tests/unit/test_protocol_client_messages.py`, `tests/unit/test_protocol_is_frozen.py`, `tests/unit/runner/test_protocol_is_frozen_runner.py`
 
-**Why:** The spec's central claim about the UI is "the wire protocol does not change — `job_start` already carries `card`, every event carries `job_id`." That claim is doing a lot of work in this plan and it is currently held up by prose. A worker or a pool that leaks a control line onto the socket breaks it silently: `EventServer.broadcast` would log and drop it, and the only symptom is an event the UI never sees.
+**Why:** The socket has been one-way since Phase 3a — `runner/server.py` broadcasts and never reads, `ui/client.py` reads and never writes — and that is the only reason a visitor's pick cannot cause a fold. The decision has been taken that it should: **a pick starts folding.** That needs a message travelling the other way, which changes the contract, which is a version bump. This task is the whole protocol change and nothing else, because every other task in the pair of directions (Tasks 4, 5, 9, 17) is easier to review against a contract that is already fixed and already tested.
 
-**Produces:** two tiny test files (one per venv, because both sides make the claim) that fail the instant the protocol moves.
+**Produces:**
+
+- `PROTOCOL_VERSION = 2`.
+- `EVENT_TYPES` — **unchanged**, still exactly the eight server→client types. Multi-chip adds no event.
+- `CLIENT_MESSAGE_TYPES = frozenset({"pick"})` — the client→server vocabulary, a **separate** frozenset.
+- `MAX_TARGET_ID_LEN = 64`.
+- `pick_message(target_id) -> dict` — `{"type": "pick", "version": PROTOCOL_VERSION, "target_id": target_id}`.
+- `encode_client_message(message) -> bytes` and `decode_client_message(line) -> dict`, mirroring `encode`/`decode` exactly: one newline-terminated JSON line, `ProtocolError` on anything else.
+- Still stdlib + numpy only. Both venvs import this module and that does not change.
+
+**Why two vocabularies rather than one bigger `EVENT_TYPES`:** `EventServer.broadcast` encodes with `encode`, and must stay structurally unable to put a `pick` on the wire to a UI. `EventClient` decodes with `decode`, and must stay structurally unable to accept a `pick` as an event. A single shared set makes both of those possible, and the two directions quietly become one channel where anything may travel either way. Two sets means a direction error is a `ProtocolError` at the boundary instead of a mystery three modules later.
+
+**Version ruling, both directions — because `ui/client.py` already has an "incompatible" path and it is easy to assume it does something it does not.**
+
+What that path does **today**, checked rather than remembered: `EventClient._session` compares `hello`'s `version` against its own `PROTOCOL_VERSION`; on a mismatch it logs at error level, calls `_set_state("incompatible")` and returns. `_run` then checks for exactly that state **before** touching it again and returns too — so the reader thread exits for the life of the process and never retries, deliberately (its comment says so: an unconditional `_set_state("disconnected")` there would clobber the guard and spam reconnects). `ui/app.py`'s `_on_state` hands the state to `StructureViewer.connection_state`, whose validator already accepts `"incompatible"` as one of its three legal values, so nothing raises and no raw text reaches the glass.
+
+**That refusal stays, in both directions.** It is the right answer, not the lazy one:
+
+- **A v2 UI against a v1 daemon.** The UI would send `pick` lines that a v1 daemon never reads — they would sit in its receive buffer until it fills, and nothing would ever fold on demand. The booth would silently promise a capability it does not have, which is precisely the failure the whole-branch review called Critical 2. A refusal is louder and more honest.
+- **A v1 UI against a v2 daemon.** Already-installed v1 code cannot be changed by anything written here, and it refuses on its own. Nothing in this plan should try to work around that: both halves ship in one Debian package (Phase 4, this branch), so a version mismatch means a half-finished upgrade — a thing to notice, not to paper over.
+
+What that costs, stated plainly so nobody discovers it at a venue: an incompatible booth is a booth whose screen never gets events. So the rule has a second half, which **Task 5 pins**: on `incompatible` the UI shows the same neutral overlay it already shows for `not_ready`, the version numbers go to the log and the diagnostics rail and never to the screen, and the client sends nothing, ever, to a daemon it has refused to interpret.
+
+**The fixtures move with the version.** Two committed fixtures carry `"version":1` in their `hello` line and are replayed to a real `EventClient` by the UI half's tests; bumping the constant without them makes those tests fail as "incompatible" for a reason nobody will remember an hour later. `short_fold.jsonl` is regenerable — `make_short_fold.py` already interpolates `PROTOCOL_VERSION` — so regenerate it. `real_fold_trpcage.jsonl` is a hardware capture that cannot be regenerated without silicon: edit its single `hello` line in place, and leave every other line byte-identical (`capture_real_fold.py` already interpolates the constant, so future captures need nothing). The ratchet test below is what keeps this from happening again on the next bump.
 
 - [ ] **Step 1: Write the failing tests**
 
-The same body goes in both files; the duplication is deliberate and is the point — each half must hold the constraint in the interpreter that actually runs it.
+`tests/unit/test_protocol_client_messages.py`:
 
 ```python
-from protocol.events import EVENT_TYPES, PROTOCOL_VERSION
+import ast
+import pathlib
+import sys
+
+import pytest
+
+from protocol.events import (
+    CLIENT_MESSAGE_TYPES, EVENT_TYPES, MAX_TARGET_ID_LEN, PROTOCOL_VERSION,
+    ProtocolError, decode, decode_client_message, encode,
+    encode_client_message, pick_message,
+)
 
 
-def test_the_protocol_version_is_unchanged_by_multi_chip():
-    """Multi-chip is a scheduling change, not a protocol change. If this
-    fails, either a genuine protocol addition happened -- in which case bump
-    the version, teach ui/client.py, and change this number deliberately --
-    or something leaked onto the wire that should not have."""
-    assert PROTOCOL_VERSION == 1
+def test_the_version_is_two_because_the_contract_changed():
+    """Not decoration: ui/client.py refuses to interpret a daemon whose
+    version differs from its own, so this number is the only thing standing
+    between a v2 UI and a v1 daemon that will never answer its picks."""
+    assert PROTOCOL_VERSION == 2
+
+
+def test_a_pick_is_not_an_event():
+    """The two directions are separate vocabularies. If a pick is also an
+    event, EventServer.broadcast can send one to a UI and ui/client.py will
+    hand one to _handle_event as if the daemon had said it."""
+    assert "pick" not in EVENT_TYPES
+    with pytest.raises(ProtocolError):
+        encode(pick_message("trpcage"))
+    with pytest.raises(ProtocolError):
+        decode(b'{"type":"pick","version":2,"target_id":"trpcage"}\n')
+
+
+def test_an_event_is_not_a_client_message():
+    """The mirror image, and the one that matters for the daemon: a client
+    that sends `job_done` must not be able to inject a fold result."""
+    assert not (EVENT_TYPES & CLIENT_MESSAGE_TYPES)
+    with pytest.raises(ProtocolError):
+        encode_client_message({"type": "job_done", "job_id": "j1"})
+    with pytest.raises(ProtocolError):
+        decode_client_message(
+            b'{"type":"job_done","job_id":"j1","cif_path":"/a.cif"}\n')
+
+
+def test_the_client_vocabulary_is_exactly_one_message():
+    """A general RPC channel is not what this phase is for."""
+    assert CLIENT_MESSAGE_TYPES == frozenset({"pick"})
+
+
+def test_a_pick_carries_the_version_it_was_written_against():
+    message = pick_message("trpcage")
+    assert message["type"] == "pick"
+    assert message["version"] == PROTOCOL_VERSION
+    assert message["target_id"] == "trpcage"
+
+
+def test_a_pick_round_trips():
+    assert decode_client_message(
+        encode_client_message(pick_message("trpcage"))) == pick_message("trpcage")
+
+
+def test_an_encoded_pick_is_exactly_one_line():
+    """The daemon frames on newlines. A target_id containing one must not be
+    able to split a message into two."""
+    line = encode_client_message(pick_message("trp\ncage"))
+    assert line.endswith(b"\n")
+    assert line.count(b"\n") == 1
+
+
+def test_a_message_from_a_different_protocol_version_is_refused():
+    with pytest.raises(ProtocolError):
+        decode_client_message(
+            b'{"type":"pick","version":1,"target_id":"trpcage"}\n')
+
+
+def test_a_message_with_no_version_is_refused():
+    """An unversioned message is one we cannot reason about at all."""
+    with pytest.raises(ProtocolError):
+        decode_client_message(b'{"type":"pick","target_id":"trpcage"}\n')
+
+
+def test_malformed_json_is_a_ProtocolError_not_a_crash():
+    for junk in (b"not json{\n", b"\n", b'{"type":\n', b"\xff\xfe\n"):
+        with pytest.raises(ProtocolError):
+            decode_client_message(junk)
+
+
+def test_a_json_array_is_refused():
+    with pytest.raises(ProtocolError):
+        decode_client_message(b'["pick","trpcage"]\n')
+
+
+def test_an_unknown_message_type_is_refused():
+    with pytest.raises(ProtocolError):
+        decode_client_message(
+            b'{"type":"shutdown","version":2,"target_id":"x"}\n')
+
+
+def test_an_absurd_target_id_is_refused():
+    """The daemon reads this off a socket. A megabyte target_id is a
+    megabyte the daemon should never have allocated, and the length limit
+    is the only thing that says so."""
+    huge = "a" * (MAX_TARGET_ID_LEN + 1)
+    with pytest.raises(ProtocolError):
+        decode_client_message(encode_client_message(
+            {"type": "pick", "version": PROTOCOL_VERSION, "target_id": huge}))
+
+
+def test_a_target_id_at_the_limit_is_accepted():
+    """A limit that is off by one is a limit that rejects real targets."""
+    ok = "a" * MAX_TARGET_ID_LEN
+    assert decode_client_message(encode_client_message(
+        {"type": "pick", "version": PROTOCOL_VERSION,
+         "target_id": ok}))["target_id"] == ok
+
+
+def test_a_non_string_target_id_is_refused():
+    for bad in (17, None, ["trpcage"], {"a": 1}):
+        with pytest.raises(ProtocolError):
+            decode_client_message(
+                encode_client_message({"type": "pick",
+                                       "version": PROTOCOL_VERSION,
+                                       "target_id": bad}))
+
+
+def test_an_empty_target_id_is_refused():
+    with pytest.raises(ProtocolError):
+        decode_client_message(
+            b'{"type":"pick","version":2,"target_id":""}\n')
+
+
+def test_this_module_still_imports_nothing_but_stdlib_and_numpy():
+    """The rule that makes protocol/ importable from BOTH venvs, enforced
+    against the file rather than against anyone's memory of it. The client
+    direction is exactly the kind of addition that reaches for a validation
+    library."""
+    source = pathlib.Path("protocol/events.py").read_text()
+    roots = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            roots.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            roots.add(node.module.split(".")[0])
+    assert roots <= set(sys.stdlib_module_names) | {"numpy"}, sorted(roots)
+```
+
+`tests/unit/test_protocol_is_frozen.py` and `tests/unit/runner/test_protocol_is_frozen_runner.py` — the same body in both, one per venv, because both halves make the claim and each must hold it in the interpreter that actually runs it:
+
+```python
+from protocol.events import CLIENT_MESSAGE_TYPES, EVENT_TYPES, PROTOCOL_VERSION
+
+
+def test_the_protocol_version_is_two_on_this_side_too():
+    """Both halves must agree on this number or the UI refuses the daemon at
+    `hello`. A bump made in one venv's checkout and not the other is exactly
+    the failure this pair of files exists to catch."""
+    assert PROTOCOL_VERSION == 2
 
 
 def test_the_event_vocabulary_is_unchanged_by_multi_chip():
+    """Multi-chip is a scheduling change. If this fails, something leaked
+    onto the wire that should not have -- a worker control line is the
+    likely candidate."""
     assert EVENT_TYPES == frozenset(
         {"hello", "not_ready", "job_start", "stage", "frame",
          "job_done", "job_error", "card_state"})
+
+
+def test_the_client_vocabulary_is_exactly_one_message():
+    """The pick, and nothing else. A second client->server message is a
+    third version, a decision, and a task of its own."""
+    assert CLIENT_MESSAGE_TYPES == frozenset({"pick"})
+
+
+def test_the_two_directions_never_overlap():
+    assert not (EVENT_TYPES & CLIENT_MESSAGE_TYPES)
 ```
 
-**Mutations these must catch:** adding any event type for multi-chip (test 2 red); bumping the version without deciding to (test 1 red).
+And, in the UI-half copy only (`tests/unit/test_protocol_is_frozen.py`), the ratchet that keeps the recorded streams in step with the constant:
 
-- [ ] **Step 2: Run, confirm green against today's code, commit**
+```python
+import json
+import pathlib
 
-This task is unusual: its tests pass immediately. That is correct — they are a **ratchet**, not a red-green cycle. Verify them by mutating `protocol/events.py` (add `"worker.ready"` to `EVENT_TYPES`) and watching both halves go red. Report that.
+
+def test_no_committed_fixture_advertises_a_stale_protocol_version():
+    """A fixture whose `hello` says v1 makes ui/client.py declare the stream
+    incompatible and stop reading -- the failure looks like "the UI tests
+    hang and see no events", which is a long way from "somebody bumped a
+    constant". Every .jsonl under tests/fixtures/streams/ is replayed to a
+    real EventClient by something, so every one of them has to move."""
+    from protocol.events import PROTOCOL_VERSION
+    for path in sorted(pathlib.Path("tests/fixtures/streams").glob("*.jsonl")):
+        for line in path.read_text().splitlines():
+            event = json.loads(line)
+            if event.get("type") == "hello":
+                assert event["version"] == PROTOCOL_VERSION, path
+```
+
+And, in the runner-half copy only, the check the UI cannot make because it may not import `runner.*`:
+
+```python
+def test_no_worker_control_line_is_a_protocol_message_in_either_direction():
+    """A control line that is also a wire type is a control line the pool
+    will forward to the socket."""
+    from runner.workers import CONTROL_FATAL, CONTROL_IDLE, CONTROL_READY
+    from protocol.events import CLIENT_MESSAGE_TYPES, EVENT_TYPES
+    for kind in (CONTROL_READY, CONTROL_IDLE, CONTROL_FATAL):
+        assert kind not in EVENT_TYPES
+        assert kind not in CLIENT_MESSAGE_TYPES
+```
+
+**Mutations these must catch:** leaving `PROTOCOL_VERSION` at `1` (version tests red); adding `"pick"` to `EVENT_TYPES` instead of its own set (tests 2, 3 red, plus the frozen pair); making `CLIENT_MESSAGE_TYPES` an alias of `EVENT_TYPES` (test 3 red); accepting any `version`, or none (tests 8, 9 red); dropping the `target_id` type check (test 15 red); dropping the length limit, or writing it as `>=` (tests 13, 14 red); letting `decode_client_message` accept a list (test 11 red); importing a third-party validator (test 17 red); bumping the version without regenerating the fixtures (the fixture ratchet red).
+
+- [ ] **Step 2: Implement, verify mutations, run `./scripts/test.sh`, commit**
+
+`decode_client_message` is deliberately strict where `decode` is not: `decode` accepts any well-formed event of a known type because the daemon is trusted, and this one is reading from a process the daemon does not control. Validate `type`, `version`, and that `target_id` is a non-empty `str` of at most `MAX_TARGET_ID_LEN` characters. It validates **nothing about what the target means** — whether that id names a real playlist entry is the daemon's question, and Task 9 answers it against the playlist rather than against a string.
+
+Regenerate `short_fold.jsonl` with `make_short_fold.py` under venv-ui, edit `real_fold_trpcage.jsonl`'s `hello` line in place, and run the UI half **before** commit: any test that replays a fixture through `EventClient` is the one that tells you whether the fixture fix is complete.
 
 ---
 
-### Task 4: The pool — spawn, dispatch, multiplex [no device]
+### Task 4: The daemon can be spoken to [no device]
+
+**Files:** Modify `runner/server.py`. Test: `tests/unit/runner/test_server_receive.py`
+
+**Why:** `EventServer` has only ever written. Giving it a read direction is the point at which the booth daemon starts accepting bytes from another process, and **a booth daemon that a bad line can kill is worse than one that cannot be picked from.** Everything in this task is about that sentence. The pick itself is Task 9; this task ends with a server that decodes client messages, hands them to a callback and survives everything else.
+
+**Produces:**
+
+- `EventServer(socket_path, hello_factory, client_send_timeout=1.0, on_client_message=None)`.
+- `CLIENT_LINE_MAX_BYTES = 64 * 1024`.
+- One reader thread per accepted client (daemon threads), started after the greeting has been sent and the client registered.
+- `stop()` joins the reader threads with a bounded timeout and leaves nothing running.
+- `on_client_message=None` is fully supported: lines are decoded and discarded. The server never *requires* a consumer, so a daemon that has not wired one up yet is not a daemon that breaks.
+
+**The reader contract, which the tests pin:**
+
+- A line that `decode_client_message` accepts is handed to `on_client_message(message)`. The callback runs **on the reader thread** and is wrapped: a raising callback costs that message and nothing else.
+- A `ProtocolError` — malformed JSON, unknown type, wrong version, absurd `target_id` — is logged (rate-limited) and dropped. **The client stays connected.** A visitor's UI is not disconnected because one line was bad.
+- EOF or `OSError` drops that client exactly the way a failed send already does: close it, remove it from `_clients`, log at info.
+- More than `CLIENT_LINE_MAX_BYTES` of buffered bytes with no newline drops the client. An unbounded line buffer is a remote process choosing how much memory this daemon allocates.
+- Partial lines are held across reads and completed later; two messages arriving in one write are both delivered.
+
+**Two implementation constraints that are not obvious and that a reviewer should check for first:**
+
+1. **Do not use `conn.makefile()` on the read side.** `_accept_loop` already calls `conn.settimeout(self._client_send_timeout)` — 1.0 s — to bound how long a wedged UI can block a send, and that timeout applies to **reads on the same socket**. A reader looping over a file object will therefore raise `socket.timeout` roughly once a second against a perfectly healthy, silent UI, and Python's socket file objects are documented as being left in an unusable state after a timeout, so any bytes already buffered for a half-received line are gone. Read with `conn.recv()` into an explicit `bytes` buffer, split on `\n` yourself, and treat `socket.timeout` as "no bytes this pass, go round again". A reader that treats it as death disconnects every idle UI after one second — which is every UI, almost all of the time.
+2. **`broadcast` must hold its lock across the whole `sendall` loop** (or take a per-connection send lock). Today it copies the client list under `_lock` and then sends *outside* it, which was safe when the single fold loop was the only caller. As of Task 6 it is called from **four** worker reader threads, and two concurrent `sendall`s on one client socket can interleave partial writes and split a JSON line in half — a stream corruption the single-fold daemon could never produce and four workers produce routinely. This is a real defect introduced by the multi-chip change, it is cheap to close here while this file is open, and Task 6 depends on it. Do not reorder the two tasks.
+
+- [ ] **Step 1: Write the failing tests**
+
+```python
+import json
+import socket
+import threading
+import time
+
+import pytest
+
+from protocol.events import (
+    PROTOCOL_VERSION, decode, encode_client_message, pick_message,
+)
+from runner.server import CLIENT_LINE_MAX_BYTES, EventServer
+
+
+def _hello():
+    return {"type": "hello", "version": PROTOCOL_VERSION, "cards": [0, 1, 2, 3],
+            "models": ["protenix-v2"], "preflight": "ok"}
+
+
+def _job_done(job_id="j1"):
+    return {"type": "job_done", "job_id": job_id, "cif_path": f"/{job_id}.cif",
+            "wall_s": 4.4, "mean_plddt": 95.3}
+
+
+def _wait(predicate, timeout=3.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.005)
+    return False
+
+
+@pytest.fixture
+def server(tmp_path):
+    """A server whose received client messages are recorded, with a short
+    send timeout so the read-side timeout path is exercised in a fast test
+    rather than only in production."""
+    received = []
+    s = EventServer(str(tmp_path / "sock"), _hello,
+                    client_send_timeout=0.05,
+                    on_client_message=received.append)
+    s.received = received
+    s.start()
+    try:
+        yield s
+    finally:
+        s.stop()
+
+
+def _connect(server):
+    conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    conn.settimeout(5.0)
+    conn.connect(server.socket_path)
+    stream = conn.makefile("rb")
+    assert decode(stream.readline())["type"] == "hello"
+    return conn, stream
+
+
+def test_a_pick_from_a_client_reaches_the_callback(server):
+    conn, _stream = _connect(server)
+    conn.sendall(encode_client_message(pick_message("trpcage")))
+    assert _wait(lambda: server.received == [pick_message("trpcage")])
+
+
+def test_a_silent_client_is_never_dropped(server):
+    """The default state of a connected UI is "sending nothing". With a
+    0.05s socket timeout, a reader that mistakes socket.timeout for EOF
+    disconnects every UI within a tenth of a second and the booth goes
+    dark while looking perfectly healthy in the log."""
+    conn, stream = _connect(server)
+    time.sleep(0.4)                      # many read timeouts
+    assert server.client_count == 1
+    assert server.broadcast(_job_done()) == 1
+    assert decode(stream.readline())["type"] == "job_done"
+
+
+def test_a_malformed_line_costs_the_line_and_not_the_client(server):
+    conn, stream = _connect(server)
+    conn.sendall(b"not json{\n")
+    conn.sendall(encode_client_message(pick_message("trpcage")))
+    assert _wait(lambda: len(server.received) == 1)
+    assert server.received[0]["target_id"] == "trpcage"
+    assert server.client_count == 1
+    assert server.broadcast(_job_done()) == 1
+
+
+def test_an_unknown_message_type_is_ignored_not_acted_on(server):
+    conn, _stream = _connect(server)
+    conn.sendall(b'{"type":"shutdown","version":2,"target_id":"x"}\n')
+    conn.sendall(encode_client_message(pick_message("trpcage")))
+    assert _wait(lambda: len(server.received) == 1)
+    assert [m["type"] for m in server.received] == ["pick"]
+
+
+def test_a_message_from_the_wrong_protocol_version_is_ignored(server):
+    conn, _stream = _connect(server)
+    conn.sendall(b'{"type":"pick","version":1,"target_id":"trpcage"}\n')
+    conn.sendall(encode_client_message(pick_message("hemoglobin")))
+    assert _wait(lambda: len(server.received) == 1)
+    assert server.received[0]["target_id"] == "hemoglobin"
+
+
+def test_a_line_split_across_two_writes_still_arrives_whole(server):
+    """A TCP-like stream splits wherever it likes, and the send-timeout on
+    this socket makes a naive file-object reader lose the first half."""
+    conn, _stream = _connect(server)
+    payload = encode_client_message(pick_message("trpcage"))
+    conn.sendall(payload[:9])
+    time.sleep(0.2)                      # several read timeouts in between
+    conn.sendall(payload[9:])
+    assert _wait(lambda: server.received == [pick_message("trpcage")])
+
+
+def test_two_messages_in_one_write_are_both_delivered(server):
+    conn, _stream = _connect(server)
+    conn.sendall(encode_client_message(pick_message("trpcage"))
+                 + encode_client_message(pick_message("hemoglobin")))
+    assert _wait(lambda: len(server.received) == 2)
+    assert [m["target_id"] for m in server.received] == ["trpcage", "hemoglobin"]
+
+
+def test_a_client_that_never_sends_a_newline_is_dropped_not_buffered(server):
+    """Otherwise a remote process decides how much memory this daemon
+    allocates, and the booth dies of something that looks like a leak."""
+    conn, _stream = _connect(server)
+    blob = b"x" * 4096
+    try:
+        for _ in range((CLIENT_LINE_MAX_BYTES // len(blob)) + 4):
+            conn.sendall(blob)
+    except OSError:
+        pass                              # the server closing on us is the point
+    assert _wait(lambda: server.client_count == 0)
+
+
+def test_the_server_still_accepts_clients_after_dropping_a_bad_one(server):
+    conn, _stream = _connect(server)
+    conn.close()
+    assert _wait(lambda: server.client_count == 0)
+    conn2, stream2 = _connect(server)
+    assert server.broadcast(_job_done()) == 1
+    assert decode(stream2.readline())["type"] == "job_done"
+
+
+def test_a_raising_callback_costs_the_message_not_the_reader(tmp_path):
+    """on_client_message runs on the reader thread. An exception escaping it
+    kills that thread, and that client is deaf for the rest of the day with
+    nothing on screen saying so."""
+    seen = []
+
+    def explode(message):
+        seen.append(message)
+        raise RuntimeError("boom")
+
+    s = EventServer(str(tmp_path / "sock"), _hello, client_send_timeout=0.05,
+                    on_client_message=explode)
+    s.start()
+    try:
+        conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        conn.settimeout(5.0)
+        conn.connect(s.socket_path)
+        stream = conn.makefile("rb")
+        assert decode(stream.readline())["type"] == "hello"
+        conn.sendall(encode_client_message(pick_message("a")))
+        conn.sendall(encode_client_message(pick_message("b")))
+        assert _wait(lambda: len(seen) == 2), "the reader died on the first one"
+        assert s.client_count == 1
+    finally:
+        s.stop()
+
+
+def test_a_server_with_no_callback_still_reads_and_discards(tmp_path):
+    s = EventServer(str(tmp_path / "sock"), _hello, client_send_timeout=0.05)
+    s.start()
+    try:
+        conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        conn.settimeout(5.0)
+        conn.connect(s.socket_path)
+        stream = conn.makefile("rb")
+        assert decode(stream.readline())["type"] == "hello"
+        conn.sendall(encode_client_message(pick_message("trpcage")))
+        time.sleep(0.2)
+        assert s.client_count == 1
+        assert s.broadcast(_job_done()) == 1
+        assert decode(stream.readline())["type"] == "job_done"
+    finally:
+        s.stop()
+
+
+def test_concurrent_broadcasts_never_split_a_line(server):
+    """Four worker reader threads call broadcast at once from Task 6 on.
+    sendall is not atomic: two of them writing to one client socket outside
+    the lock interleave partial writes, and the UI sees half a job_done
+    glued to half a frame. Every line the client reads must decode."""
+    conn, stream = _connect(server)
+    threads = [threading.Thread(target=lambda n=n: [
+        server.broadcast(_job_done(f"j{n}-{i}")) for i in range(50)])
+        for n in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10.0)
+    for _ in range(200):
+        decode(stream.readline())          # raises ProtocolError on a split line
+
+
+def test_a_client_that_speaks_while_being_broadcast_to_is_not_disturbed(server):
+    conn, stream = _connect(server)
+    for i in range(20):
+        conn.sendall(encode_client_message(pick_message(f"t{i}")))
+        server.broadcast(_job_done(f"j{i}"))
+    assert _wait(lambda: len(server.received) == 20)
+    for _ in range(20):
+        assert decode(stream.readline())["type"] == "job_done"
+
+
+def test_stop_leaves_no_reader_thread_running(server):
+    _conn, _stream = _connect(server)
+    before = {t.name for t in threading.enumerate()}
+    server.stop()
+    assert _wait(lambda: not [t for t in threading.enumerate()
+                              if t.name not in before and t.is_alive()])
+```
+
+**Mutations these must catch:** treating `socket.timeout` on the read as a disconnect (test 2 red); dropping the client on a `ProtocolError` (test 3 red); acting on an unknown type, or on a mismatched version (tests 4, 5 red); discarding the partial buffer between reads — which is what `makefile()` does after a timeout (test 6 red); splitting on the first newline only and dropping the remainder (test 7 red); an unbounded line buffer (test 8 red); letting a reader-thread exception escape (test 10 red); requiring `on_client_message` to be non-None (test 11 red); leaving the `sendall` loop outside the lock (test 12 red); never joining the reader threads (test 14 red).
+
+**Test 12 is the one that cannot be argued from a code reading**, because the interleaving depends on how the kernel schedules two partial writes. Verify it by moving the `sendall` loop back outside the lock and running it a few times; if it stays green every time, add clients or events until it fails, then keep the version that fails. A test for a race that has never been observed to fail is not a test.
+
+- [ ] **Step 2: Implement, verify mutations, run `./scripts/test.sh`, commit**
+
+Rate-limit the malformed-line log the way the pool rate-limits its own junk-line log (Task 6): a client stuck in a loop sending garbage must not be able to fill the log root the janitor is trying to bound.
+
+---
+
+### Task 5: The UI can speak [no device]
+
+**Files:** Modify `ui/client.py`. Test: `tests/unit/test_client_send.py`; extend `tests/unit/test_mock_runner.py`
+
+**Why:** The other half of the socket. This task ends with an `EventClient` that can put a `pick` on the wire from a GTK callback without ever blocking the main loop, without ever raising into it, and without ever sending anything to a daemon it has refused to interpret.
+
+**Produces:**
+
+- `OUTBOX_MAX = 8`.
+- `EventClient(..., outbox_max=OUTBOX_MAX)`, with a **sender thread** started by `start()` and joined by `stop()`, and `self._conn` published under `self._conn_lock` by `_session` and cleared when it exits.
+- `.send(message) -> bool` — validates with `encode_client_message`, enqueues, returns whether it was enqueued. **Never raises and never blocks**: it is called from a GLib callback, where an exception freezes a source forever and a blocking `sendall` freezes the whole booth.
+- `.send_pick(target_id) -> bool`.
+- `.dropped_sends` — a counter, public, because a test has to be able to assert the outbox is bounded without reaching into a private field.
+
+**Why a thread and a queue rather than just calling `sendall` in `send()`:** a `sendall` from the GTK main loop is a call that can block for as long as the peer's receive buffer stays full — the daemon is a process that could be stopped, wedged, or in the middle of four folds — and a blocked main loop is a frozen booth with a live-looking screen. A pick is ~60 bytes and would almost always go straight out; "almost always" is not a property to hang the main loop on. The queue is bounded and **drops the oldest** on overflow, and picks queued while disconnected are dropped rather than held: a pick means "fold this now", and a pick delivered ninety seconds later to a visitor who has walked away is worse than no pick at all.
+
+**The version-mismatch behaviour, pinned here** (the ruling is in Task 3): once `state == "incompatible"`, `send` returns `False` and enqueues nothing, forever. The UI has declared it cannot interpret that daemon; talking to it anyway is the one thing worse than staying quiet.
+
+- [ ] **Step 1: Write the failing tests**
+
+```python
+import json
+import pathlib
+import socket
+import threading
+import time
+
+import pytest
+
+from protocol.events import PROTOCOL_VERSION, decode_client_message, encode
+from ui.client import OUTBOX_MAX, EventClient
+
+
+def _hello(version=PROTOCOL_VERSION):
+    return {"type": "hello", "version": version, "cards": [0, 1, 2, 3],
+            "models": ["protenix-v2"], "preflight": "ok"}
+
+
+def _wait(predicate, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.005)
+    return False
+
+
+class _Listener:
+    """A minimal daemon-shaped peer: greets, then records whole lines."""
+
+    def __init__(self, path, hello=None):
+        self.path = str(path)
+        self.hello = hello or _hello()
+        self.received = []
+        self._server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self._server.bind(self.path)
+        self._server.listen(4)
+        self._server.settimeout(0.2)
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self):
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+        self._thread.join(timeout=3.0)
+        self._server.close()
+
+    def _run(self):
+        while not self._stop.is_set():
+            try:
+                conn, _ = self._server.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+            conn.sendall(encode(self.hello))
+            threading.Thread(target=self._read, args=(conn,), daemon=True).start()
+
+    def _read(self, conn):
+        conn.settimeout(0.2)
+        with conn, conn.makefile("rb") as stream:
+            while not self._stop.is_set():
+                try:
+                    line = stream.readline()
+                except (socket.timeout, OSError):
+                    continue
+                if not line:
+                    return
+                self.received.append(decode_client_message(line))
+
+
+@pytest.fixture
+def listener(tmp_path):
+    peer = _Listener(tmp_path / "sock")
+    peer.start()
+    try:
+        yield peer
+    finally:
+        peer.stop()
+
+
+def _client(path, **kw):
+    return EventClient(str(path), on_event=lambda e: None, **kw)
+
+
+def test_a_pick_reaches_a_listening_daemon(listener):
+    client = _client(listener.path)
+    client.start()
+    try:
+        assert _wait(lambda: client.state == "connected")
+        assert client.send_pick("trpcage") is True
+        assert _wait(lambda: [m["target_id"] for m in listener.received]
+                     == ["trpcage"])
+    finally:
+        client.stop()
+
+
+def test_a_pick_carries_the_protocol_version(listener):
+    client = _client(listener.path)
+    client.start()
+    try:
+        assert _wait(lambda: client.state == "connected")
+        client.send_pick("trpcage")
+        assert _wait(lambda: listener.received)
+        assert listener.received[0]["version"] == PROTOCOL_VERSION
+    finally:
+        client.stop()
+
+
+def test_send_before_there_has_ever_been_a_connection_never_raises(tmp_path):
+    """_on_pick runs in a GLib callback. An exception there freezes that
+    source for the life of the process, and the booth stops answering
+    taps -- with nothing on screen to say why."""
+    client = _client(tmp_path / "nothing-here.sock")
+    client.start()
+    try:
+        assert client.send_pick("trpcage") in (True, False)   # must not raise
+    finally:
+        client.stop()
+
+
+def test_send_does_not_block_the_caller(tmp_path):
+    """There is no daemon at this path at all. The GTK main loop must come
+    straight back regardless."""
+    client = _client(tmp_path / "nothing-here.sock")
+    client.start()
+    try:
+        started = time.monotonic()
+        for _ in range(50):
+            client.send_pick("trpcage")
+        assert time.monotonic() - started < 0.5
+    finally:
+        client.stop()
+
+
+def test_picks_made_while_disconnected_do_not_pile_up(tmp_path):
+    """A booth left running with the daemon down for an hour must not
+    deliver an hour of stale picks the moment it comes back."""
+    client = _client(tmp_path / "nothing-here.sock")
+    client.start()
+    try:
+        for n in range(1000):
+            client.send_pick(f"t{n}")
+        assert client.pending_sends <= OUTBOX_MAX
+        assert client.dropped_sends > 0
+    finally:
+        client.stop()
+
+
+def test_a_malformed_message_is_refused_without_raising(tmp_path):
+    client = _client(tmp_path / "nothing-here.sock")
+    client.start()
+    try:
+        assert client.send({"type": "job_done", "job_id": "j1"}) is False
+        assert client.send({"nonsense": True}) is False
+    finally:
+        client.stop()
+
+
+def test_nothing_is_ever_sent_to_a_daemon_we_refuse_to_interpret(tmp_path):
+    """The whole point of the incompatible state. A v2 UI whispering picks
+    at a v1 daemon that will never answer them is the booth promising a
+    capability it does not have."""
+    peer = _Listener(tmp_path / "sock", hello=_hello(version=PROTOCOL_VERSION + 1))
+    peer.start()
+    try:
+        client = _client(peer.path)
+        client.start()
+        try:
+            assert _wait(lambda: client.state == "incompatible")
+            assert client.send_pick("trpcage") is False
+            time.sleep(0.3)
+            assert peer.received == []
+        finally:
+            client.stop()
+    finally:
+        peer.stop()
+
+
+def test_the_read_direction_still_works_while_sending(tmp_path):
+    """Full duplex, and the regression that matters: a sender thread that
+    takes the same lock the reader holds turns every fold into a stall."""
+    seen = []
+    peer = _Listener(tmp_path / "sock")
+    peer.start()
+    try:
+        client = EventClient(peer.path, on_event=seen.append)
+        client.start()
+        try:
+            assert _wait(lambda: client.state == "connected")
+            for n in range(20):
+                client.send_pick(f"t{n}")
+            assert _wait(lambda: len(peer.received) == 20)
+            assert _wait(lambda: any(e["type"] == "hello" for e in seen))
+        finally:
+            client.stop()
+    finally:
+        peer.stop()
+
+
+def test_a_send_failure_does_not_end_the_read_loop(tmp_path):
+    """The daemon restarting mid-pick is ordinary. The client must come back
+    connected, not sit in a state where it never reads again."""
+    peer = _Listener(tmp_path / "sock")
+    peer.start()
+    client = _client(peer.path, reconnect_delay=0.05)
+    client.start()
+    try:
+        assert _wait(lambda: client.state == "connected")
+        peer.stop()
+        for _ in range(10):
+            client.send_pick("trpcage")
+        peer2 = _Listener(tmp_path / "sock")
+        peer2.start()
+        try:
+            assert _wait(lambda: client.state == "connected", timeout=10.0)
+            assert client.send_pick("hemoglobin") is True
+            assert _wait(lambda: any(m["target_id"] == "hemoglobin"
+                                     for m in peer2.received))
+        finally:
+            peer2.stop()
+    finally:
+        client.stop()
+
+
+def test_stop_leaves_no_sender_thread_running(listener):
+    client = _client(listener.path)
+    before = {t.name for t in threading.enumerate()}
+    client.start()
+    assert _wait(lambda: client.state == "connected")
+    client.stop()
+    assert _wait(lambda: not [t for t in threading.enumerate()
+                              if t.name not in before and t.is_alive()])
+
+
+def test_stop_is_safe_when_start_was_never_called(tmp_path):
+    _client(tmp_path / "sock").stop()          # must not raise
+```
+
+And in `tests/unit/test_mock_runner.py`:
+
+```python
+def test_a_pick_sent_to_the_mock_runner_does_not_disturb_the_replay(tmp_path):
+    """runner/mock.py is the project's core test instrument and it will
+    never read a byte from a client. A UI that now sends picks must not be
+    able to wedge it -- otherwise every UI test that replays a fixture is
+    one `_on_pick` away from hanging."""
+    from protocol.events import encode_client_message, pick_message
+    ...  # start a MockRunner on short_fold.jsonl, connect a real EventClient,
+         # call client.send_pick("trpcage") repeatedly while the stream
+         # replays, and assert every event in the fixture still arrives
+```
+
+**Mutations these must catch:** calling `sendall` directly from `send()` (test 4 red — it blocks against a dead path); an unbounded outbox (test 5 red); letting `encode_client_message`'s `ProtocolError` escape (test 6 red); sending while `incompatible` (test 7 red); holding one lock across both directions (test 8 red); a sender thread that exits on the first write failure (test 9 red); never joining the sender thread (test 10 red); `stop()` assuming `start()` ran (test 11 red).
+
+Test 5 needs `pending_sends` and `dropped_sends` to be public for the same reason `SlotRouter.tracked_jobs` is (Task 12): a boundedness claim asserted against a private field is the "adjacent to the behaviour" shape `docs/followups.md` names as this project's recurring test defect.
+
+- [ ] **Step 2: Implement, verify mutations, run `./scripts/test.sh`, commit**
+
+The sender thread waits on the outbox with a timeout so `stop()` is prompt; it takes the current connection under `_conn_lock`, writes, and on any `OSError` drops the message and logs at debug — the reconnect loop in `_run` already owns recovery and must remain the only thing that does. Do not have the sender reconnect. Do not have `send()` touch the socket.
+
+`ui/app.py` is **not** touched in this task: `_on_pick` is Task 17, and the neutral overlay for `incompatible` is Task 17's too, so the copy change and the behaviour change land in one commit.
+
+---
+
+### Task 6: The pool — spawn, dispatch, multiplex [no device]
 
 **Files:** Create `runner/pool.py`. Test: `tests/unit/runner/test_worker_pool.py`
 
@@ -631,7 +1412,7 @@ This task is unusual: its tests pass immediately. That is correct — they are a
 
 `spawn` is the seam: a callable `(spec, env) -> WorkerHandle` so the tests drive a fake worker with no subprocess at all. The real one is `subprocess.Popen`.
 
-Two more constructor keywords — `on_worker_lost=` and `restart_delay_s=` — arrive in **Task 5**, which owns death and respawn. Build the constructor so adding them there is a keyword, not a rewrite.
+Two more constructor keywords — `on_worker_lost=` and `restart_delay_s=` — arrive in **Task 7**, which owns death and respawn. Build the constructor so adding them there is a keyword, not a rewrite.
 
 **The multiplexing contract:**
 
@@ -893,15 +1674,15 @@ Test 10 is the one that protects the spec's central claim. Verify it by deleting
 
 - [ ] **Step 2: Implement, verify mutations, run `./scripts/test.sh`, commit**
 
-One reader thread per worker, blocking on `readline`. `on_event` is called **from that thread** — `EventServer.broadcast` is already thread-safe (it holds `_lock` and never raises into its caller), so this is safe, and it is what keeps a slow chip from blocking the other three. Say so in a comment.
+One reader thread per worker, blocking on `readline`. `on_event` is called **from that thread**, which is what keeps a slow chip from blocking the other three. `EventServer.broadcast` never raises into its caller and, **as of Task 4**, holds its lock across the whole `sendall` loop — which is what makes four reader threads broadcasting at once safe. Before Task 4 it copied the client list under `_lock` and then sent *outside* it: two concurrent `sendall`s on one client socket interleave partial writes and split a JSON line in half, a corruption a single-fold daemon could never produce and four workers produce routinely. Do not reorder those two tasks, and say all of this in a comment.
 
 **Name constraint:** `WorkerPool` keeps its own worker handles, spawn record and loss record under **private** names (`_workers`, and whatever else it needs), matching this codebase's existing convention (`EventServer._clients`, `JobQueue._items`, `CardPool._busy`). The fixtures above attach *test* handles at `pool.workers` / `pool.spawns` / `pool.lost`, and a public attribute of the same name would be silently clobbered by the fixture — a test that then passes against production state it has overwritten.
 
-Also extract `_FakeWorker`, `_spec`, `_job` and `_wait` into `tests/unit/runner/_workerfakes.py` as part of this task (Task 5 imports them). The leading underscore is what keeps pytest from collecting it, the same convention `tests/unit/_legibility.py` already uses.
+Also extract `_FakeWorker`, `_spec`, `_job` and `_wait` into `tests/unit/runner/_workerfakes.py` as part of this task (Task 7 imports them). The leading underscore is what keeps pytest from collecting it, the same convention `tests/unit/_legibility.py` already uses.
 
 ---
 
-### Task 5: A worker that dies must not take the booth down [no device]
+### Task 7: A worker that dies must not take the booth down [no device]
 
 **Files:** Modify `runner/pool.py`. Test: `tests/unit/runner/test_worker_death.py`
 
@@ -910,14 +1691,14 @@ Also extract `_FakeWorker`, `_spec`, `_job` and `_wait` into `tests/unit/runner/
 **Produces:** on a worker's event stream reaching EOF (the process died, however it died), the pool must, in this order:
 
 1. Notice within one reader-thread wakeup — no polling timer, no timeout.
-2. If a job was in flight, report it: call `on_worker_lost(card, job_id, target_id)` — the pool has the whole `Job` from `dispatch`, so it can name the target without the daemon looking it up. **The pool never fabricates a protocol event**; the daemon (Task 6) decides what the wire sees. This keeps "who talks to the socket" in one module.
+2. If a job was in flight, report it: call `on_worker_lost(card, job_id, target_id)` — the pool has the whole `Job` from `dispatch`, so it can name the target without the daemon looking it up. **The pool never fabricates a protocol event**; the daemon (Task 8) decides what the wire sees. This keeps "who talks to the socket" in one module.
 3. Mark the card not-ready and not-busy.
 4. Respawn after `WORKER_RESTART_DELAY_S`, unless the card has died `WORKER_RETIRE_AFTER` times consecutively with no completed job in between, in which case retire it for the session with a loud log.
 5. Never touch the other three workers.
 
 - [ ] **Step 1: Write the failing tests**
 
-Reuse `_FakeWorker`, `_spec`, `_wait` and `_job` from Task 4 — move them into `tests/unit/runner/_workerfakes.py` as part of this task and import them from both files. (`_`-prefixed, so pytest never collects it, the same convention `tests/unit/_legibility.py` already uses.)
+Reuse `_FakeWorker`, `_spec`, `_wait` and `_job` from Task 6 — move them into `tests/unit/runner/_workerfakes.py` as part of this task and import them from both files. (`_`-prefixed, so pytest never collects it, the same convention `tests/unit/_legibility.py` already uses.)
 
 ```python
 import pytest
@@ -1075,7 +1856,7 @@ def test_dispatching_to_a_retired_card_raises_rather_than_vanishing(pool):
 
 
 def test_all_four_dying_does_not_raise_out_of_the_pool(pool):
-    """The booth is now unable to fold. It must say so (Task 6's not_ready),
+    """The booth is now unable to fold. It must say so (Task 8's not_ready),
     not crash -- an unattended booth needs a process that stays up."""
     pool.start()
     _ready(pool, 0, 1, 2, 3)
@@ -1093,7 +1874,7 @@ def test_all_four_dying_does_not_raise_out_of_the_pool(pool):
 
 ---
 
-### Task 6: The daemon owns no device [no device]
+### Task 8: The daemon owns no device [no device]
 
 **Files:** Rewrite `runner/daemon.py`. Test: `tests/unit/runner/test_daemon_multichip.py`; the existing `tests/unit/runner/test_daemon.py` is rewritten with it.
 
@@ -1107,7 +1888,7 @@ def test_all_four_dying_does_not_raise_out_of_the_pool(pool):
 - `_hello()` reports `not_ready` until `pool.any_ready()`, then `hello` with `cards = cards.all_indices()`.
 - `on_worker_lost(card, job_id)` emits a `job_error` for the orphaned job, marks the card idle, and records the failure against the target.
 
-**Ruling on quarantine, because it is easy to get backwards:** a worker death counts as **one failure for the target** (a target that reliably kills a worker is a target that must eventually be quarantined — `QUARANTINE_AFTER = 3` unchanged) **and separately** against the card (`WORKER_RETIRE_AFTER`, Task 5). The two counters are independent and neither may be derived from the other.
+**Ruling on quarantine, because it is easy to get backwards:** a worker death counts as **one failure for the target** (a target that reliably kills a worker is a target that must eventually be quarantined — `QUARANTINE_AFTER = 3` unchanged) **and separately** against the card (`WORKER_RETIRE_AFTER`, Task 7). The two counters are independent and neither may be derived from the other.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1337,7 +2118,7 @@ def test_no_schedulable_cards_idles_rather_than_folding_onto_hot_hardware(tmp_pa
 
 `dispatch_once()` is a new, deliberately-extracted method: one pass of "for each dispatchable card, take a job and send it". It exists so the loop body is testable without running `run()`, exactly as `_run_one` was.
 
-Extract `_FakePool`, `_CollectingServer` and `_daemon` into **`tests/unit/runner/_daemonfakes.py`** as part of this task — Tasks 7 and 8 import them from there, and three copies of a fake pool is three places for the fake to drift from the real one.
+Extract `_FakePool`, `_CollectingServer` and `_daemon` into **`tests/unit/runner/_daemonfakes.py`** as part of this task — Tasks 10 and 11 import them from there, and three copies of a fake pool is three places for the fake to drift from the real one.
 
 - [ ] **Step 2: Implement, verify mutations, run `./scripts/test.sh`, commit**
 
@@ -1345,13 +2126,307 @@ Also in this task: `main()` gains `--devices` (default: all), and the long `Daem
 
 ---
 
-### Task 7: Thermal at 4× [no device]
+### Task 9: A pick becomes a fold [no device]
+
+**Files:** Modify `runner/queue.py`, `runner/daemon.py`. Test: `tests/unit/runner/test_visitor_pick.py`
+
+**Why, and read this paragraph before writing a line of it:** `runner/queue.py` has had a visitor-priority path since Phase 3a and **it has never once run.** Its own docstring says so — "nothing ever submits at a priority above 0 … the priority path exists for the phase that adds a client→server message". This is that phase. Every line of `JobQueue`'s ordering is therefore code that has been unit-tested in isolation and never exercised end to end, and the tests below are written on the assumption that it is **unproven**, not proven: they assert that the priority *takes effect on a dispatch*, not that a sorted list is sorted.
+
+**The ruling on "immediately", because it is the whole design question in this task.**
+
+With four chips there is usually a free one and a pick starts within a second. The interesting case is the one that will happen at a venue with a queue of visitors: **all four chips busy.** The pick then goes to the **head of the queue and takes the next chip to free. It never preempts a running fold.**
+
+Why not preempt:
+
+- Tearing down a fold mid-device-op is, in `runner/queue.py`'s own words, "a needless source of instability". This phase multiplies device operations by four and adds worker processes that can die; adding deliberate mid-fold teardown to that mix buys seconds and costs the failure mode that Task 7 exists to survive.
+- Preemption is visible destruction. The quad shows four cells. Preempting one blanks a structure a visitor is watching — possibly the previous visitor's own pick — to serve the newest tap. The booth would get less trustworthy as it got busier.
+- The wait is bounded and small, and bounded by the *earliest*-finishing of four folds rather than the longest: measured warm folds are 4.35–4.45 s for the 20-residue target (`docs/followups.md`, 30-fold soak), so the expected wait with four chips busy is a fraction of one fold. If the curated playlist's larger targets make that materially worse, that is a finding about the playlist, and Task 18 measures it rather than guessing.
+
+Also rejected, explicitly, so nobody re-proposes it: **reserving a chip for visitors.** It idles a quarter of the booth all day — in front of a crowd, on the demo whose entire premise is that all four chips work — to save a few seconds occasionally.
+
+**What is done about the wait instead**, because "a visitor taps and sees nothing for twenty seconds" is a booth that reads as broken no matter how correct the queue is:
+
+1. The UI acknowledges the pick **at tap time**, before any daemon has answered (Task 12's `pick_status`, Task 17's on-screen notice). Nothing about that acknowledgement depends on the socket.
+2. The daemon's dispatch loop is **woken by a pick** rather than discovering it at the end of a 5 s or 10 s backoff. Today `run()` sits in `self._stop.wait(5.0)` when no card is schedulable and `self._stop.wait(10.0)` when the playlist is empty; a pick landing one millisecond into either of those is a pick the visitor waits ten seconds for, which is most of the twenty seconds this ruling is about. Add `Daemon._wake` (a `threading.Event` that `stop()` also sets), wait on it instead of on `_stop` in the idle paths, clear it at the top of each pass, and set it from `on_client_message`.
+3. The pick is released by the **existing 45 s idle timeout** (Task 17), so a visitor who walks away pins nothing.
+
+**Produces:**
+
+- `runner/queue.py`: `VISITOR_PRIORITY = 10` (any value above 0 works; 10 leaves room for a priority between the playlist and a visitor without renumbering either), and `JobQueue.remove(job_id) -> bool` — thread-safe, returns whether anything was removed.
+- `runner/queue.py`'s module docstring rewritten. It currently describes the visitor path in the conditional ("would be submitted") and states in the present tense that nothing can reach it. Both halves stop being true in this task, and the docstring's own closing sentence — "Stated in the past/conditional here on purpose" — is exactly the kind of comment that rots into a lie. A test below pins the rewrite.
+- `runner/daemon.py`: `MAX_PENDING_PICKS = 1`, `DISPATCH_POLL_S = 0.25`, `Daemon._wake`, and `Daemon.on_client_message(message)`, wired into `EventServer(..., on_client_message=self.on_client_message)`.
+
+**`on_client_message`'s contract:**
+
+- It runs on a **server reader thread** (Task 4) and therefore never raises. A guard with the `return` outside the `try`, the same shape the GLib callbacks use, for the same reason: an exception here kills that client's reader and the visitor's UI goes deaf.
+- Anything that is not a `pick` is ignored. `decode_client_message` has already refused everything malformed; this is the second line, not the first.
+- **Target resolution goes through the playlist enumeration**, never through a path join. `target_id` arrives from another process; `Path(playlist_dir) / f"{target_id}.yaml"` with `target_id = "../../../etc/passwd"` is a file read outside the playlist and, worse, a path handed to the folder. Resolve by matching against the same `sorted(Path(playlist_dir).glob("*.yaml"))` stems `_enqueue_playlist` already walks, and ignore anything that does not match one exactly.
+- A quarantined target is ignored: `QUARANTINE_AFTER` means "this one has failed three times", and a visitor's tap does not overrule that.
+- A target already in flight queues **nothing** — the UI focuses the cell already folding it (Task 12's focus rule), which is what the visitor asked for and is faster than a second fold of the same thing.
+- At most `MAX_PENDING_PICKS` visitor jobs are pending. A new pick **removes the previous pending one** and replaces it. One visitor, one pick: this mirrors the UI exactly, which tracks a single `selected_target`, and it is what bounds a child tapping forty targets in ten seconds.
+
+- [ ] **Step 1: Write the failing tests**
+
+```python
+import threading
+
+import pytest
+
+from runner.cards import CardState
+from runner.queue import VISITOR_PRIORITY, Job, JobQueue
+
+from _daemonfakes import _FakePool, _daemon      # extracted in Task 8
+
+
+def _playlist(tmp_path, *names):
+    directory = tmp_path / "playlist"
+    directory.mkdir(parents=True, exist_ok=True)
+    for name in names:
+        (directory / f"{name}.yaml").write_text("sequences: []\n")
+    return directory
+
+
+def _pick(target_id):
+    from protocol.events import pick_message
+    return pick_message(target_id)
+
+
+def _busy_daemon(tmp_path, targets=("alpha", "beta", "gamma", "delta")):
+    """A daemon with a real playlist and every card already folding."""
+    _playlist(tmp_path, *targets, "hemoglobin")
+    pool = _FakePool()
+    daemon = _daemon(tmp_path, pool)
+    daemon._enqueue_playlist()
+    daemon.dispatch_once()                      # all four cards now busy
+    assert len(pool.dispatched) == 4
+    return daemon, pool
+
+
+# ---- the queue itself ----------------------------------------------------
+
+def test_a_visitor_job_is_taken_before_an_older_attract_job():
+    queue = JobQueue()
+    for n in range(5):
+        queue.submit(Job(job_id=f"a{n}", target_id=f"t{n}", input_path="/p.yaml"))
+    queue.submit(Job(job_id="v1", target_id="hemoglobin", input_path="/p.yaml",
+                     priority=VISITOR_PRIORITY))
+    assert queue.take().job_id == "v1"
+
+
+def test_two_visitor_jobs_keep_their_own_order():
+    """Priority orders between bands; submission order still orders within
+    one. A visitor path that reverses itself under load is a visitor path
+    that serves the wrong person first."""
+    queue = JobQueue()
+    for job_id in ("v1", "v2"):
+        queue.submit(Job(job_id=job_id, target_id="t", input_path="/p.yaml",
+                         priority=VISITOR_PRIORITY))
+    assert [queue.take().job_id, queue.take().job_id] == ["v1", "v2"]
+
+
+def test_remove_takes_out_exactly_the_named_job():
+    queue = JobQueue()
+    for job_id in ("a", "b", "c"):
+        queue.submit(Job(job_id=job_id, target_id="t", input_path="/p.yaml"))
+    assert queue.remove("b") is True
+    assert [j.job_id for j in queue.pending] == ["a", "c"]
+
+
+def test_removing_a_job_that_is_already_gone_is_not_an_error():
+    """The dispatch loop can take a pending pick between the decision to
+    replace it and the removal itself."""
+    queue = JobQueue()
+    assert queue.remove("never-existed") is False
+
+
+def test_the_queue_docstring_no_longer_says_the_visitor_path_is_unreachable():
+    """It reads, verbatim today: 'nothing ever submits at a priority above
+    0'. That sentence was true for a whole phase and is now false; a
+    docstring that survives the change it describes is the next reader's
+    wrong mental model."""
+    import runner.queue as mod
+    text = mod.__doc__.lower()
+    assert "nothing ever submits at a priority above 0" not in text
+    assert "the socket protocol is one-way" not in text
+
+
+# ---- the daemon: the priority actually taking effect ----------------------
+
+def test_a_pick_is_dispatched_before_the_whole_attract_backlog(tmp_path):
+    """THE test for this task. The priority path has never run in
+    production; a queue-ordering test proves the list sorts, and proves
+    nothing about whether the daemon ever submits above 0. Free one card
+    with eight attract jobs waiting and see which target actually goes."""
+    daemon, pool = _busy_daemon(tmp_path)
+    daemon._enqueue_playlist()                  # a deep backlog behind it
+    assert len(daemon.queue) >= 4
+    daemon.on_client_message(_pick("hemoglobin"))
+    visitor = [j for j in daemon.queue.pending if j.priority == VISITOR_PRIORITY]
+    assert len(visitor) == 1
+    pool.finish(2)
+    daemon.dispatch_once()
+    # The JOB, not the target: the playlist contains hemoglobin too, so
+    # asserting on target_id alone would pass against a daemon that submits
+    # the pick at priority 0 and happens to reach the attract copy of it --
+    # which is exactly the mutation this test exists to catch.
+    assert pool.dispatched[-1][:2] == (2, visitor[0].job_id)
+
+
+def test_a_pick_never_cancels_a_fold_that_is_already_running(tmp_path):
+    """The ruling, pinned. Preemption would blank a cell a visitor is
+    watching and tear down a fold mid-device-op."""
+    daemon, pool = _busy_daemon(tmp_path)
+    in_flight = {card: pool.busy_job(card) for card in (0, 1, 2, 3)}
+    daemon.on_client_message(_pick("hemoglobin"))
+    assert {card: pool.busy_job(card) for card in (0, 1, 2, 3)} == in_flight
+
+
+def test_a_pick_arriving_with_every_card_busy_is_kept_not_dropped(tmp_path):
+    daemon, pool = _busy_daemon(tmp_path)
+    daemon.on_client_message(_pick("hemoglobin"))
+    assert [j.target_id for j in daemon.queue.pending
+            if j.priority == VISITOR_PRIORITY] == ["hemoglobin"]
+
+
+def test_a_playlist_refill_does_not_bury_a_waiting_pick(tmp_path):
+    """run() refills the playlist whenever the queue empties. A pick that a
+    refill can push behind twenty targets is a pick the visitor never sees."""
+    daemon, pool = _busy_daemon(tmp_path)
+    daemon.on_client_message(_pick("hemoglobin"))
+    daemon._enqueue_playlist()
+    head = daemon.queue.pending[0]
+    assert head.target_id == "hemoglobin"
+    assert head.priority == VISITOR_PRIORITY, (
+        "the playlist has a hemoglobin of its own; the head of the queue "
+        "must be the VISITOR's job, not the attract job with the same name")
+
+
+def test_a_pick_for_an_unknown_target_is_ignored(tmp_path):
+    daemon, pool = _busy_daemon(tmp_path)
+    before = len(daemon.queue)
+    daemon.on_client_message(_pick("not-a-real-target"))
+    assert len(daemon.queue) == before
+
+
+def test_a_pick_cannot_name_a_file_outside_the_playlist(tmp_path):
+    """`target_id` arrives from another process. Joining it onto a path is
+    how a socket message becomes a file read somewhere else on the box."""
+    daemon, pool = _busy_daemon(tmp_path)
+    outside = tmp_path / "secret.yaml"
+    outside.write_text("sequences: []\n")
+    before = len(daemon.queue)
+    for hostile in ("../secret", "../../etc/passwd", "/etc/passwd",
+                    "alpha/../../secret"):
+        daemon.on_client_message(_pick(hostile))
+    assert len(daemon.queue) == before
+
+
+def test_a_pick_for_a_quarantined_target_is_ignored(tmp_path):
+    """Three failures means three failures. A tap does not overrule the
+    guard that stopped the booth failing the same fold all afternoon."""
+    daemon, pool = _busy_daemon(tmp_path)
+    for _ in range(3):
+        daemon._record_failure("hemoglobin")
+    before = len(daemon.queue)
+    daemon.on_client_message(_pick("hemoglobin"))
+    assert len(daemon.queue) == before
+
+
+def test_a_second_pick_replaces_the_first_rather_than_queueing_both(tmp_path):
+    """One visitor, one pick -- the same thing the UI tracks. Without this,
+    a child tapping forty targets queues forty folds ahead of the playlist
+    and the booth stops being a playlist for the next ten minutes."""
+    daemon, pool = _busy_daemon(tmp_path)
+    daemon.on_client_message(_pick("hemoglobin"))
+    daemon.on_client_message(_pick("alpha"))
+    visitor_jobs = [j.target_id for j in daemon.queue.pending
+                    if j.priority == VISITOR_PRIORITY]
+    assert visitor_jobs == ["alpha"]
+
+
+def test_a_pick_for_a_target_already_folding_queues_nothing(tmp_path):
+    """It is already happening. The UI focuses that cell (Task 12); a second
+    fold of the same target would occupy a chip to show the same thing."""
+    daemon, pool = _busy_daemon(tmp_path)
+    folding = pool.dispatched[0][2]
+    before = len(daemon.queue)
+    daemon.on_client_message(_pick(folding))
+    assert len(daemon.queue) == before
+
+
+def test_a_pick_wakes_a_loop_that_would_otherwise_sit_out_a_backoff(tmp_path):
+    """run() waits 5s with no schedulable card and 10s with an empty
+    playlist. A pick that lands one millisecond into either of those is a
+    pick the visitor waits ten seconds for -- which is most of the twenty
+    seconds after which a booth reads as broken."""
+    daemon, pool = _busy_daemon(tmp_path)
+    daemon._wake.clear()
+    daemon.on_client_message(_pick("hemoglobin"))
+    assert daemon._wake.is_set()
+
+
+def test_on_client_message_never_raises_whatever_arrives(tmp_path):
+    """It runs on a server reader thread. An exception there kills that
+    client's reader and the UI goes deaf with nothing on screen saying so."""
+    daemon, pool = _busy_daemon(tmp_path)
+
+    class _ExplodingQueue:
+        def submit(self, job):
+            raise RuntimeError("boom")
+
+        def remove(self, job_id):
+            raise RuntimeError("boom")
+
+        @property
+        def pending(self):
+            raise RuntimeError("boom")
+
+    daemon.queue = _ExplodingQueue()
+    daemon.on_client_message(_pick("hemoglobin"))        # must not raise
+    daemon.on_client_message({"type": "pick"})           # nor this
+    daemon.on_client_message({})                         # nor this
+    daemon.on_client_message(None)                       # nor this
+
+
+def test_a_visitor_job_that_fails_counts_against_its_target_like_any_other(tmp_path):
+    """A target that kills a worker three times is quarantined whether a
+    visitor asked for it or not. The two counters stay independent."""
+    daemon, pool = _busy_daemon(tmp_path)
+    for _ in range(3):
+        daemon.on_worker_lost(card=0, job_id="jv", target_id="hemoglobin")
+    assert "hemoglobin" in daemon._quarantined
+
+
+def test_a_pick_goes_to_the_next_card_to_free_not_a_reserved_one(tmp_path):
+    """Explicitly rejected design: holding a chip idle for visitors. All
+    four fold the playlist; the pick takes whichever frees first."""
+    daemon, pool = _busy_daemon(tmp_path)
+    daemon.on_client_message(_pick("hemoglobin"))
+    visitor = [j for j in daemon.queue.pending if j.priority == VISITOR_PRIORITY]
+    pool.finish(3)
+    daemon.dispatch_once()
+    assert pool.dispatched[-1][:2] == (3, visitor[0].job_id)
+```
+
+**Mutations these must catch:** submitting the pick at priority `0` — the mutation that reproduces today's behaviour exactly (tests 6, 8, 9, 18 red); sorting the queue by priority only, losing submission order within a band (test 2 red); dropping `JobQueue.remove` and letting picks accumulate (test 13 red); making `remove` raise on a missing id (test 4 red); leaving the module docstring alone (test 5 red); cancelling an in-flight job to make room (test 7 red); resolving the target by joining `target_id` onto `playlist_dir` (test 11 red); accepting any string as a target (test 10 red); skipping the quarantine check (test 12 red); queueing a duplicate for a target already in flight (test 14 red); never setting `_wake` (test 15 red); letting `on_client_message` raise (test 16 red); deriving the target's failure count from the card's, or the reverse (test 17 red).
+
+**Test 6 is the one that decides whether this task did anything at all.** Verify it by setting the pick's priority to `0` and watching it go red; if it stays green, the test is measuring the queue's ordering rather than the daemon's dispatch, and it is the wrong test.
+
+- [ ] **Step 2: Implement, verify mutations, run `./scripts/test.sh`, commit**
+
+`dispatch_once()` does not change: the pick is just a job with a higher priority, and the whole point of the priority queue is that nothing downstream of `queue.take()` needs to know a visitor exists. If you find yourself special-casing visitor jobs inside the dispatch loop, stop — that is a plan bug, raise it.
+
+The `run()` loop's two idle waits change from `self._stop.wait(N)` to a wait on `_wake` with the same timeout, and `stop()` sets `_wake` as well as `_stop` so shutdown stays prompt. `DISPATCH_POLL_S` is the busy-path poll; the 5 s and 10 s backoffs keep their numbers, they simply become interruptible.
+
+---
+
+### Task 10: Thermal at 4× [no device]
 
 **Files:** Modify `runner/daemon.py` if needed. Test: `tests/unit/runner/test_thermal_four_up.py`
 
 **Why:** `CardPool`'s 85 °C quarantine "already exists and has never fired in anger" (spec). Four chips folding continuously is when it fires. Its unit tests cover the class; nothing covers what the *daemon* does when it fires with three other folds in flight.
 
-**Produces:** no new production surface if Task 6 is right. This task's job is to prove it, and to fix it if it is not.
+**Produces:** no new production surface if Task 8 is right. This task's job is to prove it, and to fix it if it is not.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1359,7 +2434,7 @@ Also in this task: `main()` gains `--devices` (default: all), and the long `Daem
 from runner.cards import CardState
 from runner.queue import Job
 
-from _daemonfakes import _FakePool, _daemon      # extracted in Task 6
+from _daemonfakes import _FakePool, _daemon      # extracted in Task 8
 
 
 def _hot(index, c=91.0):
@@ -1449,7 +2524,7 @@ If all five pass without a production change, say so explicitly in the report an
 
 ---
 
-### Task 8: Logs and structures at 4× [no device]
+### Task 11: Logs and structures at 4× [no device]
 
 **Files:** Modify `runner/daemon.py`, `runner/pool.py`. Test: `tests/unit/runner/test_janitors_four_up.py`
 
@@ -1606,7 +2681,7 @@ def test_a_janitor_failure_never_stops_the_booth(tmp_path, monkeypatch):
 
 ---
 
-### Task 9: Per-fold state, pure [no device]
+### Task 12: Per-fold state, pure [no device]
 
 **Files:** Create `ui/slots.py`. Modify `ui/states.py`. Test: `tests/unit/test_slots.py`
 
@@ -1615,19 +2690,22 @@ def test_a_janitor_failure_never_stops_the_booth(tmp_path, monkeypatch):
 **Produces:**
 
 - `MAX_SLOTS = 4`
+- `PICK_PENDING_WARN_S = 10.0`
 - `SlotState(showcase_dwell_s=2.0)` with `.state` in `{"idle", "folding", "showcase"}`, `.job_id`, `.card`, `.on_job_start(event)`, `.on_job_done(event)`, `.on_job_error(event)`, `.on_structure_revealed()`, `.tick(now)`, and the two predicates `.points_are_visible` / `.ribbon_may_be_revealed` as properties.
-- `SlotRouter(cards, showcase_dwell_s=2.0)` with `.slots`, `.slot_for_card(card)`, `.slot_for_job(job_id)`, `.on_event(event) -> int | None`, `.tick(now) -> list[int]`, `.select_target(target_id)`, `.release_target()`, `.selected_target`, `.focus_slot`, and `.tracked_jobs` — the job ids the router can still route, exposed publicly **because a test has to be able to assert it is bounded**, and asserting on a private field is the "adjacent to the behaviour" shape `docs/followups.md` names as this project's recurring test defect.
+- `SlotRouter(cards, showcase_dwell_s=2.0)` with `.slots`, `.slot_for_card(card)`, `.slot_for_job(job_id)`, `.on_event(event) -> int | None`, `.tick(now) -> list[int]`, `.select_target(target_id, now=0.0)`, `.release_target()`, `.selected_target`, `.pick_status(now) -> "queued" | "waiting" | "folding" | None`, `.focus_slot`, and `.tracked_jobs` — the job ids the router can still route, exposed publicly **because a test has to be able to assert it is bounded**, and asserting on a private field is the "adjacent to the behaviour" shape `docs/followups.md` names as this project's recurring test defect.
 
 **Reuse:** `ui.states.showcase_ended(previous, current)` is imported and used as-is against `SlotState` values — `SlotState` deliberately spells its showcase state `"showcase"`, the same string `BoothState.SHOWCASE` carries, so the existing tested function works on both. **Do not write a second one.**
 
 **The focus rule**, stated once and tested below: the focus slot is the slot folding (or showcasing) the visitor's selected target if there is one; otherwise the slot that most recently entered `showcase`; otherwise slot 0.
+
+**The pick-status rule**, likewise: `"folding"` once some slot holds the selected target; `"queued"` while it is selected and no slot holds it yet; `"waiting"` once that has been true for `PICK_PENDING_WARN_S`; `None` when there is no pick. It exists because the daemon is allowed to take a few seconds (Task 9 rules out preemption, deliberately) and **a visitor who taps and sees nothing concludes the booth is broken.** This is the pure, testable half of the answer to that; Task 17 puts it on screen. Note that the status is decided here and *not* by asking whether a fold has started — the router already knows both things, and a second source of truth in `ui/app.py` is how the screen and the daemon end up disagreeing.
 
 - [ ] **Step 1: Write the failing tests**
 
 ```python
 import pytest
 
-from ui.slots import MAX_SLOTS, SlotRouter, SlotState
+from ui.slots import MAX_SLOTS, PICK_PENDING_WARN_S, SlotRouter, SlotState
 from ui.states import showcase_ended
 
 
@@ -1848,9 +2926,10 @@ def test_a_visitors_pick_takes_the_focus_when_its_fold_starts():
 
 
 def test_a_pick_does_not_move_the_focus_before_its_fold_starts():
-    """The daemon cannot be asked for a target (the socket is one-way), so a
-    pick may wait a whole playlist cycle. Moving the focus to a cell folding
-    something else would be a lie."""
+    """The daemon dispatches the pick to the next chip to free (Task 9), so
+    this is usually a wait of seconds -- but it is never zero, and moving
+    the focus to a cell folding something else in the meantime would point
+    the hero cell at the wrong protein."""
     router = SlotRouter(cards=[0, 1, 2, 3])
     router.on_event(_start("j0", card=0, target_id="attract-a"))
     router.on_event(_done("j0"))
@@ -1882,9 +2961,56 @@ def test_the_pick_is_released_when_its_fold_ends():
 
 def test_an_empty_booth_focuses_the_first_cell():
     assert SlotRouter(cards=[0, 1, 2, 3]).focus_slot == 0
+
+
+# ---- the pick, between the tap and the fold ------------------------------
+
+def test_there_is_no_pick_status_without_a_pick():
+    assert SlotRouter(cards=[0, 1, 2, 3]).pick_status(now=0.0) is None
+
+
+def test_a_pick_is_acknowledgeable_the_instant_it_is_made():
+    """Nothing about this may wait on the daemon answering: the socket may
+    be down, the daemon may be mid-fold on all four chips, and the visitor
+    is standing there either way."""
+    router = SlotRouter(cards=[0, 1, 2, 3])
+    router.select_target("hemoglobin", now=0.0)
+    assert router.pick_status(now=0.0) == "queued"
+
+
+def test_a_long_wait_is_named_differently_so_the_booth_can_say_more():
+    router = SlotRouter(cards=[0, 1, 2, 3])
+    router.select_target("hemoglobin", now=100.0)
+    assert router.pick_status(now=100.0 + PICK_PENDING_WARN_S - 0.1) == "queued"
+    assert router.pick_status(now=100.0 + PICK_PENDING_WARN_S + 0.1) == "waiting"
+
+
+def test_the_status_becomes_folding_when_the_picked_target_starts():
+    router = SlotRouter(cards=[0, 1, 2, 3])
+    router.select_target("hemoglobin", now=0.0)
+    router.on_event(_start("j3", card=3, target_id="hemoglobin"))
+    assert router.pick_status(now=999.0) == "folding"
+
+
+def test_a_pick_for_a_target_already_folding_is_folding_at_once():
+    """The daemon queues nothing in this case (Task 9). A router that waited
+    for a job_start that will never come would leave the booth saying NEXT
+    UP forever about something already on screen."""
+    router = SlotRouter(cards=[0, 1, 2, 3])
+    router.on_event(_start("j2", card=2, target_id="hemoglobin"))
+    router.select_target("hemoglobin", now=0.0)
+    assert router.pick_status(now=0.0) == "folding"
+    assert router.focus_slot == 2
+
+
+def test_releasing_the_pick_clears_its_status():
+    router = SlotRouter(cards=[0, 1, 2, 3])
+    router.select_target("hemoglobin", now=0.0)
+    router.release_target()
+    assert router.pick_status(now=0.0) is None
 ```
 
-**Mutations these must catch:** making the dwell global across slots (test 4 red); measuring the dwell from `job_done` (test 6 red); letting `job_start` cut a dwell short (test 7 red); dropping the deferred `job_start` instead of applying it (test 8 red); applying a stale `job_error` (test 10 red); routing by card instead of `job_id` for non-`job_start` events (test 16 red); routing an unknown job to slot 0 (test 17 red); an unbounded job map (test 21 red); reporting every slot from `tick` (test 22 red); a focus that ignores the pick (test 24 red); a focus that follows the pick before its fold starts (test 25 red); never releasing the pick (test 27 red).
+**Mutations these must catch:** making the dwell global across slots (test 4 red); measuring the dwell from `job_done` (test 6 red); letting `job_start` cut a dwell short (test 7 red); dropping the deferred `job_start` instead of applying it (test 8 red); applying a stale `job_error` (test 10 red); routing by card instead of `job_id` for non-`job_start` events (test 16 red); routing an unknown job to slot 0 (test 17 red); an unbounded job map (test 21 red); reporting every slot from `tick` (test 22 red); a focus that ignores the pick (test 24 red); a focus that follows the pick before its fold starts (test 25 red); never releasing the pick (test 27 red); a `pick_status` that reports `"folding"` only on a `job_start` it witnessed, so a pick for a target already in flight never resolves (the already-folding test red); a warn window applied with `>` where the clock never lands exactly (the long-wait test red).
 
 - [ ] **Step 2: Implement, verify mutations, run `./scripts/test.sh`, commit**
 
@@ -1892,11 +3018,11 @@ def test_an_empty_booth_focuses_the_first_cell():
 
 ---
 
-### Task 10: A four-fold fixture [no device]
+### Task 13: A four-fold fixture [no device]
 
 **Files:** Create `tests/fixtures/streams/make_quad_fold.py`, generate `tests/fixtures/streams/quad_fold.jsonl`. Test: `tests/unit/test_quad_fixture.py`
 
-**Why:** Everything from here to Task 14 needs a realistic four-way interleaved stream, and `runner/mock.py` — "the project's core test instrument" — can already replay one to a real UI with no hardware. Building the fixture now is what lets Tasks 11–14 be verified against something that behaves like the daemon rather than against hand-built dicts.
+**Why:** Everything from here to Task 17 needs a realistic four-way interleaved stream, and `runner/mock.py` — "the project's core test instrument" — can already replay one to a real UI with no hardware. Building the fixture now is what lets Tasks 14–17 be verified against something that behaves like the daemon rather than against hand-built dicts.
 
 **Produces:** `quad_fold.jsonl` — four folds on cards 0–3, started at staggered offsets, with interleaved `stage` and `frame` events and staggered completions, plus the ordering pathology this project actually measured: **fold N's `job_done` arriving after fold N+1's `job_start` on the same card.**
 
@@ -2010,9 +3136,11 @@ def test_the_fixture_matches_what_the_generator_produces(tmp_path):
 
 Test 10 needs `make_quad_fold.py` to be deterministic (a seeded `default_rng`, exactly as `make_short_fold.py` does) and to take `--out`. Give `make_short_fold.py` the same `--out` treatment while you are there only if it costs nothing; do not turn this into a refactor.
 
+`quad_fold.jsonl`'s `hello` line must interpolate `PROTOCOL_VERSION` rather than a literal `2`, exactly as `make_short_fold.py` already does: Task 3's fixture ratchet globs every `.jsonl` under `tests/fixtures/streams/` and a hardcoded version fails it at the next bump — which is the failure this whole amendment just had to clean up once.
+
 ---
 
-### Task 11: The quad view [no device]
+### Task 14: The quad view [no device]
 
 **Files:** Create `ui/quad.py`. Test: `tests/unit/test_quad.py`
 
@@ -2021,7 +3149,8 @@ Test 10 needs `make_quad_fold.py` to be deterministic (a seeded `default_rng`, e
 **Produces:**
 
 - `grid_position(slot) -> (column, row)` — pure: `0→(0,0)`, `1→(1,0)`, `2→(0,1)`, `3→(1,1)`.
-- `QuadView(Gtk.Grid)` built from a card list, with `.viewers`, `.viewer_for_slot(slot)`, `.set_caption(slot, text)`, `.set_focus(slot | None)`, `.set_connection_state(state)`, `.slot_count`.
+- `QuadView(Gtk.Grid)` built from a card list, with `.viewers`, `.viewer_for_slot(slot)`, `.set_caption(slot, text)`, `.set_focus(slot | None)`, `.set_connection_state(state)`, `.set_notice(text | None)`, `.notice_text()`, `.slot_count`.
+- The notice is one line spanning the whole quad, not a fifth caption: it is what the booth says between a visitor's tap and the fold that answers it (Task 17), and it belongs to no cell because at that moment no cell is folding the thing it names.
 - Its own `_QUAD_CSS` and `_BACKGROUND_BY_CLASS`, wired into `tests/unit/_legibility.py`'s shared guard.
 
 - [ ] **Step 1: Write the failing tests**
@@ -2116,6 +3245,25 @@ def test_an_out_of_range_caption_does_not_raise():
     quad.set_caption(7, "nonsense")
 
 
+def test_the_notice_belongs_to_the_quad_and_not_to_a_cell():
+    """It names a protein no cell is folding yet. Rendering it into cell 0's
+    caption would label whatever cell 0 IS folding with the wrong name."""
+    quad = QuadView(cards=[0, 1, 2, 3])
+    quad.set_notice("HEMOGLOBIN — NEXT UP")
+    assert quad.notice_text() == "HEMOGLOBIN — NEXT UP"
+    assert all(quad.caption_text(s) != "HEMOGLOBIN — NEXT UP" for s in range(4))
+
+
+def test_a_cleared_notice_leaves_nothing_behind():
+    """It is cleared the moment the picked fold starts. A banner still
+    saying NEXT UP over the fold it announced is the booth talking over
+    itself."""
+    quad = QuadView(cards=[0, 1, 2, 3])
+    quad.set_notice("HEMOGLOBIN — NEXT UP")
+    quad.set_notice(None)
+    assert not quad.notice_text()
+
+
 def test_the_connection_state_reaches_every_viewer():
     quad = QuadView(cards=[0, 1, 2, 3])
     quad.set_connection_state("connected")
@@ -2133,6 +3281,7 @@ def test_an_unknown_connection_state_does_not_raise_out_of_the_quad():
 def test_every_label_in_the_quad_is_legible():
     quad = QuadView(cards=[0, 1, 2, 3])
     quad.set_caption(0, "DIFFUSION 62%")
+    quad.set_notice("HEMOGLOBIN — NEXT UP")
     assert_every_label_is_legible(
         quad, context="ui.quad", min_contrast=MIN_CONTRAST_RATIO,
         contrast_ratio_fn=contrast_ratio,
@@ -2140,7 +3289,7 @@ def test_every_label_in_the_quad_is_legible():
         background_by_class_fn=lambda: quadmod._BACKGROUND_BY_CLASS)
 ```
 
-**Mutations these must catch:** row-major transposed to column-major (test 1 red); building a fixed four cells regardless of the card list (tests 4, 5 red); labelling cells by slot index instead of card number (test 7 red); leaving the previous focus marking in place (test 8 red); no bounds check on focus or caption (tests 10, 12 red); setting the connection state on one viewer (test 13 red); dropping the guard around the setter (test 14 red); building a caption label with no colour-bearing class (test 15 red).
+**Mutations these must catch:** row-major transposed to column-major (test 1 red); building a fixed four cells regardless of the card list (tests 4, 5 red); labelling cells by slot index instead of card number (test 7 red); leaving the previous focus marking in place (test 8 red); no bounds check on focus or caption (tests 10, 12 red); setting the connection state on one viewer (test 13 red); dropping the guard around the setter (test 14 red); rendering the notice into a cell's caption (the notice test red); leaving a cleared notice on screen (the cleared-notice test red); building a caption or notice label with no colour-bearing class (the legibility test red).
 
 - [ ] **Step 2: Implement, verify mutations, run `./scripts/test.sh`, commit**
 
@@ -2148,7 +3297,7 @@ Then **look at it**: run the app windowed against `quad_fold.jsonl` via `runner/
 
 ---
 
-### Task 12: Wire the quad into the app [no device]
+### Task 15: Wire the quad into the app [no device]
 
 **Files:** Modify `ui/app.py`. Test: `tests/unit/test_app_quad.py`
 
@@ -2161,6 +3310,7 @@ Then **look at it**: run the app windowed against `quad_fold.jsonl` via `runner/
 - `_ribbon_generation` / `_pending_ribbon` / `_deferred_clear` all become **per-slot**, per the table above.
 - **`self.viewer` is removed, not aliased** — an alias is a place for four folds to quietly become one again. `tests/unit/test_ribbon_async.py`, `test_app_handle_event.py` and `test_app_not_ready.py` are updated with it.
 - `_tick_state_at(now)` and `_join_ribbon_workers(timeout)` are the two new test seams (see Step 2).
+- `_FakeViewer`, `_FakeQuad`, `_app`, `_start`, `_done` and `_frame` are extracted into **`tests/unit/_appfakes.py`** as part of this task — Task 17's tests import them from there. The leading underscore keeps pytest from collecting it, the same convention `tests/unit/_legibility.py` already uses, and one copy of the fake quad is one place for it to drift from the real one.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2197,6 +3347,7 @@ class _FakeQuad:
         self.slot_count = n
         self.captions = {}
         self.focus = None
+        self.notice = None
 
     def viewer_for_slot(self, slot):
         return self.viewers[slot]
@@ -2206,6 +3357,9 @@ class _FakeQuad:
 
     def set_focus(self, slot):
         self.focus = slot
+
+    def set_notice(self, text):
+        self.notice = text
 
     def set_connection_state(self, state):
         for v in self.viewers:
@@ -2515,7 +3669,7 @@ def test_a_panel_failure_does_not_freeze_the_state_tick():
 
 ---
 
-### Task 13: Four chips, honestly [no device]
+### Task 16: Four chips, honestly [no device]
 
 **Files:** Modify `ui/chipviz.py`, `ui/app.py`, `ui/diagnostics.py`. Test: `tests/unit/test_chipviz_multichip.py`, extend `tests/unit/test_app_interaction.py`
 
@@ -2641,7 +3795,12 @@ def test_the_help_intro_no_longer_says_one_after_another():
 
 
 def test_the_help_intro_still_discloses_that_a_pick_starts_nothing():
-    """The one claim that must NOT change: the socket is still one-way."""
+    """Deliberately temporary, and deliberately still here. The daemon can
+    be picked from as of Task 9, but ui/app.py does not send a pick until
+    Task 17 -- so as of THIS commit a tap still starts nothing and the copy
+    saying so is still true. Task 17 replaces this test with its inverse, in
+    the same commit as the behaviour. Do not delete it early, and do not let
+    Task 17 leave both."""
     from ui.app import _HELP_INTRO
     text = " ".join(_HELP_INTRO).lower()
     assert "isn't wired up" in text or "is not wired up" in text
@@ -2662,37 +3821,155 @@ def test_the_diagnostics_teaching_copy_matches_the_help_card():
 
 ---
 
-### Task 14: The gallery pick, and what the booth says about it [no device]
+### Task 17: The pick, end to end [no device]
 
-**Files:** Modify `ui/app.py`, `ui/gallery.py`. Test: `tests/unit/test_app_pick.py`
+**Files:** Modify `ui/app.py`, `ui/gallery.py`. Test: `tests/unit/test_app_pick.py`; extend `tests/unit/test_app_interaction.py`
 
-**Why:** The spec asks that a visitor's pick become the hero of the quad. Per the declared deviation at the top of this plan, the pick still cannot cause a fold — so what it can honestly do is nominate a target and take the focus when the loop reaches it, and the copy must say exactly that.
+**Why:** Everything needed for a visitor's pick to become the hero of the quad now exists — the message (Task 3), the two directions of the socket (Tasks 4, 5), the daemon's dispatch (Task 9), the focus rule and the pick status (Task 12). This task connects the tap to it and, **in the same commit**, changes every visitor-facing string that currently says a pick starts nothing. Shipping the behaviour without the copy would leave the booth telling visitors it cannot do the thing it just did — the mirror image of the Critical 2 finding, and no more honest for being generous.
 
-**Produces:** `_on_pick` additionally calls `self.router.select_target(target_id)`; the focus cell is marked when that target's fold starts; the gallery's copy and `_HELP_INTRO`'s disclosure paragraph are updated to describe the quad rather than a single fold.
+**Produces:**
+
+- `_on_pick(target_id)` additionally: `self.router.select_target(target_id, now=…)`, a guarded `self._client.send_pick(target_id)`, and a refreshed on-screen notice. The existing `_note_input` / `_note_diagnostics` / `states.on_pick` / `_sync_to_state` calls stay exactly as they are.
+- `_sync_quad_notice(now)` — a one-line acknowledgement across the quad, driven entirely by `router.pick_status(now)` (Task 12): `"queued"` → the pick is named and told it starts on the next free chip; `"waiting"` (past `PICK_PENDING_WARN_S`) → the same, plus that the booth is finishing the folds already running; `"folding"` or `None` → cleared. Called from `_on_pick` and from `_tick_state_at`.
+- The `incompatible` connection state shows the same neutral overlay the booth already shows for `not_ready`. Task 3's ruling, landed here so it arrives with the copy: the version numbers go to the log and the diagnostics rail, never to the glass.
+- `ui/gallery.py`: `_CAPTION_BODY`, `_CARD_HINT` and the module docstring. That docstring currently ends "When the protocol grows a client→server message, this is the copy to change back — not before." This is that moment.
+- `ui/app.py`: `_HELP_INTRO`'s fourth paragraph — the disclosure — rewritten.
+
+**Copy rules, which the tests enforce:**
+
+- Say what the booth does: a tap puts that protein next. Do **not** promise "instantly" or "now" — with four chips busy it starts when one frees, usually within seconds, and a claim of instant is a claim the booth breaks in front of the person most likely to notice.
+- Say that it does not interrupt: the folds already running finish. That is a nicer fact than it sounds — it is why the other three cells keep moving — and stating it is what makes a few seconds of waiting read as deliberate rather than broken.
+- No error text, no version numbers, no paths, ever.
 
 - [ ] **Step 1: Write the failing tests**
 
+`tests/unit/test_app_pick.py`, using the helpers extracted in Task 15:
+
 ```python
-def test_a_pick_nominates_a_target_without_claiming_to_start_it():
-    app = _app()
+import pytest
+
+from _appfakes import _app, _done, _frame, _start        # extracted in Task 15
+from ui.slots import PICK_PENDING_WARN_S
+
+
+class _RecordingClient:
+    def __init__(self, ok=True):
+        self.picks = []
+        self.ok = ok
+        self.state = "connected"
+
+    def send_pick(self, target_id):
+        self.picks.append(target_id)
+        return self.ok
+
+
+def _picking_app(cards=(0, 1, 2, 3), client=None):
+    app = _app(cards)
+    app._client = client if client is not None else _RecordingClient()
+    return app
+
+
+def test_a_pick_asks_the_daemon_to_fold_it():
+    """The decision this whole amendment exists for. Without this line the
+    pick is a nomination again and the booth's copy becomes a lie."""
+    app = _picking_app()
     app._on_pick("hemoglobin")
-    assert app.router.selected_target == "hemoglobin"
-    assert app.quad.focus is None, "nothing is folding it yet"
+    assert app._client.picks == ["hemoglobin"]
 
 
-def test_the_focus_moves_when_the_picked_target_starts_folding():
+def test_a_pick_with_no_daemon_at_all_does_not_raise():
+    """DemoApp(socket_path=None) is how the whole UI suite runs, and how the
+    booth comes up before the daemon does. _on_pick runs in a GLib callback:
+    an AttributeError here freezes the source and the booth stops answering
+    taps for the rest of the day."""
     app = _app()
+    app._client = None
+    app._on_pick("hemoglobin")
+
+
+def test_a_failing_send_never_reaches_the_screen():
+    class _Exploding:
+        state = "connected"
+
+        def send_pick(self, target_id):
+            raise OSError("/run/tt-bio-demo/daemon.sock: connection refused")
+
+    app = _picking_app(client=_Exploding())
+    app._on_pick("hemoglobin")                      # must not raise
+    assert all("/run/" not in (t or "") for t in app.quad.captions.values())
+    assert "/run/" not in (app.quad.notice or "")
+
+
+def test_nothing_is_sent_to_a_daemon_the_ui_has_refused():
+    app = _picking_app(client=_RecordingClient())
+    app._client.state = "incompatible"
+    app._on_state("incompatible")
+    app._on_pick("hemoglobin")
+    assert app._client.picks == []
+
+
+def test_the_booth_acknowledges_the_pick_at_tap_time():
+    """The failure this designs against: a visitor taps, four chips are
+    busy, and for twenty seconds the screen says nothing. The
+    acknowledgement must not wait on any daemon answering."""
+    app = _picking_app()
+    app._on_pick("hemoglobin")
+    assert app.quad.notice
+    assert "HEMOGLOBIN" in app.quad.notice.upper()
+
+
+def test_the_acknowledgement_says_more_when_the_wait_runs_long():
+    app = _picking_app()
+    app._tick_state_at(0.0)
+    app._on_pick("hemoglobin")
+    early = app.quad.notice
+    app._tick_state_at(PICK_PENDING_WARN_S + 1.0)
+    assert app.quad.notice != early
+    assert app.quad.notice
+
+
+def test_the_acknowledgement_never_becomes_an_error():
+    app = _picking_app()
+    app._on_pick("hemoglobin")
+    for now in (0.0, PICK_PENDING_WARN_S + 1.0, 44.0):
+        app._tick_state_at(now)
+        text = (app.quad.notice or "").lower()
+        assert "error" not in text and "fail" not in text and "/" not in text
+
+
+def test_the_notice_clears_when_the_picked_fold_starts():
+    """It has become the thing on screen. A banner still saying NEXT UP over
+    the fold it was announcing is the booth talking over itself."""
+    app = _picking_app()
+    app._on_pick("hemoglobin")
+    app._handle_event(_start("j3", card=3, target_id="hemoglobin"))
+    assert not app.quad.notice
+
+
+def test_the_focus_moves_to_the_cell_that_folds_the_pick():
+    """Spec: 'a visitor's pick becomes the hero of the quad while the other
+    three chips continue the attract playlist.'"""
+    app = _picking_app()
     app._on_pick("hemoglobin")
     app._handle_event(_start("j0", card=0, target_id="attract-a"))
-    assert app.quad.focus != 0 or app.router.selected_target == "hemoglobin"
     app._handle_event(_start("j3", card=3, target_id="hemoglobin"))
     assert app.quad.focus == 3
+
+
+def test_a_pick_for_a_target_already_folding_takes_the_focus_at_once():
+    """The daemon queues nothing in this case (Task 9), so if the UI waited
+    for a job_start that will never come, the visitor's pick would silently
+    do nothing at all."""
+    app = _picking_app()
+    app._handle_event(_start("j2", card=2, target_id="hemoglobin"))
+    app._on_pick("hemoglobin")
+    assert app.quad.focus == 2
 
 
 def test_the_other_three_cells_keep_folding_the_attract_playlist():
     """Spec: 'the other three chips continue the attract playlist.' A pick
     must not stop, clear or freeze any other cell."""
-    app = _app()
+    app = _picking_app()
     for card in range(4):
         app._handle_event(_start(f"j{card}", card=card))
     before = [v.cleared for v in app.quad.viewers]
@@ -2700,59 +3977,116 @@ def test_the_other_three_cells_keep_folding_the_attract_playlist():
     assert [v.cleared for v in app.quad.viewers] == before
 
 
+def test_a_pick_does_not_disturb_a_frame_stream_in_flight():
+    app = _picking_app()
+    app._handle_event(_start("j1", card=1))
+    app._on_pick("hemoglobin")
+    app._on_event(_frame("j1"))
+    app._drain_frames()
+    assert app.quad.viewers[1].points == 1
+
+
 def test_a_pick_still_reaches_the_booth_state_machine():
     """Unchanged: the pick closes the gallery. Regressing this makes the
     booth stop responding to a tap."""
-    app = _app()
+    app = _picking_app()
     app._on_touch()
     app._on_pick("hemoglobin")
     assert app.display_state == "folding"
 
 
-def test_a_pick_for_a_target_the_loop_never_reaches_expires():
-    """A visitor who picks and walks away must not pin the focus for the
-    rest of the day."""
-    app = _app()
+def test_a_pick_the_daemon_never_folds_expires():
+    """A visitor who picks and walks away must not pin the focus, or the
+    notice, for the rest of the day."""
+    app = _picking_app()
     app._on_pick("hemoglobin")
     app._tick_state_at(0.0)
     app._tick_state_at(9999.0)
     assert app.router.selected_target is None
+    assert not app.quad.notice
+```
+
+And in `tests/unit/test_app_interaction.py`:
+
+```python
+def test_the_help_intro_no_longer_says_picking_is_not_wired_up():
+    """It reads, verbatim before this task: 'asking it to fold a particular
+    one on demand isn't wired up yet'. It is now, and a booth that
+    disclaims a capability it has teaches visitors not to try it."""
+    from ui.app import _HELP_INTRO
+    text = " ".join(_HELP_INTRO).lower()
+    assert "isn't wired up" not in text
+    assert "is not wired up" not in text
+    assert "one after another" not in text
 
 
-def test_the_gallery_copy_does_not_promise_an_on_demand_fold():
-    """The whole-branch review's Critical 2. The gallery says what it IS."""
+def test_the_help_intro_says_what_a_tap_now_does():
+    from ui.app import _HELP_INTRO
+    text = " ".join(_HELP_INTRO).lower()
+    assert "next" in text
+
+
+def test_the_help_intro_does_not_promise_an_instant_fold():
+    """With four chips busy the pick starts when one frees. 'Instantly' is
+    a claim the booth breaks in front of the one visitor watching for it."""
+    from ui.app import _HELP_INTRO
+    text = " ".join(_HELP_INTRO).lower()
+    assert "instantly" not in text
+    assert "straight away" not in text
+
+
+def test_the_help_intro_says_a_pick_does_not_interrupt_a_running_fold():
+    """The reason the wait exists, stated as the feature it is."""
+    from ui.app import _HELP_INTRO
+    text = " ".join(_HELP_INTRO).lower()
+    assert "interrupt" in text or "finish" in text
+```
+
+And in the same file, for the gallery:
+
+```python
+def test_the_gallery_copy_says_a_tap_folds_it_next():
     from ui.gallery import _CAPTION_BODY, _CAPTION_TITLE, _CARD_HINT
     lowered = f"{_CAPTION_TITLE} {_CAPTION_BODY} {_CARD_HINT}".lower()
     assert isinstance(_CAPTION_BODY, str), "a tuple here would join per-character"
-    assert "tap to fold" not in lowered
-    assert "isn't wired up" in lowered or "is not wired up" in lowered
+    assert "next" in lowered
+    assert "isn't wired up" not in lowered
+    assert "is not wired up" not in lowered
 
 
 def test_the_gallery_copy_no_longer_says_one_after_another():
-    """It reads, verbatim today: 'It works through these one after another,
-    all day.' Four chips is four at a time, and 'the fold that is running
-    right now' is now four folds. Both have to change with the behaviour."""
+    """It reads, verbatim before this task: 'It works through these one
+    after another, all day.' Four chips is four at a time."""
     from ui.gallery import _CAPTION_BODY
     lowered = _CAPTION_BODY.lower()
     assert "one after another" not in lowered
     assert "the fold that is running right now" not in lowered
 
 
-def test_the_help_disclosure_still_tells_the_truth_about_picking():
-    from ui.app import _HELP_INTRO
-    text = " ".join(_HELP_INTRO).lower()
-    assert "isn't wired up" in text or "is not wired up" in text
+def test_the_gallery_module_docstring_no_longer_describes_a_one_way_socket():
+    """That docstring is the instruction sheet for anyone editing this copy,
+    and it currently says, in bold, that a tap does not reach the daemon and
+    that the copy changes back only when the protocol grows a client->server
+    message. It has. A stale instruction sheet is how the copy regresses."""
+    import ui.gallery
+    text = ui.gallery.__doc__.lower()
+    assert "one-way" not in text
+    assert "cannot be reached from here yet" not in text
 ```
 
-**Mutations these must catch:** moving the focus at pick time rather than at `job_start` (test 1 red); never moving it (test 2 red); clearing other cells on a pick (test 3 red); dropping the `states.on_pick` call (test 4 red); a pick that never expires (test 5 red); reverting the honest copy (tests 6, 7 red).
+**Mutations these must catch:** dropping the `send_pick` call, i.e. reverting to a nomination (test 1 red); an unguarded `self._client.send_pick` with no client (test 2 red); letting a send failure escape or reach the screen (test 3 red); sending while `incompatible` (test 4 red); acknowledging only once the daemon answers (test 5 red); one static notice regardless of how long the wait runs (test 6 red); a notice built by interpolating an exception (test 7 red); never clearing the notice (tests 8, 14 red); moving the focus at pick time for a target nobody is folding — which would point the hero cell at the wrong protein (Task 12 test 25 red); failing to focus a target already in flight (test 10 red); clearing or freezing another cell on a pick (tests 11, 12 red); dropping the `states.on_pick` call (test 13 red); a pick that never expires (test 14 red); reverting any of the copy (the copy tests red).
+
+**Test 10 and Task 9's "already folding queues nothing" are one behaviour split across two processes.** If either half is missing, a visitor who picks the protein currently on screen gets nothing at all — the daemon queues no job, and the UI waits for a `job_start` that will never arrive. Verify them together.
 
 - [ ] **Step 2: Implement, verify mutations, run `./scripts/test.sh`, commit**
 
-Test 5 needs a pick expiry. Use the existing 45 s idle timeout as the clock source rather than inventing a second timer: when the booth returns to `attract` from the idle timeout, the selected target is released. That keeps one number for "the visitor has gone".
+The pick expiry stays where the old plan put it: the existing 45 s idle timeout is the clock source, not a second timer. When the booth returns to `attract`, `router.release_target()` is called and the notice clears. One number for "the visitor has gone".
+
+Then **look at it**: with `runner/mock.py` replaying `quad_fold.jsonl` there is no daemon to answer a pick, so drive this one against the real daemon in Task 18 — but do open the gallery windowed and confirm the notice renders and is legible (`assert_every_label_is_legible` covers contrast; it does not cover a banner that lands under the quad's own captions).
 
 ---
 
-### Task 15: Four workers, one booth [hardware]
+### Task 18: Four workers, one booth [hardware]
 
 **Files:** Modify `scripts/run-demo.sh`, `README.md`. Test: manual, on hardware, plus `tests/integration/test_four_workers.py` (opt-in via `--hw`).
 
@@ -2766,7 +4100,10 @@ Verify with measurements, not impressions:
 - Four cells on screen, four different proteins, four different progress states at the same instant. Screenshot with `spectacle -b -n -f -o /tmp/quad-live.png`.
 - Time from daemon start to first `hello` (not `not_ready`). The spike measured model load at 6.4–9.2 s under four-way contention; anything much beyond that is worth understanding before the venue.
 - Peak RSS of the four workers together, from `ps`. The spike measured 4.04 GB each, ~16 GB total. A materially larger number means something is not sharing what it should.
-- Kill one worker with `kill -9` mid-fold. **The other three must keep folding**, the killed chip's cell must not strand, and a replacement worker must come up and fold again. This is Task 5's contract against real silicon and it is the single most valuable minute of this task.
+- Kill one worker with `kill -9` mid-fold. **The other three must keep folding**, the killed chip's cell must not strand, and a replacement worker must come up and fold again. This is Task 7's contract against real silicon and it is the single most valuable minute of this task.
+- **Tap a target in the gallery, twice: once with a chip free, once with all four busy.** Time both from the tap to that target's `job_start` in the daemon log. The free-chip case should be well under a second; the busy case is bounded by the remaining time of the earliest-finishing of the four folds in flight. Record both numbers. Confirm from the log that **no running fold was cancelled** (Task 9's ruling), and on screen that the picked cell becomes the focus and the other three keep folding the playlist. If the busy-case number is anywhere near twenty seconds, that is a finding about the playlist's largest targets and it belongs in `docs/followups.md` with the measurement, not in a shrug.
+- **Pick the target that is already folding.** Nothing new should be queued, and the cell already folding it should take the focus immediately. This is the one case where the daemon and the UI have to agree without exchanging a message about it (Task 9 and Task 17).
+- **Run the UI against a deliberately mismatched daemon once** — edit `PROTOCOL_VERSION` in one venv's checkout, or run the pre-amendment daemon binary. The booth must show its neutral overlay, log the mismatch, and send nothing. A version guard nobody has ever watched fire is a version guard.
 - Then `Ctrl+C` the daemon and confirm with `tt-smi -s` and `ls /dev/tenstorrent` that **no process holds a device**. Check for stale lease files (`tt_bio.device_lease.lease_dir()`).
 
 - [ ] **Step 2: Write the hardware test**
@@ -2775,13 +4112,13 @@ Verify with measurements, not impressions:
 
 - [ ] **Step 3: `scripts/run-demo.sh` and the README**
 
-`run-demo.sh` passes `--devices` through. The README says what is now true: four chips, four proteins, one per chip; a single target is still a single-card fold (tt-bio's own documented limit — do not imply otherwise). Do not claim the pick starts a fold.
+`run-demo.sh` passes `--devices` through. The README says what is now true: four chips, four proteins, one per chip; a single target is still a single-card fold (tt-bio's own documented limit — do not imply otherwise); and a visitor's pick folds **next** — on the next chip to free, without interrupting the folds already running. Do not claim it is instant, and do not leave the old sentence saying a pick starts nothing.
 
 - [ ] **Step 4: Commit**
 
 ---
 
-### Task 16: The soak [hardware]
+### Task 19: The soak [hardware]
 
 **Files:** Report only, plus whatever it forces.
 
@@ -2812,14 +4149,18 @@ An hour that finds nothing is a result worth writing down, with the numbers, so 
 3. The daemon holds no device; four worker subprocesses hold one chip each.
 4. Four proteins fold simultaneously, one per chip, in a 2×2 quad, each labelled with its chip.
 5. Killing one worker mid-fold leaves the other three folding, and the killed chip recovers.
-6. The Tensix panel, the help card and the diagnostics copy all describe four working chips, and none of them claims a pick starts a fold.
+6. The Tensix panel, the help card, the gallery and the diagnostics copy all describe four working chips and a pick that folds next — none of them claims a pick starts nothing, and none of them claims it is instant.
 7. A one-hour four-chip soak shows bounded logs (verified with `lsof`, not just `du`), bounded RSS, and a recorded answer to whether the thermal quarantine fired.
 8. `tt-smi -s` after shutdown shows no process holding a device.
+9. A visitor's pick reaches the daemon, is dispatched ahead of the attract backlog, and becomes the focus cell of the quad — measured on hardware with a chip free and with all four busy, with no running fold cancelled either time.
+10. The daemon survives everything a client can send it — malformed JSON, an unknown message type, a line split across reads, a megabyte with no newline, a client that connects and says nothing — without dropping a healthy UI and without any of it reaching the screen.
+11. `PROTOCOL_VERSION` is `2` on both sides, no committed fixture advertises a stale version, and a mismatch in either direction refuses cleanly onto a neutral screen.
 
 ## What this phase deliberately leaves out
 
 - **Multi-chip within a single fold.** Not available: tt-bio's own documentation states a single target remains a single-card fold, and extra cards raise throughput only across queued targets. There is nothing to measure and no faster-single-fold option to weigh against the quad.
 - **Multi-host.**
-- **A client→server protocol message**, and therefore a pick that actually causes a fold. See the declared deviation at the top of this plan. It needs a protocol version bump and belongs in its own phase.
+- **A second client→server message.** The client direction carries exactly one type, `pick`. Anything else — cancel, replay, a target that is not in the playlist, a queue-position query — is another version bump, another decision, and a task of its own.
+- **Preempting a running fold to serve a pick.** Ruled out in Task 9, with reasons and numbers. If the wait measured at a venue turns out to be intolerable, revisit it there with the measurement in hand — not here, on the strength of a worry.
 - **Pipelined pre-compute** (spec option C). It optimises the thing nobody can see.
 - **Per-cell interaction** — tapping a cell to enlarge it. The quad is four equal cells; a hero-scaling layout is a design question, not a plumbing one.
