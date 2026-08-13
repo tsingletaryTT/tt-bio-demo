@@ -23,63 +23,50 @@ page is the real thing on real silicon — no mockups, no reconstructions.*
 
 ## What it looks like
 
-<table>
-<tr>
-<td width="50%">
+Every image below is the real application folding on a Blackhole p300c — no mockups, no
+reconstructions.
+
+### The fold, in flight
 
 ![Live diffusion](docs/screenshots/02-live-diffusion.png)
 
-**The fold, in flight.** 865 atoms mid-collapse. The point cloud is the model's actual
-denoising trajectory, streamed a step at a time — not an animation of a finished result.
-Press <kbd>T</kbd> for the Tensix core grid, <kbd>D</kbd> for the protocol tap.
+865 atoms mid-collapse. The point cloud is the model's actual denoising trajectory,
+streamed a step at a time — not an animation of a finished result. Press <kbd>T</kbd> for
+the Tensix core grid, <kbd>D</kbd> for the live protocol tap.
 
-</td>
-<td width="50%">
-
-![Diagnostics](docs/screenshots/03-diagnostics-detail.png)
-
-**What it is actually doing.** The live protocol tap, with a plain-language line for each
-stage. Bounded ring buffer — the booth runs unattended all day.
-
-</td>
-</tr>
-<tr>
-<td width="50%">
-
-![Panels](docs/screenshots/04-panels-detail.png)
-
-**The instrument.** Pipeline stages and per-chip telemetry, sampled independently of the
-compute daemon so the silicon keeps visibly breathing even if the daemon wedges.
-
-![The folded structure](docs/screenshots/01-folded-structure.png)
-
-**The reveal.** Trp-cage, coloured by the model's own per-residue confidence.
-
-</td>
-</tr>
-<tr>
-<td colspan="2">
+### Never a blank screen
 
 ![Holding the previous structure while the next fold computes](docs/screenshots/05-holds-previous-structure.png)
 
-**Never a blank screen.** Only the diffusion stage produces coordinates, so a big
-protein spends its first ~15 s in `trunk` with nothing to draw. Rather than showing black,
-the viewer holds the last **real** structure — dimmed, and captioned with what it is and
-what is computing now. Nothing is ever fabricated: what you see was actually computed.
+Only the diffusion stage produces coordinates, so a big protein spends its first ~15 s in
+`trunk` with nothing to draw. Rather than showing black, the viewer holds the last **real**
+structure — dimmed, and captioned with what it is and what is computing now. Nothing is
+ever fabricated: what you see was actually computed.
 
-</td>
-<td width="50%">
+### The reveal
 
-**Four chips on two boards.** A p300c carries two chips, so `tt-smi`'s four entries are
-four chips — not four boards. The panel says so, because a visitor reading "4 cards"
-would picture the wrong machine.
+![The folded structure](docs/screenshots/01-folded-structure.png)
 
-Folds are timed on this hardware, warm: Trp-cage **4.4 s**, FKBP12 **11.7 s**,
-DHFR **19.7 s**, trypsin **22.3 s**.
+Trp-cage, coloured by the model's own per-residue confidence.
 
-</td>
-</tr>
-</table>
+### What it is actually doing
+
+![Diagnostics](docs/screenshots/03-diagnostics-detail.png)
+
+The live protocol tap, with a plain-language line for each stage. Bounded ring buffer — the
+booth runs unattended all day.
+
+### The instrument
+
+![Panels](docs/screenshots/04-panels-detail.png)
+
+Pipeline stages and per-chip telemetry, sampled independently of the compute daemon so the
+silicon keeps visibly breathing even if the daemon wedges.
+
+**Four chips on two boards.** A p300c carries two chips, so `tt-smi`'s four entries are four
+chips — not four boards. The panel says so, because a visitor reading "4 cards" would
+picture the wrong machine. Folds are timed on this hardware, warm: Trp-cage **4.4 s**,
+FKBP12 **11.7 s**, DHFR **19.7 s**, trypsin **22.3 s**.
 
 ---
 
