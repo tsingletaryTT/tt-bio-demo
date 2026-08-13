@@ -10,8 +10,8 @@ itself answers. That is what lets a wedged or dead daemon still leave the
 silicon visibly breathing on screen.
 
 This module intentionally mirrors runner/cards.py's field handling
-(`_number`'s strip-then-float, the `board_type` default, the per-card
-try/except that skips one bad card rather than failing the whole snapshot)
+(`_number`'s strip-then-float, the `board_type` default, the per-chip
+try/except that skips one bad chip rather than failing the whole snapshot)
 rather than reinventing it -- per the brief, don't gratuitously diverge from
 a shape that already works. It is a separate copy, not an import: ui/ and
 runner/ live in different venvs that must never cross-import (see
@@ -21,7 +21,7 @@ both happen to be on the same PYTHONPATH. If more than the parse step itself
 ever needs to be shared between the two sides, it belongs in protocol/,
 which both venvs can already reach -- see the report for task 4 of the
 2026-08-12-ui-panels plan for why this task's copy stayed this small (one
-function, `_number`, plus the per-card try/except shape) and didn't trigger
+function, `_number`, plus the per-chip try/except shape) and didn't trigger
 that move.
 
 Design note on `latest()` / `age_s()`: a failed sample never overwrites a
@@ -30,7 +30,7 @@ the last known reading in place and lets `age_s()` say how old it is. That
 is what makes `age_s()` meaningful at all: if a single flaky poll blanked
 the reading, there would be nothing left to measure the age of, and the
 panel could not tell "tt-smi answered once and has been quiet since" (a
-sensor hiccup, wait it out) from "the cards are genuinely idle" (also
+sensor hiccup, wait it out) from "the chips are genuinely idle" (also
 static, but for a different reason) -- exactly the distinction the brief
 calls out as `age_s()`'s reason to exist. The panel is expected to combine
 `latest()` with `age_s()` itself (e.g. treat anything older than a couple of
@@ -43,21 +43,21 @@ threshold.
   covers a missing binary, a timeout, a non-zero exit, junk instead of
   JSON, AND one more case that is easy to miss: well-formed JSON reporting
   one or more devices, none of which we could parse. That last one still
-  counts as a failed sample, not a reading of zero cards -- tt-smi told us
+  counts as a failed sample, not a reading of zero chips -- tt-smi told us
   hardware exists and we simply couldn't read it, which is exactly the kind
   of incident a booth operator needs `latest()` to keep looking unresolved
   about (the previous good reading, if any, is left untouched and visibly
   ages via `age_s()`).
 - `[]` -- `tt-smi` answered successfully and truthfully reported *no
   devices at all* (`device_info` empty or absent). That is real information
-  worth showing ("no cards detected"), not a failure, so it lands as a
+  worth showing ("no chips detected"), not a failure, so it lands as a
   fresh sample with a new timestamp like any other success.
 - A non-empty list -- the normal case.
 
 Collapsing the first two into one falsy-ish state was an earlier bug in
 this module: a snapshot with N devices, all unreadable, silently clobbered
 a real prior reading with a fresh-timestamped `[]` -- indistinguishable
-from "these cards were just unplugged" one second after a real temperature
+from "these chips were just unplugged" one second after a real temperature
 was on screen. See task-4-report.md's Fix Round 1 for how this was caught
 and the tests that pin it down.
 """
@@ -80,12 +80,56 @@ _TT_SMI_ARGS = ["tt-smi", "-s", "--snapshot_no_tty"]
 
 
 @dataclass(frozen=True)
-class CardReading:
+class ChipReading:
+    """One `tt-smi -s` device entry: one CHIP, not one board.
+
+    Named for what it is, after the vocabulary fix (task 11). `tt-smi`
+    reports one `device_info` entry per PCIe device, and on this booth's
+    hardware a p300c board presents TWO of them -- so the four entries
+    tt-smi lists here are four chips on two boards, and calling the
+    dataclass `CardReading` (as this module did until now) made every
+    reader of the panel above it repeat the same mistake. `board_id` is
+    what makes the distinction recoverable: chips sharing a board share a
+    `board_id`, so `distinct_board_count` below can say "4 chips on 2
+    boards" instead of implying four boards.
+
+    `runner/cards.py` and the protocol's `card` field keep their names on
+    purpose -- they are the daemon's own scheduling vocabulary and a wire
+    contract respectively, and renaming either would be a compatibility
+    break for a cosmetic gain. See this task's report.
+    """
+
     index: int
     board_type: str
     temperature_c: float
     power_w: float
     aiclk_mhz: float
+    # tt-smi's `board_info.board_id` -- the SERIAL OF THE BOARD this chip
+    # sits on, identical for the two chips of a p300c pair. `None` when the
+    # snapshot did not carry one (an older tt-smi, or a device entry with
+    # no board_info): the panel then falls back to a plain chip count
+    # rather than guessing a board count it cannot know.
+    board_id: str = None
+
+
+def distinct_board_count(readings):
+    """How many physically distinct BOARDS `readings` sit on, or `None` if
+    that cannot be told from this snapshot.
+
+    Pure, and deliberately conservative. Chips sharing a `board_id` share a
+    board (verified against `tt-smi -s` on this booth's QB2: bus ids
+    01/02:00.0 both report board_id 0000046131924062, 03/04:00.0 both
+    report ...4055 -- four chips, two p300c boards). If ANY reading is
+    missing its `board_id` the answer is `None`, not a partial count: a
+    heading that says "4 chips on 3 boards" because one chip's id was
+    unreadable is worse than one that just says "4 chips".
+    """
+    if not readings:
+        return None
+    board_ids = [r.board_id for r in readings]
+    if any(board_id is None for board_id in board_ids):
+        return None
+    return len(set(board_ids))
 
 
 def _number(value):
@@ -100,13 +144,13 @@ def _number(value):
     happily parses `"nan"`/`"inf"` (and `json.loads` happily produces a
     literal `nan`/`inf` from non-standard-but-permitted JSON tokens), and
     without this check a non-finite value would sail through parse_snapshot
-    as a genuine-looking CardReading: a NaN temperature would render as a
-    plausible card showing "nan °C" instead of being caught by the
-    "unreadable card" handling every other bad value already goes through
+    as a genuine-looking ChipReading: a NaN temperature would render as a
+    plausible chip showing "nan °C" instead of being caught by the
+    "unreadable chip" handling every other bad value already goes through
     (tt-smi's own "n/a" sentinel, a missing key, ...). Raising ValueError
     here routes it through that exact same path -- parse_snapshot's
-    per-card try/except already treats a ValueError as "skip this one
-    card, don't blind the panel to the others" -- rather than adding a
+    per-chip try/except already treats a ValueError as "skip this one
+    chip, don't blind the panel to the others" -- rather than adding a
     second, parallel notion of "bad telemetry."
     """
     parsed = float(str(value).strip())
@@ -116,28 +160,38 @@ def _number(value):
 
 
 def parse_snapshot(snapshot):
-    """Parse a `tt-smi -s` snapshot dict into a list of CardReadings.
+    """Parse a `tt-smi -s` snapshot dict into a list of ChipReadings.
 
-    A card whose telemetry can't be parsed (tt-smi's own "n/a" sentinel, a
-    missing key, an empty board_info) is skipped, not fatal: one unreadable
-    card must not blind the panel to the other three. Mirrors
+    One entry per DEVICE, which is one chip -- see `ChipReading`. A chip
+    whose telemetry can't be parsed (tt-smi's own "n/a" sentinel, a missing
+    key, an empty board_info) is skipped, not fatal: one unreadable chip
+    must not blind the panel to the other three. Mirrors
     runner/cards.py:parse_tt_smi's shape -- see the module docstring for why
     this is a deliberate copy rather than a shared import.
+
+    `board_id` is read but NOT required: it is missing-tolerant on purpose
+    (`None` rather than an exception), because a chip whose temperature and
+    power are perfectly readable must still be shown even if this build of
+    tt-smi says nothing about which board it belongs to. Losing the board
+    grouping costs one clause of a heading; losing the chip costs the whole
+    reading.
     """
     readings = []
     for index, device in enumerate(snapshot.get("device_info", []) or []):
         board = device.get("board_info", {}) or {}
         telemetry = device.get("telemetry", {}) or {}
         try:
-            readings.append(CardReading(
+            board_id = board.get("board_id")
+            readings.append(ChipReading(
                 index=index,
                 board_type=board.get("board_type", "unknown"),
                 temperature_c=_number(telemetry.get("asic_temperature")),
                 power_w=_number(telemetry.get("power")),
                 aiclk_mhz=_number(telemetry.get("aiclk")),
+                board_id=str(board_id) if board_id is not None else None,
             ))
         except (TypeError, ValueError):
-            log.warning("card %d has unreadable telemetry; skipping it", index)
+            log.warning("chip %d has unreadable telemetry; skipping it", index)
     return readings
 
 
@@ -187,7 +241,7 @@ class TelemetrySampler:
         self.timeout_s = timeout_s
         self.samples_attempted = 0
         self._lock = threading.Lock()
-        self._latest = None       # list[CardReading] | None
+        self._latest = None       # list[ChipReading] | None
         self._latest_at = None    # time.monotonic() of the last successful sample
         self._stop_event = threading.Event()
         self._thread = None
@@ -305,8 +359,8 @@ class TelemetrySampler:
         # a non-empty device_info from which NOTHING parsed means tt-smi
         # saw hardware and none of it was readable, which is a failed
         # sample (leave the previous reading in place; let it age), not a
-        # truthful "zero cards" reading. Only an EMPTY device_info (or none
-        # at all) is the truthful zero-cards case, and that's worth
+        # truthful "zero chips" reading. Only an EMPTY device_info (or none
+        # at all) is the truthful zero-chips case, and that's worth
         # recording as a fresh, genuine sample.
         devices_seen = len(snapshot.get("device_info") or [])
         if devices_seen and not readings:

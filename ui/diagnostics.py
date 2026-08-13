@@ -10,7 +10,7 @@ So this is two things braided together in one `tail -f`-shaped stream:
 1. **Real traffic.** Every line marked with a timestamp is an actual
    protocol event as it lands off the socket -- stage transitions with
    their fractions, frame indices, the radius of gyration collapsing as
-   the structure condenses, which card the fold was placed on, the pLDDT
+   the structure condenses, which chip the fold was placed on, the pLDDT
    the model gave itself, wall time. Nothing here is simulated, padded, or
    replayed for effect; if the daemon goes quiet, so does this panel, and
    that is information too.
@@ -121,7 +121,7 @@ STAGE_TEACHING = {
     ),
     "prep": (
         "# prep: sequence and features become tensors, laid out",
-        "#   for the Tenstorrent card that will run the fold.",
+        "#   for the Tenstorrent chip that will run the fold.",
     ),
     "trunk": (
         "# trunk: 10 refinement cycles build the model's map of",
@@ -283,16 +283,21 @@ class DiagnosticsLog:
         kind = event.get("type")
 
         if kind == "hello":
-            cards = event.get("cards")
-            count = len(cards) if isinstance(cards, list) else "?"
+            # The wire field is `cards` and stays `cards` -- it is a
+            # protocol contract (protocol/events.py, runner/server.py) and
+            # renaming it would break every daemon that speaks v1. What it
+            # CARRIES is one entry per chip, which is what this line now
+            # says: the vocabulary fix is in the rendering, not the wire.
+            chips = event.get("cards")
+            count = len(chips) if isinstance(chips, list) else "?"
             self.add(f"connected · protocol v{_safe(event.get('version'), 4)}"
-                     f" · {count} cards · preflight "
+                     f" · {count} chips · preflight "
                      f"{_safe(event.get('preflight'), 12)}", KIND_MARK)
         elif kind == "job_start":
             self._taught = set()
             self.add(f"▶ fold {_safe(event.get('target_id'), 22)}"
                      f" · {_num(event.get('n_residues'), '.0f')} res"
-                     f" · card {_safe(event.get('card'), 4)}", KIND_MARK)
+                     f" · chip {_safe(event.get('card'), 4)}", KIND_MARK)
             self.add(f"  model {_safe(event.get('model'), 20)}"
                      f" · job {_safe(event.get('job_id'), 16)}")
         elif kind == "stage":
@@ -323,7 +328,10 @@ class DiagnosticsLog:
             self.add(f"! daemon not ready · {count} item(s) outstanding",
                      KIND_MARK)
         elif kind == "card_state":
-            self.add(f"card {_safe(event.get('card'), 4)}"
+            # Same rule as `hello` above: the EVENT TYPE and its `card`
+            # field are wire vocabulary and untouched; the LINE says chip,
+            # because that is what the daemon is describing.
+            self.add(f"chip {_safe(event.get('card'), 4)}"
                      f" · {_safe(event.get('state'), 14)}"
                      f" · {_num(event.get('temperature_c'), '.1f')}°C")
         elif kind == "frame":

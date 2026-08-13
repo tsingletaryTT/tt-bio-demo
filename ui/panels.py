@@ -1,4 +1,4 @@
-"""Booth panels: card telemetry and fold-pipeline progress.
+"""Booth panels: per-chip telemetry and fold-pipeline progress.
 
 Two composite widgets (`TelemetryPanel`, `PipelinePanel`) plus the pure
 decisions they render (`card_color`, `stage_rows`), kept deliberately
@@ -15,7 +15,7 @@ comes from), and putting them where they belong is what makes them both
 legible (WCAG AA, >=4.5:1 -- see `contrast_ratio`/`MIN_CONTRAST_RATIO`
 below) and on-brand at the same time, instead of fighting the palette with
 hand-darkened one-off variants. Colour is spent sparingly: only the pipeline
-panel's ACTIVE row and a card that has crossed the quarantine line ever get
+panel's ACTIVE row and a chip that has crossed the quarantine line ever get
 a saturated accent -- everything else reads by weight, fill, and text
 content, which is also what keeps the tri-state (see `TelemetryPanel`)
 distinguishable without relying on colour alone. Numbers are the largest,
@@ -48,6 +48,7 @@ gi.require_version("Gdk", "4.0")
 from gi.repository import Gdk, Gtk
 
 from protocol.events import STAGE_ORDER, within_stage_frac
+from ui.telemetry import distinct_board_count
 
 log = logging.getLogger(__name__)
 
@@ -81,8 +82,8 @@ _ORANGE = "#FA512E"
 _ACCENT_TEXT = "#3299B9"
 
 # card_color()'s two possible outputs. Colour is spent sparingly here too:
-# a card under the line gets a neutral, unremarkable reading (`_BG_ALT` --
-# nothing to see); a card AT OR OVER `max_temp_c` is the one place this
+# a chip under the line gets a neutral, unremarkable reading (`_BG_ALT` --
+# nothing to see); a chip AT OR OVER `max_temp_c` is the one place this
 # panel's own colour is meant to say something, so it gets the same
 # "something's wrong" register `runner/cards.py`'s "quarantined" card state
 # already uses conceptually.
@@ -143,15 +144,23 @@ MIN_CONTRAST_RATIO = 4.5
 # ---------------------------------------------------------------------------
 
 def card_color(temperature_c, max_temp_c=85.0):
-    """The color a telemetry card should render at, from temperature alone.
+    """The color a telemetry chip cell should render at, from temperature
+    alone.
+
+    (The FUNCTION keeps its `card_color` name deliberately, even though the
+    panel now says "chip": it describes the same threshold
+    `runner/cards.py`'s `CardPool` quarantines on, and that module -- the
+    daemon's scheduling vocabulary -- is explicitly out of scope for the
+    chips-not-boards rename. Renaming only this half would make the
+    correspondence harder to see, not easier.)
 
     Binary, not a gradient: every temperature below `max_temp_c` reads as
     the exact same color, and every temperature at or above it reads as the
     other exact same color -- a visitor should be able to tell "fine" from
     "not fine" at a glance, not have to interpret which of several shades of
-    green a card is showing. `max_temp_c` defaults to 85.0 to match
+    green a chip is showing. `max_temp_c` defaults to 85.0 to match
     runner/cards.py's `CardPool` quarantine threshold exactly, including the
-    `>=` boundary: a card sampled at precisely `max_temp_c` is already
+    `>=` boundary: a chip sampled at precisely `max_temp_c` is already
     quarantined there (`CardPool.update`: `self._hot[...] = temperature_c >=
     self.max_temp_c`), not merely "warm" -- so this uses the same `>=`, not
     `>`, to stay consistent with the fact this color is describing.
@@ -159,7 +168,7 @@ def card_color(temperature_c, max_temp_c=85.0):
     A non-finite `temperature_c` (NaN, +-inf) is not a healthy reading --
     `ui.telemetry.parse_snapshot` is the primary defense (a non-finite
     telemetry value is now treated as unparseable at the source, the same
-    as tt-smi's own "n/a" sentinel, so a real CardReading should never carry
+    as tt-smi's own "n/a" sentinel, so a real ChipReading should never carry
     one) but this function stays defensive on its own too: a NaN reads as
     the HOT color, never the normal one. There are only two buckets here,
     and "we don't have a real number" must never land in the one that looks
@@ -168,6 +177,49 @@ def card_color(temperature_c, max_temp_c=85.0):
     if not math.isfinite(temperature_c):
         return _CARD_HOT_COLOR
     return _CARD_HOT_COLOR if temperature_c >= max_temp_c else _CARD_NORMAL_COLOR
+
+
+# ---------------------------------------------------------------------------
+# Pure decision: what the telemetry panel's heading SAYS -- chips, and the
+# boards they sit on.
+# ---------------------------------------------------------------------------
+
+def chip_count_text(readings):
+    """The telemetry panel's heading for a non-empty list of readings.
+
+    This function exists because the heading was WRONG, not merely terse.
+    It used to read "4 cards", which is two separate mistakes at once: a
+    `tt-smi` device entry is a CHIP, not a card, and a visitor reading "4
+    cards" in front of a QB2 concludes the box holds four boards. It holds
+    two -- two p300c boards, each presenting two Blackhole chips (verified
+    against `tt-smi -s` on this machine: bus ids 01/02:00.0 share board_id
+    ...4062, 03/04:00.0 share ...4055).
+
+    So the heading now says both numbers when both are knowable -- "4 chips
+    on 2 boards" -- and that is not padding: the pair is the fact a visitor
+    would otherwise get wrong in the more impressive direction, and it is
+    the only place in the panel the board grouping appears. The per-chip
+    cells deliberately do NOT repeat a board tag: at 10px letterspaced in a
+    fixed 430px rail split four ways there is no room for a token that says
+    the same thing four times, and which board a chip sits on is a property
+    of the MACHINE, not of that chip's temperature.
+
+    Degrades, in order of what is knowable:
+
+    - board count unavailable (`distinct_board_count` returns None -- an
+      older tt-smi, or one chip's board_id unreadable): "4 chips". Never a
+      guessed board count.
+    - one board (all chips share a board_id): "2 chips on 1 board".
+    - one chip: "1 chip" -- the board clause is dropped entirely rather
+      than rendered as the vacuous "1 chip on 1 board".
+    """
+    chips = len(readings)
+    chip_word = "chip" if chips == 1 else "chips"
+    boards = distinct_board_count(readings)
+    if boards is None or chips <= 1:
+        return f"{chips} {chip_word}"
+    board_word = "board" if boards == 1 else "boards"
+    return f"{chips} {chip_word} on {boards} {board_word}"
 
 
 # ---------------------------------------------------------------------------
@@ -474,7 +526,7 @@ STALE_AFTER_S = 6.0
 
 class TelemetryPanel(Gtk.Box):
     """Renders `ui.telemetry.TelemetrySampler`'s tri-state `latest()` /
-    `age_s()` as one card per device, via `.update(readings, age_s)`.
+    `age_s()` as one CHIP cell per device, via `.update(readings, age_s)`.
 
     The tri-state (see ui/telemetry.py's module docstring) is rendered as
     three states distinguishable by TEXT CONTENT (never colour alone) --
@@ -483,23 +535,25 @@ class TelemetryPanel(Gtk.Box):
     telemetry"):
 
     - `readings is None`: `tt-smi` has never produced a usable answer (or
-      every device in its very first snapshot was unreadable). No cards are
+      every device in its very first snapshot was unreadable). No chips are
       drawn at all; the status line reads as a clear "no telemetry" state,
-      never as a card showing 0C/0W, which would look like real hardware
+      never as a chip showing 0C/0W, which would look like real hardware
       idling rather than a sampler with nothing to report.
     - `readings == []`: `tt-smi` answered and truthfully reported zero
-      devices. Also no cards drawn, but a visually distinct, calmer status
-      line -- this is real information ("no cards detected"), not a
+      devices. Also no chips drawn, but a visually distinct, calmer status
+      line -- this is real information ("no chips detected"), not a
       failure.
-    - `readings` non-empty: one card per reading. Temperature is the hero
-      number (largest, brightest); it turns the alarm colour only if the
-      card is at or over `card_color`'s quarantine threshold -- the one
-      place either panel spends saturated colour on a "normal" card.
+    - `readings` non-empty: one CHIP cell per reading, headed by the chip
+      count and the number of boards those chips sit on (see
+      `chip_count_text`). Temperature is the hero number (largest,
+      brightest); it turns the alarm colour only if the chip is at or over
+      `card_color`'s quarantine threshold -- the one place either panel
+      spends saturated colour on a "normal" chip.
 
     Independently of which of the three states above applies, `age_s`
     (seconds since the last successful sample, or `None` if there has never
     been one) drives a staleness note once it passes `STALE_AFTER_S`: the
-    thing this adds is telling "the cards are genuinely idle" (a fresh `[]`
+    thing this adds is telling "the chips are genuinely idle" (a fresh `[]`
     or a fresh non-empty reading) apart from "we have not heard from tt-smi
     in a while" (an OLD non-empty or `[]` reading whose sampler may have
     wedged) -- see the module-level `STALE_AFTER_S` docstring for the
@@ -547,16 +601,15 @@ class TelemetryPanel(Gtk.Box):
         if not readings:
             self.last_status = "stale-empty" if stale else "empty"
             self._status_label.set_label(
-                self._with_staleness_note("No Tenstorrent cards detected", age_s, stale))
+                self._with_staleness_note("No Tenstorrent chips detected", age_s, stale))
             self._status_label.add_css_class("telemetry-empty")
             if stale:
                 self._status_label.add_css_class("telemetry-stale")
             return
 
         self.last_status = "stale-ok" if stale else "ok"
-        card_word = "card" if len(readings) == 1 else "cards"
         self._status_label.set_label(
-            self._with_staleness_note(f"{len(readings)} {card_word}", age_s, stale))
+            self._with_staleness_note(chip_count_text(readings), age_s, stale))
         self._status_label.add_css_class("telemetry-ok")
         if stale:
             self._status_label.add_css_class("telemetry-stale")
@@ -570,11 +623,11 @@ class TelemetryPanel(Gtk.Box):
         return f"{text} — stale, last heard {age_s:.0f}s ago"
 
     def _clear_cards(self):
-        """Remove every previously-rendered card. Load-bearing, not
+        """Remove every previously-rendered chip cell. Load-bearing, not
         cosmetic: without this, a 2s sampler tick would grow a fresh row of
-        cards every poll for as long as the booth is open, and a
-        `[readings] -> []` transition would leave the LAST good cards
-        sitting on screen underneath a "no cards detected" banner --
+        cells every poll for as long as the booth is open, and a
+        `[readings] -> []` transition would leave the LAST good cells
+        sitting on screen underneath a "no chips detected" banner --
         exactly the kind of stale-looking display Task 4/5's tri-state work
         exists to prevent. See tests/unit/test_panels.py's dedicated tests
         for both of those, verified against a `pass`-body mutation of this
@@ -594,8 +647,12 @@ class TelemetryPanel(Gtk.Box):
         is_hot = color == _CARD_HOT_COLOR
         cell.add_css_class("telemetry-card-hot" if is_hot else "telemetry-card-normal")
 
+        # "CHIP n", not "CARD n": one tt-smi device entry is one chip, and a
+        # p300c board carries two of them. See `chip_count_text` for the
+        # whole argument and for why the board grouping lives in the heading
+        # rather than being repeated on every cell.
         title = Gtk.Label(
-            xalign=0.0, label=f"CARD {reading.index} · {reading.board_type}".upper())
+            xalign=0.0, label=f"CHIP {reading.index} · {reading.board_type}".upper())
         title.add_css_class("telemetry-field-label")
 
         hero = Gtk.Label(xalign=0.0, label=f"{reading.temperature_c:.1f}°C")

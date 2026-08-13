@@ -90,6 +90,7 @@ gi.require_version("Gdk", "4.0")
 from gi.repository import Gdk, GLib, Gtk
 
 from protocol.events import unpack_coords
+from ui.chipviz import ChipVizPanel
 from ui.client import EventClient, LatestFrame
 from ui.diagnostics import KIND_MARK, DiagnosticsLog, DiagnosticsPanel
 from ui.gallery import Gallery
@@ -157,7 +158,7 @@ _FRAME_DRAIN_MS = 33
 
 # Telemetry repaint cadence. The sampler polls tt-smi every 2s on its own
 # thread; repainting at 500ms means a new reading reaches the screen well
-# within one sample period without the panel rebuilding its cards 30x a
+# within one sample period without the panel rebuilding its chip cells 30x a
 # second for data that changes twice a second.
 _TELEMETRY_REPAINT_MS = 500
 
@@ -423,9 +424,9 @@ window, .booth-root, .booth-side {{
 # numbers.
 _HELP_INTRO = (
     "A protein structure prediction, running right now on Tenstorrent "
-    "Blackhole cards a few feet away. This is not a recording or an "
+    "Blackhole chips a few feet away. This is not a recording or an "
     "animation: the cloud of points collapsing on screen is the model's own "
-    "working, streamed off the card as it computes, and the ribbon at the "
+    "working, streamed off the chip as it computes, and the ribbon at the "
     "end is the structure it just predicted.",
 
     "A protein is a chain of amino acids that only does its job once it "
@@ -459,10 +460,26 @@ _HELP_PANELS = (
     "confidence, saving. The bright row is the stage running right now; "
     "diffusion owns most of the bar because it does most of the work.",
 
-    "Cards — temperature, power draw and clock speed for every Tenstorrent "
-    "card in this machine, read from the driver twice a second. It is "
-    "independent of the fold, so the silicon keeps breathing even if a fold "
-    "stalls.",
+    "Chips — temperature, power draw and clock speed for every Tenstorrent "
+    "chip in this machine, read from the driver twice a second. A Blackhole "
+    "p300c board carries two chips, so the four chips here are two boards. "
+    "It is independent of the fold, so the silicon keeps breathing even if a "
+    "fold stalls.",
+
+    # Every claim in this paragraph was checked against the rendered pixels
+    # before it was written. An earlier draft said each grid was "driven by
+    # that chip's own clock" -- the per-chip feed IS wired (ui/chipviz.py),
+    # but at this size it makes no visible difference, so the sentence was
+    # cut rather than left as a nice-sounding thing the screen does not
+    # actually do. What IS live and per-chip is the clock number, and the
+    # temperatures directly above it.
+    "Tensix activity — one animated Tensix core grid per chip, in the same "
+    "left-to-right order as the readouts above it. The pattern follows what "
+    "the fold is doing: a spreading ring while the model is denoising atom "
+    "positions, a steady glow while it is reasoning about which residues "
+    "touch. The number beside it is the fastest clock any of these chips is "
+    "running at right now, read from the driver every second. It is a "
+    "picture of the work, not a trace of individual cores.",
 )
 
 _APP_CSS_INSTALLED = False
@@ -512,7 +529,7 @@ class DemoApp(Gtk.Application):
         # must not end a showcase or fire an idle timeout).
         self._clock = clock if clock is not None else time.monotonic
 
-        # The UI samples tt-smi itself rather than reading card telemetry off
+        # The UI samples tt-smi itself rather than reading chip telemetry off
         # the socket, so a wedged or dead daemon still leaves the silicon
         # visibly breathing (spec section 6, ui/telemetry.py). Constructed
         # here, started in do_activate: constructing it starts no thread, so
@@ -528,6 +545,11 @@ class DemoApp(Gtk.Application):
         self.screens = None
         self.telemetry_panel = None
         self.pipeline_panel = None
+        # The Tensix activity panel (ui/chipviz.py). May legitimately stay
+        # None (headless tests, and the moment before do_activate runs) and
+        # may legitimately exist-but-be-unavailable (no WebKit, no chips);
+        # `_sync_chipviz` tolerates both.
+        self.chipviz_panel = None
         self.targets = []
         self._preparing_box = None
         self._preparing_message_label = None
@@ -688,6 +710,13 @@ class DemoApp(Gtk.Application):
         self._sync_to_state(force=True)
 
         self.sampler.start()
+        # The Tensix panel's AICLK poll. Started here, next to the telemetry
+        # sampler, for the same reason and with the same independence: it
+        # reads the DRIVER, not the socket, so the animation keeps its clock
+        # readout honest even with no daemon at all. A no-op when the panel
+        # is unavailable.
+        self.chipviz_panel.set_running(True)
+        self._sync_chipviz()
         self._start_timers()
 
         if self.socket_path:
@@ -701,6 +730,11 @@ class DemoApp(Gtk.Application):
         process rather than one already unwinding."""
         try:
             self.sampler.stop()
+            if self.chipviz_panel is not None:
+                # Removes the GLib poll source outright (ui/chipviz.py's
+                # `set_running`), rather than leaving a timer registered
+                # against a widget that is going away.
+                self.chipviz_panel.set_running(False)
             if self._client is not None:
                 self._client.stop()
         except Exception:
@@ -739,12 +773,20 @@ class DemoApp(Gtk.Application):
 
         self.pipeline_panel = PipelinePanel()
         self.telemetry_panel = TelemetryPanel()
-        for panel in (self.pipeline_panel, self.telemetry_panel):
+        # Directly BELOW the telemetry panel, sharing its left-to-right chip
+        # order, so animation N sits under chip N's readout: the two are one
+        # instrument in two halves (the numbers, then the picture), which is
+        # what makes the animation legible as "these four chips, right here"
+        # rather than as generic decoration. Hides itself when unavailable
+        # (no WebKit, no chips, no bundled assets) -- see ui/chipviz.py.
+        self.chipviz_panel = ChipVizPanel()
+        for panel in (self.pipeline_panel, self.telemetry_panel,
+                      self.chipviz_panel):
             panel.set_hexpand(False)
             panel.set_vexpand(False)
             side.append(panel)
 
-        # Below the progress legend and the card readout, in the space the
+        # Below the progress legend and the chip readout, in the space the
         # rail was leaving empty (see .superpowers/.../booth-wired.png): the
         # hint row, always visible, and the diagnostics panel it opens,
         # hidden until asked for. The protein is the hero; this is for the
@@ -874,7 +916,7 @@ class DemoApp(Gtk.Application):
 
         Written for a visitor who has never heard of any of this -- no
         jargon that isn't unpacked in the same sentence -- and true: the
-        fold really is running on the cards in this room while this card is
+        fold really is running on the chips in this room while this card is
         on top of it (the overlay is a widget, not a modal loop; every GLib
         source underneath keeps firing, which is the point of building it
         this way and is asserted in tests/unit/test_app_interaction.py).
@@ -1338,9 +1380,16 @@ class DemoApp(Gtk.Application):
                 self.display_message = _PREPARING_MESSAGE
             self._sync_to_state()
             self._note_diagnostics(self.diagnostics.note_event, event)
+            # Re-aim the Tensix animation. A `stage` event carries the one
+            # thing that says what the SILICON is doing; every other event
+            # only refreshes the booth state (which is what turns the
+            # animation off while the daemon is `preparing`). See
+            # ui/chipviz.py's `viz_mode` for why the stage, not the screen,
+            # decides.
+            self._sync_chipviz(event.get("stage") if kind == "stage" else None)
 
             if kind == "job_start":
-                log.info("folding %s (%s residues) on card %s",
+                log.info("folding %s (%s residues) on chip %s",
                          event.get("target_id"), event.get("n_residues"),
                          event.get("card"))
                 if self.pipeline_panel is not None:
@@ -1400,7 +1449,7 @@ class DemoApp(Gtk.Application):
                 # not silently dropped the way job_error was before this fix.
                 #
                 # `card_state` lands here deliberately, and must keep landing
-                # here: it carries per-card telemetry, and this file
+                # here: it carries per-chip telemetry, and this file
                 # rendering it would be exactly the coupling ui/telemetry.py
                 # exists to prevent -- the panel is fed from an independent
                 # tt-smi sampler so that a dead daemon still leaves the
@@ -1410,6 +1459,24 @@ class DemoApp(Gtk.Application):
         except Exception:
             log.exception("dropping malformed %s event", event.get("type"))
         return False
+
+    def _sync_chipviz(self, stage=None):
+        """Tell the Tensix activity panel what the booth is doing.
+
+        Its own guard, for the same reason `_note_diagnostics` has one: an
+        animation is the least important thing happening in `_handle_event`,
+        and a failure inside a WebView must never pre-empt the rendering
+        below it or turn a perfectly good event into a "dropping malformed
+        ..." log line. Tolerates the panel being absent (headless tests) and
+        being present-but-unavailable (no WebKit, no chips), because both are
+        ordinary.
+        """
+        if self.chipviz_panel is None:
+            return
+        try:
+            self.chipviz_panel.set_mode(self.states.state, stage)
+        except Exception:
+            log.exception("Tensix activity panel update dropped")
 
     def _note_diagnostics(self, method, *args):
         """Feed the diagnostics log without ever letting it cost the booth

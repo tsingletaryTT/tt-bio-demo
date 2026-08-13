@@ -26,7 +26,7 @@ import pytest
 
 from protocol.events import pack_coords
 from ui.app import DemoApp
-from ui.telemetry import CardReading
+from ui.telemetry import ChipReading
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 REAL_FOLD_STREAM = REPO_ROOT / "tests/fixtures/streams/real_fold_trpcage.jsonl"
@@ -175,7 +175,7 @@ class FakeGLib:
 
 
 def _reading(index=0, temperature_c=41.0):
-    return CardReading(index=index, board_type="p300c",
+    return ChipReading(index=index, board_type="p300c",
                        temperature_c=temperature_c, power_w=17.0,
                        aiclk_mhz=800.0)
 

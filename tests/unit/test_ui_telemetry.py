@@ -25,7 +25,9 @@ import time
 
 import pytest
 
-from ui.telemetry import CardReading, TelemetrySampler, parse_snapshot
+from ui.telemetry import (
+    ChipReading, TelemetrySampler, distinct_board_count, parse_snapshot,
+)
 
 SNAPSHOT = {
     "device_info": [
@@ -33,6 +35,26 @@ SNAPSHOT = {
          "telemetry": {"asic_temperature": "43.7", "power": " 18.0", "aiclk": " 800"}},
         {"board_info": {"board_type": "p300c", "bus_id": "0000:02:00.0"},
          "telemetry": {"asic_temperature": "46.3", "power": " 13.0", "aiclk": " 800"}},
+    ]
+}
+
+# Verbatim shape of this booth's own `tt-smi -s`: four device entries (four
+# CHIPS), pairwise sharing a `board_id` (two p300c BOARDS). Copied from the
+# real snapshot taken on the machine, telemetry values trimmed.
+QB2_SNAPSHOT = {
+    "device_info": [
+        {"board_info": {"board_type": "p300c", "bus_id": "0000:01:00.0",
+                        "board_id": "0000046131924062"},
+         "telemetry": {"asic_temperature": "43.7", "power": " 18.0", "aiclk": "1350"}},
+        {"board_info": {"board_type": "p300c", "bus_id": "0000:02:00.0",
+                        "board_id": "0000046131924062"},
+         "telemetry": {"asic_temperature": "44.1", "power": " 17.0", "aiclk": "1350"}},
+        {"board_info": {"board_type": "p300c", "bus_id": "0000:03:00.0",
+                        "board_id": "0000046131924055"},
+         "telemetry": {"asic_temperature": "45.9", "power": " 19.0", "aiclk": "1350"}},
+        {"board_info": {"board_type": "p300c", "bus_id": "0000:04:00.0",
+                        "board_id": "0000046131924055"},
+         "telemetry": {"asic_temperature": "46.3", "power": " 13.0", "aiclk": "1350"}},
     ]
 }
 
@@ -60,6 +82,35 @@ def test_parses_padded_string_values():
     assert cards[0].power_w == pytest.approx(18.0)
 
 
+def test_board_id_survives_the_parse_so_chips_can_be_grouped_by_board():
+    """Without this, the panel cannot tell four chips on two boards from
+    four boards -- which is the exact mistake the old "4 cards" heading
+    made."""
+    readings = parse_snapshot(QB2_SNAPSHOT)
+    assert len(readings) == 4, "four device entries are four chips"
+    assert [r.board_id for r in readings] == [
+        "0000046131924062", "0000046131924062",
+        "0000046131924055", "0000046131924055"]
+    assert distinct_board_count(readings) == 2
+
+
+def test_a_snapshot_without_board_ids_yields_no_board_count():
+    """An older tt-smi (or a device with no board_info) must cost the board
+    grouping and NOTHING else: every chip still parses, with all of its
+    telemetry."""
+    readings = parse_snapshot(SNAPSHOT)
+    assert len(readings) == 2
+    assert all(r.board_id is None for r in readings)
+    assert distinct_board_count(readings) is None
+    assert readings[0].temperature_c == pytest.approx(43.7), (
+        "a missing board_id must not cost the reading itself")
+
+
+def test_distinct_board_count_of_nothing_is_none():
+    assert distinct_board_count([]) is None
+    assert distinct_board_count(None) is None
+
+
 def test_one_unreadable_card_does_not_blind_the_panel_to_the_others():
     snapshot = {"device_info": [
         {"board_info": {}, "telemetry": {"asic_temperature": "n/a"}},
@@ -71,7 +122,7 @@ def test_one_unreadable_card_does_not_blind_the_panel_to_the_others():
 def test_a_non_finite_temperature_is_treated_as_unparseable():
     """Regression (fix round 1 review): float() happily parses "nan"/"inf",
     so without a finiteness check a NaN telemetry value would sail through
-    as a genuine-looking CardReading -- rendering as a plausible card
+    as a genuine-looking ChipReading -- rendering as a plausible card
     showing "nan °C" instead of being skipped like every other unreadable
     value (tt-smi's own "n/a", a missing key, ...) already is."""
     snapshot = {"device_info": [

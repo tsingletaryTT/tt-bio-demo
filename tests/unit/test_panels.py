@@ -27,11 +27,12 @@ from ui.panels import (
     STALE_AFTER_S,
     TelemetryPanel,
     card_color,
+    chip_count_text,
     contrast_ratio,
     relative_luminance,
     stage_rows,
 )
-from ui.telemetry import CardReading
+from ui.telemetry import ChipReading, distinct_board_count
 
 STAGES = ("msa", "prep", "trunk", "diffusion", "confidence", "saving")
 
@@ -250,9 +251,84 @@ def test_pipeline_panel_starts_reset():
 # testable boundary.
 # ---------------------------------------------------------------------------
 
-def _reading(index=0, temperature_c=45.0, board_type="p300c"):
-    return CardReading(index=index, board_type=board_type,
-                        temperature_c=temperature_c, power_w=18.0, aiclk_mhz=800.0)
+def _reading(index=0, temperature_c=45.0, board_type="p300c", board_id=None):
+    return ChipReading(index=index, board_type=board_type,
+                        temperature_c=temperature_c, power_w=18.0, aiclk_mhz=800.0,
+                        board_id=board_id)
+
+
+def _qb2_readings():
+    """This booth's real hardware, as `tt-smi -s` actually reports it: FOUR
+    chips, pairwise sharing TWO board ids (verified on the machine -- bus ids
+    01/02:00.0 share ...4062, 03/04:00.0 share ...4055)."""
+    return [
+        _reading(0, board_id="0000046131924062"),
+        _reading(1, board_id="0000046131924062"),
+        _reading(2, board_id="0000046131924055"),
+        _reading(3, board_id="0000046131924055"),
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Chips, not boards. The panel used to head itself "4 cards" on a box holding
+# four CHIPS on TWO boards -- wrong twice over, and wrong in the direction a
+# visitor would find flattering, which is the worst direction for a booth
+# whose whole claim is "this is real". These tests pin both halves: the word,
+# and the arithmetic that turns four readings into "2 boards".
+# ---------------------------------------------------------------------------
+
+def test_the_panel_never_calls_a_chip_a_card():
+    panel = TelemetryPanel()
+    panel.update(_qb2_readings(), 0.1)
+    texts = [label.get_label() for label in _iter_labels(panel)]
+    blob = " ".join(texts).lower()
+    assert "card" not in blob, (
+        f"the telemetry panel still says 'card' somewhere: {texts!r}")
+    assert "chip" in blob
+
+
+def test_four_chips_on_two_boards_reads_as_exactly_that():
+    """The heading a visitor reads in front of this booth's own QB2."""
+    assert chip_count_text(_qb2_readings()) == "4 chips on 2 boards"
+    panel = TelemetryPanel()
+    panel.update(_qb2_readings(), 0.1)
+    assert panel._status_label.get_label() == "4 chips on 2 boards"
+
+
+def test_per_chip_cells_are_headed_chip_not_card():
+    panel = TelemetryPanel()
+    panel.update(_qb2_readings(), 0.1)
+    titles = [label.get_label() for label in _iter_labels(panel)
+              if label.get_label().startswith(("CHIP", "CARD"))]
+    assert titles == ["CHIP 0 · P300C", "CHIP 1 · P300C",
+                      "CHIP 2 · P300C", "CHIP 3 · P300C"]
+
+
+def test_a_board_count_is_never_guessed_when_a_board_id_is_missing():
+    """One unreadable `board_id` must cost the whole board clause, not
+    produce a plausible-looking wrong one. A heading that says "4 chips on 3
+    boards" because one id was missing is worse than one that just counts
+    chips."""
+    readings = _qb2_readings()
+    readings[2] = _reading(2, board_id=None)
+    assert distinct_board_count(readings) is None
+    assert chip_count_text(readings) == "4 chips"
+
+
+def test_chips_sharing_one_board_say_one_board():
+    two_on_one = [_reading(0, board_id="b"), _reading(1, board_id="b")]
+    assert chip_count_text(two_on_one) == "2 chips on 1 board"
+
+
+def test_a_single_chip_drops_the_vacuous_board_clause():
+    assert chip_count_text([_reading(0, board_id="b")]) == "1 chip"
+
+
+def test_no_chips_detected_says_chips():
+    panel = TelemetryPanel()
+    panel.update([], 0.1)
+    assert "chips" in panel._status_label.get_label()
+    assert "cards" not in panel._status_label.get_label()
 
 
 def test_none_readings_shows_no_telemetry_never_zeros():

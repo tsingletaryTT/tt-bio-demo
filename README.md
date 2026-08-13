@@ -4,13 +4,13 @@ A turnkey conference demo for [tt-bio](https://github.com/moritztng/tt-bio) — 
 structure prediction on Tenstorrent hardware.
 
 Watch a protein condense out of noise into its folded structure, in real time, computed on
-the Blackhole cards in the room. Native GTK4, no browser.
+the Blackhole chips in the room. Native GTK4, no browser.
 
 ---
 
 ## Quick start
 
-On a box with a Tenstorrent card, from a fresh clone:
+On a box with a Tenstorrent device, from a fresh clone:
 
 ```bash
 ./scripts/setup-venvs.sh --dev     # build both venvs (one-time, ~minutes)
@@ -22,7 +22,7 @@ recorded trajectory — see [Running without hardware](#running-without-hardware
 
 ```bash
 ./scripts/test.sh                  # full suite, software only
-./scripts/test.sh --hw             # also run the tests that open the cards
+./scripts/test.sh --hw             # also run the tests that open the chips
 ```
 
 ---
@@ -46,7 +46,7 @@ That creates two:
 
 They are split because tt-bio needs a torch/ttnn stack and GTK needs apt's `python3-gi`;
 keeping them apart removes the conflict rather than managing it, and means the UI holds no
-device handles and cannot be taken down by a wedged card.
+device handles and cannot be taken down by a wedged chip.
 
 Useful flags:
 
@@ -75,7 +75,7 @@ failure, `2` runner venv built but non-functional.
 
 This starts the compute daemon in `venv-runner` and the GTK4 UI in `venv-ui`, wires them
 over a Unix socket, and folds every `.yaml` target it finds in a playlist directory. A
-protein renders driven entirely by live computation on a card — no recorded fixture
+protein renders driven entirely by live computation on a chip — no recorded fixture
 anywhere in this path.
 
 Every option has an environment-variable equivalent; `./scripts/run-demo.sh --help` prints
@@ -96,7 +96,7 @@ curated tt-bio playlist entries do.
 
 ```bash
 ./scripts/test.sh            # both venvs, software only
-./scripts/test.sh --hw       # additionally run tests/integration, which opens the cards
+./scripts/test.sh --hw       # additionally run tests/integration, which opens the chips
 ```
 
 The suite spans both environments and `test.sh` runs each half under its own interpreter —
@@ -104,7 +104,7 @@ UI tests in `venv-ui`, runner tests in `venv-runner`. It fails if either half fa
 also if either half's path selector matches **zero** tests, since a silently empty half
 looks identical to a passing one.
 
-**The hardware half is opt-in.** `tests/integration/` opens every Tenstorrent card on the
+**The hardware half is opt-in.** `tests/integration/` opens every Tenstorrent chip on the
 box. On a shared machine that is antisocial — mutation testing alone re-runs the suite a
 dozen times per change — so it only runs with `--hw` (or `TT_BIO_DEMO_HW_TESTS=1`). The
 skip is announced before the run and restated in the verdict, so a software-only pass can
@@ -121,7 +121,7 @@ Anything after the flag is passed through to pytest: `./scripts/test.sh -k telem
 
 The renderer's own test suite and the mock runner (`runner/mock.py`) replay a recorded fold
 trajectory at the protocol's real pace, so the whole UI — noise cloud, contraction,
-cross-fade, rotating pLDDT ribbon — works on any Linux box with no Tenstorrent card
+cross-fade, rotating pLDDT ribbon — works on any Linux box with no Tenstorrent chip
 attached. `./scripts/test.sh` is fully green on such a machine.
 
 ### Never type a bare `python3`
@@ -159,7 +159,7 @@ the event schema, the stage order, and the per-stage progress bands.
 - **Event protocol** — newline-delimited JSON over a Unix socket (`protocol/events.py`).
 - **Compute daemon** (`runner/`) — opens a device once and holds the model resident across
   folds (~4.3–4.5 s warm vs. ~5.7 s cold), folds every `.yaml` in a playlist directory,
-  samples `tt-smi` for card health and quarantines an unsafe card rather than handing it
+  samples `tt-smi` for chip health and quarantines an unsafe chip rather than handing it
   out, and contains tt-metal's own log output to a configured root with a swept budget.
 - **Renderer** (`ui/`) — streams the live diffusion point cloud, then cross-fades into a
   pLDDT-colored ribbon. Ribbon geometry is built off the GTK main loop, and multi-chain
@@ -192,8 +192,8 @@ that half.
 **The suite passes but you expected hardware coverage** — check the verdict line. Hardware
 tests are opt-in; pass `--hw`.
 
-**A card is missing from telemetry** — `tt-smi -s` prints the snapshot the sampler parses.
-A card the daemon has quarantined for temperature is deliberately withheld from scheduling.
+**A chip is missing from telemetry** — `tt-smi -s` prints the snapshot the sampler parses.
+A chip the daemon has quarantined for temperature is deliberately withheld from scheduling.
 Never run `tt-smi -r` on a shared machine.
 
 **Inspector / `tt-triage`** — tt-metal's Inspector is disabled by default here, because it
@@ -215,7 +215,9 @@ cache so the first fold at the booth is a warm one. Not built yet.
 
 ## Requirements
 
-- Tenstorrent QB2 (4× p300c Blackhole) — developed and tested there
+- Tenstorrent QB2 — 2× p300c Blackhole **boards**, presenting **4 chips** (`tt-smi -s`
+  lists one entry per chip; the two chips of a p300c share a `board_id`). Developed and
+  tested there
 - Ubuntu 24.04, Wayland
 - Network at provisioning time; **none required at the venue**
 

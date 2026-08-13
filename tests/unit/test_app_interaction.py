@@ -19,6 +19,7 @@ import pytest
 import _legibility
 from protocol.events import pack_coords
 from ui import app as app_module
+from ui import chipviz as chipviz_module
 from ui import diagnostics as diagnostics_module
 from ui import panels as panels_module
 from ui.app import DemoApp
@@ -43,6 +44,24 @@ class FakeSampler:
 
     def stop(self):
         pass
+
+
+class _RecordingChipViz:
+    """Stands in for `ui.chipviz.ChipVizPanel`, recording every
+    `(state, stage)` the booth hands it. Deliberately NOT a real panel: these
+    tests are about the WIRING, and constructing a real `WebKit.WebView` in a
+    test process is its own crash class (see test_chipviz.py's note on
+    bwrap/SIGTRAP)."""
+
+    def __init__(self):
+        self.modes = []
+        self.running = None
+
+    def set_mode(self, state, stage):
+        self.modes.append((state, stage))
+
+    def set_running(self, running):
+        self.running = running
 
 
 class FakeGesture:
@@ -395,7 +414,14 @@ def test_protocol_events_reach_the_diagnostics_log():
     app._handle_event({"type": "job_start", "job_id": "j1", "target_id": "trpcage",
                        "model": "protenix-v2", "card": 2, "n_residues": 20})
     blob = "\n".join(text for _s, _k, text in app.diagnostics.tail(50))
-    assert "trpcage" in blob and "card 2" in blob
+    # The WIRE field is still `card` (a protocol contract), but the LINE says
+    # chip -- one tt-smi/daemon device is one chip, not one board. See
+    # ui/telemetry.ChipReading and this task's report.
+    assert "trpcage" in blob and "chip 2" in blob
+    assert "card 2" not in blob, (
+        "the diagnostics panel must not call a chip a card -- a visitor "
+        "reading it in front of a QB2 would conclude the box holds four "
+        "boards when it holds two")
 
 
 def test_drawn_frames_reach_the_diagnostics_log_with_their_geometry():
@@ -630,6 +656,81 @@ def test_the_diagnostics_panel_is_built_hidden():
 
 
 # ---------------------------------------------------------------------------
+# The Tensix activity panel, as wired into the booth (the panel's own
+# behaviour is tested in test_chipviz.py).
+# ---------------------------------------------------------------------------
+
+def test_the_tensix_panel_is_in_the_rail_and_never_expands_it():
+    """Adding a WebView to a fixed column is exactly the change that could
+    break the rail -- and with it, the protein's claim on the screen."""
+    app = _app()
+    rail = app._build_side_rail()
+    assert app.chipviz_panel is not None
+    assert app.chipviz_panel.get_hexpand() is False
+    assert rail.get_hexpand() is False
+    assert rail.get_size_request()[0] == app_module._SIDE_RAIL_WIDTH_PX
+
+
+def test_the_tensix_panel_sits_directly_below_the_telemetry_panel():
+    """The correspondence that makes the animation legible as "these four
+    chips, right here" rather than as decoration: animation N is under chip
+    N's readout. Mutation this catches: appending it anywhere else in the
+    rail."""
+    app = _app()
+    # The rail must stay referenced for the duration of the assertion: let it
+    # go and Python finalizes the Gtk.Box, which unparents every child and
+    # makes `get_next_sibling()` answer None for reasons that have nothing to
+    # do with the layout under test.
+    rail = app._build_side_rail()
+    assert rail is not None
+    assert app.telemetry_panel.get_next_sibling() is app.chipviz_panel
+
+
+def test_a_stage_event_re_aims_the_animation():
+    app = _app()
+    app.chipviz_panel = _RecordingChipViz()
+    app._handle_event({"type": "stage", "stage": "diffusion", "frac": 0.5})
+    assert app.chipviz_panel.modes[-1] == ("attract", "diffusion")
+
+
+def test_a_non_stage_event_refreshes_the_state_without_inventing_a_stage():
+    """`not_ready` must be able to turn the animation off (state=preparing)
+    without claiming a stage the daemon never sent."""
+    app = _app()
+    app.chipviz_panel = _RecordingChipViz()
+    app._handle_event({"type": "not_ready", "missing": ["weights"]})
+    assert app.chipviz_panel.modes[-1] == ("preparing", None)
+
+
+def test_a_broken_tensix_panel_cannot_cost_the_booth_an_event():
+    """An animation is the least important thing happening in
+    `_handle_event`. A failure inside a WebView must not pre-empt the
+    rendering below it or turn a good event into "dropping malformed ...".
+
+    Mutation this catches: removing `_sync_chipviz`'s own try/except.
+    """
+    app = _app()
+
+    class Exploding:
+        def set_mode(self, *_args):
+            raise RuntimeError("web process died")
+
+    app.chipviz_panel = Exploding()
+    app._handle_event({"type": "stage", "stage": "diffusion", "frac": 0.5})
+    # The pipeline panel is rendered AFTER the chipviz call, so this proves
+    # the failure did not pre-empt anything.
+    assert app.pipeline_panel.stages[-1] == ("diffusion", 0.5)
+
+
+def test_the_booth_tolerates_having_no_tensix_panel_at_all():
+    """Headless tests, and the moment before do_activate runs."""
+    app = _app()
+    app.chipviz_panel = None
+    app._handle_event({"type": "stage", "stage": "trunk", "frac": 0.3})
+    assert app.pipeline_panel.stages[-1] == ("trunk", 0.3)
+
+
+# ---------------------------------------------------------------------------
 # Legibility. The shared guard (tests/unit/_legibility.py), pointed at this
 # file's two new widget trees.
 #
@@ -647,6 +748,14 @@ _MERGED_CSS_FN, _MERGED_BG_FN = _legibility.merged_stylesheets(
     (lambda: panels_module._PANEL_CSS, lambda: panels_module._BACKGROUND_BY_CLASS),
     (lambda: diagnostics_module._DIAGNOSTICS_CSS,
      lambda: diagnostics_module._BACKGROUND_BY_CLASS),
+    # The Tensix activity panel is the FOURTH stylesheet in this one tree.
+    # Its two labels (#C7D9D8 = 11.36:1, #F1F8F8 = 15.46:1 on #092221) sit on
+    # `.chipviz-panel`, which paints its own ground -- so without this entry
+    # the walker would hit a background-painting ancestor whose class it does
+    # not know and fail loudly (which is the designed behaviour, and is how
+    # this line came to be written).
+    (lambda: chipviz_module._CHIPVIZ_CSS,
+     lambda: chipviz_module._BACKGROUND_BY_CLASS),
 )
 
 
