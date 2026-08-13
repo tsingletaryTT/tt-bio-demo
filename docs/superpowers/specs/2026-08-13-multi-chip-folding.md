@@ -23,6 +23,35 @@ Two details from that function apply directly to this box:
 - **Our chips are p300c, and a lone P300 is a custom topology.** `_detect_p300_devices()` exists because P300 chips are exposed one at a time, and each such worker also needs a 1×1 Blackhole mesh graph descriptor — `p150_mesh_graph_descriptor.textproto`, via `TT_MESH_GRAPH_DESC_PATH`. Confirmed present in our runner venv at `ttnn/tt_metal/fabric/mesh_graph_descriptors/`. Getting this wrong is the most likely cause of a worker that opens a device and then behaves strangely.
 - `tt_bio/device_lease.py` provides `DeviceLease` and `DeviceInUseError` — a file-based lease so two processes cannot claim the same chip. Prefer it over inventing our own mutual exclusion.
 
+## Verified by spike, 2026-08-13
+
+Run before writing any plan, because a wrong answer here invalidates the design. Script: one subprocess per chip, `TT_VISIBLE_DEVICES` + the p300 MGD set before import, each folding Trp-cage through our own `runner.folder.Folder`.
+
+**Q1 — does a worker pinned to a non-zero chip fold?** Yes. Chip 1 alone: pLDDT 95.3, 30 frames, load 3.13 s, fold 7.42 s, peak RSS 4.05 GB.
+
+**Q2 — does it use the chip we asked for, or silently chip 0?** It really uses the requested chip. Mid-fold telemetry with only chip 1 working: **chip 1 at 33.0 W, chips 0/2/3 at 13–17 W idle.** This was the failure most worth ruling out — the daemon's own comment describes exactly this silent decoupling.
+
+**Q3 — can four fold concurrently?** Yes. All four succeeded, each pLDDT 95.3 and 30 frames, folds 6.6–7.7 s, peak RSS 4.04 GB each (~16 GB total, not the 29 GB estimated below). Model load stretched from 3.1 s solo to 6.4–9.2 s under four-way contention — the cost is paid at startup, not per fold.
+
+*Caveat on the spike's own evidence:* the four-way run sampled `tt-smi` at a fixed 25 s, by which time load+fold had already completed, so those wattages show idle and prove nothing about concurrency. The proof of concurrency is that four workers each returned a correct structure; the power evidence stands only for Q2.
+
+## Use tt-bio's own worker machinery, do not reinvent it
+
+The user asked whether tt-bio already documents running all four chips on a QB2. **It does**, and the design should follow it rather than parallel it:
+
+> "Prediction uses up to one card per pending target, labelled in the display (`quietbox:tt0`, `quietbox:tt1`, …). Models load once per active card and stay resident."
+> "Pass `--devices 0,1,2,3` to pick or limit the available cards. **A single target remains a single-card fold; additional cards increase throughput only when multiple targets are queued.**"
+
+Two consequences:
+
+1. **That last sentence settles the "out of scope" question below.** Fanning one fold across four chips is not merely out of scope for us — `predict` does not offer it. Four chips buy *throughput on queued targets*, which is exactly the quad view. There is no faster-single-fold option to weigh against it.
+2. **`tt_bio.runtime` is importable without importing ttnn** — verified — which matters enormously, because device assignment must happen before that import. Reuse:
+   - `detect_tenstorrent_devices(device_ids, num_devices, max_workers)` — validates a requested id against `/dev/tenstorrent` and errors clearly on a typo instead of failing later with an opaque device-open error. Returns `[0, 1, 2, 3]` here.
+   - `build_local_workers(...)` → `WorkerSlot`s, ids `tsingletaryTT-quietbox:tt:0..3` on this box.
+   - `tt_bio.main._build_worker_device_assignments(...)` — the p300 MGD handling, so we do not hand-roll it.
+
+**We still cannot simply shell out to `tt-bio predict`.** It returns finished structures; the booth's entire premise is the live per-denoising-step trajectory, which comes from the `dump_fn` tap on the Python API. So: tt-bio's *worker/device machinery*, our own fold loop and event stream on top.
+
 ## Feasibility
 
 Measured on this box: one resident folding process is **7.2 GB RSS**. Four would be ~29 GB against 249 GB total (111 GB in use, 137 GB available). Comfortable.
@@ -65,5 +94,5 @@ The wire protocol **does not change**: `job_start` already carries `card`, and e
 
 ## Out of scope
 
-- Multi-chip *within* one fold (tt-bio can fan a single prediction across cards). Different problem, different win: it makes one fold faster rather than four folds concurrent. Worth measuring later — for a 22 s trypsin fold it might matter more than concurrency.
+- Multi-chip *within* one fold. **Not available**: tt-bio's own documentation states a single target remains a single-card fold, and extra cards raise throughput only across queued targets. Nothing to measure.
 - Multi-host.
