@@ -24,3 +24,6 @@ generated/
 # Recorded booth demo video (Task 10 deliverable). Large binary; kept out of
 # git but left in the repo root so it is easy to find.
 *.mp4
+
+# Recording masters: large local binaries, kept for recutting.
+recordings/
