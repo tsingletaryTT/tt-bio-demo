@@ -892,3 +892,180 @@ def test_a_panel_that_has_never_been_told_anything_never_goes_stale():
     clock.now += PIPELINE_STALE_AFTER_S * 10
     panel.tick()
     assert panel.stale is False
+
+
+# ---------------------------------------------------------------------------
+# The reserved footprint: why the rail stopped jerking.
+#
+# The defect these cover, measured before the fix with a harness that built
+# the real rail in a real window and logged every panel's allocation across
+# the booth's transitions (see this task's report):
+#
+#     no telemetry yet      telemetry panel 312 x 51   -> rail 430 wide
+#     4 chips at 48.0 C     telemetry panel 531 x 116  -> rail 531 wide
+#     4 chips at 100.0 C    telemetry panel 595 x 116  -> rail 595 wide
+#
+# The panel's minimum size tracked the TEXT IN IT, the rail's size request is
+# only a floor, so the whole column -- and the left edge of the protein --
+# moved 101px sideways the moment the first tt-smi sample landed, and moved
+# back whenever the sampler went unreadable.
+#
+# These tests assert on `measure()` (the widget's own minimum), not on
+# allocation: the minimum is what DROVE the allocation, it is deterministic,
+# and it needs no main loop. Every one of them fails against the unfixed
+# panel -- verified by reverting ui/panels.py and re-running.
+# ---------------------------------------------------------------------------
+
+def _min_size(widget):
+    """`(min_width, min_height)` as GTK itself computes them."""
+    min_w, _nat_w, _b, _e = widget.measure(Gtk.Orientation.HORIZONTAL, -1)
+    min_h, _nat_h, _b, _e = widget.measure(Gtk.Orientation.VERTICAL, min_w)
+    return (min_w, min_h)
+
+
+def _label_min_width(text, css_class):
+    """How wide `text` insists on being in `css_class`'s face, in px."""
+    ui_panels._ensure_css_installed()
+    label = Gtk.Label(label=text, xalign=0.0)
+    label.add_css_class(css_class)
+    # Parented into a window so the CSS provider on the default display is
+    # actually consulted -- an orphan label measures in the default face.
+    window = Gtk.Window()
+    window.set_child(label)
+    width, _nat, _b, _e = label.measure(Gtk.Orientation.HORIZONTAL, -1)
+    window.set_child(None)
+    return width
+
+
+def test_a_chip_cell_is_wide_enough_for_every_reading_it_can_render():
+    """`CHIP_CELL_WIDTH_PX` is a promise: no string this panel can produce
+    gets ellipsized. The cell labels ellipsize (which is what makes the
+    width a guarantee at all), so without this check the failure mode is
+    silent -- a chip at 100 degrees would just render as "100.…" and nobody
+    would find out until the booth was hot.
+
+    The strings are the widest each format can produce, not samples.
+    """
+    budget = ui_panels.CHIP_CELL_WIDTH_PX - 2 * 14   # the cell's own padding
+    widest = {
+        "telemetry-field-label": "CHIP 3 · N300-R2",
+        "telemetry-hero-number": ui_panels.hero_text(99.9),
+        "telemetry-field-value": "999W · 1350MHz",
+    }
+    for css_class, text in widest.items():
+        width = _label_min_width(text, css_class)
+        assert width <= budget, (
+            f"{text!r} needs {width}px in .{css_class} but a cell only has "
+            f"{budget}px of content width; it would be ellipsized on screen")
+
+
+def test_the_hot_hero_number_is_no_wider_than_the_cool_one():
+    """The whole reason `hero_text` drops the tenth at 100 degrees. If a
+    three-digit temperature were allowed to be wider than a two-digit one,
+    the panel would need a permanently wider cell -- 64px more of rail, all
+    day, for a reading that means a chip is in trouble."""
+    cool = _label_min_width(ui_panels.hero_text(99.9), "telemetry-hero-number")
+    hot = _label_min_width(ui_panels.hero_text(100.0), "telemetry-hero-number")
+    assert hot <= cool
+
+
+def test_hero_text_keeps_the_tenth_until_a_hundred_degrees():
+    assert ui_panels.hero_text(48.0) == "48.0°C"
+    assert ui_panels.hero_text(99.9) == "99.9°C"
+    assert ui_panels.hero_text(100.0) == "100°C"
+    assert ui_panels.hero_text(104.6) == "105°C"
+
+
+def test_the_telemetry_panel_is_the_same_size_in_every_state_it_can_be_in():
+    """THE regression test for the jerk the user saw.
+
+    One panel, driven through every transition the booth can put it
+    through -- the tri-state, a changing chip count, a chip crossing 100
+    degrees, a sampler going stale -- asserting the panel's minimum size
+    never changes at all. Against the unfixed panel the widths run
+    312/531/595 and the heights 51/116, which is exactly the movement that
+    dragged the rail (and the protein's left edge) around.
+    """
+    panel = TelemetryPanel()
+    window = Gtk.Window()
+    window.set_child(panel)
+
+    hot = [_reading(i, temperature_c=100.4, board_id="0000046131924062")
+           for i in range(4)]
+    steps = [
+        ("no telemetry", (None, None)),
+        ("four chips, cool", (_qb2_readings(), 0.5)),
+        ("four chips, stale", (_qb2_readings(), STALE_AFTER_S + 1.0)),
+        ("four chips, at 100C", (hot, 0.5)),
+        ("zero chips", ([], 0.5)),
+        ("zero chips, stale", ([], STALE_AFTER_S + 1.0)),
+        ("one chip", ([_reading(0)], 0.5)),
+        ("two chips", (_qb2_readings()[:2], 0.5)),
+        ("back to four", (_qb2_readings(), 0.5)),
+        ("no telemetry again", (None, None)),
+    ]
+
+    sizes = {}
+    for name, (readings, age_s) in steps:
+        panel.update(readings, age_s)
+        sizes[name] = _min_size(panel)
+
+    distinct = set(sizes.values())
+    assert len(distinct) == 1, (
+        "the telemetry panel changes size as its contents change, which "
+        f"moves the whole rail: {sizes}")
+
+
+def test_the_reserved_footprint_is_what_the_rail_was_sized_for():
+    """The arithmetic in ui/app.py's `_SIDE_RAIL_WIDTH_PX` comment, checked
+    rather than trusted. If a cell gets wider without the rail following,
+    the panel's minimum exceeds the rail's size request again and GTK
+    quietly hands the rail the larger of the two -- which is the original
+    defect, back."""
+    from ui.app import _SIDE_RAIL_WIDTH_PX
+
+    panel_padding = 2 * 16     # .telemetry-panel { padding: 12px 16px; }
+    assert (ui_panels.MAX_CHIP_CELLS * ui_panels.CHIP_CELL_WIDTH_PX
+            + panel_padding) == _SIDE_RAIL_WIDTH_PX
+
+    panel = TelemetryPanel()
+    window = Gtk.Window()
+    window.set_child(panel)
+    panel.update(_qb2_readings(), 0.5)
+    assert _min_size(panel)[0] <= _SIDE_RAIL_WIDTH_PX
+
+
+def test_the_panel_draws_at_most_max_chip_cells_and_says_when_it_capped():
+    """A machine bigger than this booth's QB2 must not grow the rail a cell
+    at a time -- and must not quietly under-report its own hardware
+    either."""
+    eight = [_reading(i, board_id="000004613192406%d" % (i // 2))
+             for i in range(8)]
+    panel = TelemetryPanel()
+    window = Gtk.Window()
+    window.set_child(panel)
+    panel.update(eight, 0.5)
+
+    cells = 0
+    child = panel._cards_box.get_first_child()
+    while child is not None:
+        cells += 1
+        child = child.get_next_sibling()
+    assert cells == ui_panels.MAX_CHIP_CELLS
+
+    assert "8 chips" in panel._status_label.get_label()
+    assert "showing 4" in panel._status_label.get_label()
+
+
+def test_the_cell_cap_matches_the_tensix_panels():
+    """Two panels, one row of chips each, sitting one above the other with
+    the Nth cell over the Nth animation. A cap that differed between them
+    would break that correspondence silently."""
+    from ui.chipviz import MAX_CHIPS
+
+    assert ui_panels.MAX_CHIP_CELLS == MAX_CHIPS
+
+
+def test_an_uncapped_count_says_nothing_extra():
+    assert chip_count_text(_qb2_readings(), shown=4) == "4 chips on 2 boards"
+    assert chip_count_text(_qb2_readings(), shown=None) == "4 chips on 2 boards"

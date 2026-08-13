@@ -108,8 +108,11 @@ KIND_TEACH = "teach"   # the `#` commentary
 # Teaching copy. Real copy, not placeholders -- and true.
 #
 # Line lengths are held to ~62 characters on purpose: the rail is a fixed
-# 430px column (ui/app.py's `_SIDE_RAIL_WIDTH_PX`), and a monospace line
-# longer than that would ellipsize mid-sentence. Where a stage needs more
+# narrow column (ui/app.py's `_SIDE_RAIL_WIDTH_PX`), and a monospace line
+# longer than that would ellipsize mid-sentence. The budget is stated in
+# CHARACTERS rather than pixels so it does not go stale the next time that
+# constant moves -- as it did when the telemetry panel's cells were given a
+# reserved width. Where a stage needs more
 # than one line to explain, it gets more than one line, each wrapped by
 # hand rather than by Pango -- which is also what keeps every row in the
 # panel exactly one line tall.

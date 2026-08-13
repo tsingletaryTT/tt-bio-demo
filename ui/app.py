@@ -20,17 +20,24 @@ not make them:
 If a booth decision ever appears in this file as an `if` on raw state, that
 is the signal it belongs in one of those modules instead.
 
-The two interactive surfaces (Task 10)
----------------------------------------
-The diagnostics panel and the `?` help card are CHROME, not booth state:
-they are laid over whatever `ui.states` is doing, and neither one touches
-it. That is deliberate and it is what lets `?` work "at any time" -- from
-attract, gallery, folding, showcase or preparing -- without the state
-machine growing a sixth state and every transition in it growing an
-opinion about overlays. What they do borrow from the state machine is its
-principle that a visitor who walks away must not leave the booth changed:
-`_tick_overlays` closes both of them after a period with no input at all
-(`_HELP_IDLE_S`, `_DIAGNOSTICS_IDLE_S`).
+The three interactive surfaces (Task 10, extended)
+---------------------------------------------------
+The diagnostics panel (`D`), the Tensix activity panel (`T`) and the `?`
+help card are CHROME, not booth state: they are laid over whatever
+`ui.states` is doing, and none of them touches it. That is deliberate and
+it is what lets `?` work "at any time" -- from attract, gallery, folding,
+showcase or preparing -- without the state machine growing a sixth state
+and every transition in it growing an opinion about overlays. What they do
+borrow from the state machine is its principle that a visitor who walks
+away must not leave the booth changed: `_tick_overlays` closes all three
+after a period with no input at all (`_HELP_IDLE_S`,
+`_DIAGNOSTICS_IDLE_S`, `_RAIL_PANEL_IDLE_S`).
+
+All three start CLOSED on every run and nothing about them is persisted, so
+a booth restarted at the venue comes up protein-first. The Tensix panel is
+the newest of the three to be demoted to chrome: it shipped visible, and
+it is the most eye-catching thing in the rail attached to the least
+important claim -- see `_TENSIX_KEYS`.
 
 The sequencing this file exists to get right
 ---------------------------------------------
@@ -170,7 +177,25 @@ _TELEMETRY_REPAINT_MS = 500
 # -- ends up squeezed into a corner. Verified on real glass with the
 # throwaway composed-screen harness that preceded this file (see
 # .superpowers/sdd/2026-08-12-ui-panels/booth-composed.png).
-_SIDE_RAIL_WIDTH_PX = 430
+#
+# This number is a FLOOR, not a ceiling: GTK gives a widget its own minimum
+# whenever that is larger than its size request, so the rail is only as
+# fixed as the panels inside it are. It was 430 and it did NOT hold -- the
+# telemetry panel's minimum tracked the text in its chip cells, so the rail
+# stood at 430 until the first `tt-smi` sample landed, snapped to 531, and
+# would have gone to 595 the moment a chip read three digits of degrees.
+# That measured lurch is the "jerk on state change" this value now fixes,
+# together with ui/panels.py's reserved footprint (see the long block above
+# `CHIP_CELL_WIDTH_PX`, which is where the real work is).
+#
+# 552 is what the reservation costs, exactly: `MAX_CHIP_CELLS` (4) cells of
+# `CHIP_CELL_WIDTH_PX` (130) plus the telemetry panel's own 2x16px padding.
+# It is ~20px wider than the 531 the booth was ALREADY rendering all day
+# with four chips live, so the steady-state screen barely changes -- what
+# changes is that it now renders that width in every state, including the
+# ones it used to jump between. `tests/unit/test_panels.py` pins the
+# arithmetic so a wider cell cannot silently reintroduce the lurch.
+_SIDE_RAIL_WIDTH_PX = 552
 
 # What the gallery gets to lay its cards out in: the window minus the rail.
 # 1920 is this booth's screen; `ui.gallery.grid_shape` turns it into a
@@ -231,6 +256,13 @@ def _format_missing(missing):
 # build wanted.
 _HELP_KEYS = frozenset({"question", "f1", "help"})
 _DIAGNOSTICS_KEYS = frozenset({"d"})
+# The Tensix activity panel (ui/chipviz.py), on the same footing as the
+# diagnostics panel: chrome, off by default, one key. It is the most
+# eye-catching thing in the rail and it is the LEAST important -- a
+# decorative animation next to a protein that is the actual point -- so the
+# booth comes up protein-first and a visitor or an operator asks for it.
+# Nothing about it is persisted: a restart at the venue is a clean booth.
+_TENSIX_KEYS = frozenset({"t"})
 
 # How long an overlay a visitor left open survives their walking away.
 #
@@ -247,6 +279,14 @@ _DIAGNOSTICS_KEYS = frozenset({"d"})
 # neither can close while someone is actually pressing things.
 _HELP_IDLE_S = 60.0
 _DIAGNOSTICS_IDLE_S = 300.0
+
+# The Tensix activity panel gets the diagnostics panel's patience, for the
+# diagnostics panel's reason -- it is the other thing WE want up while
+# standing at the booth talking to someone, and having it vanish mid-sentence
+# would be worse than useless. An alias rather than a second number: the two
+# panels are the same kind of chrome opened the same way, and two constants
+# that must stay equal are a constant waiting to drift.
+_RAIL_PANEL_IDLE_S = _DIAGNOSTICS_IDLE_S
 
 # ── logging a failure that repeats ──────────────────────────────────────────
 #
@@ -476,8 +516,9 @@ _HELP_INTRO = (
 # folklore.
 _KEY_HELP = (
     ("?  or  F1", "this card — from any screen, at any time"),
+    ("T", "Tensix activity: the live core-grid animation, one grid per chip"),
     ("D", "diagnostics: the live protocol log in the right-hand rail"),
-    ("Esc", "close this card, or close the diagnostics panel"),
+    ("Esc", "close this card, or close whichever rail panel is open"),
     ("any other key,\nor a tap anywhere",
      "wake the booth and look through the proteins it folds"),
     ("Ctrl + F", "leave or return to fullscreen — for the booth operator"),
@@ -509,8 +550,8 @@ _HELP_PANELS = (
     # cut rather than left as a nice-sounding thing the screen does not
     # actually do. What IS live and per-chip is the clock number, and the
     # temperatures directly above it.
-    "Tensix activity — one animated Tensix core grid per chip, in the same "
-    "left-to-right order as the readouts above it. Only the chip actually "
+    "Tensix activity (press T) — one animated Tensix core grid per chip, in "
+    "the same left-to-right order as the readouts above it. Only the chip actually "
     "running this fold animates the work — a spreading ring while the model "
     "is denoising atom positions, a steady glow while it is reasoning about "
     "which residues touch — and the others sit idle, because today the fold "
@@ -615,6 +656,7 @@ class DemoApp(Gtk.Application):
         self.diagnostics = DiagnosticsLog()
         self.diagnostics_panel = None
         self._diagnostics_toggle_label = None
+        self._tensix_toggle_label = None
         self._help_box = None
 
         # Visibility is tracked as plain booleans, NOT read back off the
@@ -623,6 +665,12 @@ class DemoApp(Gtk.Application):
         # window between construction and realization.
         self.diagnostics_visible = False
         self.help_visible = False
+        # The Tensix activity panel starts CLOSED, every run. It is the one
+        # panel that animates whether or not anything is happening, and a
+        # booth whose first impression is four blinking core grids has sold
+        # the wrong thing -- the protein is the hero. `T` opens it. See
+        # `_TENSIX_KEYS`.
+        self.chipviz_visible = False
 
         # When the last visitor input of any kind happened, on the injected
         # clock -- the only thing that can close an overlay nobody is using
@@ -767,12 +815,14 @@ class DemoApp(Gtk.Application):
         self._sync_to_state(force=True)
 
         self.sampler.start()
-        # The Tensix panel's AICLK poll. Started here, next to the telemetry
-        # sampler, for the same reason and with the same independence: it
-        # reads the DRIVER, not the socket, so the animation keeps its clock
-        # readout honest even with no daemon at all. A no-op when the panel
-        # is unavailable.
-        self.chipviz_panel.set_running(True)
+        # NOT `self.chipviz_panel.set_running(True)` any more. The panel is
+        # closed by default (see `chipviz_visible`), and a closed panel polls
+        # nothing: `_set_chipviz_visible` starts and stops the AICLK source
+        # with the panel, so the booth's default state costs no sysfs reads
+        # and no JS at all. `_sync_chipviz` still runs, because the panel has
+        # to be aimed at the right mode BEFORE it is ever shown -- otherwise
+        # the first thing a visitor pressing `T` mid-fold would see is an
+        # idle animation over a running fold.
         self._sync_chipviz()
         self._start_timers()
 
@@ -842,6 +892,12 @@ class DemoApp(Gtk.Application):
             panel.set_hexpand(False)
             panel.set_vexpand(False)
             side.append(panel)
+        # Hidden until `T`. Applied AFTER the append so it is the panel's
+        # settled state, and via the same setter the key uses so there is
+        # exactly one place that decides what "the Tensix panel is open"
+        # means -- including the part the key cannot do, which is leaving an
+        # UNAVAILABLE panel (no WebKit, no chips) hidden regardless.
+        self._set_chipviz_visible(self.chipviz_visible)
 
         # Below the progress legend and the chip readout, in the space the
         # rail was leaving empty (see .superpowers/.../booth-wired.png): the
@@ -856,18 +912,21 @@ class DemoApp(Gtk.Application):
         return side
 
     def _build_hint_row(self):
-        """The two small affordances that say the booth is interactive.
+        """The small affordances that say the booth is interactive.
 
-        Both are clickable AND keyed, because the user asked for both ("with
-        a press of a button or a click"), and because a booth may or may not
-        have a keyboard in front of the public. Each click handler CLAIMS its
-        gesture sequence, which is what stops the window-wide "any click is a
-        visitor touch" gesture (see `_connect_visitor_input`) from also
-        opening the gallery underneath the thing the visitor just pressed.
+        All of them are clickable AND keyed, because the user asked for both
+        ("with a press of a button or a click"), and because a booth may or
+        may not have a keyboard in front of the public. Each click handler
+        CLAIMS its gesture sequence, which is what stops the window-wide
+        "any click is a visitor touch" gesture (see `_connect_visitor_input`)
+        from also opening the gallery underneath the thing the visitor just
+        pressed.
         """
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=18)
         row.set_halign(Gtk.Align.START)
 
+        self._tensix_toggle_label = self._build_hint(
+            row, self._tensix_hint_text(), self._toggle_chipviz)
         self._diagnostics_toggle_label = self._build_hint(
             row, self._diagnostics_hint_text(), self._toggle_diagnostics)
         self._build_hint(row, "?  HELP", self._show_help)
@@ -903,6 +962,10 @@ class DemoApp(Gtk.Application):
     def _diagnostics_hint_text(self):
         return ("▾  DIAGNOSTICS  ·  D" if self.diagnostics_visible
                 else "▸  DIAGNOSTICS  ·  D")
+
+    def _tensix_hint_text(self):
+        return ("▾  TENSIX  ·  T" if self.chipviz_visible
+                else "▸  TENSIX  ·  T")
 
     def _build_gallery(self):
         """Load the playlist and build the pick grid, or ship without one.
@@ -1200,7 +1263,8 @@ class DemoApp(Gtk.Application):
            the gallery behind it".
         3. `?` opens the card from anywhere -- attract, gallery, folding,
            showcase, preparing. It is chrome; it does not touch booth state.
-        4. `D` toggles diagnostics; `Esc` closes it if it is open.
+        4. `D` toggles diagnostics and `T` toggles the Tensix activity
+           panel; `Esc` closes whichever of them is open.
         5. Everything else is a visitor touch, exactly as before.
         """
         self._note_input()
@@ -1228,27 +1292,32 @@ class DemoApp(Gtk.Application):
         if lowered in _DIAGNOSTICS_KEYS:
             self._toggle_diagnostics()
             return True
+        if lowered in _TENSIX_KEYS:
+            self._toggle_chipviz()
+            return True
         if lowered == "escape":
-            # Nothing to close but the diagnostics panel; and if that is
-            # shut too, Escape does nothing at all -- notably it does NOT
-            # count as a touch, so a visitor cannot back out of a screen
-            # into a gallery they did not ask for.
+            # Nothing to close but the two rail panels; and if both are shut
+            # too, Escape does nothing at all -- notably it does NOT count
+            # as a touch, so a visitor cannot back out of a screen into a
+            # gallery they did not ask for.
             if self.diagnostics_visible:
                 self._set_diagnostics_visible(False)
+            if self.chipviz_visible:
+                self._set_chipviz_visible(False)
             return True
 
         self._on_touch()
         return True
 
-    # ── chrome: the diagnostics panel and the help card ──────────────────
+    # ── chrome: the two rail panels and the help card ────────────────────
     #
-    # Neither of these is booth STATE -- they are chrome laid over whatever
-    # the state machine is doing, which is precisely why `?` can work "at
-    # any time" without ui/states.py growing a sixth state and every
-    # transition in it growing an opinion about overlays. The one thing they
-    # do borrow from the state machine is its idea that a visitor who walks
-    # away should not leave the booth changed: `_tick_overlays` closes them
-    # both after a period of no input at all.
+    # None of these is booth STATE -- they are chrome laid over whatever the
+    # state machine is doing, which is precisely why `?` can work "at any
+    # time" without ui/states.py growing a sixth state and every transition
+    # in it growing an opinion about overlays. The one thing they do borrow
+    # from the state machine is its idea that a visitor who walks away
+    # should not leave the booth changed: `_tick_overlays` closes all three
+    # after a period of no input at all.
 
     def _note_input(self):
         """Stamp "a human did something just now", for the overlay idle
@@ -1275,6 +1344,46 @@ class DemoApp(Gtk.Application):
         if self._diagnostics_toggle_label is not None:
             self._diagnostics_toggle_label.set_label(self._diagnostics_hint_text())
 
+    def _toggle_chipviz(self):
+        self._set_chipviz_visible(not self.chipviz_visible)
+
+    def _set_chipviz_visible(self, visible):
+        """Open or close the Tensix activity panel.
+
+        Two things this does beyond flipping `set_visible`, both of them the
+        reason the key handler goes through here rather than at the widget:
+
+        - an UNAVAILABLE panel (no WebKit, no chips, no bundled assets --
+          ui/chipviz.py hides itself and sets `available` False) stays
+          hidden. Showing an empty 146px box because someone pressed `T` on
+          a machine with no Tenstorrent card in it would be worse than the
+          key appearing to do nothing;
+        - the panel's 1Hz AICLK poll and its JS evaluation follow the
+          panel. Closed means closed: `set_running(False)` removes the GLib
+          source outright, so the booth's default state costs no sysfs
+          reads and no WebView work at all.
+
+        `self.chipviz_visible` still tracks what was ASKED for, not what is
+        on screen, so the hint reads honestly on a machine where the panel
+        cannot be shown -- and, like the other two overlays, it is a plain
+        bool a headless test can drive.
+        """
+        self.chipviz_visible = visible
+        panel = self.chipviz_panel
+        if panel is not None:
+            available = getattr(panel, "available", True)
+            try:
+                panel.set_visible(bool(visible) and available)
+                # Guarded with the visibility change rather than after it:
+                # a WebView that fails to stop must not leave the panel's
+                # visibility half-applied. See `_sync_chipviz` for the same
+                # rule applied to the same widget.
+                panel.set_running(bool(visible) and available)
+            except Exception:
+                log.exception("Tensix activity panel visibility change dropped")
+        if self._tensix_toggle_label is not None:
+            self._tensix_toggle_label.set_label(self._tensix_hint_text())
+
     def _show_help(self):
         self._set_help_visible(True)
 
@@ -1296,9 +1405,9 @@ class DemoApp(Gtk.Application):
     def _tick_overlays(self, now):
         """Close chrome a visitor walked away from.
 
-        Runs off the same 100ms tick as the state machine. Both timers are
-        measured from the last input of ANY kind, so neither overlay can
-        close while someone is still pressing things -- and neither can
+        Runs off the same 100ms tick as the state machine. All three timers
+        are measured from the last input of ANY kind, so no overlay can
+        close while someone is still pressing things -- and none can
         outlive the visitor who opened it, which is what the booth's own
         idle timeout guarantees for the screens the state machine owns.
         """
@@ -1311,6 +1420,9 @@ class DemoApp(Gtk.Application):
         if self.diagnostics_visible and idle_s >= _DIAGNOSTICS_IDLE_S:
             log.info("diagnostics panel closed after %.0fs idle", idle_s)
             self._set_diagnostics_visible(False)
+        if self.chipviz_visible and idle_s >= _RAIL_PANEL_IDLE_S:
+            log.info("Tensix activity panel closed after %.0fs idle", idle_s)
+            self._set_chipviz_visible(False)
 
     def _on_pick(self, target_id):
         """A visitor picked a target off the gallery.

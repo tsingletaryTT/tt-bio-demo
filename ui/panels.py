@@ -46,7 +46,13 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
 
-from gi.repository import Gdk, Gtk
+# Pango, for `EllipsizeMode` -- the one thing that makes this module's fixed
+# cell widths a guarantee rather than a hope (see the reserved-footprint
+# block below `PIPELINE_STALE_AFTER_S`). Version-pinned like the others so a
+# stray unversioned import cannot decide it for us.
+gi.require_version("Pango", "1.0")
+
+from gi.repository import Gdk, Gtk, Pango
 
 from protocol.events import STAGE_ORDER, within_stage_frac
 from ui.telemetry import distinct_board_count
@@ -181,11 +187,39 @@ def card_color(temperature_c, max_temp_c=85.0):
 
 
 # ---------------------------------------------------------------------------
+# Pure decision: the hero temperature's text, inside a fixed width budget.
+# ---------------------------------------------------------------------------
+
+def hero_text(temperature_c):
+    """The big number on a chip cell: `"48.0°C"`, `"102°C"`.
+
+    One tenth of a degree below 100, none at or above it. That is not a
+    style preference, it is what keeps the number INSIDE the cell it has to
+    fit in (`CHIP_CELL_WIDTH_PX`): at the shipped 26px monospace face,
+    "100.0" is 112px against "99.9"'s 96px, and reserving the wider box for
+    every chip all day would have cost the rail (and therefore the protein)
+    64px permanently to accommodate a reading that means a chip is in
+    serious trouble.
+
+    Dropping the tenth there costs nothing anyone reads -- at 100°C the
+    interesting fact is "100", not "100.0" -- and it is strictly better than
+    the alternative the fixed width would otherwise force, which is
+    ellipsizing the alarm number into "100.…" at exactly the moment someone
+    needs to read it.
+
+    Pure, so the width budget can be tested without a display.
+    """
+    if temperature_c >= 100.0 or temperature_c <= -100.0:
+        return f"{temperature_c:.0f}°C"
+    return f"{temperature_c:.1f}°C"
+
+
+# ---------------------------------------------------------------------------
 # Pure decision: what the telemetry panel's heading SAYS -- chips, and the
 # boards they sit on.
 # ---------------------------------------------------------------------------
 
-def chip_count_text(readings):
+def chip_count_text(readings, shown=None):
     """The telemetry panel's heading for a non-empty list of readings.
 
     This function exists because the heading was WRONG, not merely terse.
@@ -201,9 +235,9 @@ def chip_count_text(readings):
     would otherwise get wrong in the more impressive direction, and it is
     the only place in the panel the board grouping appears. The per-chip
     cells deliberately do NOT repeat a board tag: at 10px letterspaced in a
-    fixed 430px rail split four ways there is no room for a token that says
-    the same thing four times, and which board a chip sits on is a property
-    of the MACHINE, not of that chip's temperature.
+    `CHIP_CELL_WIDTH_PX` cell there is no room for a token that says the
+    same thing four times, and which board a chip sits on is a property of
+    the MACHINE, not of that chip's temperature.
 
     Degrades, in order of what is knowable:
 
@@ -213,14 +247,26 @@ def chip_count_text(readings):
     - one board (all chips share a board_id): "2 chips on 1 board".
     - one chip: "1 chip" -- the board clause is dropped entirely rather
       than rendered as the vacuous "1 chip on 1 board".
+
+    `shown` is how many CELLS the panel actually drew. When that is fewer
+    than the machine has (see `MAX_CHIP_CELLS`), the heading says so --
+    "8 chips on 4 boards, showing 4" -- so a capped panel can never
+    under-report the hardware without admitting it. Same contract, same
+    wording register, as `ui.chipviz.readout_text`'s "N/total". `None`
+    means "not capped"; a `shown` that is not actually smaller than the
+    count adds nothing.
     """
     chips = len(readings)
     chip_word = "chip" if chips == 1 else "chips"
     boards = distinct_board_count(readings)
     if boards is None or chips <= 1:
-        return f"{chips} {chip_word}"
-    board_word = "board" if boards == 1 else "boards"
-    return f"{chips} {chip_word} on {boards} {board_word}"
+        text = f"{chips} {chip_word}"
+    else:
+        board_word = "board" if boards == 1 else "boards"
+        text = f"{chips} {chip_word} on {boards} {board_word}"
+    if shown is not None and shown < chips:
+        text = f"{text}, showing {shown}"
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -549,6 +595,72 @@ STALE_AFTER_S = 6.0
 PIPELINE_STALE_AFTER_S = 20.0
 
 
+# ── the telemetry panel's RESERVED FOOTPRINT ────────────────────────────────
+#
+# This panel is the reason the side rail used to visibly jerk, and these
+# three constants are the fix. Measured, not guessed -- see this task's
+# report for the harness and the before/after numbers.
+#
+# The defect: `update()` rebuilds the chip cells from scratch on every
+# sampler tick, and until this fix NOTHING pinned how much room the result
+# took. A GTK box's minimum size is its content's minimum size, so the
+# panel's footprint tracked the TEXT INSIDE IT, and the rail -- whose
+# `set_size_request(_SIDE_RAIL_WIDTH_PX)` is a FLOOR, not a ceiling -- was
+# dragged along with it. Measured on this booth's four chips:
+#
+#   no telemetry yet          panel 312 x 51   -> rail allocated 430
+#   4 chips at 48.0°C         panel 531 x 116  -> rail allocated 531
+#   4 chips at 100.0°C        panel 595 x 116  -> rail allocated 595
+#
+# So the whole column -- and with it the left edge of the protein, which is
+# the hero -- moved 101px sideways the moment the first `tt-smi` sample
+# landed, moved back if the sampler ever went unreadable, and would have
+# moved another 64px if a chip crossed 100°C. That is the jerk.
+#
+# The fix is to RESERVE the space instead of negotiating it:
+#
+#   1. `_cards_box` gets a fixed size request, so the panel is exactly as
+#      tall with zero chips as with four (65px of deliberately empty space
+#      in the "no telemetry" state, rather than 65px of everything below it
+#      jumping up);
+#   2. each cell is exactly `CHIP_CELL_WIDTH_PX` wide, whatever is in it;
+#   3. every label inside a cell ellipsizes, which is what makes (2) a
+#      GUARANTEE rather than a hope -- an ellipsizing label's minimum width
+#      is the ellipsis, so no string, however long, can push a cell (and
+#      therefore the rail) wider.
+#
+# `CHIP_CELL_WIDTH_PX` is then chosen so that (3) never actually fires for
+# anything this panel can render -- truncating a chip's temperature would be
+# a worse bug than the one being fixed. The widest strings the formats in
+# `_build_card` can produce, measured at the shipped font sizes:
+#
+#   title      "CHIP 3 . N300-R2"    96px   (10px letterspaced)
+#   hero       "99.9°C"              96px   (26px mono; see `hero_text` for
+#                                            why 100°C and up is NARROWER)
+#   secondary  "999W . 1350MHz"      98px   (12px mono)
+#
+# 98px of content plus the cell's own 2x14px padding is 126px; 130 leaves a
+# little headroom for a font that measures slightly differently on another
+# machine, and `test_panels.py` re-measures all three strings against this
+# constant so a copy or format change that would truncate fails the suite
+# instead of the booth.
+CHIP_CELL_WIDTH_PX = 130
+
+# One cell's height: title (14) + hero (32) + secondary (15) + 2x2px spacing.
+# Reserved so the tri-state (`None` / `[]` / readings) cannot change the
+# panel's height and shove the panels below it up and down.
+CHIP_CELL_HEIGHT_PX = 65
+
+# How many cells are drawn, at most. Same number and same reason as
+# `ui.chipviz.MAX_CHIPS` (which cannot be imported here -- that module pulls
+# in WebKit): four is what this booth's QB2 presents, and it is also the
+# point past which the reservation above stops being able to hold the rail
+# still. A machine with more chips gets the first four drawn and a heading
+# that says so (`chip_count_text`), rather than a rail that silently grows
+# a cell at a time. `test_panels.py` pins the two constants together.
+MAX_CHIP_CELLS = 4
+
+
 class TelemetryPanel(Gtk.Box):
     """Renders `ui.telemetry.TelemetrySampler`'s tri-state `latest()` /
     `age_s()` as one CHIP cell per device, via `.update(readings, age_s)`.
@@ -592,9 +704,25 @@ class TelemetryPanel(Gtk.Box):
 
         self._status_label = Gtk.Label(xalign=0.0)
         self._status_label.add_css_class("telemetry-status")
+        # Ellipsizing is what stops the LONGEST of the four status strings
+        # (the stale note, "No Tenstorrent chips detected - stale, last
+        # heard 1204s ago", 397px) from setting the rail's width. It has
+        # room for all of them at the shipped rail width and so never
+        # actually fires; it is here as the structural guarantee, the same
+        # one the cell labels carry -- see the reserved-footprint block.
+        self._status_label.set_ellipsize(Pango.EllipsizeMode.END)
         self.append(self._status_label)
 
         self._cards_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        # THE fix for the rail's jerk: reserve the cells' space once, here,
+        # instead of letting every `update()` renegotiate it. See the
+        # reserved-footprint block above these constants for the measured
+        # before/after. `halign=START` so cells stay packed to the left in
+        # the reserved band rather than being spread across it when there
+        # are fewer than `MAX_CHIP_CELLS` of them.
+        self._cards_box.set_halign(Gtk.Align.START)
+        self._cards_box.set_size_request(
+            MAX_CHIP_CELLS * CHIP_CELL_WIDTH_PX, CHIP_CELL_HEIGHT_PX)
         self.append(self._cards_box)
 
         # Rendered state, kept for tests and diagnostics -- not read by GTK
@@ -632,13 +760,19 @@ class TelemetryPanel(Gtk.Box):
                 self._status_label.add_css_class("telemetry-stale")
             return
 
+        # Capped, and the heading says when it is: past `MAX_CHIP_CELLS` the
+        # reserved band cannot hold the cells, and a rail that grows a
+        # column at a time is the defect this whole reservation exists to
+        # remove. Same cap, same disclosure, as ui/chipviz.py's `MAX_CHIPS`.
+        drawn = readings[:MAX_CHIP_CELLS]
         self.last_status = "stale-ok" if stale else "ok"
         self._status_label.set_label(
-            self._with_staleness_note(chip_count_text(readings), age_s, stale))
+            self._with_staleness_note(
+                chip_count_text(readings, shown=len(drawn)), age_s, stale))
         self._status_label.add_css_class("telemetry-ok")
         if stale:
             self._status_label.add_css_class("telemetry-stale")
-        for index, reading in enumerate(readings):
+        for index, reading in enumerate(drawn):
             self._cards_box.append(self._build_card(reading, first=(index == 0)))
 
     @staticmethod
@@ -666,6 +800,12 @@ class TelemetryPanel(Gtk.Box):
     def _build_card(self, reading, *, first):
         cell = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         cell.add_css_class("telemetry-card-cell")
+        # Exactly one cell width, whatever is in it. Together with the
+        # ellipsize calls below, this is what makes a chip going from 48.0
+        # to 100.0 degrees -- or a longer board type, or a three-digit watt
+        # figure -- cost nothing but the characters on screen. See the
+        # reserved-footprint block.
+        cell.set_size_request(CHIP_CELL_WIDTH_PX, CHIP_CELL_HEIGHT_PX)
         if not first:
             cell.add_css_class("telemetry-card-cell-divider")
         color = card_color(reading.temperature_c)
@@ -680,7 +820,7 @@ class TelemetryPanel(Gtk.Box):
             xalign=0.0, label=f"CHIP {reading.index} · {reading.board_type}".upper())
         title.add_css_class("telemetry-field-label")
 
-        hero = Gtk.Label(xalign=0.0, label=f"{reading.temperature_c:.1f}°C")
+        hero = Gtk.Label(xalign=0.0, label=hero_text(reading.temperature_c))
         hero.add_css_class("telemetry-hero-number")
         if is_hot:
             hero.add_css_class("telemetry-hero-hot")
@@ -690,6 +830,15 @@ class TelemetryPanel(Gtk.Box):
         secondary.add_css_class("telemetry-field-value")
 
         for widget in (title, hero, secondary):
+            # The guarantee behind the cell's fixed width: an ellipsizing
+            # label's MINIMUM width is the ellipsis, so no string this panel
+            # can be handed -- however long a future board type or a
+            # four-digit wattage -- can push the cell, the panel or the rail
+            # wider. `CHIP_CELL_WIDTH_PX` is sized so that never fires for
+            # anything the formats above can actually produce, and
+            # test_panels.py re-measures the widest of them to keep it that
+            # way.
+            widget.set_ellipsize(Pango.EllipsizeMode.END)
             cell.append(widget)
         return cell
 

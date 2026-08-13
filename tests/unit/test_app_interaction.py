@@ -14,7 +14,12 @@ trees under test (`_build_help_overlay`, `_build_side_rail`) rather than a
 whole window.
 """
 
+import gi
+
+gi.require_version("Gtk", "4.0")
+
 import pytest
+from gi.repository import Gtk
 
 import _legibility
 from protocol.events import pack_coords
@@ -25,6 +30,7 @@ from ui import panels as panels_module
 from ui.app import DemoApp
 from ui.geometry import PLDDT_STOPS
 from ui.panels import MIN_CONTRAST_RATIO, contrast_ratio
+from ui.telemetry import ChipReading
 
 # The wiring tests' fakes are the right ones here too -- reusing them is
 # also what keeps "what a FakeViewer models" a single decision (see
@@ -61,6 +67,15 @@ class _RecordingChipViz:
         # ui/chipviz.py's `set_folding_chip`); this records that the booth
         # actually tells it.
         self.folding_chips = []
+        # The panel is CHROME now (off by default, `T` to open), so the two
+        # things ui/app.py's `_set_chipviz_visible` reads and writes have to
+        # be here too: `available` is the real panel's "can this machine
+        # draw me at all", and `visible` records what the booth did about it.
+        self.available = True
+        self.visible = None
+
+    def set_visible(self, visible):
+        self.visible = visible
 
     def set_mode(self, state, stage):
         self.modes.append((state, stage))
@@ -553,7 +568,6 @@ def test_clicking_a_hint_claims_the_click_so_it_is_not_also_a_touch():
 
     Mutation this catches: dropping `gesture.set_state(CLAIMED)`.
     """
-    from gi.repository import Gtk
 
     app = _app()
     gesture = FakeGesture()
@@ -592,9 +606,11 @@ def test_every_key_the_booth_answers_to_is_listed_in_the_help_card():
         "help": "f1",      # the dedicated Help key some keyboards carry,
                            # documented as F1 rather than as a third spelling
         "d": "d",
+        "t": "t",
     }
     listed = " ".join(keys for keys, _meaning in app_module._KEY_HELP).lower()
-    for key in app_module._HELP_KEYS | app_module._DIAGNOSTICS_KEYS:
+    for key in (app_module._HELP_KEYS | app_module._DIAGNOSTICS_KEYS
+                | app_module._TENSIX_KEYS):
         assert key in printed_as, f"{key!r} is bound but not documented anywhere"
         assert printed_as[key] in listed, f"{key!r} is missing from the card"
     for phrase in ("esc", "ctrl + f", "ctrl + q", "any other key"):
@@ -883,3 +899,214 @@ def test_a_stage_event_does_not_reattribute_the_fold_to_another_chip():
                        "n_residues": 20, "card": 2})
     app._handle_event({"type": "stage", "stage": "diffusion", "frac": 0.5})
     assert app.chipviz_panel.folding_chips == [2]
+
+
+# ---------------------------------------------------------------------------
+# The Tensix activity panel is CHROME now: off by default, `T` to open.
+# ---------------------------------------------------------------------------
+
+def test_the_booth_comes_up_with_the_tensix_panel_closed():
+    """Protein-first. The panel is the most eye-catching thing in the rail
+    and it is attached to the booth's smallest claim, so a booth restarted
+    at the venue must not come up animating four core grids at a visitor
+    who has not asked for them."""
+    app = _app()
+    assert app.chipviz_visible is False
+    app.chipviz_panel = _RecordingChipViz()
+    app._set_chipviz_visible(app.chipviz_visible)
+    assert app.chipviz_panel.running is False
+
+
+def test_t_toggles_the_tensix_panel_from_any_state():
+    """Chrome, like `D`: it works from every screen and moves no booth
+    state. Mutation this catches: wiring `T` through `_on_touch`."""
+    for state in ("attract", "gallery", "folding", "showcase"):
+        app = _app()
+        app.chipviz_panel = _RecordingChipViz()
+        _drive_to(app, state)
+        before = app.states.state
+
+        app._handle_key("t")
+        assert app.chipviz_visible is True
+        assert app.states.state == before
+
+        app._handle_key("t")
+        assert app.chipviz_visible is False
+        assert app.states.state == before
+
+
+def test_escape_closes_the_tensix_panel():
+    app = _app()
+    app.chipviz_panel = _RecordingChipViz()
+    app._handle_key("t")
+    assert app.chipviz_visible is True
+    app._handle_key("escape")
+    assert app.chipviz_visible is False
+
+
+def test_a_closed_tensix_panel_polls_nothing():
+    """`set_running` is not decoration: it adds and removes a 1Hz GLib
+    source that reads sysfs and evaluates JS. The booth's default state has
+    to cost neither."""
+    app = _app()
+    app.chipviz_panel = _RecordingChipViz()
+    app._handle_key("t")
+    assert app.chipviz_panel.running is True
+    app._handle_key("t")
+    assert app.chipviz_panel.running is False
+
+
+def test_t_does_not_show_a_panel_that_cannot_draw_anything():
+    """No WebKit, no chips, no bundled assets -- `ui.chipviz` sets
+    `available` False and hides itself. Pressing `T` there must not put an
+    empty box in the rail; the key simply has nothing to show."""
+    app = _app()
+    panel = _RecordingChipViz()
+    panel.available = False
+    app.chipviz_panel = panel
+
+    app._handle_key("t")
+    assert app.chipviz_visible is True     # what was ASKED for
+    assert panel.visible is False          # what is on screen
+    assert panel.running is False
+
+
+def test_a_visitor_who_walks_away_does_not_leave_the_tensix_panel_open():
+    """Same rule, and the same timer, as the diagnostics panel: chrome must
+    not outlive the person who opened it."""
+    clock = FakeClock()
+    app = _app(clock=clock)
+    app.chipviz_panel = _RecordingChipViz()
+    app._handle_key("t")
+    assert app.chipviz_visible is True
+
+    clock.advance(app_module._RAIL_PANEL_IDLE_S - 1.0)
+    app._tick_overlays(clock())
+    assert app.chipviz_visible is True
+
+    clock.advance(2.0)
+    app._tick_overlays(clock())
+    assert app.chipviz_visible is False
+
+
+def test_the_hint_row_advertises_the_tensix_key_and_tracks_it():
+    app = _app()
+    rail = app._build_side_rail()
+    assert app._tensix_toggle_label is not None
+    assert "T" in app._tensix_toggle_label.get_label()
+    closed = app._tensix_toggle_label.get_label()
+
+    app._toggle_chipviz()
+    assert app._tensix_toggle_label.get_label() != closed
+    del rail
+
+
+def test_the_tensix_panel_is_built_hidden():
+    app = _app()
+    app._build_side_rail()
+    assert app.chipviz_panel.get_visible() is False
+
+
+# ---------------------------------------------------------------------------
+# The rail does not move. (The jerk the user saw, as a test.)
+# ---------------------------------------------------------------------------
+
+def _rail_min_size(widget):
+    min_w, _nat_w, _b, _e = widget.measure(Gtk.Orientation.HORIZONTAL, -1)
+    min_h, _nat_h, _b, _e = widget.measure(Gtk.Orientation.VERTICAL, min_w)
+    return (min_w, min_h)
+
+
+def test_nothing_the_booth_does_by_itself_changes_the_rail_or_its_panels():
+    """The user, watching the booth: "there's a little bit of a jerk to the
+    app's UI/layout when switching states."
+
+    It was the telemetry panel. Its minimum size tracked the text in its
+    chip cells, and the rail's `set_size_request` is a FLOOR -- so the rail
+    stood at 430px until the first `tt-smi` sample landed, snapped to 531,
+    and would have gone to 595 at a three-digit temperature, taking the
+    protein's left edge with it every time. Measured with a harness that
+    built this same rail in a real window; see this task's report.
+
+    So: build the real rail, drive it through everything that happens
+    WITHOUT a keypress -- telemetry appearing, going stale, vanishing and
+    coming back, a chip crossing 100 degrees, every pipeline stage, the
+    pipeline going stale and recovering, every viz mode -- and assert the
+    rail's size and every panel's size are identical at every step. Only a
+    visitor pressing a key is allowed to change this column.
+
+    Fails against the unfixed code with seven distinct telemetry sizes.
+    """
+    from ui.panels import STALE_AFTER_S
+
+    app = _app()
+    rail = app._build_side_rail()
+    panels = {
+        "pipeline": app.pipeline_panel,
+        "telemetry": app.telemetry_panel,
+        "chipviz": app.chipviz_panel,
+        "diagnostics": app.diagnostics_panel,
+    }
+
+    def chip(index, temperature_c=48.0):
+        return ChipReading(index=index, board_type="p300c",
+                           temperature_c=temperature_c, power_w=88.0,
+                           aiclk_mhz=1350.0,
+                           board_id="000004613192406%d" % (index // 2))
+
+    four = [chip(i) for i in range(4)]
+    hot = [chip(i, temperature_c=100.4) for i in range(4)]
+
+    def sizes():
+        snapshot = {"rail": _rail_min_size(rail)}
+        snapshot.update({name: _rail_min_size(w) for name, w in panels.items()})
+        return snapshot
+
+    seen = [("start", sizes())]
+
+    for label, readings, age in (
+            ("four chips", four, 0.5),
+            ("stale", four, STALE_AFTER_S + 1.0),
+            ("hot", hot, 0.5),
+            ("no chips", [], 0.5),
+            ("no telemetry", None, None),
+            ("two chips", four[:2], 0.5),
+            ("four again", four, 0.5)):
+        app.telemetry_panel.update(readings, age)
+        seen.append((label, sizes()))
+
+    for stage in ("msa", "prep", "trunk", "diffusion", "confidence", "saving"):
+        app.pipeline_panel.set_stage(stage, 0.5)
+        app._sync_chipviz(stage=stage, card=0)
+        seen.append((f"stage {stage}", sizes()))
+
+    app.pipeline_panel.reset()
+    seen.append(("pipeline blank", sizes()))
+    app.pipeline_panel.set_stage("diffusion", 0.9)
+    seen.append(("pipeline back", sizes()))
+
+    baseline = seen[0][1]
+    for label, snapshot in seen:
+        assert snapshot == baseline, (
+            f"the rail changed size at {label!r}: {baseline} -> {snapshot}")
+
+
+def test_the_rail_stays_put_with_its_panels_open_too():
+    """The same guarantee with the chrome up: opening `T` or `D` is allowed
+    to make the column TALLER (it grows downward, below everything else),
+    but it must never make it wider -- a wider rail moves the protein."""
+    app = _app()
+    rail = app._build_side_rail()
+    width = _rail_min_size(rail)[0]
+
+    app._set_diagnostics_visible(True)
+    assert _rail_min_size(rail)[0] == width
+    app._set_chipviz_visible(True)
+    assert _rail_min_size(rail)[0] == width
+
+    app.telemetry_panel.update(
+        [ChipReading(index=i, board_type="p300c", temperature_c=100.4,
+                     power_w=188.0, aiclk_mhz=1350.0,
+                     board_id="0000046131924062") for i in range(4)], 0.5)
+    assert _rail_min_size(rail)[0] == width
+    del rail
