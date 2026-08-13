@@ -159,12 +159,17 @@ the authoritative list. The ones you are most likely to want:
 | `--structures-budget-gb` | 0.2 | Sweep budget for emitted `.cif` structures, per device |
 
 **The default is every target in the manifest** — the booth shows what it can do rather
-than the one safe thing. A full cycle is ~58 s: Trp-cage 4.4 s, FKBP12 11.7 s, DHFR 19.7 s,
-trypsin 22.3 s, all measured warm on this hardware. Use `--targets trpcage` to fold a
-single target while iterating, which is much faster.
+than the one safe thing. A full cycle is ~63 s: Trp-cage 4.4 s, FKBP12 11.7 s, DHFR 19.7 s,
+trypsin 22.3 s, DNA 4.6 s, all measured warm on this hardware. Use `--targets trpcage` to
+fold a single target while iterating, which is much faster.
 
-All four ship because they need no MSA server; most curated tt-bio playlist entries do need
-one, and the venue is offline.
+The four proteins ship because they need no MSA server; most curated tt-bio playlist
+entries do need one, and the venue is offline. The fifth target is a **DNA duplex** — the
+Dickerson–Drew dodecamer — which needs no alignment for a different reason: base-pairing
+is chemistry, not evolutionary inference. It is also the target that shows what the
+ribbon's colours are worth. It comes back at mean pLDDT 95.7 where the three larger
+MSA-less proteins come back at 50.8, 52.9 and 39.5, and the confidence legend under the
+render is what lets a visitor read that off the screen for themselves.
 
 > **`--all-targets` is not yet validated end to end.** The other three shipped targets
 > (FKBP12, DHFR, Trypsin) are measured 62–75 s folds, and their long callback-free windows —

@@ -310,6 +310,50 @@ Thirteen mutations, thirteen red. Two of them are literally the pre-change code
 (the immediate clear and the deferred one); each turns seven tests red, including
 all four the brief named.
 
+### DNA renders, and the ramp says what it means (2026-08-13)
+
+Two things, one branch.
+
+**The booth folds DNA now, and you can see it.** The compute side had always
+worked — a Dickerson–Drew dodecamer (`CGCGAATTCGCG` paired with itself) folded
+in 4.6s warm at mean pLDDT 95.7 — but it drew *nothing*, because
+`ui/geometry.py` looked for `CA` atoms and a nucleotide has none. The fix is
+`BACKBONE_ANCHORS = ("CA", "P", "C1'")`, tried **per residue**, so a
+protein/DNA complex traces its protein chains on C-alpha and its nucleic
+chains on phosphorus in one pass. Order is load-bearing in both directions:
+CA first, because phosphoserine is protein and contains a `P`; `C1'` last,
+because a 5'-terminal nucleotide often has no phosphate and dropping it would
+shorten every strand by one. `load_ca_trace`/`CaTrace` were renamed to
+`load_backbone_trace`/`BackboneTrace` — the old names had stopped being true.
+
+The lesson worth keeping is about the **fixture**, not the code. A DNA duplex
+is two near-identical strands (the sequence is its own reverse complement), so
+every count is the same for both and a chain-assignment bug would leave the
+obvious assertions green. What actually separates a right duplex from a wrong
+one is *where* things are: every vertex of strand A is nearer to strand A's
+own phosphates than to strand B's, and nothing at all sits in the 18.8 Å gap
+between A's 3' end and B's 5' end (measured: 6.85 Å clearance when the chains
+are splined separately, 1.34 Å when they are not). The asymmetric half of the
+job went to a hand-written protein+DNA fixture where no two candidate anchors
+in a residue share a position *or* a B-factor — so picking the wrong atom
+moves the trace **and** recolours it, instead of being invisible.
+
+**A subtle confidence legend**, at the right-hand end of the caption strip
+under the render: one line ("Colour: how sure the model is, residue by
+residue") over the four ramp bands, low to high, with `less sure` / `more
+sure` naming the ends. Generated from `PLDDT_STOPS` like the `?` card's
+legend, so neither can drift from the ribbon; the low-to-high order is
+`reversed()`, never a second hand-ordered list.
+
+It is placed **beside** the caption rather than under it for a measured
+reason: stacked, the strip goes 96px → 124px and the render loses 28px —
+the same class of defect, and nearly the same size, as the 32px the rail's
+natural width once took out of the hero slot. `test_the_confidence_legend_costs
+_the_protein_no_height` measures that A/B at the real hero width against
+**every tagline the manifest ships**, because "does the tagline still fit
+beside it" is a fact about the copy as much as about the widget. It caught the
+first draft of the DNA tagline, which was 135 characters and did not.
+
 ## Conventions
 
 - **Keep the README's screenshots current.** The README claims every image on it is the

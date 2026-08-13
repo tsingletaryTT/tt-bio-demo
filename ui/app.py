@@ -626,6 +626,22 @@ _PLDDT_LEGEND = (
     ("plddt-very-low", "below 50", "very low — likely floppy or disordered"),
 )
 
+# The always-on version of that legend, under the render (see
+# `_build_confidence_legend`). It says what the colour MEANS and which way
+# the ramp runs, and stops there -- the thresholds, and what each band is
+# worth, are the `?` card's job.
+#
+# The swatches are the same `.plddt-*` classes the card uses, so both are
+# generated from `PLDDT_STOPS` and neither can drift from the ribbon. This
+# legend reads LOW to HIGH, which is the reverse of `PLDDT_STOPS`' own
+# order: a ramp a visitor scans left to right should end where the good
+# news is, and "less sure -> more sure" is the direction the sentence above
+# it reads in. That reversal is derived (`reversed(_PLDDT_LEGEND)`), never a
+# second hand-ordered list.
+_CONFIDENCE_LEGEND_CAPTION = "Colour: how sure the model is, residue by residue"
+_CONFIDENCE_LEGEND_LOW = "less sure"
+_CONFIDENCE_LEGEND_HIGH = "more sure"
+
 
 def _plddt_swatch_css():
     """One `.plddt-*` background rule per ramp stop, in ramp order.
@@ -789,6 +805,29 @@ window, .booth-root, .booth-side {{
     border-radius: 3px;
     min-width: 34px;
     min-height: 14px;
+}}
+/* The always-on legend in the caption strip (`_build_confidence_legend`).
+   Deliberately the quietest text on the screen: _ACCENT_TEXT is 5.06:1 on
+   this ground where the tagline beside it is 11.36:1, and it is set at
+   13px/12px against the tagline's 20px. A legend that competed with the
+   protein would be a worse legend, and the whole point of this one is that
+   a visitor can ignore it until the moment they wonder why one fold is
+   blue and the next is orange. Its swatches are smaller than the help
+   card's for the same reason -- 24x9 rather than 34x14 -- and butt against
+   each other (spacing 2) so the four bands read as one ramp rather than
+   four unrelated chips. */
+.confidence-legend-caption {{
+    color: {_ACCENT_TEXT};
+    font-size: 13px;
+}}
+.confidence-legend-end {{
+    color: {_ACCENT_TEXT};
+    font-size: 12px;
+}}
+.confidence-legend-swatch {{
+    border-radius: 2px;
+    min-width: 24px;
+    min-height: 9px;
 }}
 {_plddt_swatch_css()}
 """
@@ -1077,8 +1116,14 @@ class DemoApp(Gtk.Application):
         # (a manifest entry without one) -- the name still shows.
         self._target_info = None
         self._target_info_box = None
+        self._target_info_caption_box = None
         self._target_info_name_label = None
         self._target_info_tagline_label = None
+        # The colour key beside that caption (`_build_confidence_legend`).
+        # Stateless once built -- it describes the ramp, not the fold -- so
+        # nothing ever updates it; the handle exists so tests and any future
+        # layout work can find it.
+        self._confidence_legend_box = None
 
         # ribbon_from_cif costs up to ~1.2s at 3000 residues (measured,
         # docs/followups.md) and must never run on the thread that calls
@@ -1496,14 +1541,28 @@ class DemoApp(Gtk.Application):
         is the difference between reading it and re-finding it. Both labels
         take a colour-bearing class from `_APP_CSS` -- see that stylesheet
         and the legibility guard in tests/unit/test_app_interaction.py.
+
+        The strip is a ROW, not a column: the caption's two lines on the
+        left, and the confidence legend (`_build_confidence_legend`) sitting
+        at the far right of the same row, bottom-aligned with the tagline.
+        Beside rather than below on purpose -- stacked, the legend would add
+        its own height to this strip, and every pixel this strip takes is a
+        pixel the protein above it loses. Beside, the strip is still exactly
+        as tall as the caption's two lines, and the legend costs the render
+        nothing at all. `tests/unit/test_app_interaction.py` measures that.
         """
         _ensure_app_css_installed()
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=32)
         box.add_css_class("target-info")
         box.set_halign(Gtk.Align.FILL)
         # Never steals height from the protein: this strip is exactly as
         # tall as its two lines, and the viewer above it takes the rest.
         box.set_vexpand(False)
+
+        caption = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        # Takes whatever the legend does not: the tagline wraps into it
+        # rather than pushing the legend off the end of the strip.
+        caption.set_hexpand(True)
 
         name = Gtk.Label()
         name.add_css_class("target-info-name")
@@ -1515,16 +1574,88 @@ class DemoApp(Gtk.Application):
         tagline.set_xalign(0.0)
         tagline.set_wrap(True)
 
-        box.append(name)
-        box.append(tagline)
+        caption.append(name)
+        caption.append(tagline)
+        box.append(caption)
+        box.append(self._build_confidence_legend())
 
         self._target_info_box = box
+        # The half of the strip that disappears when the playlist cannot
+        # name what is on screen -- the caption only. The legend describes
+        # the RIBBON, which is still there and still coloured either way, so
+        # it is deliberately not hidden with the words about the molecule.
+        self._target_info_caption_box = caption
         self._target_info_name_label = name
         self._target_info_tagline_label = tagline
         # Idempotent, like `_build_viewer_caption`: a tree built after the
         # booth already knows what it is folding must not come up blank.
         self._sync_target_info()
         return box
+
+    def _build_confidence_legend(self):
+        """The subtle, always-on key to the ribbon's colours.
+
+        Four booth targets out of five come back in visibly different
+        colours -- Trp-cage deep blue at pLDDT 95.3, the DNA duplex blue at
+        95.7, and FKBP12/DHFR/trypsin yellow-to-orange at 50.8/52.9/39.5,
+        because those three are folded with no evolutionary alignment to
+        lean on. Without a key that difference reads as decoration. With
+        one, a visitor can see for themselves that the model is telling
+        them how much of what it drew to believe.
+
+        Deliberately NOT an explanation: one line saying what the colour
+        is, then the ramp itself with its two ends named. Anyone who wants
+        the thresholds and what each band is worth presses `?`, where
+        `_PLDDT_LEGEND` is spelled out in full. Both are built from the
+        same tuple and therefore from `ui.geometry.PLDDT_STOPS`; neither
+        contains a copy of the ramp's colours.
+
+        Returns a widget that never expands: `hexpand` stays False and the
+        row is bottom-aligned, so it takes its natural width at the end of
+        the caption strip and adds no height to it (the caption's two lines
+        are taller than the whole legend). See `_build_target_info`.
+        """
+        _ensure_app_css_installed()
+        column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        column.set_hexpand(False)
+        column.set_halign(Gtk.Align.END)
+        # Bottom-aligned against the caption beside it: the legend sits on
+        # the tagline's baseline rather than floating in the middle of a
+        # strip whose height is set by two much larger lines.
+        column.set_valign(Gtk.Align.END)
+
+        caption = Gtk.Label(label=_CONFIDENCE_LEGEND_CAPTION, xalign=1.0)
+        caption.add_css_class("confidence-legend-caption")
+        column.append(caption)
+
+        ramp = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        ramp.set_halign(Gtk.Align.END)
+
+        low = Gtk.Label(label=_CONFIDENCE_LEGEND_LOW)
+        low.add_css_class("confidence-legend-end")
+        ramp.append(low)
+
+        # The swatches themselves, low confidence first -- see
+        # `_CONFIDENCE_LEGEND_CAPTION`'s comment for why this walks the ramp
+        # backwards, and why the reversal is derived rather than retyped.
+        # A swatch is a painted BOX, never a coloured label: `#0053D6`
+        # measures 2.54:1 on this ground and could not legally be text here.
+        swatches = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
+        swatches.set_valign(Gtk.Align.CENTER)
+        for css_class, _range_text, _meaning in reversed(_PLDDT_LEGEND):
+            swatch = Gtk.Box()
+            swatch.add_css_class("confidence-legend-swatch")
+            swatch.add_css_class(css_class)
+            swatches.append(swatch)
+        ramp.append(swatches)
+
+        high = Gtk.Label(label=_CONFIDENCE_LEGEND_HIGH)
+        high.add_css_class("confidence-legend-end")
+        ramp.append(high)
+
+        column.append(ramp)
+        self._confidence_legend_box = column
+        return column
 
     def _target_tagline(self, target_id):
         """A target's one-line description from the playlist, or None.
@@ -1556,13 +1687,17 @@ class DemoApp(Gtk.Application):
         self._target_info = (
             (name, self._target_tagline(subject)) if name else None)
 
-        if self._target_info_box is None:
+        if self._target_info_caption_box is None:
             return
         try:
             # No name means the playlist cannot identify what is on screen.
-            # The whole strip goes away rather than showing a blank line or
-            # a raw wire id -- the same choice `_target_name` makes.
-            self._target_info_box.set_visible(self._target_info is not None)
+            # The words go away rather than showing a blank line or a raw
+            # wire id -- the same choice `_target_name` makes. Only the
+            # words: the legend beside them describes the ribbon's colours,
+            # which are on screen and meaningful whether or not this booth
+            # can put a name to the molecule they belong to.
+            self._target_info_caption_box.set_visible(
+                self._target_info is not None)
             if self._target_info is None:
                 return
             shown_name, shown_tagline = self._target_info
@@ -1668,8 +1803,8 @@ class DemoApp(Gtk.Application):
             label.set_max_width_chars(52)
             column.append(label)
 
-        # Per RESIDUE, not per atom. ui/geometry.py's `load_ca_trace` reads
-        # one pLDDT per residue -- the CA atom's B-factor -- and that is
+        # Per RESIDUE, not per atom. ui/geometry.py's `load_backbone_trace`
+        # reads one pLDDT per residue -- its anchor atom's B-factor -- and that is
         # what colours the ribbon a visitor is looking at while reading
         # this legend. ui/diagnostics.py's STAGE_TEACHING carried the same
         # error and is fixed with it.

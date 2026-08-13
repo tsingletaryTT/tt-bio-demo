@@ -32,7 +32,7 @@ from ui import panels as panels_module
 from ui.app import DemoApp
 from ui.geometry import PLDDT_STOPS
 from ui.panels import MIN_CONTRAST_RATIO, contrast_ratio
-from ui.playlist import Target
+from ui.playlist import Target, load_playlist
 from ui.telemetry import ChipReading
 
 # The wiring tests' fakes are the right ones here too -- reusing them is
@@ -1029,14 +1029,33 @@ def test_a_target_with_no_tagline_is_captioned_with_its_name_alone():
 
 def test_a_protein_the_playlist_cannot_name_gets_no_caption_at_all():
     """`_target_name` returns None rather than the raw wire id for an
-    unknown target. The caption follows it: the strip disappears rather than
-    showing `trpcage_no_msa` to a visitor."""
+    unknown target. The caption follows it: the words disappear rather than
+    showing `trpcage_no_msa` to a visitor.
+
+    The words, and only the words. The confidence legend shares this strip
+    but describes the RIBBON's colours, which are on screen and mean the
+    same thing whether or not the playlist can put a name to the molecule
+    -- so hiding it here would remove a key from a picture that still needs
+    one. (Before the legend existed this assertion was on the whole strip,
+    which is why it is spelled out now.)
+    """
     app = _app()
     app.targets = []
     app._shown_target_id = "some_id_the_playlist_never_heard_of"
     info = app._build_target_info()
     assert app._target_info is None
-    assert info.get_visible() is False
+    assert app._target_info_caption_box.get_visible() is False
+    assert app._confidence_legend_box.get_visible() is True
+    assert info.get_visible() is True
+    # ...and nothing readable is left behind by the hidden half. `is_visible`
+    # (not `get_visible`) is the one that accounts for ancestors: a label
+    # inside a hidden box still reports its OWN flag as True, so checking
+    # that would have passed no matter what this strip actually shows.
+    shown = [label.get_label() for label in _legibility.iter_labels(info)
+             if label.is_visible()]
+    assert shown == [app_module._CONFIDENCE_LEGEND_CAPTION,
+                     app_module._CONFIDENCE_LEGEND_LOW,
+                     app_module._CONFIDENCE_LEGEND_HIGH]
 
 
 def test_target_info_subject_prefers_what_is_on_screen():
@@ -1054,8 +1073,14 @@ def test_every_label_on_the_protein_caption_is_legible():
     readable at booth distance.
 
     Measured on the #092221 ground: `.target-info-name` #74C5DF = 8.55:1,
-    `.target-info-tagline` #C7D9D8 = 11.36:1. Both clear the 4.5:1 AA floor
-    this project holds every label to.
+    `.target-info-tagline` #C7D9D8 = 11.36:1, and the confidence legend
+    sharing this strip -- `.confidence-legend-caption` and
+    `.confidence-legend-end`, both #3299B9 -- = 5.06:1. All three clear the
+    4.5:1 AA floor this project holds every label to; the legend is the
+    quietest of them on purpose (see `_build_confidence_legend`), and 5.06
+    is how much room that leaves, which is not much. Its four SWATCHES are
+    painted boxes and not labels, deliberately: the top of the ramp
+    (#0053D6) measures 2.54:1 here and could not legally be text.
     """
     app = _app()
     app.targets = [_target("trpcage", "Trp-cage",
@@ -1063,6 +1088,181 @@ def test_every_label_on_the_protein_caption_is_legible():
                            "proteins that folds itself.")]
     app._shown_target_id = "trpcage"
     _assert_legible(app._build_target_info(), context="protein caption")
+
+
+# ---------------------------------------------------------------------------
+# The confidence legend under the render: what the ribbon's colours MEAN.
+# ---------------------------------------------------------------------------
+
+def _legend_swatch_classes(root):
+    """The ramp class on each swatch box in `root`, in widget order.
+
+    Walks the real widget tree rather than re-deriving the list from
+    `_PLDDT_LEGEND`, for the reason `test_every_label_this_file_builds...`
+    records: a check that reads the same constant the builder read is not
+    affected by anything the builder actually does with it.
+    """
+    found = []
+
+    def walk(widget):
+        classes = set(widget.get_css_classes())
+        if "confidence-legend-swatch" in classes:
+            # `plddt-` prefixed only: GTK itself puts an orientation class
+            # ("horizontal") on every box, which is not ours and is not a
+            # ramp band.
+            ramp = sorted(c for c in classes if c.startswith("plddt-"))
+            assert len(ramp) == 1, f"swatch carries {ramp!r}, want exactly one ramp class"
+            found.append(ramp[0])
+        child = widget.get_first_child()
+        while child is not None:
+            walk(child)
+            child = child.get_next_sibling()
+
+    walk(root)
+    return found
+
+
+def test_the_confidence_legend_is_built_from_the_ramp_the_ribbon_uses():
+    """Same rule as the `?` card's legend, one surface further out: the
+    swatches come from `ui.geometry.PLDDT_STOPS`, so a legend that has
+    drifted from the ribbon it describes is not expressible.
+
+    The ORDER is the part worth pinning. This legend reads low-to-high --
+    the reverse of the ramp's own high-first order -- because it runs
+    "less sure -> more sure" left to right under a sentence that reads the
+    same way. A legend whose swatches ran the other way would be a legend
+    that says the opposite of what it means, and nothing about the colours
+    alone would give that away.
+
+    Mutations this catches: dropping the `reversed()` (the ramp then runs
+    backwards under the "less sure ... more sure" labels); hand-copying the
+    hexes into a separate legend stylesheet (they would be right today and
+    wrong the day the ramp moves).
+    """
+    app = _app()
+    legend = app._build_confidence_legend()
+
+    classes = _legend_swatch_classes(legend)
+    assert classes == [css_class for css_class, _range, _meaning
+                       in reversed(app_module._PLDDT_LEGEND)]
+    assert len(classes) == len(PLDDT_STOPS)
+
+    # ...and each of those classes is painted with the ramp's own colour,
+    # lowest threshold first now that the list is reversed.
+    swatch_css = app_module._plddt_swatch_css()
+    for css_class, (_threshold, rgb) in zip(classes, reversed(PLDDT_STOPS)):
+        hex_color = "#%02X%02X%02X" % tuple(rgb)
+        assert f".{css_class} {{ background-color: {hex_color}; }}" in swatch_css
+
+    # The two ends are named, so the ramp's direction is stated in words and
+    # not left to be inferred from the colours -- which is exactly what a
+    # visitor who cannot distinguish those colours has to do otherwise.
+    labels = [label.get_label() for label in _legibility.iter_labels(legend)]
+    assert labels.index(app_module._CONFIDENCE_LEGEND_LOW) < \
+        labels.index(app_module._CONFIDENCE_LEGEND_HIGH)
+
+
+def test_the_confidence_legend_says_what_the_colour_actually_means():
+    """A legend that only shows colours explains nothing: the visitor's
+    question is "why is this one orange", and the answer is that the model
+    is telling them how much of what it drew to believe, residue by
+    residue.
+
+    Both facts are asserted because both are load-bearing and neither is
+    obvious: that the colour is the MODEL's own confidence (not, say,
+    temperature, charge, or which chain is which), and that it is per
+    RESIDUE (the thing ui/diagnostics.py's teaching text got wrong once
+    already -- see STAGE_TEACHING's "confidence" entry).
+    """
+    caption = app_module._CONFIDENCE_LEGEND_CAPTION.lower()
+    assert "colour" in caption
+    assert "model" in caption and "sure" in caption
+    assert "residue" in caption
+    # ...and it stays a legend. The `?` card is where the thresholds and the
+    # band-by-band meanings live; this line has to survive being read at a
+    # glance by someone standing in front of a protein.
+    assert len(app_module._CONFIDENCE_LEGEND_CAPTION) < 60
+    assert not any(str(int(threshold)) in caption for threshold, _rgb in PLDDT_STOPS
+                   if threshold)
+
+
+def _strip_height(strip, for_width):
+    return strip.measure(Gtk.Orientation.VERTICAL, for_width).natural
+
+
+def test_the_confidence_legend_costs_the_protein_no_height():
+    """The layout invariant this legend is placed BESIDE the caption for.
+
+    Every pixel the caption strip takes is a pixel the render above it does
+    not get. The legend is 39px tall and the caption's two lines are 68px,
+    so putting the legend at the end of the caption's own row costs nothing
+    -- but only for as long as it also leaves the tagline enough width to
+    stay on one line. Stack it under the tagline instead, or let it grow
+    wide enough to wrap the tagline, and the strip goes 96px -> 124px and
+    the protein loses 28px of the screen. That is the same class of defect,
+    and very nearly the same size, as the 32px the rail's natural width
+    once took out of the hero slot.
+
+    Measured A/B, at the real hero width, against every tagline this booth
+    actually ships -- because "does the tagline still fit beside it" is a
+    fact about the COPY as much as about the widget, and the copy is in
+    playlist/manifest.yaml where nothing else would catch it.
+
+    Mutations this catches: appending the legend to the caption column
+    rather than to the strip; widening the legend (a longer caption line, a
+    fifth ramp band) past what the taglines leave room for.
+    """
+    hero_width = app_module._GALLERY_WIDTH_PX
+    targets = load_playlist(app_module._DEFAULT_PLAYLIST)
+    assert targets, "the shipped manifest is what this test is about"
+
+    too_tall = []
+    for target in targets:
+        app = _app()
+        app.targets = [target]
+        app._shown_target_id = target.id
+        strip = app._build_target_info()
+        with_legend = _strip_height(strip, hero_width)
+        # `unparent`, not `strip.remove(...)`: the legend has to come out of
+        # WHEREVER it was put, and `remove` on a widget that is not a direct
+        # child is a no-op that leaves the tree intact -- so the A/B would
+        # compare the strip with itself and pass for the one arrangement
+        # this test exists to reject (measured: it did).
+        app._confidence_legend_box.unparent()
+        without_legend = _strip_height(strip, hero_width)
+        if with_legend != without_legend:
+            too_tall.append(
+                f"{target.id}: the caption strip is {with_legend}px tall with "
+                f"the legend and {without_legend}px without it -- the render "
+                f"loses {with_legend - without_legend}px")
+    assert not too_tall, "\n".join(too_tall)
+
+
+def test_the_confidence_legend_never_takes_the_screen_from_the_protein():
+    """The width half of the same rule.
+
+    The caption strip lives in the hero slot, so its MINIMUM width is what
+    the protein's column cannot go below -- if that ever exceeded the slot
+    itself, the rail (which is fixed) would have nowhere to give from and
+    the whole layout would be over-constrained. And the legend itself has
+    to stay a footnote: it is measured here against a third of the slot,
+    which it uses about two thirds of today (292px of 456px).
+
+    Mutation this catches: giving the legend the help card's 34px swatches
+    and 12pt text, or letting its caption line grow into a sentence.
+    """
+    app = _app()
+    app.targets = [_target("dna", "DNA double helix",
+                           "The double helix, twelve rungs of it — and the "
+                           "only thing this booth folds that is not a protein.")]
+    app._shown_target_id = "dna"
+    strip = app._build_target_info()
+    hero_width = app_module._GALLERY_WIDTH_PX
+
+    assert strip.measure(Gtk.Orientation.HORIZONTAL, -1).minimum < hero_width
+    legend_width = app._confidence_legend_box.measure(
+        Gtk.Orientation.HORIZONTAL, -1).natural
+    assert legend_width < hero_width // 3
 
 
 def test_every_label_on_the_preparing_overlay_is_legible():
