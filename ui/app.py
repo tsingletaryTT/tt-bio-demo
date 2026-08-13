@@ -472,11 +472,18 @@ _HELP_PANELS = (
     "confidence, saving. The bright row is the stage running right now; "
     "diffusion owns most of the bar because it does most of the work.",
 
+    # The cadence here is `ui/telemetry.py`'s TelemetrySampler(period_s=2.0)
+    # -- one `tt-smi` snapshot every two seconds, on its own thread. This
+    # paragraph used to say "read from the driver twice a second", which was
+    # wrong twice over: it is 4x the real rate (500ms is `_TELEMETRY_REPAINT_MS`,
+    # the REPAINT cadence, not the sample rate) and it is a `tt-smi`
+    # subprocess, not a driver read. The chip panel below it genuinely does
+    # read the driver, once a second, and says so.
     "Chips — temperature, power draw and clock speed for every Tenstorrent "
-    "chip in this machine, read from the driver twice a second. A Blackhole "
-    "p300c board carries two chips, so the four chips here are two boards. "
-    "It is independent of the fold, so the silicon keeps breathing even if a "
-    "fold stalls.",
+    "chip in this machine, taken from a tt-smi snapshot every two seconds. A "
+    "Blackhole p300c board carries two chips, so the four chips here are two "
+    "boards. It is independent of the fold, so the silicon keeps breathing "
+    "even if a fold stalls.",
 
     # Every claim in this paragraph was checked against the rendered pixels
     # before it was written. An earlier draft said each grid was "driven by
@@ -486,12 +493,14 @@ _HELP_PANELS = (
     # actually do. What IS live and per-chip is the clock number, and the
     # temperatures directly above it.
     "Tensix activity — one animated Tensix core grid per chip, in the same "
-    "left-to-right order as the readouts above it. The pattern follows what "
-    "the fold is doing: a spreading ring while the model is denoising atom "
-    "positions, a steady glow while it is reasoning about which residues "
-    "touch. The number beside it is the fastest clock any of these chips is "
-    "running at right now, read from the driver every second. It is a "
-    "picture of the work, not a trace of individual cores.",
+    "left-to-right order as the readouts above it. Only the chip actually "
+    "running this fold animates the work — a spreading ring while the model "
+    "is denoising atom positions, a steady glow while it is reasoning about "
+    "which residues touch — and the others sit idle, because today the fold "
+    "runs on one chip and the header says which. The number beside it is the "
+    "fastest clock any of these chips is running at right now, read from the "
+    "driver every second. It is a picture of the work, not a trace of "
+    "individual cores.",
 )
 
 _APP_CSS_INSTALLED = False
@@ -1413,7 +1422,14 @@ class DemoApp(Gtk.Application):
             # animation off while the daemon is `preparing`). See
             # ui/chipviz.py's `viz_mode` for why the stage, not the screen,
             # decides.
-            self._sync_chipviz(event.get("stage") if kind == "stage" else None)
+            self._sync_chipviz(
+                event.get("stage") if kind == "stage" else None,
+                # Only job_start carries which chip claimed the fold, and
+                # that is what lets the panel animate THAT chip rather than
+                # claiming all four are working. Passing None for every
+                # other event leaves the last attribution in place, which
+                # is correct for the stage events that follow.
+                card=event.get("card") if kind == "job_start" else None)
 
             if kind == "job_start":
                 log.info("folding %s (%s residues) on chip %s",
@@ -1487,8 +1503,9 @@ class DemoApp(Gtk.Application):
             log.exception("dropping malformed %s event", event.get("type"))
         return False
 
-    def _sync_chipviz(self, stage=None):
-        """Tell the Tensix activity panel what the booth is doing.
+    def _sync_chipviz(self, stage=None, card=None):
+        """Tell the Tensix activity panel what the booth is doing, and
+        (when a `job_start` just said so) which chip is doing it.
 
         Its own guard, for the same reason `_note_diagnostics` has one: an
         animation is the least important thing happening in `_handle_event`,
@@ -1501,6 +1518,8 @@ class DemoApp(Gtk.Application):
         if self.chipviz_panel is None:
             return
         try:
+            if card is not None:
+                self.chipviz_panel.set_folding_chip(card)
             self.chipviz_panel.set_mode(self.states.state, stage)
         except Exception:
             log.exception("Tensix activity panel update dropped")

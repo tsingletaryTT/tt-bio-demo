@@ -19,6 +19,15 @@ Say this accurately, because the whole booth's claim is "this is real":
   `tt_aiclk` every second and shows the peak. On this booth's QB2 that reads
   1350 MHz, which is what the driver really reports.
 - **The MODE is live**, driven by the fold's stage off the socket.
+- **WHICH CHIP is folding is live, and only that chip animates the fold.**
+  `job_start` carries the card index the daemon claimed (runner/folder.py),
+  and `set_folding_chip` aims the fold's mode at that canvas alone; the
+  others animate `idle`, which is what they are. This phase's daemon is
+  card-0 only (runner/daemon.py builds `CardPool([config.device_id])` with
+  `device_id = 0` and says so), so on this booth that is one chip working
+  and three resting -- and the panel now shows exactly that. Until this fix
+  the mode was fanned to all four canvases, which said four chips were
+  folding when one was.
 - **The per-chip ANIMATION is not visibly clock-driven.** Each chip's own
   activity IS fed to its own canvas (`setChipStats`, exactly as
   tt-local-generator's `activity_viz.py` does), and tensix-viz really does
@@ -59,8 +68,11 @@ applies to a decorative hardware animation in a 430px rail:
 
 The cost, stated plainly: a WebKit WebProcess (tens of MB) in a booth process
 that previously had none. That is the trade, and it buys the one thing the
-booth could not otherwise show — that there are four chips and they are all
-working.
+booth could not otherwise show — that the silicon in this machine is real,
+how much of it there is, and which of it this fold is running on. Note what
+that is NOT a claim of: this phase folds on card 0 only, so what the panel
+shows is one chip working next to three that are idle, and it is drawn that
+way (see "What is live" above).
 
 Differences from the reference implementation, and why
 -------------------------------------------------------
@@ -179,8 +191,11 @@ MAX_CHIPS = 4
 # ── polling and staleness ───────────────────────────────────────────────────
 
 # How often the panel re-reads every chip's AICLK, in milliseconds. Four
-# sysfs reads per tick; at 1 Hz that is negligible next to the 2 Hz `tt-smi`
-# subprocess the telemetry panel's sampler already runs. Deliberately slower
+# sysfs reads per tick; at 1 Hz that is negligible next to the ONE-EVERY-TWO-
+# SECONDS `tt-smi` subprocess the telemetry panel's sampler already runs
+# (`ui/telemetry.py`'s `TelemetrySampler(period_s=2.0)` -- this comment said
+# "2 Hz", which is the panel's REPAINT cadence, not the sample rate, and the
+# help card had inherited the same 4x error). Deliberately slower
 # than the animation itself -- tensix-viz animates continuously from its own
 # rAF loop, and this only re-aims it.
 POLL_INTERVAL_MS = 1000
@@ -564,8 +579,11 @@ def build_page_html(js, css, chip_count_shown, canvas_w, canvas_h, arch="blackho
     Pure (a string in, a string out) so what actually gets rendered is
     testable with no WebKit and no display at all.
 
-    A small facade on `window.__viz` fans `activate(mode)` out to every chip
-    and adds `setChipStats(i, stats)` for PER-CHIP telemetry. Built by hand
+    A small facade on `window.__viz` carries three calls: `activate(mode)`
+    fans a mode out to every chip (used once, at page load, to start
+    everything idle), `activateChip(i, mode)` aims one at a single canvas --
+    which is what makes "chip 0 is folding and the other three are not"
+    drawable -- and `setChipStats(i, stats)` feeds PER-CHIP telemetry. Built by hand
     rather than via tensix-viz's own `CardViz`/`SystemViz` because those
     wrap and hide their inner `TensixViz` instances, and per-chip access is
     the entire point here: feeding all four canvases one averaged number
@@ -592,6 +610,8 @@ def build_page_html(js, css, chip_count_shown, canvas_w, canvas_h, arch="blackho
         "window.__viz={"
         "activate:function(m){window.__vizChips.forEach(function(v,i){"
         "setTimeout(function(){try{v.activate(m);}catch(e){}},i*100);});},"
+        "activateChip:function(i,m){var v=window.__vizChips[i];"
+        "if(v){try{v.activate(m);}catch(e){}}},"
         "setChipStats:function(i,s){var v=window.__vizChips[i];"
         "if(v){try{v.setMemoryStats(s);}catch(e){}}}};"
         "try{window.__viz.activate('idle');}catch(e){}"
@@ -654,6 +674,14 @@ class ChipVizPanel(Gtk.Box):
         self._stage = None
         self._stage_at = None
         self._state = None
+        # Which chip index the daemon said it is folding on (`job_start`'s
+        # `card`), or None for "nobody has told us yet" -- see
+        # `set_folding_chip` for what each means on screen.
+        self._folding_chip = None
+        # What each canvas was last told to animate, so `_push_modes` can
+        # skip the JS for canvases that have not changed. One entry per
+        # canvas, all starting at the page's own initial `activate('idle')`.
+        self._chip_modes = []
 
         # Honest chip count, capped for legibility. `_chip_actual` is what the
         # machine has; `_chip_shown` is how many we draw. The readout says
@@ -661,6 +689,7 @@ class ChipVizPanel(Gtk.Box):
         # under-report the hardware.
         self._chip_actual = chip_count()
         self._chip_shown = min(self._chip_actual, MAX_CHIPS)
+        self._chip_modes = ["idle"] * self._chip_shown
 
         cols, canvas_w, canvas_h = grid_layout(self._chip_shown)
         self._canvas_w, self._canvas_h = canvas_w, canvas_h
@@ -732,9 +761,9 @@ class ChipVizPanel(Gtk.Box):
     def set_mode(self, state, stage):
         """Record what the booth is doing and re-aim the animation.
 
-        Idempotent and cheap: if the resulting mode has not changed, no JS is
-        evaluated at all — which matters because ui/app.py calls this from
-        every `stage` event.
+        Idempotent and cheap: if nothing about the resulting picture has
+        changed, no JS is evaluated at all — which matters because
+        ui/app.py calls this from every `stage` event.
         """
         if not self.available:
             return
@@ -749,12 +778,86 @@ class ChipVizPanel(Gtk.Box):
                 log.exception("clock failed while stamping a stage")
         self._apply_mode(viz_mode(state, self._stage))
 
+    def set_folding_chip(self, index):
+        """Which chip the current fold is running on — `job_start`'s `card`.
+
+        This is what stops the panel claiming four-way work when one chip is
+        folding (whole-branch review, Critical 3). `index` is a chip index
+        as the daemon reports it; `None` means "we have not been told", and
+        is not the same thing as "no chip is folding":
+
+        - a KNOWN index animates the fold's mode on that canvas alone and
+          `idle` on the rest, which is what the hardware is actually doing
+          (this phase's daemon is card-0 only — runner/daemon.py);
+        - `None` falls back to animating every canvas in the mode, and the
+          header omits the chip number so nothing on screen attributes the
+          work to a particular chip. That window is transient in practice:
+          the daemon has sent `card` on every `job_start` since Phase 3a, so
+          this only covers "no fold has started yet" (where the mode is
+          `idle` anyway) and a hypothetical daemon that stops saying.
+
+        An index outside the canvases actually drawn (a fifth chip on a
+        bigger machine than this booth's QB2 — see `MAX_CHIPS`) is stored,
+        so no canvas claims the work, rather than being clamped onto chip 0.
+        """
+        if not self.available:
+            return
+        if index is not None:
+            try:
+                index = int(index)
+            except (TypeError, ValueError):
+                # Wire-shaped data: an unusable card index costs the
+                # attribution, never an exception on the event path.
+                log.debug("ignoring unusable folding chip index %r", index)
+                index = None
+        if index == self._folding_chip:
+            return
+        self._folding_chip = index
+        self._push_modes()
+
     def _apply_mode(self, mode):
         if mode == self._mode:
             return
         self._mode = mode
-        self._eval("window.__viz&&window.__viz.activate(" + json.dumps(mode) + ")")
-        self._title_label.set_label(f"TENSIX ACTIVITY · {mode_caption(mode)}".upper())
+        self._push_modes()
+
+    def _push_modes(self):
+        """Send each canvas the mode IT should be animating, and re-label.
+
+        Only canvases whose mode actually changed get JS, so the common case
+        (a stage event that changes nothing) costs nothing at all.
+        """
+        for index in range(self._chip_shown):
+            wanted = self._mode_for_chip(index)
+            if index < len(self._chip_modes) and self._chip_modes[index] == wanted:
+                continue
+            if index < len(self._chip_modes):
+                self._chip_modes[index] = wanted
+            self._eval("window.__viz&&window.__viz.activateChip(%d,%s)"
+                       % (index, json.dumps(wanted)))
+        self._title_label.set_label(self._title_text().upper())
+
+    def _mode_for_chip(self, index):
+        """`self._mode` for the chip doing the work, `idle` for the rest.
+
+        With no known folding chip the mode goes to every canvas — see
+        `set_folding_chip` for why that fallback is the honest one there.
+        """
+        if self._mode == "idle" or self._folding_chip is None:
+            return self._mode
+        return self._mode if index == self._folding_chip else "idle"
+
+    def _title_text(self):
+        """The header: what is running, and — when we know it — where.
+
+        "TENSIX ACTIVITY · CHIP 0 · DENOISING" is the whole point: it says
+        one chip is denoising, which is what the animation below it now
+        draws and what the daemon is actually doing.
+        """
+        caption = mode_caption(self._mode)
+        if self._mode == "idle" or self._folding_chip is None:
+            return f"TENSIX ACTIVITY · {caption}"
+        return f"TENSIX ACTIVITY · CHIP {self._folding_chip} · {caption}"
 
     def _stage_is_stale(self):
         """True once nothing has updated the stage for `STAGE_STALE_AFTER_S`.
@@ -818,11 +921,16 @@ class ChipVizPanel(Gtk.Box):
             self._readout_label.set_label(
                 readout_text(clocks[:self._chip_shown], self._chip_shown,
                              self._chip_actual))
-            active = self._mode != "idle"
             for index in range(self._chip_shown):
                 mhz = clocks[index] if index < len(clocks) else None
                 if mhz is None:
                     continue
+                # Per chip, not per panel: the flow floor in `flow_params`
+                # exists so a chip that is genuinely working never looks
+                # switched off, and applying it to the three chips that are
+                # NOT folding would be the same claim this panel just
+                # stopped making with the animation mode.
+                active = self._mode_for_chip(index) != "idle"
                 dram, l1, writeback = flow_params(clock_activity(mhz), active)
                 self._eval(
                     "window.__viz&&window.__viz.setChipStats(%d,"

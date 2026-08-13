@@ -56,9 +56,17 @@ class _RecordingChipViz:
     def __init__(self):
         self.modes = []
         self.running = None
+        # Which chip the booth said is folding -- `job_start`'s `card`. The
+        # real panel animates the fold on that canvas alone (see
+        # ui/chipviz.py's `set_folding_chip`); this records that the booth
+        # actually tells it.
+        self.folding_chips = []
 
     def set_mode(self, state, stage):
         self.modes.append((state, stage))
+
+    def set_folding_chip(self, index):
+        self.folding_chips.append(index)
 
     def set_running(self, running):
         self.running = running
@@ -803,3 +811,25 @@ def test_every_help_card_class_has_an_explicit_colour_rule():
     for css_class in ("help-title", "help-body", "help-section", "help-key",
                       "help-desc", "help-note", "booth-hint", "booth-hint-key"):
         assert frozenset({css_class}) in rules, f"{css_class} has no color: rule"
+
+
+def test_the_chip_that_is_folding_is_passed_to_the_tensix_panel():
+    """The panel cannot draw "chip 0 is working and the other three are not"
+    unless the booth tells it which chip -- and `job_start` is the only event
+    that carries it (whole-branch review, Critical 3)."""
+    app = _app()
+    app.chipviz_panel = _RecordingChipViz()
+    app._handle_event({"type": "job_start", "job_id": "j1", "target_id": "t",
+                       "n_residues": 20, "card": 0})
+    assert app.chipviz_panel.folding_chips == [0]
+
+
+def test_a_stage_event_does_not_reattribute_the_fold_to_another_chip():
+    """Stage events carry no `card`; passing their (absent) one through
+    would clear the attribution on the very next event after job_start."""
+    app = _app()
+    app.chipviz_panel = _RecordingChipViz()
+    app._handle_event({"type": "job_start", "job_id": "j1", "target_id": "t",
+                       "n_residues": 20, "card": 2})
+    app._handle_event({"type": "stage", "stage": "diffusion", "frac": 0.5})
+    assert app.chipviz_panel.folding_chips == [2]
