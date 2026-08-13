@@ -38,15 +38,17 @@
 # never becomes an on-screen fact for the visitor to check the blurb
 # against, so a blurb should not promise seeing it.
 #
-# `expected_s` is omitted on all three new entries -- deliberately, not an
-# oversight: nobody has folded them on this booth's actual hardware yet
-# (the cards were unavailable for the whole of this task; see the report),
-# and ui/playlist.py now treats a missing `expected_s` as "not yet measured"
-# rather than requiring a guessed number (see that module's own docstring).
-# ui/gallery.py renders that case as an explicit "not yet timed" note, never
-# a fabricated time. `tests/integration/test_new_targets_timing.py` is the
-# single-command hardware pass that measures the real number for each and
-# is the reason to come back and fill this field in.
+# `expected_s` on the three new entries was MEASURED on this booth's own
+# hardware (2026-08-12) by tests/integration/test_new_targets_timing.py,
+# after a board reset cleared an ethernet-core fault that had been failing
+# every device open. The numbers are a booth-planning fact, not a detail:
+# Trp-cage folds in 4.4s, the other three in 62-75s. Historical note --
+# these shipped with the field omitted, because the cards were unavailable
+# and a guessed number would have read as a measured one. That machinery
+# stays: ui/playlist.py treats a missing `expected_s` as "not yet measured"
+# and ui/gallery.py renders it as an explicit "not yet timed" note rather
+# than a fabricated time, so a future target can be added honestly before
+# anyone has folded it.
 #
 # `model` is omitted here on purpose so the Trp-cage entry exercises
 # ui/playlist.py's DEFAULT_MODEL fallback (protenix-v2, this project's
@@ -78,9 +80,13 @@
     tacrolimus specifically because it clicks onto FKBP12 and, together,
     the two jam shut a signal that would otherwise tell the immune system
     to attack the new organ.
-  # expected_s intentionally omitted -- not yet folded on this booth's real
-  # hardware; see the manifest's own header comment and
-  # tests/integration/test_new_targets_timing.py.
+  # Measured on this booth's own hardware by
+  # tests/integration/test_new_targets_timing.py: 62.6s wall for 107
+  # residues. Note this is an order of magnitude slower than Trp-cage's
+  # 4.4s, and that the three new targets sit within 12s of each other
+  # despite spanning 107-223 residues -- the cost is dominated by the
+  # fixed ~200 denoising steps, not by residue count.
+  expected_s: 62.6
 
 - id: dhfr
   name: Dihydrofolate Reductase
@@ -90,9 +96,13 @@
     material for new DNA -- which is exactly why one of the oldest cancer
     drugs, methotrexate, is shaped to jam it shut instead, starving
     fast-dividing cancer cells of what they need to keep copying themselves.
-  # expected_s intentionally omitted -- not yet folded on this booth's real
-  # hardware; see the manifest's own header comment and
-  # tests/integration/test_new_targets_timing.py.
+  # Measured on this booth's own hardware by
+  # tests/integration/test_new_targets_timing.py: 69.1s wall for 187
+  # residues. Note this is an order of magnitude slower than Trp-cage's
+  # 4.4s, and that the three new targets sit within 12s of each other
+  # despite spanning 107-223 residues -- the cost is dominated by the
+  # fixed ~200 denoising steps, not by residue count.
+  expected_s: 69.1
 
 - id: trypsin
   input: ../examples/affinity_tryp.yaml
@@ -102,6 +112,10 @@
     protein in a meal into smaller, absorbable pieces, and it is also one
     of the most-studied protein shapes in science -- often the very first
     real structure a biochemistry student ever examines up close.
-  # expected_s intentionally omitted -- not yet folded on this booth's real
-  # hardware; see the manifest's own header comment and
-  # tests/integration/test_new_targets_timing.py.
+  # Measured on this booth's own hardware by
+  # tests/integration/test_new_targets_timing.py: 74.9s wall for 223
+  # residues. Note this is an order of magnitude slower than Trp-cage's
+  # 4.4s, and that the three new targets sit within 12s of each other
+  # despite spanning 107-223 residues -- the cost is dominated by the
+  # fixed ~200 denoising steps, not by residue count.
+  expected_s: 74.9
