@@ -10,7 +10,18 @@
 
 ## Global Constraints
 
-- **Nothing in this plan may be installed on the development box.** These packages install kernel modules and system packages. Every test here is build-time or unpack-time: `dpkg-deb --contents`, `--info`, extraction into a temp dir, and unit tests of maintainer-script *logic*. A task that can only be verified by `dpkg -i` on this machine is out of scope — say so rather than installing.
+- **Never install on the host; install in a disposable container.** These packages install kernel modules and system packages, and the dev box is shared and in active use — `dpkg -i` on the host is forbidden. But installs *must* be tested, so they are tested in a throwaway container that is destroyed afterwards (`--rm`). Docker is available and permitted to this user (verified 2026-08-13).
+
+  Two tiers, and use the cheapest that answers the question:
+
+  | Tier | Image | For |
+  |---|---|---|
+  | Fast | `ubuntu:24.04` (already pulled) | Per-task verification: does it install, what does postinst do, is it idempotent, does purge clean up |
+  | Fidelity | `tenstorrent/qb2-env` from `~/code/tt-developer-image/docker/Dockerfile.qb2` | The real target: "a TT-QuietBox 2 immediately after first boot post-tt-installer" — user `ttuser`, Ubuntu 24.04, Blackhole, venvs at the paths tt-installer creates |
+
+  **This makes the tests real rather than textual.** Grepping a postinst for `Default: false` proves the string exists; installing noninteractively in a container and asserting `tt-bio install-deps` did *not* run proves the behaviour. This project's signature failure is tests that cannot fail — prefer the container assertion every time one is available. Where a test can only be textual, say so and explain why.
+
+  The container has no Tenstorrent device unless one is passed in, and **none should be**. A package that only works with silicon attached cannot be verified at install time anyway; the booth's own preflight is what covers that.
 - **`tt-bio install-deps` runs only after an explicit debconf prompt that defaults to declining.** (User ruling, 2026-08-13.) The project's standing rule is that it is never run silently; a prompt is consent, an unattended install is not. A noninteractive install must decline and print exactly what the operator should run.
 - **Weights are downloaded in postinst, never shipped in the package.** Spec §7: offline operation is required at the venue, not at install time.
 - **tt-bio is pinned to a release tag, never `main`.** The pin already lives in one variable at the top of `scripts/setup-venvs.sh` (`TT_BIO_VERSION`); packaging must read that pin rather than introduce a second one that can drift.
@@ -108,7 +119,56 @@ Declared dependencies for `tt-bio-demo`, from spec §7: `python3-gi`, `python3-g
 
 ---
 
-## Task 2: The application package ships the right files, and only those
+## Task 2: The container harness that makes install tests real
+
+**Files:** Create `tests/unit/conftest_container.py` (or extend the existing conftest), `scripts/deb-container.sh`. Test: `tests/unit/test_packaging.py`
+
+**Produces:** a `container` pytest fixture exposing `.install(pkg, env=, preseed=, shim=)` returning a result with `.installed`, `.log`, `.status(pkg)`, `.shim_called_with(arg)`, `.shim_call_count(arg)`, `.shim_log`.
+
+**Why this task exists:** every later task's most important assertion is behavioural — *did the postinst actually do the right thing* — and without this harness those tests degrade into grepping shell scripts for strings. This project's recurring failure is tests that cannot fail; a text search for `Default: false` is exactly that shape. Build the harness first and the rest of the plan gets to assert on behaviour.
+
+**How it must work:**
+
+- Runs `docker run --rm` against `ubuntu:24.04` (already pulled locally). Never touches the host's dpkg database. Never passes `--device /dev/tenstorrent`.
+- Copies the built `.deb` files in, installs with `apt-get install -y ./pkg.deb` so dependencies resolve, and returns everything the test needs to judge what happened.
+- **The `shim` parameter is the load-bearing part.** It puts a fake executable of that name early on `PATH` inside the container which appends its arguments to a log file and exits 0. That is how a test proves `tt-bio install-deps` did *or did not* run, without a real tt-bio and without installing kernel modules.
+- `preseed` writes debconf selections before installing, so both branches of a prompt can be exercised.
+- **If Docker is unavailable, these tests must fail loudly, not skip.** A silently skipped install test is indistinguishable from a passing one, and this project already fails a whole test half that matches zero tests for exactly that reason.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+def test_the_harness_detects_a_command_that_ran(container):
+    """Prove the shim mechanism works before trusting it to prove a negative."""
+    r = container.run("tt-bio install-deps --yes", shim="tt-bio")
+    assert r.shim_called_with("install-deps")
+    assert r.shim_call_count("install-deps") == 1
+
+
+def test_the_harness_detects_a_command_that_did_not_run(container):
+    r = container.run("echo doing nothing", shim="tt-bio")
+    assert not r.shim_called_with("install-deps")
+
+
+def test_the_harness_never_passes_a_tenstorrent_device():
+    s = (REPO / "scripts" / "deb-container.sh").read_text()
+    assert "/dev/tenstorrent" not in s
+
+
+def test_the_harness_always_removes_its_container():
+    s = (REPO / "scripts" / "deb-container.sh").read_text()
+    assert "--rm" in s
+```
+
+**Mutations these must catch:** a shim that never records (test 1 red); a `shim_called_with` that returns True unconditionally (test 2 red); adding a device passthrough (test 3 red).
+
+Tests 1 and 2 are a matched pair on purpose: a harness that always reports "it ran" and one that always reports "it didn't" both pass a single-sided test. The negative assertion in Task 5 is only trustworthy because test 1 proves the mechanism can see a positive.
+
+- [ ] **Step 2: Implement, verify mutations, run `./scripts/test.sh`, commit**
+
+---
+
+## Task 3: The application package ships the right files, and only those
 
 **Files:** Create `debian/tt-bio-demo.install`, `debian/tt-bio-demo.links` if needed. Modify `debian/rules`. Test: extend `tests/unit/test_packaging.py`
 
@@ -163,7 +223,7 @@ Note test 3 is the packaging counterpart of `test_every_shipped_target_points_at
 
 ---
 
-## Task 3: `helpers.sh` — the only place with testable logic
+## Task 4: `helpers.sh` — the only place with testable logic
 
 **Files:** Create `debian/helpers.sh`. Test: extend `tests/unit/test_packaging.py`
 
@@ -221,7 +281,7 @@ Test 3 is the one that matters most: the failure mode is a download that produce
 
 ---
 
-## Task 4: The runtime package builds the venvs, and asks before touching the system
+## Task 5: The runtime package builds the venvs, and asks before touching the system
 
 **Files:** Create `debian/tt-bio-demo-runtime.{templates,config,postinst,prerm}`. Test: extend `tests/unit/test_packaging.py`
 
@@ -232,22 +292,51 @@ Test 3 is the one that matters most: the failure mode is a download that produce
 - [ ] **Step 1: Write the failing test**
 
 ```python
+def test_a_noninteractive_install_does_not_run_install_deps(container):
+    """The behavioural version of the ruling, not a grep for a string.
+
+    Installs the package noninteractively in a throwaway container with a
+    `tt-bio` shim on PATH that records every invocation. If install-deps ran,
+    the marker file exists. This is the assertion that would actually catch a
+    regression; a text search only proves a default was written down.
+    """
+    result = container.install(
+        "tt-bio-demo-runtime",
+        env={"DEBIAN_FRONTEND": "noninteractive"},
+        shim="tt-bio",
+    )
+    assert result.installed, result.log
+    assert not result.shim_called_with("install-deps"), (
+        "an unattended install ran tt-bio install-deps -- it must default to "
+        f"declining. shim log:\n{result.shim_log}")
+
+
+def test_declining_the_prompt_still_leaves_a_usable_package(container):
+    """Declining is the default path, so it must not be a broken one."""
+    result = container.install("tt-bio-demo-runtime", preseed={
+        "tt-bio-demo-runtime/install-deps": "boolean false"})
+    assert result.installed, result.log
+    assert result.status("tt-bio-demo-runtime") == "install ok installed"
+
+
+def test_accepting_the_prompt_runs_it_exactly_once(container):
+    result = container.install("tt-bio-demo-runtime", shim="tt-bio", preseed={
+        "tt-bio-demo-runtime/install-deps": "boolean true"})
+    assert result.installed, result.log
+    assert result.shim_call_count("install-deps") == 1, result.shim_log
+
+
 def test_install_deps_defaults_to_declining():
-    """An unattended install must not install kernel modules."""
+    """Textual companion to the behavioural test above: the declared default.
+
+    Kept because the container test could pass for the wrong reason (e.g. the
+    prompt never being asked at all), and these two fail differently.
+    """
     t = (REPO / "debian" / "tt-bio-demo-runtime.templates").read_text()
     block = [b for b in t.split("\n\n") if "install-deps" in b]
     assert block, "no debconf template for the install-deps prompt"
     assert "Default: false" in block[0], "the prompt must default to declining"
     assert "Type: boolean" in block[0]
-
-
-def test_postinst_never_calls_install_deps_unguarded():
-    """The call must sit behind the debconf answer, not run outright."""
-    p = (REPO / "debian" / "tt-bio-demo-runtime.postinst").read_text()
-    for line in p.splitlines():
-        s = line.strip()
-        if "install-deps" in s and not s.startswith("#"):
-            assert not s.startswith("tt-bio "), f"unguarded call: {s}"
 
 
 def test_postinst_builds_the_venvs_via_the_tested_script():
@@ -278,7 +367,7 @@ def test_postinst_is_idempotent_in_shape():
 
 ---
 
-## Task 5: The weights package, and the checksum that must not lie
+## Task 6: The weights package, and the checksum that must not lie
 
 **Files:** Create `debian/tt-bio-demo-weights.{templates,config,postinst}`. Test: extend `tests/unit/test_packaging.py`
 
@@ -328,7 +417,7 @@ Measured for context: the weights download was previously estimated in tens of m
 
 ---
 
-## Task 6: The systemd user unit and desktop entry
+## Task 7: The systemd user unit and desktop entry
 
 **Files:** Create `debian/tt-bio-demo.service`, `debian/tt-bio-demo.desktop`. Modify `debian/rules`. Test: extend `tests/unit/test_packaging.py`
 
@@ -373,7 +462,7 @@ Test 3 is not hypothetical: this project measured tt-metal writing 13–14 MB/s 
 
 ---
 
-## Task 7: Gallery thumbnails, rendered from real folds
+## Task 8: Gallery thumbnails, rendered from real folds
 
 **Files:** Create `scripts/make-thumbnails.py`. Modify `playlist/manifest.yaml`, `debian/tt-bio-demo.install`. Test: extend `tests/unit/test_playlist.py`
 
@@ -405,7 +494,7 @@ Keep the existing "missing thumbnail is tolerated" behaviour exactly as it is �
 
 ---
 
-## Task 8: Build the packages and inspect them, without installing
+## Task 9: One command that builds and reports
 
 **Files:** Create `scripts/build-deb.sh`. Test: extend `tests/unit/test_packaging.py`
 
@@ -439,5 +528,5 @@ Print, for each package: name, version, installed size, dependency list, and the
 
 - The four-package split is the spec's, and it is load-bearing: weights change on a different cadence from code, and an operator must be able to reinstall one without the other.
 - `debian/` in `tt-local-generator` is the prior art the spec points at, including its debconf `.templates`/`.config`/`.postinst` triple. Read it before writing yours; do not copy more than the pattern.
-- `lintian` is **not installed** on this box. Do not install it. If a task would benefit from lintian output, say so and leave it for a machine that has it.
+- `lintian` is **not installed** on this box. Do not install it. If a task would benefit from lintian output, run it inside the container instead — the harness from Task 2 already gives you a disposable Ubuntu where `apt-get install -y lintian` costs nothing and disappears on exit.
 - The three untracked PNGs and `booth-demo-2min.mp4` in the repo root are not yours; leave them alone. `booth-demo-2min.mp4` is gitignored deliberately.
