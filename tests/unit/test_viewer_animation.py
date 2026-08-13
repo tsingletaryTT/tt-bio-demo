@@ -58,6 +58,11 @@ class _FakeViewer:
         self._blend = 0.0
         self._blend_target = 0.0
         self._spin = 0.0
+        # Per-instance since the easter egg needed a viewer that holds still
+        # (ui/viewer.py's `set_spin_rate`). Seeded from the class constant,
+        # as the real `__init__` does, so every test below still measures the
+        # shipped rate rather than one this fake invented.
+        self._spin_rate = StructureViewer.SPIN_RATE
         self._last_frame_time = None
         self._point_count = 0
         self._ribbon_index_count = 0

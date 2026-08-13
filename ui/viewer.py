@@ -212,6 +212,15 @@ class StructureViewer(Gtk.GLArea):
         self._ready = False
 
         self._spin = 0.0
+        # Per-instance, not the class constants, so a SECOND viewer can be
+        # given a different look without changing the protein's. Both are
+        # here for ui/mark.py's easter egg, which needs the brand purple and
+        # a mark that holds still: the mark is a plane figure, and a plane
+        # figure on a 0.35 rad/s turntable is edge-on within five seconds.
+        # The fold's viewer never calls either setter, so it keeps the
+        # module defaults it always had.
+        self._point_color = POINT_COLOR
+        self._spin_rate = self.SPIN_RATE
         self._blend = 0.0          # 0 = points only, 1 = ribbon only
         self._blend_target = 0.0
         self._tick_id = None
@@ -298,6 +307,21 @@ class StructureViewer(Gtk.GLArea):
         """Fade from the point cloud to the ribbon."""
         self._blend_target = 1.0
 
+    def set_point_color(self, rgb):
+        """Recolour the point cloud. `rgb` is three floats in 0..1.
+
+        The ribbon is untouched: its colours are per-vertex pLDDT and mean
+        something, so there is nothing here to override. Points carry no
+        meaning of their own beyond "an atom is here", which is why this is
+        a single uniform and why it is safe to change.
+        """
+        self._point_color = (float(rgb[0]), float(rgb[1]), float(rgb[2]))
+        self.queue_render()
+
+    def set_spin_rate(self, radians_per_second):
+        """How fast this viewer turns, in radians/second. 0 holds it still."""
+        self._spin_rate = float(radians_per_second)
+
     def _on_tick(self, _widget, frame_clock):
         now = frame_clock.get_frame_time() / 1e6  # microseconds to seconds
         if self._last_frame_time is None:
@@ -320,7 +344,7 @@ class StructureViewer(Gtk.GLArea):
         # Wrap _spin into [0, 2*pi) so it stays bounded across an all-day
         # (or longer) unattended run instead of growing forever. rotation_y
         # is periodic in 2*pi, so this changes nothing about what's drawn.
-        self._spin = (self._spin + self.SPIN_RATE * dt) % _TWO_PI
+        self._spin = (self._spin + self._spin_rate * dt) % _TWO_PI
         self._blend = blend_step(
             self._blend, self._blend_target, dt, self.CROSSFADE_SECONDS)
         self.queue_render()
@@ -590,7 +614,8 @@ class StructureViewer(Gtk.GLArea):
             # frame (see the module-level comment on _POINT_SIZE_FACTOR).
             self._extent * _POINT_SIZE_FACTOR)
         GL.glUniform3f(
-            GL.glGetUniformLocation(self._point_program, "u_color"), *POINT_COLOR)
+            GL.glGetUniformLocation(self._point_program, "u_color"),
+            *self._point_color)
         GL.glUniform1f(
             GL.glGetUniformLocation(self._point_program, "u_opacity"), opacity)
         GL.glBindVertexArray(self._point_vao)

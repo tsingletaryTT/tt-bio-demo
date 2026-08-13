@@ -354,6 +354,65 @@ _the_protein_no_height` measures that A/B at the real hero width against
 beside it" is a fact about the copy as much as about the widget. It caught the
 first draft of the DNA tagline, which was 135 characters and did not.
 
+### The Tensix panel's flicker, and an easter egg (2026-08-13)
+
+Two things, one branch, both driven by "measure it, do not guess."
+
+**The flicker was the animation, not our loop.** Reported from the booth as
+*"when the tensix viz is on there's a lot of flicker in their rendering area."*
+The obvious suspect was `ChipVizPanel._tick` — the 1 Hz JS/sysfs poll. It was
+not. Rendering the live WebView to a texture on every GTK frame and comparing
+pixels (in isolation, then inside the real app, then against a 20-frame
+Spectacle burst of the booth itself) showed the panel's pixel statistics are
+*identical* with the poll running and with it stopped: no re-layout, no resize,
+no blanking, no white flash, whole-panel mean luminance flat to ±0.3%.
+
+What it actually is: tensix-viz's **`idle`** mode randomises every cell once per
+*display* frame, and `_drawHeatmap` renormalises the grid to its own per-frame
+maximum — so on a 60 Hz panel each 86 px canvas starts ~4 new pops every 17 ms
+and each one lands at *full* contrast as a hard 4×7 px near-white dot. Measured
+over the four canvases: 4697 pixel-brightenings/second. The three smooth modes
+measure 10–30× quieter on the same metric, which is why the panel flickered
+**worse at rest than mid-fold** — three of four canvases are `idle` during a
+fold and all four are when nothing is folding.
+
+The fix owns the frame budget rather than the vendored library
+(`PROVENANCE.md`: do not hand-edit those files): the generated page installs a
+`requestAnimationFrame` governor and gets the per-mode budget as data from
+Python. `idle` runs at 20 fps; every fold mode stays ungoverned so the diffusion
+ring keeps its designed cadence. Verified live — one chip folding renders 60
+frames/s while the three resting ones render 16–17. **4697 → 1458
+brightenings/s (3.2×).** Stated honestly as a reduction: what is left is
+inherent to that mode at a canvas 4× smaller than the library's design size.
+
+**`Ctrl+G` is an easter egg, and it is labelled as one.** `ui/mark.py` defines
+the Tenstorrent mark as a signed distance field and runs gradient descent on it,
+pulling 6,000 points of Gaussian noise into the logo over six seconds — through
+the same `StructureViewer.set_points` the diffusion trajectory uses, because it
+is the same noise-becomes-structure motion.
+
+- **The geometry is a construction, not a trace.** The mark is a cube seen
+  corner-on, so every vertex lands on an isometric lattice; the shipped vector
+  artwork confirms it (five x values 28 apart, eight y values 16.2 apart, ratio
+  0.5786 against tan 30° = 0.5774). Rasterising the field against the real
+  32×32 artwork scores **IoU 0.996**.
+- **The first model was wrong and looked right.** "Three congruent rhombi at
+  120°" scores 0.60. The artwork settles it: the three pieces are *not*
+  congruent and the mark is *not* three-fold symmetric. Only rasterising caught
+  that — which is the same lesson as the DNA duplex fixture, one surface later.
+- **Honesty is the hard part, not the maths.** It is a chord (every unbound
+  plain key is a visitor touch, so a letter would have stolen one), it is not on
+  the `?` card, the heading says "Not a fold" and the body says "not a folded
+  structure", the point count in the copy is interpolated from `mark.POINTS` so
+  it cannot drift, it closes itself after 60 s idle, and it gets its **own**
+  viewer so the fold in flight keeps streaming into the real one — dismissing it
+  returns the booth to exactly what it would have been showing. It covers the
+  hero slot only, so its own claim ("the rail on the right is still live") is
+  something a visitor can check.
+
+Seven mutations for the flicker fix, seven red. Twenty-four for the egg,
+twenty-four red, with a deliberate no-op control that correctly survived.
+
 ## Conventions
 
 - **Keep the README's screenshots current.** The README claims every image on it is the

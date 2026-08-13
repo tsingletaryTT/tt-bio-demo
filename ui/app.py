@@ -155,6 +155,7 @@ from ui.states import (
     StateMachine, points_are_visible, ribbon_may_be_revealed, showcase_ended,
 )
 from ui.telemetry import TelemetrySampler
+from ui.mark import BRAND_PURPLE, POINTS as MARK_POINTS, MarkCondensation
 from ui.viewer import StructureViewer
 
 log = logging.getLogger(__name__)
@@ -526,6 +527,50 @@ _DIAGNOSTICS_KEYS = frozenset({"d"})
 # Nothing about it is persisted: a restart at the venue is a clean booth.
 _TENSIX_KEYS = frozenset({"t"})
 
+# ── the easter egg ──────────────────────────────────────────────────────────
+#
+# `Ctrl+G`, for geometry. `ui/mark.py` pulls a cloud of Gaussian noise into
+# the Tenstorrent mark by gradient descent on a signed distance field, and
+# draws it through the same `StructureViewer.set_points` a fold does.
+#
+# Why a CHORD and not a plain letter. Every unbound plain key in this booth is
+# a visitor touch (`_handle_key`'s last line) -- that is the whole interaction
+# model, and a visitor at a keyboard presses things. Carving a letter out of
+# that would mean a visitor who wanted the gallery sometimes got a toy
+# instead, which is a worse bug than the egg is a feature. A chord cannot be
+# hit by accident, costs the visitor surface nothing, and sits with the two
+# chords the booth already reserves for people who know the booth.
+#
+# It is deliberately NOT on the `?` card. An easter egg that is documented is
+# a feature, and this is not one -- see
+# `test_the_easter_egg_is_not_advertised_on_the_help_card`, which pins that as
+# a decision rather than leaving it as an omission somebody later "fixes".
+_EGG_KEYS = frozenset({"g"})
+
+# One descent step per tick, at the same cadence `_drain_frames` runs a real
+# fold's frames at -- so the egg's collapse is paced like the diffusion
+# trajectory it is imitating rather than being a separate kind of motion.
+_EGG_STEP_MS = _FRAME_DRAIN_MS
+
+# The copy. This is the one place in the booth where a visitor could mistake
+# computed decoration for a computed RESULT, so the card says what it is in
+# the same register as everything else here: what it is, what it is not, and
+# that the booth has not stopped doing its actual job.
+_EGG_TITLE = "Not a fold — geometry, for fun"
+_EGG_BODY = (
+    # The count comes from ui/mark.py rather than being typed here: a number
+    # in visitor-facing copy that can drift from the thing it describes is
+    # exactly the kind of small lie this booth has already had to fix once.
+    f"{MARK_POINTS:,} points of Gaussian noise, pulled into the Tenstorrent "
+    "mark by gradient descent on a signed distance field. The mark is a cube "
+    "seen corner-on: three faces on an isometric lattice, with a notch."
+)
+_EGG_DISCLAIMER = (
+    "Real arithmetic — but no chemistry, no molecule, and nothing off the "
+    "chips. This is not a folded structure."
+)
+_EGG_NOTE = "Any key returns to the booth · the rail on the right is still live"
+
 # How long an overlay a visitor left open survives their walking away.
 #
 # The state machine's own 45s idle timeout only covers the states it owns
@@ -549,6 +594,13 @@ _DIAGNOSTICS_IDLE_S = 300.0
 # panels are the same kind of chrome opened the same way, and two constants
 # that must stay equal are a constant waiting to drift.
 _RAIL_PANEL_IDLE_S = _DIAGNOSTICS_IDLE_S
+
+# The easter egg gets the HELP CARD's patience, not the panels'. It covers the
+# hero slot, and the one thing the attract loop must never do is show a
+# visitor who did not ask for it something that is not a fold. An alias, for
+# the same reason as above: it is the same kind of thing, opened the same way,
+# and it must go away on its own.
+_EGG_IDLE_S = _HELP_IDLE_S
 
 # ── logging a failure that repeats ──────────────────────────────────────────
 #
@@ -597,6 +649,10 @@ _BACKGROUND_BY_CLASS = {
     "booth-side": _DARK_BASE,
     "preparing-overlay": _DARK_BASE,
     "help-overlay": _DARK_BASE,
+    # The easter egg's card (`_build_egg_overlay`). Same near-opaque wash of
+    # the same ground as the help card, and registered here for the same
+    # reason: its three labels have to be contrast-checkable.
+    "egg-overlay": _DARK_BASE,
     # The held-structure caption. Like the two overlays above it is a
     # near-opaque wash OF the dark ground rather than a second surface
     # colour, so the contrast its two labels really have is the contrast
@@ -775,6 +831,42 @@ window, .booth-root, .booth-side {{
     color: {_BG};
     font-size: 26px;
     font-weight: 700;
+}}
+/* The easter egg (`Ctrl+G`, ui/mark.py). Same wash as the help card, because
+   it is the same kind of thing: the booth putting something over itself for
+   a moment, not another application.
+
+   The BRAND PURPLE the mark is drawn in is deliberately absent from this
+   block. #7C68FA measures 4.13:1 on #092221 -- under the 4.5:1 floor every
+   label in this booth holds to -- so it is a FILL colour only, on a point
+   cloud in a GL uniform (ui/mark.py's `BRAND_PURPLE`), and never on type.
+   `_ACCENT` is excluded from type here for exactly the same reason. */
+.egg-overlay {{
+    background-color: rgba(9, 34, 33, 0.96);
+    padding: 36px 40px;
+}}
+.egg-title {{
+    /* _TEAL, 8.55:1 -- the same colour and the same role as
+       `.viewer-caption-title`: the one line that says what this is. */
+    color: {_TEAL};
+    font-size: 24px;
+    font-weight: 700;
+}}
+.egg-body {{
+    color: {_BG_ALT};  /* 11.36:1 */
+    font-size: 14pt;
+}}
+.egg-disclaimer {{
+    /* Brighter than the body (_BG, 15.46:1): this is the sentence that
+       stops the egg being mistaken for a result, so it is the one line on
+       the card that must survive being read from across a booth. */
+    color: {_BG};
+    font-size: 14pt;
+    font-weight: 700;
+}}
+.egg-note {{
+    color: {_BG_ALT};  /* 11.36:1 */
+    font-size: 11pt;
 }}
 .help-body {{
     color: {_BG_ALT};
@@ -1006,6 +1098,25 @@ class DemoApp(Gtk.Application):
         self._preparing_message_label = None
         self._window = None
 
+        # ── the easter egg (Ctrl+G; ui/mark.py, `_EGG_KEYS`) ─────────────
+        #
+        # It gets its OWN viewer rather than borrowing the protein's. That is
+        # the whole reason it cannot disturb a fold in flight: `_drain_frames`
+        # keeps feeding the real viewer the whole time the egg is up, so
+        # dismissing it puts a visitor back exactly where the booth would have
+        # been -- rather than in front of a viewer that has to be cleared and
+        # then wait for the next frame, which on a 223-residue target is
+        # twenty seconds of nothing (the defect the 2026-08-13 "never clear
+        # until superseded" change exists to prevent).
+        #
+        # `egg_visible` is a plain bool a headless test can drive, exactly
+        # like `help_visible` and the two panel flags.
+        self.egg_visible = False
+        self.egg_viewer = None
+        self._egg_box = None
+        self._egg = None
+        self._egg_source_id = None
+
         # ── the two interactive surfaces this task adds ──────────────────
         #
         # The log is created here, not in do_activate, for the same reason
@@ -1220,9 +1331,23 @@ class DemoApp(Gtk.Application):
         self.screens.add_named(viewer_column, "viewer")
         self._build_gallery()
 
+        # The hero slot, with the easter egg laid over it and NOTHING else.
+        #
+        # Wrapping the stack rather than the window is what makes the egg's
+        # own claim -- "the rail on the right is still live" -- checkable by a
+        # visitor instead of merely asserted: the pipeline and the chip
+        # telemetry stay uncovered beside it. Doing it structurally also means
+        # no arithmetic against `_SIDE_RAIL_WIDTH_PX`, which was the first
+        # attempt and left the rail's heading half washed out.
+        hero = Gtk.Overlay()
+        hero.set_hexpand(True)
+        hero.set_vexpand(True)
+        hero.set_child(self.screens)
+        hero.add_overlay(self._build_egg_overlay())
+
         root = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
         root.add_css_class("booth-root")
-        root.append(self.screens)
+        root.append(hero)
         root.append(self._build_side_rail())
 
         logo = Gtk.Label(label=TT_BIO_LOGO)
@@ -1285,6 +1410,8 @@ class DemoApp(Gtk.Application):
                 self.chipviz_panel.set_running(False)
             if self._client is not None:
                 self._client.stop()
+            # The easter egg's timer, if a visitor left it running.
+            self._stop_egg_source()
         except Exception:
             log.exception("error during shutdown")
         Gtk.Application.do_shutdown(self)
@@ -1712,6 +1839,56 @@ class DemoApp(Gtk.Application):
 
     # ── the `?` card ─────────────────────────────────────────────────────
 
+    def _build_egg_overlay(self):
+        """The easter egg's card: the mark, condensing, and what it is not.
+
+        It covers the HERO SLOT only -- see `do_activate`, where it is laid
+        over the screen stack rather than over the window. The claim on the
+        card ("the rail on the right is still live") is then something a
+        visitor can check with their own eyes, and an assertion a visitor can
+        check is worth more than one they have to take on trust. That is also
+        why this is a widget over the booth rather than anything that touches
+        the state machine, the socket, or the protein's viewer.
+        """
+        _ensure_app_css_installed()
+        ground = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+        ground.add_css_class("egg-overlay")
+        ground.set_hexpand(True)
+        ground.set_vexpand(True)
+        ground.set_halign(Gtk.Align.FILL)
+        ground.set_valign(Gtk.Align.FILL)
+        # The wash is FULL BLEED and the padding is in the CSS, not on the
+        # widget: a margin here would leave the hero slot's own corners
+        # showing through around the card -- which put the pLDDT legend,
+        # unwashed and looking live, under an easter egg the first time this
+        # was looked at on real glass.
+
+        title = self._help_label(_EGG_TITLE, "egg-title")
+        title.set_halign(Gtk.Align.CENTER)
+        ground.append(title)
+
+        # Its own viewer, its own colour, and no turntable: the mark is a
+        # plane figure, so the spin that makes a protein readable would put
+        # this edge-on inside five seconds. See ui/viewer.py's two setters.
+        self.egg_viewer = StructureViewer()
+        self.egg_viewer.set_hexpand(True)
+        self.egg_viewer.set_vexpand(True)
+        self.egg_viewer.set_point_color(BRAND_PURPLE)
+        self.egg_viewer.set_spin_rate(0.0)
+        ground.append(self.egg_viewer)
+
+        for text, css_class in ((_EGG_BODY, "egg-body"),
+                                (_EGG_DISCLAIMER, "egg-disclaimer"),
+                                (_EGG_NOTE, "egg-note")):
+            label = self._help_label(text, css_class, wrap=True)
+            label.set_halign(Gtk.Align.CENTER)
+            label.set_justify(Gtk.Justification.CENTER)
+            ground.append(label)
+
+        ground.set_visible(False)
+        self._egg_box = ground
+        return ground
+
     def _build_help_overlay(self):
         """The help card: what this booth is, every key, and what the panels
         on the right actually mean.
@@ -2052,6 +2229,9 @@ class DemoApp(Gtk.Application):
         if ctrl and lowered == "f":
             self._toggle_fullscreen()
             return True
+        if ctrl and lowered in _EGG_KEYS:
+            self._toggle_egg()
+            return True
         if ctrl:
             # An unbound chord is swallowed rather than treated as a touch:
             # a stray Ctrl+something must not open the gallery.
@@ -2059,6 +2239,13 @@ class DemoApp(Gtk.Application):
 
         if self.help_visible:
             self._set_help_visible(False)
+            return True
+
+        if self.egg_visible:
+            # Same rule as the help card, for the same reason: something is
+            # covering the booth, and any key means "get rid of this" rather
+            # than "and also open the gallery behind it".
+            self._set_egg_visible(False)
             return True
 
         if lowered in _HELP_KEYS:
@@ -2159,6 +2346,91 @@ class DemoApp(Gtk.Application):
         if self._tensix_toggle_label is not None:
             self._tensix_toggle_label.set_label(self._tensix_hint_text())
 
+    # ── the easter egg ───────────────────────────────────────────────────
+
+    def _toggle_egg(self):
+        self._set_egg_visible(not self.egg_visible)
+
+    def _set_egg_visible(self, visible):
+        """Open or close the easter egg (ui/mark.py).
+
+        Opening it starts a fresh condensation from noise -- a visitor who
+        asks for it twice sees it collapse twice, rather than being handed a
+        finished logo -- and starts the one repeating source this feature
+        owns. Closing it REMOVES that source rather than leaving it firing
+        30 times a second against a hidden widget, which is the same rule
+        `ChipVizPanel.set_running` follows and for the same reason: this
+        booth runs unattended all day.
+
+        Nothing here touches the state machine, the socket, the protein's
+        viewer or the rail. The fold in flight keeps streaming into the
+        viewer underneath, so dismissing this returns the booth to whatever
+        it would have been showing anyway.
+        """
+        visible = bool(visible)
+        self.egg_visible = visible
+        if visible:
+            # A wall of text under a toy helps nobody, and the help card's
+            # own copy is about the fold this is temporarily covering.
+            self._set_help_visible(False)
+        if self._egg_box is not None:
+            self._egg_box.set_visible(visible)
+        self._stop_egg_source()
+        if not visible:
+            self._egg = None
+            return
+        try:
+            self._egg = MarkCondensation()
+            if self.egg_viewer is not None:
+                self.egg_viewer.clear_structure()
+                self.egg_viewer.set_points(self._egg.points())
+            self._egg_source_id = GLib.timeout_add(_EGG_STEP_MS, self._tick_egg)
+        except Exception:
+            # Fail-soft, like everything else a visitor can reach: an egg
+            # that cannot be built is an egg that does not play. Nothing on
+            # screen ever shows the reason.
+            log.exception("easter egg could not be started")
+            self.egg_visible = False
+            self._egg = None
+            if self._egg_box is not None:
+                self._egg_box.set_visible(False)
+
+    def _stop_egg_source(self):
+        """Remove the egg's timer if it is registered. Idempotent."""
+        if self._egg_source_id is not None:
+            GLib.source_remove(self._egg_source_id)
+            self._egg_source_id = None
+
+    def _tick_egg(self):
+        """One gradient-descent step of the mark, on the main loop.
+
+        This source is meant to STOP -- once the cloud has settled there is
+        nothing left to compute and the mark simply holds until dismissed --
+        so unlike the booth's other repeating sources it can return False.
+        The rule those sources exist to satisfy is still met: `keep` is
+        decided before the try and an escaping exception leaves it False, so
+        a failure stops the timer cleanly rather than freezing it or
+        spraying a traceback 30 times a second. Whatever the cloud had
+        reached stays on screen, still captioned as geometry.
+        """
+        keep = False
+        try:
+            keep = self._advance_egg()
+        except Exception:
+            log.exception("easter egg step dropped; leaving it where it landed")
+        if not keep:
+            self._egg_source_id = None
+        return keep
+
+    def _advance_egg(self):
+        """Advance the condensation one step. True to keep the timer."""
+        if not self.egg_visible or self._egg is None:
+            return False
+        points = self._egg.step()
+        if self.egg_viewer is not None:
+            self.egg_viewer.set_points(points)
+        return not self._egg.done
+
     def _show_help(self):
         self._set_help_visible(True)
 
@@ -2195,6 +2467,9 @@ class DemoApp(Gtk.Application):
         if self.diagnostics_visible and idle_s >= _DIAGNOSTICS_IDLE_S:
             log.info("diagnostics panel closed after %.0fs idle", idle_s)
             self._set_diagnostics_visible(False)
+        if self.egg_visible and idle_s >= _EGG_IDLE_S:
+            log.info("easter egg closed after %.0fs idle", idle_s)
+            self._set_egg_visible(False)
         if self.chipviz_visible and idle_s >= _RAIL_PANEL_IDLE_S:
             log.info("Tensix activity panel closed after %.0fs idle", idle_s)
             self._set_chipviz_visible(False)

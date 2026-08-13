@@ -1305,6 +1305,9 @@ def _widget_trees_this_file_builds():
     app._shown_target_id = "trpcage"
     yield "protein caption under the render", app._build_target_info()
 
+    app = _app()
+    yield "easter egg", app._build_egg_overlay()
+
 
 def test_every_label_this_file_builds_carries_an_explicit_colour_rule():
     """The structural half of the rule: an explicitly-set background implies
@@ -1347,7 +1350,8 @@ def test_every_help_card_class_has_an_explicit_colour_rule():
     for css_class in ("help-title", "help-body", "help-section", "help-key",
                       "help-desc", "help-note", "booth-hint", "booth-hint-key",
                       "viewer-caption-title", "viewer-caption-sub",
-                      "target-info-name", "target-info-tagline"):
+                      "target-info-name", "target-info-tagline",
+                      "egg-title", "egg-body", "egg-disclaimer", "egg-note"):
         assert frozenset({css_class}) in rules, f"{css_class} has no color: rule"
 
 
@@ -1582,3 +1586,191 @@ def test_the_rail_stays_put_with_its_panels_open_too():
                      board_id="0000046131924062") for i in range(4)], 0.5)
     assert _rail_min_size(rail)[0] == width
     del rail
+
+
+# ---------------------------------------------------------------------------
+# The easter egg (Ctrl+G; ui/mark.py). Chrome, like the help card -- with one
+# extra obligation the help card does not have: it must be impossible to
+# mistake for a fold, and impossible to reach by accident.
+# ---------------------------------------------------------------------------
+
+def test_ctrl_g_opens_the_easter_egg_and_any_key_puts_it_away():
+    app = _app()
+    assert app.egg_visible is False
+    app._handle_key("g", ctrl=True)
+    assert app.egg_visible is True
+    app._handle_key("k")
+    assert app.egg_visible is False
+
+
+def test_a_plain_g_is_still_a_visitor_touch():
+    """The binding is a CHORD on purpose. Every unbound plain key in this
+    booth opens the gallery, and carving a letter out of that would mean a
+    visitor who reached for the booth sometimes got a toy instead.
+
+    Mutation this catches: moving the egg off Ctrl and onto plain `g`.
+    """
+    app = _app()
+    app._handle_key("g")
+    assert app.egg_visible is False
+    assert app.states.state == "gallery"
+
+
+def test_the_easter_egg_is_not_advertised_on_the_help_card():
+    """An egg that is documented is a feature. This pins the omission as a
+    decision, so a later reader completing the card does not quietly turn the
+    booth's one hidden thing into a listed one.
+    """
+    listed = " ".join(keys for keys, _m in app_module._KEY_HELP).lower()
+    assert "g" not in [key.strip() for key in listed.replace("·", " ").split()]
+    assert "ctrl + g" not in listed
+    documented = (app_module._HELP_KEYS | app_module._DIAGNOSTICS_KEYS
+                  | app_module._TENSIX_KEYS)
+    assert not (app_module._EGG_KEYS & documented)
+
+
+def test_dismissing_the_egg_is_not_a_visitor_touch():
+    """Same rule as the help card: a key pressed to get rid of something is
+    not a request for the gallery."""
+    app = _app()
+    app._handle_key("g", ctrl=True)
+    app._handle_key("space")
+    assert app.egg_visible is False
+    assert app.states.state == "attract"
+
+
+def test_the_egg_never_touches_the_protein_or_the_state_machine():
+    """The guarantee that makes this safe to ship at a booth: a fold in
+    flight keeps streaming into the real viewer the whole time the egg is
+    up, so dismissing it returns to whatever was there.
+    """
+    app = _app()
+    _drive_to(app, "folding")
+    app._on_event({"type": "job_start", "job_id": "j1",
+                   "target_id": "trpcage", "card": 0})
+    app._on_event({"type": "frame", "job_id": "j1", "step": 1,
+                   "coords_b64": pack_coords([[1.0, 2.0, 3.0]] * 4)})
+    app._drain_frames()
+    before_frames = len(app.viewer.point_frames)
+    before_state = app.states.state
+
+    app._handle_key("g", ctrl=True)
+    for _ in range(5):
+        app._tick_egg()
+    # ... and a real fold frame lands WHILE the egg is up
+    app._on_event({"type": "frame", "job_id": "j1", "step": 2,
+                   "coords_b64": pack_coords([[4.0, 5.0, 6.0]] * 4)})
+    app._drain_frames()
+
+    assert len(app.viewer.point_frames) == before_frames + 1, (
+        "the fold must keep drawing into the real viewer behind the egg")
+    assert app.viewer.clears == 0
+    assert app.states.state == before_state
+
+
+def test_the_egg_stops_its_own_timer_once_the_cloud_has_settled():
+    """It is a 30-per-second source over an all-day booth: it has to end."""
+    app = _app()
+    app._handle_key("g", ctrl=True)
+    app._egg.completed = app._egg.steps - 2
+    assert app._tick_egg() is True     # one step left after this one
+    assert app._tick_egg() is False    # the last step; nothing left to compute
+    assert app._egg_source_id is None
+
+
+def test_closing_the_egg_removes_its_timer():
+    app = _app()
+    app._handle_key("g", ctrl=True)
+    assert app._egg_source_id is not None
+    app._set_egg_visible(False)
+    assert app._egg_source_id is None
+    assert app._advance_egg() is False
+
+
+def test_a_failing_step_stops_the_egg_instead_of_repeating_forever():
+    """The booth's rule is that an exception must not silently freeze a
+    repeating source. This source is allowed to end, so the same rule here
+    means a failure ends it cleanly -- rather than logging a traceback 30
+    times a second for the rest of the day, or leaving a dead timer.
+    """
+    app = _app()
+    app._handle_key("g", ctrl=True)
+
+    def boom():
+        raise RuntimeError("no")
+    app._advance_egg = boom
+
+    assert app._tick_egg() is False
+    assert app._egg_source_id is None
+
+
+def test_the_egg_closes_itself_when_the_visitor_walks_away():
+    """It covers the hero slot, and the attract loop must never show
+    somebody who did not ask for it something that is not a fold."""
+    clock = FakeClock()
+    app = _app(clock=clock)
+    app._handle_key("g", ctrl=True)
+    app._tick_overlays(clock() + app_module._EGG_IDLE_S - 1)
+    assert app.egg_visible is True
+    app._tick_overlays(clock() + app_module._EGG_IDLE_S)
+    assert app.egg_visible is False
+
+
+def test_opening_the_egg_takes_the_help_card_down():
+    app = _app()
+    app._show_help()
+    app._handle_key("g", ctrl=True)
+    assert app.egg_visible is True
+    assert app.help_visible is False
+
+
+def test_the_egg_says_on_screen_that_it_is_not_a_fold():
+    """The one thing this feature is not allowed to get wrong. Both the
+    heading and the body have to disclaim it: a visitor reading only the
+    biggest words on the screen must still be told."""
+    heading = app_module._EGG_TITLE.lower()
+    body = app_module._EGG_DISCLAIMER.lower()
+    assert "not a fold" in heading
+    assert "not a folded structure" in body
+    assert "no chemistry" in body
+
+
+def test_the_egg_card_reports_the_number_of_points_it_actually_uses():
+    """A number in visitor-facing copy that can drift from the thing it
+    describes is a small lie waiting to happen, and this booth has already
+    had to fix one. The count is interpolated from ui/mark.py.
+    """
+    from ui import mark as mark_module
+    assert f"{mark_module.POINTS:,}" in app_module._EGG_BODY
+
+
+def test_the_egg_is_drawn_in_the_brand_purple_and_does_not_spin():
+    """Purple because it is the mark; still because the mark is a plane
+    figure, and the protein's 0.35 rad/s turntable would put it edge-on
+    within five seconds."""
+    from ui.mark import BRAND_PURPLE
+    app = _app()
+    app._build_egg_overlay()
+    assert app.egg_viewer._point_color == BRAND_PURPLE
+    assert app.egg_viewer._spin_rate == 0.0
+
+
+def test_the_protein_keeps_the_colour_and_the_spin_it_always_had():
+    """The two setters the egg needed are per-instance. A second viewer must
+    not have changed the first one."""
+    from ui.viewer import POINT_COLOR, StructureViewer
+    app = _app()
+    app._build_egg_overlay()
+    protein = StructureViewer()
+    assert protein._point_color == POINT_COLOR
+    assert protein._spin_rate == StructureViewer.SPIN_RATE
+
+
+def test_every_label_on_the_easter_egg_is_legible():
+    """`.egg-title` #74C5DF = 8.55:1, `.egg-body`/`.egg-note` #C7D9D8 =
+    11.36:1 and `.egg-disclaimer` #F1F8F8 = 15.46:1, all on #092221. The
+    brand purple itself measures 4.13:1 and is therefore a FILL only -- it
+    is on the point cloud, never on type.
+    """
+    app = _app()
+    _assert_legible(app._build_egg_overlay(), context="easter egg")
