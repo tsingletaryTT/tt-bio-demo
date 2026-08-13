@@ -7,6 +7,57 @@ Watch a protein condense out of noise into its folded structure, in real time, c
 the Blackhole chips in the room. Native GTK4 and OpenGL — with [one scoped
 exception](#the-one-webkit-exception) for a small hardware-activity animation.
 
+![The folded structure](docs/screenshots/01-folded-structure.png)
+
+*Trp-cage, folded on a Blackhole p300c and rendered live. Every screenshot on this page is
+the real application on real silicon — no mockups, no recordings.*
+
+---
+
+## What it looks like
+
+<table>
+<tr>
+<td width="50%">
+
+![Live diffusion](docs/screenshots/02-live-diffusion.png)
+
+**The fold, in flight.** 865 atoms mid-collapse. The point cloud is the model's actual
+denoising trajectory, streamed a step at a time — not an animation of a finished result.
+Press <kbd>T</kbd> for the Tensix core grid, <kbd>D</kbd> for the protocol tap.
+
+</td>
+<td width="50%">
+
+![Diagnostics](docs/screenshots/03-diagnostics-detail.png)
+
+**What it is actually doing.** The live protocol tap, with a plain-language line for each
+stage. Bounded ring buffer — the booth runs unattended all day.
+
+</td>
+</tr>
+<tr>
+<td width="50%">
+
+![Panels](docs/screenshots/04-panels-detail.png)
+
+**The instrument.** Pipeline stages and per-chip telemetry, sampled independently of the
+compute daemon so the silicon keeps visibly breathing even if the daemon wedges.
+
+</td>
+<td width="50%">
+
+**Four chips on two boards.** A p300c carries two chips, so `tt-smi`'s four entries are
+four chips — not four boards. The panel says so, because a visitor reading "4 cards"
+would picture the wrong machine.
+
+Folds are timed on this hardware, warm: Trp-cage **4.4 s**, FKBP12 **11.7 s**,
+DHFR **19.7 s**, trypsin **22.3 s**.
+
+</td>
+</tr>
+</table>
+
 ---
 
 ## Quick start
