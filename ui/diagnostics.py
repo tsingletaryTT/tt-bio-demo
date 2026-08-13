@@ -132,9 +132,14 @@ STAGE_TEACHING = {
         "#   into real atom coordinates. ~30 of those steps are",
         "#   sampled to the wire -- the collapse you can see.",
     ),
+    # Per RESIDUE, not per atom: the score this booth actually renders is
+    # read from the CA atom's B-factor, one value per residue
+    # (ui/geometry.py's load_ca_trace), and the ribbon is coloured by that.
+    # Both this line and the help card's pLDDT legend said "per atom".
     "confidence": (
-        "# confidence: the model scores its own answer, per atom.",
-        "#   That score is pLDDT (0-100) and it colours the ribbon.",
+        "# confidence: the model scores its own answer, per",
+        "#   residue. That score is pLDDT (0-100) and it",
+        "#   colours the ribbon.",
     ),
     "saving": (
         "# saving: coordinates written out as mmCIF -- the file",
@@ -290,8 +295,12 @@ class DiagnosticsLog:
             # says: the vocabulary fix is in the rendering, not the wire.
             chips = event.get("cards")
             count = len(chips) if isinstance(chips, list) else "?"
+            # Pluralised: this daemon is card-0 only (runner/daemon.py), so
+            # the ordinary reading is ONE, and "1 chips" was rendering
+            # directly above a panel that reads "4 chips on 2 boards".
+            noun = "chip" if count == 1 else "chips"
             self.add(f"connected · protocol v{_safe(event.get('version'), 4)}"
-                     f" · {count} chips · preflight "
+                     f" · {count} {noun} · preflight "
                      f"{_safe(event.get('preflight'), 12)}", KIND_MARK)
         elif kind == "job_start":
             self._taught = set()

@@ -1,9 +1,21 @@
 """Priority job queue for the runner daemon.
 
-A visitor's pick is submitted at a higher priority than the attract loop's own
-jobs, so it is taken next by whichever card frees up first. In-flight jobs are
-never cancelled: with four cards and sub-minute folds the wait is imperceptible,
-and tearing down a fold mid-device-op is a needless source of instability.
+The DESIGN, which this queue implements and nothing currently exercises: a
+visitor's pick would be submitted at a higher priority than the attract
+loop's own jobs, so it is taken next by whichever card frees up first.
+In-flight jobs are never cancelled -- with sub-minute folds the wait is
+imperceptible, and tearing down a fold mid-device-op is a needless source of
+instability.
+
+What is TRUE TODAY: nothing ever submits at a priority above 0. The socket
+protocol is one-way (runner/server.py broadcasts; ui/client.py never sends),
+so a visitor's pick never leaves the UI process -- see ui/gallery.py's module
+docstring. The only producer is `Daemon._enqueue_playlist`, which submits
+every target at the default priority, so this queue is behaving as FIFO in
+production and the priority path exists for the phase that adds a
+client->server message. Stated in the past/conditional here on purpose: this
+docstring described the visitor path in the present tense for a whole phase
+in which no visitor could reach it.
 """
 
 import itertools

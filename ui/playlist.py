@@ -102,8 +102,16 @@ class Target(object):
     """One fold target a visitor can pick from the gallery.
 
     Frozen: a Target is loaded once at startup and handed around read-only
-    (ui/gallery.py's cards, ui/app.py's dispatch to the daemon) -- nothing
+    (ui/gallery.py's cards; scripts/run-demo.sh's expansion of this manifest
+    into the daemon's fold inputs, via this module's CLI) -- nothing
     downstream should ever be mutating one in place.
+
+    Note what is NOT among those readers: there is no dispatch from the UI
+    to the daemon. This docstring used to name one. The socket protocol is
+    one-way (runner/server.py broadcasts; ui/client.py never sends), so a
+    visitor's pick reaches ui/app.py's state machine and stops there -- see
+    ui/gallery.py's module docstring, which carries the same warning for the
+    copy on that screen.
     """
 
     id: str

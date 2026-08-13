@@ -288,11 +288,25 @@ def ribbon_from_cif(cif_path, samples_per_segment=8, radius=1.6, sides=10):
         # A chain with a single resolved C-alpha has no centerline to sweep:
         # catmull_rom returns that lone point and tube_mesh rightly refuses
         # anything shorter than two points. Skip it -- deliberately not
-        # fatal, and deliberately not a zero-length stub tube. One stray
+        # fatal, and deliberately not a zero-length stub tube: one stray
         # single-residue chain (a ligand-like entity, a truncated subunit)
-        # must not cost the visitor the rest of the structure, and the
+        # should not cost the visitor the rest of the structure, and the
         # alternative "draw something anyway" produces a degenerate ring
         # whose tangent is undefined, i.e. NaNs handed to OpenGL.
+        #
+        # Note the limit of that, because this comment used to overstate it:
+        # this skip covers the SHORT-chain case only. It is not a general
+        # "one bad chain cannot cost the whole render" guarantee -- tube_mesh
+        # also raises GeometryError on a centerline whose leading or
+        # trailing points are bit-exactly coincident, and that raise is not
+        # caught here, so it aborts the whole ribbon (ui/app.py logs it and
+        # leaves the last frame on screen; nothing crashes and nothing
+        # reaches the visitor as an error). Left as-is on purpose after
+        # review: two C-alphas at bit-exact identical coordinates do not
+        # occur in real predicted structures, the cost if it ever happened
+        # is one fold with no ribbon, and it is already loud in the log --
+        # so the guard is not worth restructuring around a probability of
+        # roughly zero. The comment is what was wrong, not the code.
         if len(coords) < 2:
             continue
 

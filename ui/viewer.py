@@ -579,12 +579,20 @@ class StructureViewer(Gtk.GLArea):
             np.ascontiguousarray(indices, dtype=np.uint32),
         )
         # Unlike set_points(), this is called exactly once per job -- there
-        # is no subsequent frame to ease the rest of the way in. _frame_camera
-        # defaults to an 80/20 ease meant for a stream; a single eased step
-        # here would leave the camera framed against a blend of the last
-        # diffusion frame's extent and the ribbon's own, permanently (the
-        # finished structure is what stays on screen for the rest of the
-        # attract cycle). Snap straight to the ribbon's actual spread instead.
+        # is no subsequent frame to ease the rest of the way in.
+        # _frame_camera defaults to the asymmetric log-domain ease meant for
+        # a stream (_EASE_IN 0.40 / _EASE_OUT 0.06 -- and it is _EASE_OUT
+        # that applies here, since a ribbon is SMALLER than the noise cloud
+        # that preceded it only in the contracting direction; growing back
+        # out is the reluctant one). A single eased step would leave the
+        # camera framed against a blend of the last diffusion frame's extent
+        # and the ribbon's own, permanently -- the finished structure is
+        # what stays on screen for the rest of the attract cycle. Snap
+        # straight to the ribbon's actual spread instead.
+        #
+        # (This comment used to say "an 80/20 ease", naming the LINEAR
+        # `_extent*0.8 + spread*0.2` this module was rewritten to remove --
+        # i.e. it described, by name, the exact bug the camera fix deleted.)
         #
         # robust=False for the same reason: this mesh is the hero image and
         # every vertex of it must be inside the frame, so it is fitted with

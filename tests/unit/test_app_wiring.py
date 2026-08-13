@@ -774,3 +774,31 @@ def test_a_pipeline_panel_that_raises_cannot_cost_the_booth_its_tick():
     app.pipeline_panel = RecordingPanel(boom=True)
     app.diagnostics_visible = True
     assert app._tick_state() is True
+
+
+# ---------------------------------------------------------------------------
+# A failure that repeats every frame must not repeat its traceback.
+# ---------------------------------------------------------------------------
+
+def test_a_broken_frame_stream_logs_once_not_thirty_times_a_second(caplog):
+    """`_drain_frames` is a 33ms repeating source. A daemon sending
+    unparseable coords would have written one full traceback per frame for
+    the whole conference day, burying the first occurrence -- the only one
+    an operator needs -- under thousands of copies of itself.
+
+    The first failure must still be loud and carry its traceback; the rest
+    must not.
+    """
+    app = _app()
+    app.states.on_event(_job_start())     # points visible, so frames drain
+    for _ in range(30):
+        app._frames.put({"type": "frame", "coords_b64": "not base64 at all!"})
+        app._drain_frames()
+
+    with_traceback = [record for record in caplog.records
+                      if record.levelno >= logging.ERROR]
+    assert len(with_traceback) == 1, (
+        f"expected exactly one loud record, got {len(with_traceback)}")
+    assert with_traceback[0].exc_info is not None, (
+        "the one loud record must carry the traceback")
+    assert app._drop_counts["frame"] == 30

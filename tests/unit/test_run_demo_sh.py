@@ -37,7 +37,7 @@ RUN_DEMO = REPO_ROOT / "scripts" / "run-demo.sh"
 MANIFEST = REPO_ROOT / "playlist" / "manifest.yaml"
 
 
-def _write_stub(path, argv_log, real_python):
+def _write_stub(path, argv_log, real_python, *, sentinel, wait_for_sentinel):
     """One fake venv interpreter: record argv, then exit 0.
 
     `-m ui.playlist` is the exception and is delegated to `real_python`:
@@ -45,14 +45,39 @@ def _write_stub(path, argv_log, real_python):
     daemon's fold inputs, so stubbing it would leave the very thing under
     test unexercised. Everything else (`-m runner.daemon`, `-m ui.app`)
     must NOT run -- one opens a Tenstorrent device, the other a window.
+
+    The sentinel is what makes this test deterministic rather than racy.
+    run-demo.sh backgrounds the daemon and then runs the UI in the
+    foreground; when the UI exits, its EXIT trap SIGTERMs the daemon. A stub
+    daemon that has not finished writing its argv by then gets killed
+    mid-write -- observed as a truncated argv log. So the daemon stub drops
+    a sentinel once its record is safely on disk, and the UI stub waits
+    (bounded) for that sentinel before returning, which is also the moment
+    the launcher is genuinely finished doing everything under test.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
+    wait = ""
+    if wait_for_sentinel:
+        wait = (
+            'if [[ "${1:-}" == "-m" && "${2:-}" == "ui.app" ]]; then\n'
+            "  for _ in $(seq 1 200); do\n"
+            f'    [[ -e {sentinel!s} ]] && break\n'
+            "    sleep 0.025\n"
+            "  done\n"
+            "fi\n"
+        )
+    mark = ""
+    if not wait_for_sentinel:
+        mark = ('if [[ "${1:-}" == "-m" && "${2:-}" == "runner.daemon" ]]; then\n'
+                f"  : > {sentinel!s}\n"
+                "fi\n")
     path.write_text(
         "#!/usr/bin/env bash\n"
-        f'printf "%s\\n" "$@" >> {argv_log!s}\n'
         'if [[ "${1:-}" == "-m" && "${2:-}" == "ui.playlist" ]]; then\n'
         f'  exec {real_python!s} "$@"\n'
         "fi\n"
+        f'printf "%s\\n" "$@" >> {argv_log!s}\n'
+        + mark + wait +
         "exit 0\n"
     )
     path.chmod(0o755)
@@ -69,9 +94,15 @@ def _launch(tmp_path, *args, expect_ok=True):
     prefix = tmp_path / "prefix"
     runtime = tmp_path / "xdg"
     runtime.mkdir(parents=True, exist_ok=True)
+    sentinel = tmp_path / "daemon.started"
+    # Each launch starts from a clean slate, so `_argv` always describes THIS
+    # launch -- test_a_target_dropped_between_runs launches twice on purpose.
+    for stale in (sentinel, tmp_path / "venv-runner.argv", tmp_path / "venv-ui.argv"):
+        stale.unlink(missing_ok=True)
     for venv in ("venv-runner", "venv-ui"):
         _write_stub(prefix / venv / "bin" / "python3",
-                    tmp_path / f"{venv}.argv", Path(sys.executable))
+                    tmp_path / f"{venv}.argv", Path(sys.executable),
+                    sentinel=sentinel, wait_for_sentinel=(venv == "venv-ui"))
 
     env = dict(os.environ)
     env.update({

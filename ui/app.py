@@ -248,6 +248,23 @@ _DIAGNOSTICS_KEYS = frozenset({"d"})
 _HELP_IDLE_S = 60.0
 _DIAGNOSTICS_IDLE_S = 300.0
 
+# ── logging a failure that repeats ──────────────────────────────────────────
+#
+# `_drain_frames` runs every 33ms and `_handle_event` fires per event, so a
+# systematically malformed stream (a daemon sending a bad coords_b64, a
+# protocol change this build cannot parse) turns a single `log.exception`
+# into ~30 tracebacks a second for as long as the booth is up -- which is
+# both an unbounded log and, worse, a wall of noise that buries the FIRST
+# occurrence, the only one an operator actually needs to read.
+#
+# ui/chipviz.py already made this trade for its own 1Hz JS failures by
+# dropping straight to `log.debug`. This does the same thing without losing
+# the signal: the first failure of each kind is logged in full, at error
+# level, with its traceback; every `_DROP_LOG_EVERY`-th one after that logs
+# a one-line count so a persistent problem stays visible; everything in
+# between goes to debug.
+_DROP_LOG_EVERY = 100
+
 # ── palette ─────────────────────────────────────────────────────────────────
 #
 # The same brand constants ui/panels.py names, repeated here rather than
@@ -623,6 +640,12 @@ class DemoApp(Gtk.Application):
         # at all (headless tests, and a booth started with no --socket).
         self._frames = LatestFrame()
         self._client = None
+
+        # How many times each kind of repeating failure has been logged --
+        # see _note_dropped and _DROP_LOG_EVERY. Per-app rather than
+        # module-level so one booth session's counts cannot leak into
+        # another's (or into another test's).
+        self._drop_counts = {}
 
         # The `job_start` clear that a showcase deferred. See the module
         # docstring: the clear belongs to `job_start`, not to the end of the
@@ -1029,8 +1052,13 @@ class DemoApp(Gtk.Application):
             label.set_max_width_chars(52)
             column.append(label)
 
+        # Per RESIDUE, not per atom. ui/geometry.py's `load_ca_trace` reads
+        # one pLDDT per residue -- the CA atom's B-factor -- and that is
+        # what colours the ribbon a visitor is looking at while reading
+        # this legend. ui/diagnostics.py's STAGE_TEACHING carried the same
+        # error and is fixed with it.
         column.append(self._help_label(
-            "pLDDT — the model's own confidence, per atom:", "help-desc",
+            "pLDDT — the model's own confidence, per residue:", "help-desc",
             wrap=True))
         for css_class, range_text, meaning in _PLDDT_LEGEND:
             row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
@@ -1515,7 +1543,11 @@ class DemoApp(Gtk.Application):
                 # panel.
                 log.warning("unhandled event type %r", kind)
         except Exception:
-            log.exception("dropping malformed %s event", event.get("type"))
+            # Rate-limited: a protocol change this build cannot parse would
+            # otherwise write one traceback per event for the rest of the
+            # day. See _note_dropped.
+            kind = event.get("type")
+            self._note_dropped(f"event:{kind!r}", f"dropping malformed {kind!r} event")
         return False
 
     def _sync_chipviz(self, stage=None, card=None):
@@ -1538,6 +1570,28 @@ class DemoApp(Gtk.Application):
             self.chipviz_panel.set_mode(self.states.state, stage)
         except Exception:
             log.exception("Tensix activity panel update dropped")
+
+    def _note_dropped(self, key, message):
+        """Log a failure that can repeat every frame, without flooding.
+
+        See `_DROP_LOG_EVERY`. `key` groups failures that are the same
+        problem (the frame stream, one event type); `message` is already
+        formatted, because this is only ever called from an `except` block
+        where the cost of one f-string is irrelevant.
+
+        MUST be called from inside an `except` block -- the first-occurrence
+        branch uses `log.exception`, whose whole value here is the traceback
+        of the failure that started it.
+        """
+        count = self._drop_counts.get(key, 0) + 1
+        self._drop_counts[key] = count
+        if count == 1:
+            log.exception("%s (first occurrence; repeats are logged at debug, "
+                          "with a count every %d)", message, _DROP_LOG_EVERY)
+        elif count % _DROP_LOG_EVERY == 0:
+            log.warning("%s (%d times now)", message, count)
+        else:
+            log.debug("%s (repeat %d)", message, count, exc_info=True)
 
     def _note_diagnostics(self, method, *args):
         """Feed the diagnostics log without ever letting it cost the booth
@@ -1800,7 +1854,11 @@ class DemoApp(Gtk.Application):
             # place that can honestly say "a visitor saw this frame".
             self._note_diagnostics(self.diagnostics.note_frame, frame, coords)
         except Exception:
-            log.exception("dropping malformed frame")
+            # Rate-limited, and this is the call site that most needs it:
+            # this source runs every 33ms, so a systematically malformed
+            # frame stream produced ~30 tracebacks a second. See
+            # _note_dropped.
+            self._note_dropped("frame", "dropping malformed frame")
         return True
 
 
