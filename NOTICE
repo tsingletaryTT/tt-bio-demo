@@ -1,0 +1,86 @@
+tt-bio-demo is licensed under Apache-2.0 (see LICENSE). It bundles a small
+amount of third-party material, each of which keeps its upstream license, and
+it depends at runtime on software it does not redistribute.
+
+Written to the convention tt-bio itself uses (see that project's NOTICE), so
+the two read the same way.
+
+---
+
+## 1. Vendored fold inputs — from tt-bio
+
+    examples/trpcage_no_msa.yaml
+    examples/affinity_fkg.yaml
+    examples/affinity_dhfr.yaml
+    examples/affinity_tryp.yaml
+
+    Source:   github.com/moritztng/tt-bio, examples/
+    License:  MIT — Copyright (c) 2024 Jeremy Wohlwend, Gabriele Corso,
+              Saro Passaro (tt-bio is built on the MIT-licensed Boltz-2 /
+              Boltz-1 code and carries their copyright)
+
+    Modifications: each file gains a header comment explaining why it is
+    vendored here rather than read from a sibling checkout. The sequences and
+    fold configuration are unchanged.
+
+    Why vendored at all: this project previously pointed at
+    ~/code/tt-boltz/examples/... — an absolute path into a repository it does
+    not control. If that path moved, seven integration tests would have
+    skipped silently while the suite still printed PASS, leaving the demo's
+    headline mechanism untested. Copying the inputs makes their presence a
+    fact about this repo.
+
+## 2. Upstream contribution — derived from tt-bio
+
+    docs/upstream/protenix-dump-fn/
+
+    A patch adding a public `dump_fn` to `Protenix.fold`, which `OpenDDE.fold`
+    already has. Contains diffs against tt-bio source.
+
+    License:  MIT, as above. Offered back upstream; not a fork.
+
+## 3. Vendored visualization — tensix-viz
+
+    ui/assets/tensix-viz/
+
+    Source:   github.com/tsingletaryTT/tensix-viz
+    License:  see ui/assets/tensix-viz/PROVENANCE.md, which records the
+              version and why it is bundled rather than fetched (the booth is
+              offline at the venue, so a CDN reference would render an empty
+              panel).
+
+---
+
+## Runtime dependencies — used, not redistributed
+
+`scripts/setup-venvs.sh` and the Debian runtime package install these with
+pip at setup time; this repository ships none of their code.
+
+  * tt-bio — MIT. github.com/moritztng/tt-bio
+    Pinned to a release tag, never `main`. The pin lives in one variable at
+    the top of scripts/setup-venvs.sh.
+
+  * Protenix-v2 model weights — Apache-2.0, downloaded from ByteDance's
+    Hugging Face mirror on first use. Not shipped here; the venue is offline
+    at show time, not at install time.
+
+tt-bio bundles further third-party code of its own (ESMFold2 host-side
+reference, the OpenFold3 data pipeline, BoltzGen) — see that project's NOTICE
+for the full list. This project does not redistribute any of it.
+
+---
+
+## Scientific credit
+
+The demo exists to show other people's science running on Tenstorrent
+hardware. The structure prediction is not ours:
+
+  * Boltz-2 / Boltz-1 — Wohlwend, Corso, Passaro et al. The code tt-bio is
+    built on.
+  * Protenix-v2 — ByteDance. The model this booth folds with by default.
+  * OpenFold3 — the OpenFold Consortium.
+  * tt-bio — Moritz Thüning (github.com/moritztng/tt-bio), which is what makes
+    any of it run on Tenstorrent silicon.
+
+Protein sequences and reference structures are drawn from the public
+literature and the Protein Data Bank.

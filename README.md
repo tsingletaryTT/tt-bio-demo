@@ -394,3 +394,22 @@ cache so the first fold at the booth is a warm one. Not built yet.
 See [`CLAUDE.md`](CLAUDE.md) for the working log and decisions. In short: spec-first;
 tt-bio pinned to a release tag, never `main`; nothing in the UI ever displays a stack trace
 or raw error text; and every test is written so that it can actually fail.
+
+---
+
+## Credit and licensing
+
+This demo is Apache-2.0. The science in it is not ours — it exists to show other
+people's work running on Tenstorrent hardware:
+
+- **[tt-bio](https://github.com/moritztng/tt-bio)** (MIT) by Moritz Thüning is what makes
+  structure prediction run on Tenstorrent silicon at all. This project installs it from a
+  pinned release, vendors four of its example inputs, and offers one patch back upstream.
+- **Boltz-2 / Boltz-1** — Wohlwend, Corso, Passaro et al., the MIT-licensed code tt-bio
+  builds on.
+- **Protenix-v2** (ByteDance, Apache-2.0) — the model this booth folds with by default.
+- **OpenFold3** — the OpenFold Consortium.
+
+Sequences and reference structures come from the public literature and the Protein Data
+Bank. See [`NOTICE`](NOTICE) for the full list, what is vendored versus merely depended on,
+and the modifications made.
