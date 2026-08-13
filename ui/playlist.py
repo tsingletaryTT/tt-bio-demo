@@ -4,8 +4,10 @@
 `input` fold spec (a tt-bio job YAML, e.g. `examples/trpcage_no_msa.yaml`),
 plus the copy the gallery card shows a visitor (`name`, `blurb`), and
 optionally `model` (defaults to `protenix-v2`, this project's default model
-everywhere else), `thumbnail` (Phase 4 art; absent entries render a
-placeholder -- see `ui/gallery.py`), and `expected_s` (a fold time for
+everywhere else), `thumbnail` (a picture of a real fold of this target,
+built by `scripts/make-thumbnails.py`; absent entries render a placeholder
+-- see `ui/gallery.py`), `tagline` (one short sentence for the caption under
+the live render -- see `Target.tagline`), and `expected_s` (a fold time for
 pacing, measured once on this booth's own hardware -- see below).
 
 `expected_s` is OPTIONAL, on purpose. It exists to record a real,
@@ -80,10 +82,10 @@ DEFAULT_MODEL = "protenix-v2"
 # than a loud failure at load time). Checked in this order so a manifest
 # entry missing more than one field always reports the same field first,
 # deterministically, rather than whichever dict-iteration order happens to
-# land. "model", "thumbnail" and "expected_s" are NOT here: all three have
-# well-defined optional behavior (DEFAULT_MODEL / no thumbnail / None
-# meaning "not yet measured") so their absence is not an error at all --
-# see load_playlist.
+# land. "model", "thumbnail", "tagline" and "expected_s" are NOT here: all
+# four have well-defined optional behavior (DEFAULT_MODEL / no thumbnail /
+# no caption line / None meaning "not yet measured") so their absence is not
+# an error at all -- see load_playlist.
 _REQUIRED_FIELDS = ("input", "name", "blurb")
 
 
@@ -125,6 +127,17 @@ class Target(object):
     # a real time.
     expected_s: float | None = None
     thumbnail: Path | None = None
+    # One short sentence about the molecule, for the caption under the live
+    # render (ui/app.py's `_build_target_info`). Deliberately a SECOND field
+    # rather than a reuse of `blurb`: `blurb` is gallery-card copy, several
+    # sentences long, and is read by someone who has stopped and is choosing.
+    # This one is read at two metres by someone walking past, so it has to be
+    # one line at a size that carries -- and the two are written to different
+    # lengths on purpose, not derived from each other.
+    #
+    # Optional, like `thumbnail`: a target added before anyone has written
+    # one still loads, and the caption simply shows its name alone.
+    tagline: str | None = None
 
 
 def _entry_label(entry, index):
@@ -232,6 +245,14 @@ def load_playlist(path):
         thumbnail = entry.get("thumbnail")
         thumbnail_path = (manifest_dir / thumbnail).resolve() if thumbnail else None
 
+        # Absent, null and "" all collapse to None -- the caption under the
+        # render then shows the target's name alone rather than an empty
+        # second line. Same rule `blurb` gets above, minus the hard failure:
+        # a tagline is optional (see Target.tagline).
+        raw_tagline = entry.get("tagline")
+        tagline = raw_tagline.strip() if isinstance(raw_tagline, str) else None
+        tagline = tagline or None
+
         targets.append(Target(
             id=entry_id,
             input_path=(manifest_dir / entry["input"]).resolve(),
@@ -240,6 +261,7 @@ def load_playlist(path):
             blurb=entry["blurb"],
             expected_s=expected_s,
             thumbnail=thumbnail_path,
+            tagline=tagline,
         ))
 
     return targets

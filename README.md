@@ -4,7 +4,7 @@ A turnkey conference demo for [tt-bio](https://github.com/moritztng/tt-bio) — 
 structure prediction on Tenstorrent hardware.
 
 Watch a protein condense out of noise into its folded structure, in real time, computed on
-the Blackhole chips in the room. Native GTK4 and OpenGL — with [one scoped
+the Blackhole chips a few feet away. Native GTK4 and OpenGL — with [one scoped
 exception](#the-one-webkit-exception) for a small hardware-activity animation.
 
 <video src="docs/screenshots/booth-loop-30s.mp4" autoplay loop muted playsinline width="100%"></video>
