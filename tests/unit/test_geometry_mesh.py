@@ -4,7 +4,7 @@ import pytest
 from ui.geometry import (
     GeometryError,
     catmull_rom,
-    load_ca_trace,
+    load_backbone_trace,
     plddt_colors,
     resample_scalar,
     ribbon_from_cif,
@@ -215,7 +215,7 @@ def test_ribbon_from_cif_colors_align_ring_by_ring_with_known_bfactors():
     cif_path = MINIMAL
     samples_per_segment, sides = 4, 6
 
-    trace = load_ca_trace(cif_path)
+    trace = load_backbone_trace(cif_path)
     assert list(trace.plddt) == [95.0, 80.0, 60.0, 40.0, 88.0]  # pin the input
     assert trace.chain_ids == ["A", "A", "A", "A", "B"]         # ...and its chains
 
@@ -274,7 +274,7 @@ def test_ribbon_from_cif_colors_align_ring_by_ring_with_known_bfactors():
 def _contiguous_chain_runs(chain_ids):
     """(chain_id, start, stop) for each contiguous run of one chain id.
 
-    Deliberately re-derived here from `CaTrace.chain_ids` rather than
+    Deliberately re-derived here from `BackboneTrace.chain_ids` rather than
     imported from `ui.geometry`, so these tests say what the ribbon *should*
     be split on instead of agreeing with however the implementation happens
     to split it.
@@ -296,7 +296,7 @@ def _expected_chain_vertex_spans(cif_path, samples_per_segment, sides):
     contiguous, spans packed end to end with no gaps -- is asserted here
     rather than read back out of the implementation.
     """
-    trace = load_ca_trace(cif_path)
+    trace = load_backbone_trace(cif_path)
     spans, start = [], 0
     for chain_id, lo, hi in _contiguous_chain_runs(trace.chain_ids):
         if hi - lo < 2:
@@ -322,7 +322,7 @@ def test_no_ribbon_segment_spans_the_chain_break():
     clear of legitimate geometry, while a leg splined across the break at
     samples_per_segment=4 puts rings at roughly t = 0.25, 0.5 and 0.75.
     """
-    trace = load_ca_trace(TWO_CHAINS)
+    trace = load_backbone_trace(TWO_CHAINS)
     assert trace.chain_ids == ["A", "A", "A", "B", "B", "B"]  # pin the fixture
 
     a_c_terminus = trace.coords[2].astype(np.float64)
@@ -375,7 +375,7 @@ def test_a_single_chain_structure_is_unchanged():
     that is not a chain id) this fixture's 20 residues would be chopped up
     and the buffers would stop matching.
     """
-    trace = load_ca_trace(SINGLE_CHAIN)
+    trace = load_backbone_trace(SINGLE_CHAIN)
     assert set(trace.chain_ids) == {"A"}  # pin the fixture: one chain only
     assert trace.n_residues == 20
 
@@ -404,7 +404,7 @@ def test_each_chain_contributes_its_own_geometry():
     either chain were dropped its residues would have nothing nearer than the
     other chain's tube -- far outside that tolerance.
     """
-    trace = load_ca_trace(TWO_CHAINS)
+    trace = load_backbone_trace(TWO_CHAINS)
     verts, _, _, _ = ribbon_from_cif(TWO_CHAINS, samples_per_segment=4, sides=6)
     assert len(verts) > 0
 
@@ -433,7 +433,7 @@ def test_a_chain_too_short_to_spline_is_skipped_not_fatal():
     stub sitting on top of the lone residue, no NaNs, and the rest of the
     structure still renders exactly as it would on its own.
     """
-    trace = load_ca_trace(MINIMAL)
+    trace = load_backbone_trace(MINIMAL)
     assert _contiguous_chain_runs(trace.chain_ids) == [("A", 0, 4), ("B", 4, 5)]
 
     verts, norms, colors, idx = ribbon_from_cif(MINIMAL, samples_per_segment=4, sides=6)
@@ -479,7 +479,7 @@ def test_each_chains_colors_come_from_its_own_residues():
     blue = np.array([0x00, 0x53, 0xD6], dtype=np.float64) / 255.0    # >90
     orange = np.array([0xFF, 0x7D, 0x45], dtype=np.float64) / 255.0  # <50
 
-    trace = load_ca_trace(TWO_CHAINS)
+    trace = load_backbone_trace(TWO_CHAINS)
     assert list(trace.plddt) == [95.0, 97.0, 93.0, 40.0, 35.0, 45.0]  # pin input
 
     verts, _, colors, _ = ribbon_from_cif(TWO_CHAINS, samples_per_segment=4, sides=6)
@@ -519,9 +519,179 @@ def test_a_structure_with_no_drawable_chain_fails_presentably():
     """
     # alt_locs.cif is a single residue in a single chain, resolved down to
     # one C-alpha by occupancy -- one residue total, nothing to spline.
-    trace = load_ca_trace("tests/fixtures/structures/alt_locs.cif")
+    trace = load_backbone_trace("tests/fixtures/structures/alt_locs.cif")
     assert trace.n_residues == 1
 
     with pytest.raises(GeometryError) as excinfo:
         ribbon_from_cif("tests/fixtures/structures/alt_locs.cif")
     assert "alt_locs.cif" in str(excinfo.value)
+
+
+# ── Nucleic acids: a duplex, and a mixed complex ─────────────────────────
+#
+# A DNA duplex is the hardest fixture in this file to write an honest test
+# against, and it is here for exactly that reason. Its two strands are
+# near-identical (CGCGAATTCGCG is its own reverse complement), so every
+# count is the same for both, every length is the same for both, and a bug
+# that assigned one strand's residues -- or one strand's colours -- to the
+# other would leave most of the obvious assertions perfectly green. What
+# separates a correct duplex from a wrong one is WHERE things are, so that
+# is what is asserted below.
+
+# A real fold off this booth's own hardware: 2 x 12 nucleotides, 494 atoms,
+# no C-alpha anywhere. See the fixture's own header.
+DNA_DUPLEX = "tests/fixtures/structures/real_fold_dna_duplex.cif"
+
+# One protein chain (4 residues, C-alpha) and one DNA chain (4 residues,
+# phosphate) in a single structure. See the fixture's own header.
+PROTEIN_DNA = "tests/fixtures/structures/protein_dna_complex.cif"
+
+
+def test_a_dna_duplex_is_drawn_as_two_strands_not_one_tube():
+    """Two chains in, two separate ribbons out.
+
+    The vertex total is typed in from the geometry's own documented rules
+    rather than read back from the implementation, because that is the
+    number the bug moves: `catmull_rom` emits `(n - 1) * samples + 1` points
+    for n control points, so twelve nucleotides splined per chain give
+    11*8+1 = 89 rings each -- 178 rings, 1780 vertices at 10 sides. One
+    spline through all 24 anchors would give 23*8+1 = 185 rings and 1850
+    vertices. Those two numbers are 4% apart, which is exactly why a test
+    that only checked "some geometry came back" would not have noticed.
+    """
+    trace = load_backbone_trace(DNA_DUPLEX)
+    assert _contiguous_chain_runs(trace.chain_ids) == [("A", 0, 12), ("B", 12, 24)]
+
+    verts, norms, colors, idx = ribbon_from_cif(DNA_DUPLEX)
+
+    assert len(verts) == 2 * 89 * 10
+    assert len(colors) == len(verts) == len(norms)
+    assert idx.max() < len(verts)
+    assert not np.isnan(verts).any()
+
+    # ...and the halves really are the two chains, in file order, packed end
+    # to end with no gap -- not one tube that happens to have the right
+    # vertex count.
+    assert _expected_chain_vertex_spans(DNA_DUPLEX, 8, 10) == [
+        ("A", 0, 890), ("B", 890, 1780)]
+
+
+def test_every_vertex_of_a_duplex_belongs_to_its_own_strand():
+    """The assertion the near-identical strands make necessary.
+
+    Each strand's vertex span must consist of vertices that are nearer to
+    THAT strand's own phosphates than to the other strand's -- with the two
+    backbones passing within 8.97 A of each other, and their centroids only
+    4.67 A apart, this is a genuine spatial claim and not a restatement of
+    the counts above. It is what fails if the per-chain slices are ever
+    taken in the wrong order or off the wrong array.
+
+    Mutation this catches: swapping the two chains' vertex blocks, or
+    splining chain B's coordinates into chain A's slot.
+    """
+    trace = load_backbone_trace(DNA_DUPLEX)
+    verts, _, _, _ = ribbon_from_cif(DNA_DUPLEX)
+    strand_a, strand_b = trace.coords[:12], trace.coords[12:]
+
+    to_a = np.linalg.norm(verts[:, None, :] - strand_a[None, :, :], axis=2).min(axis=1)
+    to_b = np.linalg.norm(verts[:, None, :] - strand_b[None, :, :], axis=2).min(axis=1)
+    nearer_to_a = to_a < to_b
+
+    assert nearer_to_a[:890].all(), (
+        f"{(~nearer_to_a[:890]).sum()} of chain A's own vertices sit nearer "
+        "to chain B's backbone")
+    assert (~nearer_to_a[890:]).all(), (
+        f"{nearer_to_a[890:].sum()} of chain B's own vertices sit nearer "
+        "to chain A's backbone")
+
+    # Every phosphate is actually wrapped, so "belongs to its own strand"
+    # cannot be satisfied by a strand that was silently dropped.
+    for i, anchor in enumerate(trace.coords):
+        nearest = float(np.linalg.norm(verts - anchor, axis=1).min())
+        assert nearest < RIBBON_RADIUS + 0.5, (
+            f"nucleotide {i} of chain {trace.chain_ids[i]} has no ribbon "
+            f"around it (nearest vertex {nearest:.2f} A away)")
+
+
+def test_no_ribbon_geometry_bridges_the_two_strands_of_a_duplex():
+    """The chain-break rule, on the structure where breaking it is loudest.
+
+    Strand A's 3' phosphate and strand B's 5' phosphate sit 18.83 A apart
+    across the end of the double helix. A single spline through both chains
+    lays a tube straight across that gap -- a girder over the top of the
+    helix, and the exact thing a visitor would read as "the model produced
+    one impossible molecule".
+
+    Measured on this fixture: with the chains splined separately the nearest
+    vertex to the middle of that gap is 6.85 A away; with one spline through
+    everything it is 1.34 A away. The 4.0 A forbidden radius below sits
+    between the two with room on both sides, so the test neither passes by
+    luck nor fails on a legitimate change of sampling density.
+    """
+    trace = load_backbone_trace(DNA_DUPLEX)
+    strand_a_end, strand_b_start = trace.coords[11], trace.coords[12]
+    assert 18.0 < float(np.linalg.norm(strand_b_start - strand_a_end)) < 19.5
+
+    verts, _, _, _ = ribbon_from_cif(DNA_DUPLEX)
+    midpoint = (strand_a_end + strand_b_start) / 2.0
+    nearest = float(np.linalg.norm(verts - midpoint, axis=1).min())
+    assert nearest > 4.0, (
+        f"a vertex sits {nearest:.2f} A from the middle of the gap between "
+        "the two strands -- the ribbon is bridging the double helix")
+
+
+def test_a_protein_dna_complex_draws_both_chains_on_their_own_anchors():
+    """The mixed case, end to end: one structure, two kinds of backbone.
+
+    The two chains are 23.02 A apart and in different pLDDT bands by
+    construction, so this checks all three things a wrong anchor would
+    break at once -- that both chains are drawn, that each one's geometry is
+    where its own residues are, and that each one's colours come from its
+    own residues' confidence.
+
+    Mutation this catches: anchoring the whole file on one atom name (the
+    DNA chain vanishes and only the blue protein tube is drawn), or
+    colouring the DNA chain from the protein chain's pLDDT (its ribbon
+    turns blue instead of yellow).
+    """
+    trace = load_backbone_trace(PROTEIN_DNA)
+    assert _contiguous_chain_runs(trace.chain_ids) == [("A", 0, 4), ("B", 4, 8)]
+
+    verts, _, colors, idx = ribbon_from_cif(
+        PROTEIN_DNA, samples_per_segment=4, sides=6)
+
+    # (4 - 1) * 4 + 1 = 13 rings per chain, 6 sides, two chains.
+    assert len(verts) == 2 * 13 * 6
+    assert _expected_chain_vertex_spans(PROTEIN_DNA, 4, 6) == [
+        ("A", 0, 78), ("B", 78, 156)]
+    assert idx.max() < len(verts)
+
+    # The protein runs along y = 0 and the DNA along y = 20; a 1.6 A tube
+    # around either cannot reach the other. Asserted on the VERTICES, so a
+    # chain drawn in the wrong place fails here even if the counts are right.
+    protein_verts, dna_verts = verts[:78], verts[78:]
+    assert protein_verts[:, 1].max() < 2.0
+    assert dna_verts[:, 1].min() > 18.0
+
+    # Colours, by band: the protein's residues are 91-97 (">90" blue), the
+    # DNA's are 61-64 ("50-70" yellow), and no interpolation within either
+    # chain can cross a threshold -- so every vertex is unambiguously one
+    # band or the other. Both hexes are typed in from PLDDT_STOPS' own
+    # table, not read back from `plddt_colors`.
+    blue = np.array([0x00, 0x53, 0xD6]) / 255.0
+    yellow = np.array([0xFF, 0xDB, 0x13]) / 255.0
+    np.testing.assert_allclose(
+        colors[:78], np.tile(blue, (78, 1)), atol=1e-3,
+        err_msg="the protein chain is not carrying its own >90 pLDDT colour")
+    np.testing.assert_allclose(
+        colors[78:], np.tile(yellow, (78, 1)), atol=1e-3,
+        err_msg="the DNA chain is not carrying its own 50-70 pLDDT colour")
+
+    # ...and nothing spans the 23 A gap between them (nearest vertex to its
+    # midpoint: 8.40 A when the chains are splined separately, 1.45 A when
+    # they are splined as one).
+    midpoint = (trace.coords[3] + trace.coords[4]) / 2.0
+    nearest = float(np.linalg.norm(verts - midpoint, axis=1).min())
+    assert nearest > 4.0, (
+        f"a vertex sits {nearest:.2f} A from the middle of the gap between "
+        "the protein and the DNA")

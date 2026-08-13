@@ -1,0 +1,55 @@
+# The Dickerson-Drew dodecamer: a DNA double helix, and the first target in
+# this booth's playlist that is not a protein.
+#
+# Vendored here like every other input this booth folds (see
+# examples/trpcage_no_msa.yaml's header for why nothing in the playlist may
+# point outside this repository) -- but unlike the other four, this one is
+# written from scratch rather than lifted from an upstream tt-boltz example,
+# because tt-boltz ships no nucleic-acid example at all.
+#
+# WHAT IT IS
+# ----------
+# CGCGAATTCGCG, twice, as two `dna:` entities. The two strands are
+# complementary read in opposite directions (C-G, G-C, C-G, G-C, A-T, A-T,
+# T-A, T-A, C-G, G-C, C-G, G-C), which is why the SAME twelve letters appear
+# on both chains: the sequence is its own reverse complement (a palindrome,
+# in the sense the word has in molecular biology). That is not a
+# copy-and-paste error in this file -- it is the property that makes this
+# particular sequence anneal to itself, and it is why it crystallised.
+#
+# This is the single most-studied piece of B-form DNA there is: solved by
+# Richard Dickerson and Horace Drew in 1980 (PDB 1BNA), it was the first
+# atomic-resolution structure of a full turn of the double helix, and it is
+# still the reference every textbook picture of B-DNA is drawn from. It also
+# contains the EcoRI recognition site (GAATTC) in the middle, which is the
+# six letters the first widely-used restriction enzyme cuts at -- i.e. the
+# sequence molecular cloning was built on.
+#
+# NO `msa:` KEY
+# -------------
+# Every protein in this playlist carries `msa: empty`, which asks the model
+# to predict a fold with no evolutionary alignment to lean on. A nucleic-acid
+# entity has no MSA field at all in this input format -- there is no
+# alignment for DNA to withhold -- so the two are not the same setting. But
+# the comparison a visitor sees is real and is the reason this target is
+# worth folding at the booth: the four MSA-less proteins come back at mean
+# pLDDT 39.5-95.3, while this duplex comes back around 84-88, because
+# base-pairing is chemically determined in a way protein folding is not.
+# See playlist/manifest.yaml's own entry for the copy that says so.
+#
+# RENDERING
+# ---------
+# Nucleic acids have no C-alpha atom, so this input is also what forced
+# ui/geometry.py to learn a nucleic-acid backbone anchor (the phosphorus of
+# the phosphate backbone, `P`, falling back to the sugar's `C1'` for the
+# 5'-terminal residue that has no phosphate). Before that change this fold
+# succeeded and then rendered as nothing at all. See that module's
+# `_backbone_anchor_atom`.
+version: 1
+sequences:
+  - dna:
+      id: A
+      sequence: CGCGAATTCGCG
+  - dna:
+      id: B
+      sequence: CGCGAATTCGCG

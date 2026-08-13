@@ -4,12 +4,14 @@
 # relative path below resolves against THIS FILE'S OWN DIRECTORY -- not the
 # process's working directory, which differs between the daemon and the UI.
 #
-# Four targets ship today. Trp-cage shipped first (Phase 3a), vendored into
-# examples/ specifically to remove a cross-repo absolute path
-# (~/code/tt-boltz/examples/trpcage_no_msa.yaml) that this project does not
-# control -- see that file's own header comment; the three below it were
-# added in the same spirit (this task), chosen out of six `msa: empty`
-# candidates found in the upstream tt-boltz checkout.
+# Five targets ship today: four proteins and one piece of DNA. Trp-cage
+# shipped first (Phase 3a), vendored into examples/ specifically to remove a
+# cross-repo absolute path (~/code/tt-boltz/examples/trpcage_no_msa.yaml)
+# that this project does not control -- see that file's own header comment;
+# the three proteins below it were added in the same spirit, chosen out of
+# six `msa: empty` candidates found in the upstream tt-boltz checkout. The
+# DNA duplex (last entry) came later and is written from scratch, because
+# upstream ships no nucleic-acid example at all.
 #
 # Why these three and not the other two candidates (see this task's own
 # report for the fuller reasoning):
@@ -27,7 +29,8 @@
 # The three shipped below (107 / 187 / 223 residues) still span a real
 # range from Trp-cage's 20, without that open-ended risk.
 #
-# All three new entries are protein+ligand complexes in their *upstream*
+# The three protein entries below Trp-cage are protein+ligand complexes in
+# their *upstream*
 # form (each pairs the protein with a small-molecule ligand for tt-boltz's
 # own affinity-prediction workflow) but this booth's runner ignores the
 # `properties:` block entirely and folds the ligand purely as part of the
@@ -42,6 +45,7 @@
 # 2026-08-12 from a live run of the real daemon and UI over the socket, with
 # the model resident across folds, which is the state the attract loop keeps
 # the booth in. Trp-cage 4.45s, FKBP12 11.7s, DHFR 19.7s, trypsin 22.3s.
+# The DNA duplex (2026-08-13, same method, six folds on card 0) is 4.6s.
 #
 # These are deliberately NOT the numbers
 # tests/integration/test_new_targets_timing.py prints (62.6 / 69.1 / 74.9s).
@@ -180,3 +184,44 @@
   # spelled out on the Trp-cage entry above, and the reason the warm
   # number is the honest one to print on a gallery card.
   expected_s: 22.3
+
+- id: dna
+  input: ../examples/dna_dickerson.yaml
+  name: DNA double helix
+  thumbnail: thumbnails/dna.png
+  tagline: >-
+    The double helix, twelve rungs of it — and the only thing this booth
+    folds that is not a protein.
+  blurb: >-
+    Twelve rungs of the double helix. Both strands spell the same twelve
+    letters, CGCGAATTCGCG, because each one read backwards is the other --
+    which is exactly what lets them clip together -- and the six in the
+    middle, GAATTC, are the mark that EcoRI, one of the first gene-cutting
+    enzymes ever put to work, searches a genome for. Solved in 1980, this
+    twelve-letter piece was the first atom-by-atom look at a full turn of
+    DNA and is still the picture the textbooks are drawn from. Watch the
+    colour: the four proteins here come back mostly yellow and orange,
+    because the model is asked to fold them with no evolutionary data to
+    lean on. DNA needs none -- the two strands pair by chemistry -- and it
+    comes back blue.
+  # The measured facts behind that last sentence, so nobody has to take the
+  # copy on trust. Six warm folds on card 0, 2026-08-13, protenix-v2:
+  # mean pLDDT 95.7 every time (per-atom B-factors 84.2-97.3, i.e. the
+  # ribbon is "very high" blue along the strands and "confident" pale blue
+  # at the four ends). The `msa: empty` proteins on this same playlist come
+  # back at 95.3 (Trp-cage), 50.8 (FKBP12), 52.9 (DHFR) and 39.5 (trypsin).
+  #
+  # So the honest claim is the one the blurb makes -- three of the four
+  # proteins are yellow-to-orange and the DNA is blue -- and NOT "the model
+  # is surer of DNA than of any protein", which Trp-cage's 95.3 would make
+  # false. Base-pairing is chemically determined in a way that protein
+  # folding is not, which is why a nucleic acid does not need the
+  # evolutionary signal the three big proteins are missing; a nucleic-acid
+  # entity has no `msa:` field to empty in the first place (see
+  # examples/dna_dickerson.yaml).
+  #
+  # Warm timings from those six folds: 6.17s cold (first fold after the
+  # model loads), then 4.61 / 4.66 / 4.62 / 4.64 / 4.57s warm -- mean 4.62.
+  # 24 nucleotides is the smallest input on the playlist after Trp-cage's 20
+  # residues, and it lands within 0.2s of it.
+  expected_s: 4.6

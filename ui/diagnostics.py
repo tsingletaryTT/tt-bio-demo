@@ -136,8 +136,9 @@ STAGE_TEACHING = {
         "#   sampled to the wire -- the collapse you can see.",
     ),
     # Per RESIDUE, not per atom: the score this booth actually renders is
-    # read from the CA atom's B-factor, one value per residue
-    # (ui/geometry.py's load_ca_trace), and the ribbon is coloured by that.
+    # read from ONE anchor atom's B-factor per residue -- the C-alpha of an
+    # amino acid, the phosphate's P of a nucleotide (ui/geometry.py's
+    # load_backbone_trace) -- and the ribbon is coloured by that.
     # Both this line and the help card's pLDDT legend said "per atom".
     "confidence": (
         "# confidence: the model scores its own answer, per",

@@ -14,8 +14,15 @@ class GeometryError(Exception):
 
 
 @dataclass
-class CaTrace:
-    """The C-alpha backbone of a predicted structure."""
+class BackboneTrace:
+    """One anchor atom per residue, along every chain of a structure.
+
+    Named for the backbone rather than for C-alpha because it is no longer
+    a protein-only trace: a nucleic-acid residue has no C-alpha at all and
+    is anchored on its phosphate instead (see `BACKBONE_ANCHORS`). The
+    fields are unchanged, and so is their meaning -- one row per drawable
+    residue, in file order, with the chain each row came from.
+    """
 
     coords: np.ndarray      # (N, 3) float32
     plddt: np.ndarray       # (N,) float32, 0-100
@@ -26,8 +33,61 @@ class CaTrace:
         return len(self.coords)
 
 
-def _best_ca_atom(residue):
-    """Return the residue's best-supported CA atom, or None if it has none.
+# The atom that stands for a residue's position on the backbone, tried in
+# this order, PER RESIDUE -- not once per file and not once per chain.
+#
+# Why this exists: this booth folds DNA as well as protein (see
+# examples/dna_dickerson.yaml), and a nucleic-acid residue contains no atom
+# named "CA". A CA-only trace therefore found nothing in a DNA duplex, and
+# `ribbon_from_cif` drew literally nothing for a fold that had otherwise
+# completely succeeded -- 24 residues and 494 atoms of real structure,
+# rendered as an empty screen.
+#
+# Why P, and why in this order:
+#
+#   "CA"  -- the C-alpha of an amino acid, the conventional protein trace.
+#            FIRST on purpose. A handful of modified amino acids carry a
+#            phosphate (phosphoserine, phosphothreonine) and so contain an
+#            atom named "P" as well; they are still protein and must still
+#            trace on their alpha carbon, which trying CA first guarantees
+#            no matter what else the residue contains.
+#
+#   "P"    -- the phosphorus of the phosphate backbone, the conventional
+#            nucleic-acid trace (it is what a "backbone" cartoon of DNA or
+#            RNA follows in every structural viewer). It is ON the backbone
+#            proper, so the two strands of a duplex come out as the two
+#            visibly separate helical ribbons a visitor expects, rather
+#            than a trace running nearer the helix axis. Measured on this
+#            booth's own output: consecutive P atoms sit 5.96-7.16 A apart
+#            (a protein's C-alphas sit ~3.8 A apart), which the 1.6 A
+#            ribbon radius and the Catmull-Rom spline both handle fine.
+#
+#   "C1'"  -- the sugar's anomeric carbon, present in EVERY nucleotide
+#            including one with no phosphate at all. This is the fallback
+#            for a 5'-TERMINAL residue: the 5' end of a strand often
+#            carries no phosphate group, and dropping that residue would
+#            silently shorten every strand by one. (Not the case in this
+#            booth's own output -- protenix-v2 writes a full 5'-phosphate,
+#            OP3 included, so all 24 residues of the duplex anchor on P --
+#            but it is the case for most experimental PDB entries, and the
+#            cost of the fallback is one residue's anchor sitting ~5.1 A
+#            off the phosphate line at one end of one strand, against
+#            losing the residue entirely.)
+#
+# Anything with none of the three (a small-molecule ligand entity, a water)
+# contributes no anchor at all and is skipped exactly as a CA-less residue
+# always was -- which for a one-residue ligand chain means it is dropped by
+# `ribbon_from_cif`'s too-short-to-spline rule, as it was before.
+BACKBONE_ANCHORS = ("CA", "P", "C1'")
+
+
+def _best_anchor_atom(residue):
+    """Return the residue's best-supported backbone anchor, or None.
+
+    Walks `BACKBONE_ANCHORS` in order and takes the first name the residue
+    actually has -- so the choice is made per residue, which is what lets a
+    protein/DNA complex trace its protein chains on C-alpha and its nucleic
+    chains on phosphorus within one structure and one pass.
 
     `residue.find_atom("CA", "*")` looks like an altloc wildcard but it
     isn't occupancy-aware: against gemmi 0.6.4 it returns the first CA
@@ -40,14 +100,18 @@ def _best_ca_atom(residue):
     with no altloc at all) are broken by altloc code ascending, so the
     choice is deterministic rather than an accident of file order.
     """
-    candidates = [atom for atom in residue if atom.name == "CA"]
-    if not candidates:
-        return None
-    return min(candidates, key=lambda atom: (-atom.occ, atom.altloc))
+    for name in BACKBONE_ANCHORS:
+        candidates = [atom for atom in residue if atom.name == name]
+        if candidates:
+            return min(candidates, key=lambda atom: (-atom.occ, atom.altloc))
+    return None
 
 
-def load_ca_trace(cif_path):
-    """Read C-alpha positions and per-residue pLDDT from a CIF file.
+def load_backbone_trace(cif_path):
+    """Read one backbone anchor per residue, and its pLDDT, from a CIF file.
+
+    The anchor is chosen per residue by `_best_anchor_atom`: C-alpha for an
+    amino acid, the phosphate's P (or the sugar's C1') for a nucleotide.
 
     pLDDT is taken from the B-factor column, which is where AlphaFold-family
     predictors (including everything tt-bio serves) write per-residue confidence.
@@ -57,15 +121,17 @@ def load_ca_trace(cif_path):
     except Exception as exc:
         raise GeometryError(f"could not read {cif_path}: {exc}") from exc
 
-    no_ca_error = f"{cif_path} contains no C-alpha atoms"
+    anchors = ", ".join(BACKBONE_ANCHORS)
+    no_anchor_error = (
+        f"{cif_path} contains no backbone anchor atoms ({anchors})")
 
     if len(structure) == 0:
-        raise GeometryError(no_ca_error)
+        raise GeometryError(no_anchor_error)
 
     coords, plddt, chain_ids = [], [], []
     for chain in structure[0]:
         for residue in chain:
-            atom = _best_ca_atom(residue)
+            atom = _best_anchor_atom(residue)
             if atom is None:
                 continue
             coords.append([atom.pos.x, atom.pos.y, atom.pos.z])
@@ -73,9 +139,9 @@ def load_ca_trace(cif_path):
             chain_ids.append(chain.name)
 
     if not coords:
-        raise GeometryError(no_ca_error)
+        raise GeometryError(no_anchor_error)
 
-    return CaTrace(
+    return BackboneTrace(
         coords=np.asarray(coords, dtype=np.float32),
         plddt=np.asarray(plddt, dtype=np.float32),
         chain_ids=chain_ids,
@@ -270,14 +336,21 @@ def ribbon_from_cif(cif_path, samples_per_segment=8, radius=1.6, sides=10):
 
     Each chain is splined and tubed *separately*, then the per-chain buffers
     are concatenated into the single set of arrays the renderer uploads. A
-    single spline through every C-alpha of every chain would draw a tube leg
+    single spline through every anchor of every chain would draw a tube leg
     from one chain's C-terminus to the next chain's N-terminus -- and since
     that gap is often an ordinary C-alpha--C-alpha distance, the spurious leg
     looks exactly like real backbone. On a complex (the interesting booth
     content) it is the difference between "two subunits" and "one impossible
     protein".
+
+    A DNA duplex is the same rule with a louder failure: its two strands are
+    anchored on phosphorus (see `BACKBONE_ANCHORS`), and on this booth's own
+    Dickerson-Drew fold the two ends the spurious leg would join sit 18.8 A
+    apart -- so the wrong answer there is not a subtle extra loop but a
+    girder laid across the top of the double helix. `tests/unit/
+    test_geometry_mesh.py` forbids geometry in that gap on the real fold.
     """
-    trace = load_ca_trace(cif_path)
+    trace = load_backbone_trace(cif_path)
 
     verts_parts, norms_parts, colors_parts, index_parts = [], [], [], []
     vertex_offset = 0  # running vertex count -- see the index rebase below
@@ -285,7 +358,7 @@ def ribbon_from_cif(cif_path, samples_per_segment=8, radius=1.6, sides=10):
     for _chain_id, start, stop in _chain_runs(trace.chain_ids):
         coords = trace.coords[start:stop]
 
-        # A chain with a single resolved C-alpha has no centerline to sweep:
+        # A chain with a single anchored residue has no centerline to sweep:
         # catmull_rom returns that lone point and tube_mesh rightly refuses
         # anything shorter than two points. Skip it -- deliberately not
         # fatal, and deliberately not a zero-length stub tube: one stray
@@ -335,12 +408,12 @@ def ribbon_from_cif(cif_path, samples_per_segment=8, radius=1.6, sides=10):
 
     if not verts_parts:
         # Every chain was too short to draw. Same class of failure as the
-        # "no C-alpha atoms" case in load_ca_trace: there is no geometry to
-        # be had, so say so with a GeometryError the UI already knows how to
-        # present, rather than returning empty buffers a renderer would
-        # happily and silently draw as nothing.
+        # "no backbone anchor atoms" case in load_backbone_trace: there is no
+        # geometry to be had, so say so with a GeometryError the UI already
+        # knows how to present, rather than returning empty buffers a
+        # renderer would happily and silently draw as nothing.
         raise GeometryError(
-            f"{cif_path} has no chain with at least 2 C-alpha atoms to draw"
+            f"{cif_path} has no chain with at least 2 anchored residues to draw"
         )
 
     return (
