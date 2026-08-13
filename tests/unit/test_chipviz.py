@@ -682,3 +682,22 @@ def test_the_page_exposes_per_chip_activation(tmp_path):
     it -- `activate(mode)` alone (the fan-out) cannot express this."""
     html = build_page_html("/*js*/", "/*css*/", 4, 84, 88)
     assert "activateChip" in html
+
+
+def test_the_page_denies_itself_every_network_source(tmp_path):
+    """The WebKit sandbox is off in this process by necessity (see the
+    SIGTRAP note above), so the containment argument -- "one local page, no
+    network" -- should be enforced by the engine rather than left as a
+    property of what we happened to inline.
+
+    Both halves are asserted: the deny-all base, AND the two inline
+    allowances the page genuinely needs. A bare `default-src 'none'` would
+    block this page's own inline <script>/<style> and blank the panel at the
+    venue, which is precisely the fail-silent mode this module exists to
+    avoid.
+    """
+    html = build_page_html("/*js*/", "/*css*/", 4, 84, 88)
+    assert "Content-Security-Policy" in html
+    assert "default-src 'none'" in html
+    assert "script-src 'unsafe-inline'" in html
+    assert "style-src 'unsafe-inline'" in html

@@ -627,8 +627,31 @@ def build_page_html(js, css, chip_count_shown, canvas_w, canvas_h, arch="blackho
         + str(int(canvas_w)) + "px);gap:" + str(_GAP) + "px;"
         "justify-content:space-between;}"
     )
+    # Content-Security-Policy: deny everything, then re-allow ONLY the two
+    # things this page is actually made of.
+    #
+    # Why this is here at all: WebKit's own bubblewrap sandbox is disabled in
+    # this process (see WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS at the top
+    # of this module), and the argument for that being safe is "there is no
+    # hostile content here to contain -- one vendored local page, no
+    # navigation, no network". This header turns that from a property of what
+    # we happen to load into one the engine enforces: every fetch/XHR,
+    # WebSocket, image, font, frame and form submission is refused outright.
+    #
+    # Why NOT a bare `default-src 'none'`: this page's script and style are
+    # INLINE (`<script>`/`<style>` below, because the assets are vendored and
+    # inlined rather than fetched -- see assets/tensix-viz/PROVENANCE.md).
+    # Under CSP, inline script and inline style each need their own explicit
+    # 'unsafe-inline', and default-src 'none' alone would block both -- i.e.
+    # it would silently blank this panel at the venue, which is the failure
+    # this module spends most of its length avoiding. 'unsafe-inline' permits
+    # exactly the bytes we put in the page ourselves; it does not permit a
+    # single remote source, which is the property being bought here.
+    csp = ("default-src 'none'; script-src 'unsafe-inline'; "
+           "style-src 'unsafe-inline'")
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
+        "<meta http-equiv=\"Content-Security-Policy\" content=\"" + csp + "\">"
         "<style>html,body{margin:0;padding:0;background:" + _DARK_BASE
         + ";overflow:hidden}canvas{display:block}" + grid_css
         + (css or "") + "</style></head><body>"

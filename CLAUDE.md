@@ -24,10 +24,26 @@ integrated GTK UI.
 
 ### Key decisions
 
-- **Native GTK4 throughout, no WebKit.** The original viability sketch assumed a browser
-  panel running Mol* for the 3D view. Taylor pushed back on that, and the native path turned
-  out better: one scene graph, one visual language, and the protein is a real widget
-  alongside the telemetry rather than an iframe next to it.
+- **Native GTK4 for everything the demo is claiming.** The original viability sketch assumed
+  a browser panel running Mol* for the 3D view. Taylor pushed back on that, and the native
+  path turned out better: one scene graph, one visual language, and the protein is a real
+  widget alongside the telemetry rather than an iframe next to it.
+  **Amended 2026-08-12 (Phase 3b):** this was written as "no WebKit", and that is no longer
+  literally true. The Tensix activity panel (`ui/chipviz.py`) is a `WebKit.WebView` holding a
+  vendored [tensix-viz](ui/assets/tensix-viz/PROVENANCE.md) animation. The decision the
+  pushback was actually about — the 3D protein view — is unchanged and stays GTK4 + OpenGL;
+  the exception is scoped to one 430 px decorative panel that hides itself if WebKit is
+  missing, loads one local `about:blank` page, never navigates and now declares
+  `default-src 'none'`. See `ui/chipviz.py`'s "Why there is a WebView" section, and the
+  sandbox note below.
+- **`WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1` is load-bearing for the booth.** Ubuntu
+  24.04 restricts unprivileged user namespaces (`kernel.apparmor_restrict_unprivileged_userns
+  = 1`), so WebKitGTK's bubblewrap sandbox cannot start and WebKit responds with a `g_error`
+  — a SIGTRAP that kills the whole process and that **no Python `try/except` can catch**.
+  Without this variable the kiosk aborts at startup, at the venue, with nothing on screen.
+  Its blast radius is bounded by what the WebView loads: one vendored local page, no
+  navigation, no network, no remote or user-supplied bytes, plus the CSP above. `setdefault`,
+  not assignment, so an operator on a machine where the sandbox works can export `0`.
 - **Two processes, two Python environments.** tt-bio needs a torch/ttnn venv; GTK needs
   system `python3-gi`. Splitting them removes the conflict instead of managing it, and gives
   fault isolation for free — the UI holds no device handles and cannot be taken down by a

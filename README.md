@@ -4,7 +4,8 @@ A turnkey conference demo for [tt-bio](https://github.com/moritztng/tt-bio) — 
 structure prediction on Tenstorrent hardware.
 
 Watch a protein condense out of noise into its folded structure, in real time, computed on
-the Blackhole chips in the room. Native GTK4, no browser.
+the Blackhole chips in the room. Native GTK4 and OpenGL — with [one scoped
+exception](#the-one-webkit-exception) for a small hardware-activity animation.
 
 ---
 
@@ -166,6 +167,36 @@ gemmi nor GTK, and the failure is confusing rather than loud. Use the project's 
 `protocol/` is the only code both environments import, which is why it is restricted to the
 standard library and numpy — anything richer would have to exist in both stacks. It holds
 the event schema, the stage order, and the per-stage progress bands.
+
+### The one WebKit exception
+
+This README used to say "no browser" flatly. That is not true and has not been since the
+Tensix activity panel shipped, so here is what is actually the case.
+
+`ui/chipviz.py` renders one `WebKit.WebView` in the 430 px side rail, holding a vendored copy
+of [tensix-viz](ui/assets/tensix-viz/PROVENANCE.md) — the small animated Tensix core grids
+under the chip readouts. **The 3D protein is not a browser and never will be**: it is a
+`GtkGLArea` with this project's own shaders, and that — the part whose frame timing, colour
+and provenance the booth is claiming to be real — is what "native GTK4" was always about.
+The exception is scoped accordingly: the panel hides itself if WebKit is missing, if there
+are no chips, or if the vendored assets cannot be read; it loads one inline `about:blank`
+page and never navigates; it declares `default-src 'none'` so the engine itself refuses every
+network source; and nothing in it can reach the viewer, the state machine or the socket.
+
+**`WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1`** is set by that module before WebKit is
+imported, and it is load-bearing for the booth rather than a development convenience:
+
+- Ubuntu 24.04 restricts unprivileged user namespaces by default
+  (`kernel.apparmor_restrict_unprivileged_userns = 1`), which WebKitGTK's bubblewrap sandbox
+  requires. Without it `bwrap` fails and WebKit answers with a `g_error`.
+- A `g_error` is **not** a Python exception. It is SIGTRAP: it kills the process, and no
+  `try/except` anywhere can catch it. Every other failure in that module degrades to a hidden
+  panel; this one would abort the kiosk at startup, at the venue, with nothing on screen.
+- The blast radius is one static, vendored, local page that renders no remote or
+  user-supplied bytes — there is no hostile content for the sandbox to contain, and the CSP
+  above enforces that rather than assuming it.
+- It uses `setdefault`, so an operator on a machine where the sandbox does work can keep it
+  on by exporting `WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=0`.
 
 ## What works today
 
