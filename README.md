@@ -7,10 +7,12 @@ Watch a protein condense out of noise into its folded structure, in real time, c
 the Blackhole chips in the room. Native GTK4 and OpenGL — with [one scoped
 exception](#the-one-webkit-exception) for a small hardware-activity animation.
 
-![The folded structure](docs/screenshots/01-folded-structure.png)
+![The booth folding four proteins on Tenstorrent Blackhole](docs/screenshots/booth-loop.gif)
 
-*Trp-cage, folded on a Blackhole p300c and rendered live. Every screenshot on this page is
-the real application on real silicon — no mockups, no recordings.*
+*Four proteins folding on a Blackhole p300c — FKBP12, Trp-cage, trypsin, DHFR — captured
+at 60 fps from the running booth. Every image on this page is the real application on real
+silicon: no mockups, no reconstructions. The point cloud is the model's actual denoising
+trajectory, streamed a step at a time.*
 
 ---
 
@@ -43,6 +45,10 @@ stage. Bounded ring buffer — the booth runs unattended all day.
 
 **The instrument.** Pipeline stages and per-chip telemetry, sampled independently of the
 compute daemon so the silicon keeps visibly breathing even if the daemon wedges.
+
+![The folded structure](docs/screenshots/01-folded-structure.png)
+
+**The reveal.** Trp-cage, coloured by the model's own per-residue confidence.
 
 </td>
 <td width="50%">
