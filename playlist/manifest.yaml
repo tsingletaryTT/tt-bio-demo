@@ -4,14 +4,51 @@
 # relative path below resolves against THIS FILE'S OWN DIRECTORY -- not the
 # process's working directory, which differs between the daemon and the UI.
 #
-# One target ships today: Trp-cage, vendored into examples/ in Phase 3a
-# specifically to remove a cross-repo absolute path
+# Four targets ship today. Trp-cage shipped first (Phase 3a), vendored into
+# examples/ specifically to remove a cross-repo absolute path
 # (~/code/tt-boltz/examples/trpcage_no_msa.yaml) that this project does not
-# control -- see that file's own header comment. Phase 4 owns growing this
-# list with curated targets, pre-cached MSAs, and thumbnail art; this phase
-# ships only the machinery and this one real entry.
+# control -- see that file's own header comment; the three below it were
+# added in the same spirit (this task), chosen out of six `msa: empty`
+# candidates found in the upstream tt-boltz checkout.
 #
-# `model` is omitted here on purpose so this entry exercises
+# Why these three and not the other two candidates (see this task's own
+# report for the fuller reasoning):
+#   - `prot_no_msa.yaml` (117 residues) was EXCLUDED: its protein could not
+#     be confidently identified against known structural-biology proteins,
+#     and this booth's blurbs must be accurate to the actual molecule, not
+#     a plausible-sounding guess.
+#   - `hsa_no_msa.yaml` (585 residues, human serum albumin) was EXCLUDED for
+#     THIS pass on pacing grounds: it is ~29x Trp-cage's residue count with
+#     no measured fold time on this hardware to bound how long that actually
+#     runs, and a booth attract loop a visitor watches must not gamble a
+#     multi-minute stall on an unmeasured target. Worth reconsidering once a
+#     hardware pass (see tests/integration/test_new_targets_timing.py) has
+#     real numbers for it.
+# The three shipped below (107 / 187 / 223 residues) still span a real
+# range from Trp-cage's 20, without that open-ended risk.
+#
+# All three new entries are protein+ligand complexes in their *upstream*
+# form (each pairs the protein with a small-molecule ligand for tt-boltz's
+# own affinity-prediction workflow) but this booth's runner ignores the
+# `properties:` block entirely and folds the ligand purely as part of the
+# STRUCTURE (see each examples/affinity_*.yaml's own header comment) -- and
+# none of the three ligands is actually visible in the rendered ribbon (each
+# examples/affinity_*.yaml explains why for its own ligand). The blurbs
+# below describe the protein only, for that reason: the CCD ligand itself
+# never becomes an on-screen fact for the visitor to check the blurb
+# against, so a blurb should not promise seeing it.
+#
+# `expected_s` is omitted on all three new entries -- deliberately, not an
+# oversight: nobody has folded them on this booth's actual hardware yet
+# (the cards were unavailable for the whole of this task; see the report),
+# and ui/playlist.py now treats a missing `expected_s` as "not yet measured"
+# rather than requiring a guessed number (see that module's own docstring).
+# ui/gallery.py renders that case as an explicit "not yet timed" note, never
+# a fabricated time. `tests/integration/test_new_targets_timing.py` is the
+# single-command hardware pass that measures the real number for each and
+# is the reason to come back and fill this field in.
+#
+# `model` is omitted here on purpose so the Trp-cage entry exercises
 # ui/playlist.py's DEFAULT_MODEL fallback (protenix-v2, this project's
 # default model everywhere else) for real, rather than only in a synthetic
 # unit test. `thumbnail` is omitted because Phase 4 owns the art; the
@@ -31,3 +68,40 @@
   # continuously, so a visitor's own pick almost always lands warm; 4.4s is
   # the midpoint of the warm range and the representative number to show.
   expected_s: 4.4
+
+- id: fkbp12
+  input: ../examples/affinity_fkg.yaml
+  name: FKBP12
+  blurb: >-
+    FKBP12 is the molecular lock that a whole class of anti-rejection drugs
+    was built to pick: organ-transplant patients take a daily drug called
+    tacrolimus specifically because it clicks onto FKBP12 and, together,
+    the two jam shut a signal that would otherwise tell the immune system
+    to attack the new organ.
+  # expected_s intentionally omitted -- not yet folded on this booth's real
+  # hardware; see the manifest's own header comment and
+  # tests/integration/test_new_targets_timing.py.
+
+- id: dhfr
+  name: Dihydrofolate Reductase
+  input: ../examples/affinity_dhfr.yaml
+  blurb: >-
+    Every dividing cell relies on this enzyme, DHFR, to help build the raw
+    material for new DNA -- which is exactly why one of the oldest cancer
+    drugs, methotrexate, is shaped to jam it shut instead, starving
+    fast-dividing cancer cells of what they need to keep copying themselves.
+  # expected_s intentionally omitted -- not yet folded on this booth's real
+  # hardware; see the manifest's own header comment and
+  # tests/integration/test_new_targets_timing.py.
+
+- id: trypsin
+  input: ../examples/affinity_tryp.yaml
+  name: Trypsin
+  blurb: >-
+    Trypsin is a digestive enzyme your own small intestine makes to cut the
+    protein in a meal into smaller, absorbable pieces, and it is also one
+    of the most-studied protein shapes in science -- often the very first
+    real structure a biochemistry student ever examines up close.
+  # expected_s intentionally omitted -- not yet folded on this booth's real
+  # hardware; see the manifest's own header comment and
+  # tests/integration/test_new_targets_timing.py.

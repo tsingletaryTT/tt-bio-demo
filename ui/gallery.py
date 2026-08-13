@@ -47,6 +47,15 @@ now dark-ground with only a hairline border and a small, muted initial --
 quiet enough that the target's NAME and BLURB (what a visitor actually
 reads to choose) are the loudest things on the card, not the empty tile.
 
+Fold-time hint: each card also shows a short pacing note built by the pure
+`_format_fold_time(target.expected_s)` -- a real, hardware-measured time
+("~4.4s to fold") when `ui.playlist.Target.expected_s` is set, or an
+explicit "not yet timed" sentence when it is `None` (a target nobody has
+folded on this booth's real hardware yet -- see ui/playlist.py's own
+docstring for why that is `None` rather than a guessed number). The
+unmeasured case gets its own wording rather than blank space specifically
+so it reads as a deliberate, known state, not a missing field.
+
 Legibility guard: per this task's brief, ui/panels.py's generalized
 "every label must carry an explicitly-coloured CSS class, checked both
 statically against the real stylesheet text and dynamically via runtime
@@ -96,6 +105,30 @@ _BG_ALT = "#C7D9D8"
 # hint sits on the same dark ground and needs the same fix.
 _ACCENT_TEXT = "#3299B9"
 _HAIRLINE = "rgba(199, 217, 216, 0.18)"  # _BG_ALT at 18% opacity, matches ui/panels.py
+
+
+# ---------------------------------------------------------------------------
+# Pure decision: how to show a target's fold time (or the lack of one).
+# ---------------------------------------------------------------------------
+
+def _format_fold_time(expected_s):
+    """The short fold-time hint shown on a gallery card.
+
+    `expected_s` is `None` for a target nobody has folded on this booth's
+    real hardware yet (`ui.playlist.Target.expected_s`, and see that
+    module's docstring for why it is `None` rather than a guessed number).
+    That case gets its OWN explicit sentence here -- "not yet timed" -- so
+    it reads as a deliberate, known state to a visitor or operator glancing
+    at the card, not as a blank space that looks like a missing field, and
+    absolutely not as some fabricated number formatted to look measured.
+    A real, measured value is rounded to one decimal place: sub-second
+    precision on a multi-second fold reads as more precise than this
+    project's own measurement methodology (docs/followups.md's 30-fold
+    soak) actually supports.
+    """
+    if expected_s is None:
+        return "fold time: not yet timed"
+    return f"~{expected_s:.1f}s to fold"
 
 
 # ---------------------------------------------------------------------------
@@ -288,6 +321,14 @@ _GALLERY_CSS = f"""
     font-size: 13px;
     color: {_BG_ALT};
 }}
+/* Same muted secondary-text colour as the blurb, smaller and set apart --
+   pacing info a visitor may glance at, not the reason they picked the
+   card. See _format_fold_time for what this shows when a target has no
+   measured time yet. */
+.gallery-card-time {{
+    font-size: 11px;
+    color: {_BG_ALT};
+}}
 .gallery-card-tap-hint {{
     font-size: 10px;
     font-weight: 600;
@@ -437,6 +478,13 @@ class Gallery(Gtk.ScrolledWindow):
         blurb.set_wrap(True)
         blurb.set_justify(Gtk.Justification.LEFT)
         content.append(blurb)
+
+        # Pacing info, not a promise: see _format_fold_time's own docstring
+        # for why an unmeasured target gets its own explicit sentence here
+        # rather than silence or a fabricated number.
+        time_label = Gtk.Label(label=_format_fold_time(target.expected_s), xalign=0.0)
+        time_label.add_css_class("gallery-card-time")
+        content.append(time_label)
 
         hint = Gtk.Label(label="TAP TO FOLD", xalign=0.0)
         hint.add_css_class("gallery-card-tap-hint")

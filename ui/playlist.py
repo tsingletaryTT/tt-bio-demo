@@ -2,11 +2,23 @@
 
 `playlist/manifest.yaml` is a YAML list of targets. Each entry names an
 `input` fold spec (a tt-bio job YAML, e.g. `examples/trpcage_no_msa.yaml`),
-plus the copy the gallery card shows a visitor (`name`, `blurb`), an
-`expected_s` fold time for pacing, and optionally `model` (defaults to
-`protenix-v2`, this project's default model everywhere else) and
-`thumbnail` (Phase 4 art; absent entries render a placeholder -- see
-`ui/gallery.py`).
+plus the copy the gallery card shows a visitor (`name`, `blurb`), and
+optionally `model` (defaults to `protenix-v2`, this project's default model
+everywhere else), `thumbnail` (Phase 4 art; absent entries render a
+placeholder -- see `ui/gallery.py`), and `expected_s` (a fold time for
+pacing, measured once on this booth's own hardware -- see below).
+
+`expected_s` is OPTIONAL, on purpose. It exists to record a real,
+hardware-measured fold time for pacing (Trp-cage's `4.4` is a 30-fold soak
+average -- see playlist/manifest.yaml's own comment); nothing about this
+module can produce that number for a target nobody has folded on this
+booth's hardware yet, and inventing one would read to an operator as
+measured when it is a guess. So a target is allowed to omit `expected_s`
+(or set it explicitly to YAML `null`) to mean "not yet measured" --
+`Target.expected_s` is `None` in that case, never a fabricated float. A
+target that DOES supply `expected_s` still has it validated as a number,
+exactly as before. `ui/gallery.py` is responsible for showing `None`
+sensibly (never as a bogus time); see that module's `_format_fold_time`.
 
 This module is UI-side: it must never import torch or tt_bio (see
 docs/venv-bootstrap-notes.md -- ui/ and runner/ are different venvs, and
@@ -53,14 +65,15 @@ import yaml
 DEFAULT_MODEL = "protenix-v2"
 
 # Every field an entry must supply explicitly -- no sane cross-target
-# default exists for any of these (a made-up name, blurb, or fold time
-# would be worse than a loud failure at load time). Checked in this order
-# so a manifest entry missing more than one field always reports the same
-# field first, deterministically, rather than whichever dict-iteration
-# order happens to land. "model" and "thumbnail" are NOT here: both have
-# well-defined optional behavior (DEFAULT_MODEL / no thumbnail) so their
-# absence is not an error at all -- see load_playlist.
-_REQUIRED_FIELDS = ("input", "name", "blurb", "expected_s")
+# default exists for any of these (a made-up name or blurb would be worse
+# than a loud failure at load time). Checked in this order so a manifest
+# entry missing more than one field always reports the same field first,
+# deterministically, rather than whichever dict-iteration order happens to
+# land. "model", "thumbnail" and "expected_s" are NOT here: all three have
+# well-defined optional behavior (DEFAULT_MODEL / no thumbnail / None
+# meaning "not yet measured") so their absence is not an error at all --
+# see load_playlist.
+_REQUIRED_FIELDS = ("input", "name", "blurb")
 
 
 class PlaylistError(Exception):
@@ -87,7 +100,11 @@ class Target(object):
     model: str
     name: str
     blurb: str
-    expected_s: float
+    # None means "not yet measured on real hardware" -- see the module
+    # docstring. Never a fabricated number; ui/gallery.py renders this case
+    # explicitly rather than formatting None into something that looks like
+    # a real time.
+    expected_s: float | None = None
     thumbnail: Path | None = None
 
 
@@ -113,8 +130,11 @@ def load_playlist(path):
     YAML list of mappings. Raises `PlaylistError` -- never yaml.YAMLError,
     KeyError, TypeError, or anything else raw -- for every failure mode:
     a missing file, a file that isn't a YAML list, an entry missing a
-    required field, an entry with a non-numeric `expected_s`, or two
-    entries sharing one `id`.
+    required field, an entry whose `expected_s` is PRESENT but not a
+    number, or two entries sharing one `id`. `expected_s` itself may be
+    absent or explicit YAML `null` -- both mean "not yet measured" and
+    produce `Target.expected_s is None`, not an error; see the module
+    docstring.
     """
     manifest_path = Path(path)
     if not manifest_path.is_file():
@@ -173,12 +193,22 @@ def load_playlist(path):
             )
         seen_ids[entry_id] = index
 
-        try:
-            expected_s = float(entry["expected_s"])
-        except (TypeError, ValueError) as exc:
-            raise PlaylistError(
-                f"{entry_id}: 'expected_s' must be a number, got {entry['expected_s']!r}"
-            ) from exc
+        # Absent key or explicit YAML `null` both mean "not yet measured on
+        # real hardware" -- None, not a fabricated number (see the module
+        # docstring and Target.expected_s's own comment). Only a PRESENT,
+        # non-null value is validated as a number; this is why expected_s
+        # is not in _REQUIRED_FIELDS above.
+        raw_expected_s = entry.get("expected_s")
+        if raw_expected_s is None:
+            expected_s = None
+        else:
+            try:
+                expected_s = float(raw_expected_s)
+            except (TypeError, ValueError) as exc:
+                raise PlaylistError(
+                    f"{entry_id}: 'expected_s' must be a number (or absent/null "
+                    f"for 'not yet measured'), got {raw_expected_s!r}"
+                ) from exc
 
         thumbnail = entry.get("thumbnail")
         thumbnail_path = (manifest_dir / thumbnail).resolve() if thumbnail else None

@@ -23,6 +23,16 @@ docstring:
   otherwise an implementation that raises PlaylistError unconditionally
   (never actually checking for duplicates) would still make the naive
   version of this test pass.
+
+`test_expected_s_*` (added when the playlist grew past its first target):
+`expected_s` became optional, meaning "not yet measured on real hardware"
+when absent or explicit YAML `null`, rather than a required field every
+entry must fabricate a number for -- see ui/playlist.py's own docstring.
+Three tests, not one, because there are three genuinely different
+behaviors to pin down: absent stays None, explicit null ALSO stays None
+(the two spellings of "not yet measured" must not diverge), and a PRESENT
+but non-numeric value is still a loud PlaylistError -- the leniency is for
+"nothing was said," not for "something wrong was said."
 """
 
 import pytest
@@ -82,6 +92,59 @@ def test_a_missing_thumbnail_is_tolerated(tmp_path):
     # other path. Catches an implementation that tolerates a missing
     # thumbnail by ignoring the field unconditionally.
     assert by_id["has-thumb"].thumbnail == thumb.resolve()
+
+
+def test_expected_s_absent_means_not_yet_measured(tmp_path):
+    """Omitting `expected_s` entirely is not an error -- it means this
+    target has not been folded on real hardware yet (this task's brief).
+    `Target.expected_s` must come back `None`, never a fabricated float."""
+    (tmp_path / "a.yaml").write_text("version: 1\n")
+    m = tmp_path / "m.yaml"
+    m.write_text(
+        "- id: unmeasured\n"
+        "  input: a.yaml\n"
+        "  name: Unmeasured\n"
+        "  blurb: no expected_s at all\n"
+    )
+    targets = load_playlist(m)
+    assert len(targets) == 1
+    assert targets[0].expected_s is None
+
+
+def test_expected_s_explicit_null_also_means_not_yet_measured(tmp_path):
+    """The other spelling of "not yet measured": `expected_s: null` (or,
+    equivalently, a bare `expected_s:` with nothing after the colon) must be
+    tolerated identically to the field being absent outright -- not treated
+    as a "missing required field" and not coerced into some other number."""
+    (tmp_path / "a.yaml").write_text("version: 1\n")
+    m = tmp_path / "m.yaml"
+    m.write_text(
+        "- id: unmeasured\n"
+        "  input: a.yaml\n"
+        "  name: Unmeasured\n"
+        "  blurb: expected_s is explicit null\n"
+        "  expected_s: null\n"
+    )
+    targets = load_playlist(m)
+    assert targets[0].expected_s is None
+
+
+def test_expected_s_still_validated_as_a_number_when_present(tmp_path):
+    """A target that DOES supply expected_s keeps the original contract: a
+    non-numeric value is still a loud PlaylistError naming the entry, not
+    silently treated as 'not yet measured' -- that leniency is reserved for
+    absent/null, not for "someone typed garbage here"."""
+    (tmp_path / "a.yaml").write_text("version: 1\n")
+    m = tmp_path / "m.yaml"
+    m.write_text(
+        "- id: bogus\n"
+        "  input: a.yaml\n"
+        "  name: Bogus\n"
+        "  blurb: expected_s is not a number\n"
+        "  expected_s: soon\n"
+    )
+    with pytest.raises(PlaylistError, match="bogus"):
+        load_playlist(m)
 
 
 def test_duplicate_ids_are_rejected(tmp_path):

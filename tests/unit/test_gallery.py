@@ -40,7 +40,7 @@ from gi.repository import GdkPixbuf, Gtk
 
 import _legibility
 import ui.gallery as ui_gallery
-from ui.gallery import Gallery, MIN_CONTRAST_RATIO, contrast_ratio, grid_shape
+from ui.gallery import Gallery, MIN_CONTRAST_RATIO, _format_fold_time, contrast_ratio, grid_shape
 from ui.playlist import Target
 
 # The thumbnail-loading/placeholder helpers (_load_thumbnail_texture,
@@ -121,6 +121,34 @@ def test_grid_shape_never_gives_more_columns_than_targets():
 
 def test_grid_shape_is_deterministic():
     assert grid_shape(7, 1280) == grid_shape(7, 1280)
+
+
+# ---------------------------------------------------------------------------
+# `_format_fold_time`: a measured time formats as a time; an unmeasured
+# target (expected_s is None) gets its own explicit, deliberate-looking
+# sentence -- never blank, never a fabricated number.
+# ---------------------------------------------------------------------------
+
+def test_a_measured_fold_time_is_shown_as_a_time():
+    text = _format_fold_time(4.4)
+    assert "4.4" in text
+    assert "s" in text
+
+
+def test_an_unmeasured_fold_time_says_so_explicitly_not_blank():
+    text = _format_fold_time(None)
+    assert text.strip() != ""
+    # Must not read as a number a visitor could mistake for a real
+    # measurement -- no digits at all in the unmeasured case.
+    assert not any(ch.isdigit() for ch in text)
+
+
+def test_format_fold_time_rounds_rather_than_shows_false_precision():
+    """0.1s-precision measurement methodology (docs/followups.md's 30-fold
+    soak) must not be dressed up with more decimal places than that: a
+    value like 4.44444 must format with exactly one decimal digit, not be
+    echoed back verbatim."""
+    assert _format_fold_time(4.44444) == "~4.4s to fold"
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +293,24 @@ def test_gallery_card_shows_the_targets_name_and_blurb():
     assert "Folds in microseconds." in labels
 
 
+def test_gallery_card_shows_a_measured_fold_time():
+    target = _target(id="a", expected_s=4.4)
+    gallery = Gallery([target], width_px=1280)
+    labels = {label.get_label() for label in _legibility.iter_labels(gallery)}
+    assert _format_fold_time(4.4) in labels
+
+
+def test_gallery_card_of_an_unmeasured_target_says_so_not_a_bogus_time():
+    """A target with `expected_s=None` (not yet folded on real hardware --
+    ui.playlist's own contract) must render the SAME deliberate sentence
+    _format_fold_time produces for None, not a blank card slot and not the
+    default 4.4 some other target happens to carry."""
+    target = _target(id="a", expected_s=None)
+    gallery = Gallery([target], width_px=1280)
+    labels = {label.get_label() for label in _legibility.iter_labels(gallery)}
+    assert _format_fold_time(None) in labels
+
+
 # ---------------------------------------------------------------------------
 # 4. Legibility guard, extended from ui/panels.py's (see this task's brief:
 # "extend that guard to cover it rather than leaving ui/gallery.py
@@ -308,6 +354,15 @@ def _all_gallery_states(tmp_path):
         [_target(id="d1", thumbnail=None), _target(id="d2", thumbnail=real_png)],
         width_px=1280)
     yield "multi-card grid", multi
+
+    # The new gallery-card-time label added when the playlist grew past its
+    # first target: an unmeasured target (expected_s=None) is the state
+    # this task actually ships (three of the four real targets), so the
+    # legibility guard must see the "not yet timed" wording rendered for
+    # real, not just the measured 4.4 default every other fixture above
+    # uses.
+    unmeasured = Gallery([_target(id="e", thumbnail=None, expected_s=None)], width_px=1280)
+    yield "card with unmeasured fold time", unmeasured
 
 
 def test_every_gallery_label_is_legible_in_every_state(tmp_path):
