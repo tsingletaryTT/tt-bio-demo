@@ -57,7 +57,8 @@ class FakeClock:
 
 
 class FakeViewer:
-    """Records what the app asks the screen to show, and models the blend.
+    """Records what the app asks the screen to show, and models the blend
+    and the contents.
 
     `blend` mirrors `ui.viewer.StructureViewer`'s own: `clear_structure()`
     puts it back to 0 (points visible), `begin_crossfade()` drives it to 1
@@ -65,6 +66,19 @@ class FakeViewer:
     0.8s to travel; this jumps, which is conservative in the SAME direction
     for every implementation being compared, and keeps the test free of a
     frame clock.
+
+    `shown` models WHAT IS ON SCREEN, as `(kind, payload)` or None -- the
+    same thing the real widget's `_point_count`/`_ribbon_index_count` say,
+    since `clear_structure` zeroes both and each upload sets one. It is here
+    for the same reason `blend` is: counting `clear_structure` calls cannot
+    tell "the previous protein is still on screen" from "the screen is
+    black", and that distinction is now the whole point of the sequencing
+    (see the module docstring in ui/app.py, second section). A test that
+    asserts on a call count would score an empty viewer green.
+
+    `held` mirrors `set_held`, which the real widget uses to dim a structure
+    whose own fold is over. `clear_structure` clears it there, so it clears
+    it here.
     """
 
     def __init__(self):
@@ -73,17 +87,26 @@ class FakeViewer:
         self.clears = 0
         self.crossfades = 0
         self.blend = 0.0
+        self.held = False
+        self.shown = None
         self.connection_state = "disconnected"
 
     def clear_structure(self):
         self.clears += 1
         self.blend = 0.0
+        self.held = False
+        self.shown = None
 
     def set_points(self, coords, opacity=1.0):
         self.point_frames.append(coords)
+        self.shown = ("points", coords)
 
     def set_ribbon(self, verts, norms, colors, indices):
         self.ribbons.append(verts)
+        self.shown = ("ribbon", verts)
+
+    def set_held(self, held):
+        self.held = bool(held)
 
     def begin_crossfade(self):
         self.crossfades += 1

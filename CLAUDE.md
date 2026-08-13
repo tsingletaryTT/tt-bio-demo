@@ -250,6 +250,66 @@ card, the `D` diagnostics log, a live Tensix core-grid animation per chip, and t
   truth, not by inventing the capability. That is the standard this project is
   holding itself to, and it is worth re-reading before writing any booth copy.
 
+### 2026-08-13 — the empty viewer: hold the previous structure until superseded
+
+Prompted from a frame-by-frame scan of a 91-second recording of the real booth:
+**20 of 45 sampled seconds had an empty 3D view.** A frame at t=44s shows trypsin
+at `TRUNK ~60%`, diffusion not started, and nothing on screen but a progress bar.
+
+The cause is a one-line assumption that only ever held for Trp-cage. Only the
+`diffusion` stage emits `frame` events — `msa`, `prep` and `trunk` emit progress
+and no coordinates — and trunk is ten refinement cycles, ~15s on a 223-residue
+target. `job_start` cleared the viewer. So for three of the four shipped targets
+(FKBP12 11.7s, DHFR 19.7s, trypsin 22.3s, against Trp-cage's 4.4s) the demo whose
+whole premise is *watch it fold* showed a visitor black for most of every fold.
+The `_SHOWCASE_DWELL_S = 2.0` hold made it 2 seconds less bad and was itself the
+same mistake in miniature: a fixed budget tuned against a 4.4s cycle is under 10%
+of a 22.3s one.
+
+**The fix is one sentence: never clear the viewer until there is something to put
+in its place.** The clear moved out of `job_start` and into `_drain_frames`, at
+the instant the new fold's first real frame is about to be drawn. The hold stops
+being a number of seconds and becomes "until superseded", which scales with fold
+length by construction. It also collapsed the old `_deferred_clear` machinery —
+the deferred clear existed only to postpone a clear that should not have been
+happening.
+
+What made it a *booth* change rather than a one-liner was honesty. A rotating
+protein with a live stage readout beside it reads as the fold in progress, and
+after this change it frequently is not. So:
+
+- Nothing is fabricated. No interpolation, no synthesised motion, no placeholder
+  geometry for a stage that produced none — the held thing is a structure that
+  was really computed, just an older one.
+- It is **dimmed** (`StructureViewer.set_held`, 0.55) and **captioned**
+  ("Previous fold: Trp-cage" / "Now folding Trypsin"), so "this one is finished,
+  the next is computing" reads at booth distance.
+- The caption is an assertion, so it is taken down by anything that makes it
+  false: the first real frame, `job_error`, and `not_ready`. A daemon that dies
+  mid-fold leaves an honest structure with no claim over it, never a permanent
+  "Now folding X".
+- Where there is genuinely nothing to hold (the first fold after launch) the
+  booth says what it is doing and when the view will fill, rather than showing a
+  bare black field.
+- An unknown `target_id` degrades to a claims-less caption, never to the raw wire
+  id on a conference screen.
+
+Two smaller things fell out of it, both worth remembering:
+
+- **`job_id` on `frame` events is load-bearing now.** The daemon does not pause
+  between folds, so a straggler frame from fold N can arrive after fold N+1's
+  `job_start`; without the comparison it would retire a finished structure in
+  favour of the *older* fold's noise cloud.
+- **"Is the cross-fade finished" and "how bright is this" became two different
+  questions.** `_draw_ribbon` used to derive its depth-write flag from its alpha,
+  which was correct until a fully cross-faded ribbon could be drawn at 0.55 —
+  after which the whole 15-second hold would have run with depth writes off,
+  resolving the tube's self-overlaps by triangle index order.
+
+Thirteen mutations, thirteen red. Two of them are literally the pre-change code
+(the immediate clear and the deferred one); each turns seven tests red, including
+all four the brief named.
+
 ## Conventions
 
 - **Keep the README's screenshots current.** The README claims every image on it is the
