@@ -241,6 +241,48 @@ def viewer_hold_caption(*, awaiting_first_frame, has_structure, showcasing,
             else "Now folding the next target")
 
 
+# ── the protein caption, under the render ───────────────────────────────────
+#
+# A visitor used to get a shape and a name and learn nothing. This is the
+# line or two that says what the molecule actually IS.
+#
+# HOW THIS COEXISTS WITH `viewer_hold_caption` ABOVE
+#
+# The two never make competing claims, because each names its own subject
+# and each answers a different question:
+#
+#   the hold caption   sits at the TOP of the hero slot, appears only during
+#                      the silent stages of a new fold, and answers "which
+#                      molecule am I looking at, and which one is being
+#                      computed?" -- Previous fold: X / Now folding Y.
+#   this caption       sits BELOW the render, is always up, and answers
+#                      "what IS the molecule in this picture?"
+#
+# So this one follows the structure ON SCREEN (`shown_target_id`), not the
+# fold in flight. That is what makes them agree rather than fight: during
+# the hold window the picture is still X, so this caption keeps describing
+# X while the top caption announces that Y is coming; then both switch
+# together on the new fold's first frame, which is also the moment the
+# picture itself changes. Binding this line to the fold in flight instead
+# would put a description of Y directly underneath a picture of X -- the
+# exact confusion the top caption exists to prevent.
+#
+# The fallback to `folding_target_id` covers the first fold of the day,
+# when nothing has been shown yet and the booth is drawing an empty viewer:
+# there is no picture to contradict, and naming what is coming beats naming
+# nothing.
+
+
+def target_info_subject(*, shown_target_id, folding_target_id):
+    """Which target the caption under the render describes.
+
+    Pure and id-only, so the choice is testable with no display and no
+    playlist -- the same split `viewer_hold_caption` uses. See the block
+    above for why "what is on screen" wins over "what is being folded".
+    """
+    return shown_target_id or folding_target_id
+
+
 # ── booth timing ────────────────────────────────────────────────────────────
 #
 # How long a finished structure holds the screen. `ui.states` defaults this
@@ -332,6 +374,90 @@ _TELEMETRY_REPAINT_MS = 500
 # ones it used to jump between. `tests/unit/test_panels.py` pins the
 # arithmetic so a wider cell cannot silently reintroduce the lurch.
 _SIDE_RAIL_WIDTH_PX = 552
+
+
+class _PinnedNaturalBoxLayout(Gtk.BoxLayout):
+    """A `Gtk.BoxLayout` that reports its natural WIDTH as its minimum.
+
+    The override has to live on the layout manager, not on the widget:
+    `gtk_widget_measure` delegates to the layout manager whenever a widget
+    has one, and never calls the widget class's own `measure` vfunc. A
+    `do_measure` on a `Gtk.Box` subclass is therefore dead code -- verified
+    by measuring, before this class existed, that overriding it changed the
+    rail's reported natural width by exactly nothing.
+    """
+
+    def do_measure(self, widget, orientation, for_size):
+        minimum, natural, min_baseline, nat_baseline = Gtk.BoxLayout.do_measure(
+            self, widget, orientation, for_size)
+        if orientation == Gtk.Orientation.HORIZONTAL:
+            natural = minimum
+        return minimum, natural, min_baseline, nat_baseline
+
+
+class _FixedWidthBox(Gtk.Box):
+    """A box whose NATURAL width is pinned to its minimum, so nothing inside
+    it can widen the column merely by *wanting* more room.
+
+    This is the second half of the fix `_SIDE_RAIL_WIDTH_PX` above describes.
+    That one stopped the rail's MINIMUM from moving; this one stops its
+    NATURAL from moving, which turns out to be the number that actually
+    reallocates the screen.
+
+    The defect, measured on this booth's own 1920x1080 fullscreen window
+    (`get_allocated_width()` / `compute_bounds()` across a `T` press):
+
+        rail        552 -> 584 px wide, left edge x 1350 -> 1318
+        hero slot   1332 -> 1300 px wide   <- the protein, moving 32px
+        every panel in the rail: 32px left, 32px wider
+
+    Why: `set_size_request` is only a FLOOR (the same lesson as the 101px
+    telemetry lurch above). With the Tensix panel hidden the rail measured
+    (minimum=588, natural=588); with it shown, (minimum=588, natural=620).
+    The minimum never moved -- the panel's own minimum is capped at
+    `ui.chipviz.RAIL_INNER_WIDTH_PX` exactly so it would not -- but the
+    WebView reports a natural width of 552 (584 with the panel's padding),
+    which is 32px past the rail's inner width, and `RAIL_INNER_WIDTH_PX`
+    only ever constrained the minimum.
+
+    That 32px matters because `GtkBoxLayout` distributes spare space in two
+    passes: first it grows every child from its minimum toward its NATURAL,
+    and only the remainder goes to the `hexpand` children. The rail is
+    `hexpand(False)`, but pass one still hands it the 32px it asked for --
+    and the hero slot, which is the `hexpand` child, pays for it.
+
+    Pinning `natural := minimum` here fixes the whole class of bug in one
+    place rather than chasing each child: the rail is exactly as wide as
+    what it MUST have, never as wide as what something in it would like.
+    Minimum is deliberately left alone, so a child that genuinely cannot
+    render narrower still widens the column rather than being clipped.
+
+    Still a `Gtk.Box`, with only its layout manager swapped, so it keeps
+    `Gtk.Box`'s `append`/`remove` and -- the part that is easy to lose --
+    `Gtk.Box`'s unparenting of its children at dispose. Two routes to the
+    same pin were tried and rejected first, both by running them:
+
+    - `do_measure` on a `Gtk.Box` subclass is never called. GTK delegates
+      measurement to the layout manager whenever a widget has one, so the
+      widget's own vfunc is dead code.
+    - a plain `Gtk.Widget` subclass with this layout manager measures
+      correctly but leaks its children: PyGObject does not wire a
+      `do_dispose` override on a widget subclass, so teardown printed
+      "Finalizing ... but it still has children left" for every rail a test
+      built.
+
+    Swapping the layout manager on a live `Gtk.Box` is safe here because
+    `gtk_box_set_spacing`/`set_orientation` resolve the layout manager
+    through `gtk_widget_get_layout_manager()` on each call rather than
+    caching it -- verified by setting spacing after the swap and reading it
+    back.
+    """
+
+    def __init__(self, *, orientation, spacing=0):
+        super().__init__(orientation=orientation, spacing=spacing)
+        self.set_layout_manager(
+            _PinnedNaturalBoxLayout(orientation=orientation, spacing=spacing))
+
 
 # What the gallery gets to lay its cards out in: the window minus the rail.
 # 1920 is this booth's screen; `ui.gallery.grid_shape` turns it into a
@@ -478,6 +604,10 @@ _BACKGROUND_BY_CLASS = {
     # wash for the obvious reason: the structure it is captioning has to
     # stay visible behind it.
     "viewer-caption": _DARK_BASE,
+    # The protein caption below the render. Unlike the two overlays it is a
+    # real strip in the layout rather than a wash, but it paints the same
+    # ground, so its two labels are checked against `_DARK_BASE` too.
+    "target-info": _DARK_BASE,
 }
 
 # The pLDDT legend's swatches, generated from the ONE ramp the ribbon itself
@@ -561,6 +691,31 @@ _APP_CSS = f"""
     color: {_BG_ALT};
     font-size: 14px;
 }}
+/* The protein caption, under the render (`_build_target_info`). Sized to be
+   read at TWO METRES by someone walking past -- which is why both lines are
+   far larger than anything in the rail -- and deliberately quiet in colour
+   and weight so it reads as a caption to the picture above it rather than
+   competing with it. It paints the booth's own ground (it is a strip below
+   the GL area, not a card over it), so it is registered in
+   `_BACKGROUND_BY_CLASS` like every other background tier here. */
+.target-info {{
+    background-color: {_DARK_BASE};
+    padding: 10px 32px 18px 32px;
+}}
+.target-info-name {{
+    /* _TEAL, 8.55:1 on #092221 -- the same colour and the same role as
+       `.viewer-caption-title`: the line that says what this is. */
+    color: {_TEAL};
+    font-size: 26px;
+    font-weight: bold;
+}}
+.target-info-tagline {{
+    /* _BG_ALT, 11.36:1 on #092221. Body weight on purpose: at 20px this is
+       already the largest body text on the screen, and bolding it too would
+       have it fighting the protein for attention. */
+    color: {_BG_ALT};
+    font-size: 20px;
+}}
 window, .booth-root, .booth-side {{
     background-color: {_DARK_BASE};
 }}
@@ -642,8 +797,8 @@ window, .booth-root, .booth-side {{
 #
 # Plain language, on purpose: the person most likely to press `?` is the one
 # who does not already know what any of this is. Every claim here is one the
-# booth can actually back up -- the fold IS running on the cards in this
-# room, the trajectory IS the model's own, and the timings are the measured
+# booth can actually back up -- the fold IS running on the cards a few feet
+# away, the trajectory IS the model's own, and the timings are the measured
 # ones from docs/followups.md's 30-fold soak (4.35-4.45s warm), not marketing
 # numbers.
 _HELP_INTRO = (
@@ -915,6 +1070,16 @@ class DemoApp(Gtk.Application):
         self._caption_title_label = None
         self._caption_sub_label = None
 
+        # The protein caption under the render, as a (name, tagline) pair or
+        # None. Same split as `_caption` above and for the same reason: the
+        # decision is a plain field a headless test can read, and the widgets
+        # do not exist until `do_activate`. `tagline` may be None on its own
+        # (a manifest entry without one) -- the name still shows.
+        self._target_info = None
+        self._target_info_box = None
+        self._target_info_name_label = None
+        self._target_info_tagline_label = None
+
         # ribbon_from_cif costs up to ~1.2s at 3000 residues (measured,
         # docs/followups.md) and must never run on the thread that calls
         # _handle_event -- for real traffic that's the GTK main loop, via
@@ -996,7 +1161,18 @@ class DemoApp(Gtk.Application):
         self.screens = Gtk.Stack()
         self.screens.set_hexpand(True)
         self.screens.set_vexpand(True)
-        self.screens.add_named(viewer_page, "viewer")
+        # The hero column: the render, and directly under it the caption
+        # that says what the molecule is. A column rather than another
+        # overlay because this text must never sit on top of the structure
+        # -- see `_build_target_info`. `viewer_page` keeps vexpand, so the
+        # caption takes only the height its two lines need and the protein
+        # keeps the rest.
+        viewer_column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        viewer_column.set_hexpand(True)
+        viewer_column.set_vexpand(True)
+        viewer_column.append(viewer_page)
+        viewer_column.append(self._build_target_info())
+        self.screens.add_named(viewer_column, "viewer")
         self._build_gallery()
 
         root = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
@@ -1075,10 +1251,13 @@ class DemoApp(Gtk.Application):
         then what the silicon is doing.
 
         `set_hexpand(False)` plus an explicit width is load-bearing, not a
-        preference -- see `_SIDE_RAIL_WIDTH_PX`.
+        preference -- see `_SIDE_RAIL_WIDTH_PX`. So is `_FixedWidthBox`:
+        `set_size_request` pins only the floor, and it was the rail's
+        NATURAL width (which the Tensix panel moved by 32px) that shifted
+        the hero slot every time a visitor pressed `T`.
         """
         _ensure_app_css_installed()
-        side = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+        side = _FixedWidthBox(orientation=Gtk.Orientation.VERTICAL, spacing=14)
         side.add_css_class("booth-side")
         side.set_size_request(_SIDE_RAIL_WIDTH_PX, -1)
         side.set_hexpand(False)
@@ -1091,7 +1270,12 @@ class DemoApp(Gtk.Application):
         title.add_css_class("booth-title")
         title.set_xalign(0.0)
         title.set_wrap(True)
-        subtitle = Gtk.Label(label="live diffusion trajectory, computed in this room")
+        # The claim this line carries is that the trajectory is LIVE and is
+        # being computed on the hardware present -- not replayed from a file.
+        # The wording matches `_HELP_INTRO`'s own "a few feet away", which is
+        # this project's established way of saying it.
+        subtitle = Gtk.Label(
+            label="live diffusion trajectory, computed a few feet away")
         subtitle.add_css_class("booth-sub")
         subtitle.set_xalign(0.0)
         subtitle.set_wrap(True)
@@ -1299,6 +1483,98 @@ class DemoApp(Gtk.Application):
         self._sync_viewer_hold()
         return box
 
+    def _build_target_info(self):
+        """The caption under the render: what this protein actually is.
+
+        A strip in the layout, below the GL area -- NOT an overlay over it.
+        An overlay would either cover the structure or have to dodge it;
+        this is a caption, so it goes where a caption goes, under the
+        picture, in space the viewer gives up rather than space it loses.
+
+        Left-aligned rather than centred so the eye finds the start of the
+        line in the same place every time as the copy changes length, which
+        is the difference between reading it and re-finding it. Both labels
+        take a colour-bearing class from `_APP_CSS` -- see that stylesheet
+        and the legibility guard in tests/unit/test_app_interaction.py.
+        """
+        _ensure_app_css_installed()
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        box.add_css_class("target-info")
+        box.set_halign(Gtk.Align.FILL)
+        # Never steals height from the protein: this strip is exactly as
+        # tall as its two lines, and the viewer above it takes the rest.
+        box.set_vexpand(False)
+
+        name = Gtk.Label()
+        name.add_css_class("target-info-name")
+        name.set_xalign(0.0)
+        name.set_wrap(True)
+
+        tagline = Gtk.Label()
+        tagline.add_css_class("target-info-tagline")
+        tagline.set_xalign(0.0)
+        tagline.set_wrap(True)
+
+        box.append(name)
+        box.append(tagline)
+
+        self._target_info_box = box
+        self._target_info_name_label = name
+        self._target_info_tagline_label = tagline
+        # Idempotent, like `_build_viewer_caption`: a tree built after the
+        # booth already knows what it is folding must not come up blank.
+        self._sync_target_info()
+        return box
+
+    def _target_tagline(self, target_id):
+        """A target's one-line description from the playlist, or None.
+
+        None, never invented text, when the playlist has no tagline for it
+        -- the caption then shows the name by itself. Same rule as
+        `_target_name`: this booth does not fabricate copy about a molecule.
+        """
+        if not target_id:
+            return None
+        for target in self.targets:
+            if target.id == target_id:
+                return target.tagline
+        return None
+
+    def _sync_target_info(self):
+        """Point the caption at whichever protein is on screen.
+
+        Idempotent and tolerant of every collaborator being absent, like
+        `_sync_viewer_hold`, which is what calls it -- so the caption
+        reconciles on every event, touch, pick and 100ms tick, and headless
+        tests that build no widgets at all still drive the decision.
+        """
+        subject = target_info_subject(
+            shown_target_id=self._shown_target_id,
+            folding_target_id=self._current_target_id,
+        )
+        name = self._target_name(subject)
+        self._target_info = (
+            (name, self._target_tagline(subject)) if name else None)
+
+        if self._target_info_box is None:
+            return
+        try:
+            # No name means the playlist cannot identify what is on screen.
+            # The whole strip goes away rather than showing a blank line or
+            # a raw wire id -- the same choice `_target_name` makes.
+            self._target_info_box.set_visible(self._target_info is not None)
+            if self._target_info is None:
+                return
+            shown_name, shown_tagline = self._target_info
+            self._target_info_name_label.set_label(shown_name)
+            # A target with no tagline shows its name alone: the empty label
+            # is hidden outright so it does not leave a gap of leading under
+            # the name.
+            self._target_info_tagline_label.set_label(shown_tagline or "")
+            self._target_info_tagline_label.set_visible(bool(shown_tagline))
+        except Exception:
+            log.exception("protein caption update dropped")
+
     # ── the `?` card ─────────────────────────────────────────────────────
 
     def _build_help_overlay(self):
@@ -1307,7 +1583,7 @@ class DemoApp(Gtk.Application):
 
         Written for a visitor who has never heard of any of this -- no
         jargon that isn't unpacked in the same sentence -- and true: the
-        fold really is running on the chips in this room while this card is
+        fold really is running on the chips a few feet away while this card is
         on top of it (the overlay is a widget, not a modal loop; every GLib
         source underneath keeps firing, which is the point of building it
         this way and is asserted in tests/unit/test_app_interaction.py).
@@ -1553,6 +1829,12 @@ class DemoApp(Gtk.Application):
             held_name=self._target_name(self._shown_target_id),
         )
         self._caption = caption
+
+        # Driven from here rather than from its own timer so the two
+        # captions can never disagree about which fold is which: they are
+        # reconciled from the same fields in the same pass. See the block
+        # above `target_info_subject` for how the two divide the work.
+        self._sync_target_info()
 
         if self.viewer is not None:
             # Dim exactly when the caption explains why. Deriving both from

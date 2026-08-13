@@ -52,13 +52,37 @@ routinely. Do not reorder those two tasks, and do not "simplify"
   is dropped with a rate-limited log and does **not** kill the reader. A
   dead reader is a chip that silently stops reporting.
 
-Death is deliberately thin here: this task notices EOF, marks the card
-neither ready nor busy, and logs it. Reporting the orphaned job and
-respawning belong to Task 7, which adds ``on_worker_lost=`` and
-``restart_delay_s=`` as constructor keywords and fills in
-``_worker_exited``. What is already true, and load-bearing either way: a
-worker that dies mid-fold does not take the booth down, and no dead worker
-is ever handed work.
+**Death (Task 7), which is the other five percent of the time.** A worker's
+event stream reaching EOF means that process is gone, however it went. The
+pool then, on that worker's own reader thread and touching no other card:
+
+1. marks the card neither ready nor busy, and forgets its handle;
+2. if a job was in flight, reports it once through
+   ``on_worker_lost(card, job_id, target_id)`` -- the pool holds the whole
+   ``Job`` from ``dispatch``, so the daemon never has to look the target up.
+   **The pool never fabricates a protocol event**: what the wire sees is
+   Task 8's decision, which keeps "who talks to the socket" in one module;
+3. respawns after ``restart_delay_s``, unless this card has now died
+   ``WORKER_RETIRE_AFTER`` times *consecutively* with no completed job in
+   between -- or has already said ``worker.fatal`` -- in which case it is
+   retired for the session with a loud log.
+
+Two orderings in there are deliberate and are the opposite of the obvious
+one:
+
+- **The card is marked undispatchable BEFORE the loss is reported**, not
+  after. Task 8's ``on_worker_lost`` requeues the orphan and then looks for a
+  free chip; a card that still looked ready at that moment would be handed
+  its own orphaned job straight back into a pipe whose far end is a corpse.
+- **``worker.ready`` does not reset the death counter; ``worker.idle``
+  does.** A chip in a bad state comes up, announces ready and dies, over and
+  over -- resetting on ready would mean it never retires. Only a *completed
+  job* (success or failure -- Task 2 emits ``worker.idle`` after the
+  try/except either way) is evidence that this chip can still do the work.
+
+What is true throughout, and load-bearing: a worker that dies mid-fold does
+not take the booth down, no dead worker is ever handed work, and the other
+three chips never notice.
 """
 
 from __future__ import annotations
@@ -86,6 +110,24 @@ log = logging.getLogger(__name__)
 # and tt-metal's teardown is not instant. One deadline covers all four (see
 # `stop`), so booth shutdown does not scale with the number of chips.
 WORKER_STOP_GRACE_S = 5.0
+
+# How long the pool waits before putting a new worker on a chip whose last
+# one died. Not zero: a chip that fails during device bring-up fails FAST, so
+# a zero delay turns one bad card into a spawn loop that takes the tt-metal
+# device-init lock several times a second -- which the other three workers
+# need every time one of them opens or reopens a device. A few seconds of one
+# dark chip is invisible at a booth; a lock-storm across all four is not.
+WORKER_RESTART_DELAY_S = 5.0
+
+# How many CONSECUTIVE deaths -- with no completed job in between -- retire a
+# card for the rest of the session. Three, because the failure this guards
+# against is a chip that is genuinely wedged (tt-bio's device-init notes
+# describe a raced "remote-only" bring-up that presents exactly this way), and
+# two respawns is enough to tell that from one unlucky fold. Retiring is
+# strictly better than respawning forever: a dark chip costs the booth a
+# quarter of its throughput, while a chip respawning every few seconds all day
+# costs the OTHER three their device-init lock.
+WORKER_RETIRE_AFTER = 3
 
 # Minimum seconds between "that line was garbage" log lines, per worker. The
 # same reasoning as `EventServer`'s own limiter (runner/server.py's
@@ -142,9 +184,18 @@ class WorkerPool:
     default is a real `python3 -m runner.worker` child. A handle is anything
     with `send(command)`, `readline()`, `terminate()`, `kill()` and `alive`.
 
+    `on_worker_lost(card, job_id, target_id)` is called, on that worker's
+    reader thread, for a job that was in flight when its worker died -- once,
+    and never for a card that was idle. It is the daemon's business what a UI
+    then sees; this module puts nothing on the wire. `restart_delay_s` is how
+    long a chip waits for its replacement worker.
+
     `clock` is injected for the same reason it is on `EventServer`'s bad-line
     limiter: rate limiting and shutdown deadlines are otherwise untestable
-    without sleeping.
+    without sleeping. `restart_delay_s` is deliberately NOT measured against
+    it: it is waited out on `threading.Event.wait`, which takes real seconds,
+    and a test that collapsed the clock would silently turn the delay into a
+    busy loop.
 
     All bookkeeping is private (`_workers`, `_ready`, `_busy`, ...), matching
     `EventServer._clients` / `JobQueue._items` / `CardPool._busy`. Tests
@@ -154,11 +205,18 @@ class WorkerPool:
     """
 
     def __init__(self, specs, on_event, *, log_root, spawn=None,
+                 on_worker_lost=None, restart_delay_s=WORKER_RESTART_DELAY_S,
                  clock=time.monotonic):
         # Insertion-ordered, so `cards`, `start()` and every log line agree on
         # an order without re-sorting a dict view at each call site.
         self._specs = {spec.card: spec for spec in specs}
         self._on_event = on_event
+        # Optional so a caller that only reads events (and every Task 6 test)
+        # keeps working. A pool with no `on_worker_lost` still frees, respawns
+        # and retires -- it just has nobody to tell about the orphan, which is
+        # a reporting gap and not a stuck chip.
+        self._on_worker_lost = on_worker_lost
+        self._restart_delay_s = restart_delay_s
         self._log_root = log_root
         # The seam is `(spec, env) -> handle`. The production spawn needs one
         # more thing the seam does not carry -- where this booth's logs live --
@@ -181,6 +239,11 @@ class WorkerPool:
         self._threads = {}        # card -> reader Thread
         self._ready = {}          # card -> has announced worker.ready
         self._busy = {}           # card -> the Job in flight, or None
+        # Consecutive deaths since this card last completed a job, and whether
+        # it has been given up on for the session. Both survive a respawn on
+        # purpose -- that is the whole point of counting.
+        self._deaths = {card: 0 for card in self._specs}
+        self._retired = {card: False for card in self._specs}
         self._stopping = threading.Event()
 
     # -- inventory ---------------------------------------------------------
@@ -227,7 +290,19 @@ class WorkerPool:
                 self._spawn_worker(spec)
 
     def _spawn_worker(self, spec):
-        """Spawn one worker and its reader thread. Call with `_lock` held."""
+        """Spawn one worker and its reader thread. Call with `_lock` held.
+
+        Returns the handle, or None if the spawn itself failed or the card has
+        been retired. The retirement check lives here rather than in the two
+        callers so that "a retired card never gets another process" has one
+        enforcement point: `start()` (a second call, or a restart of a booth
+        that retired a chip earlier in the session) and the respawn path both
+        pass through it.
+        """
+        if self._retired.get(spec.card):
+            log.info("card %s: retired for this session; not spawning a worker",
+                     spec.card)
+            return None
         try:
             env = worker_environ(spec, log_root=self._log_root,
                                  n_workers=len(self._specs))
@@ -356,6 +431,13 @@ class WorkerPool:
                    "target_id": job.target_id, "input_path": job.input_path,
                    "n_residues": job.n_residues}
         with self._lock:
+            if self._retired.get(card):
+                # Its own message, ahead of the readiness check that would
+                # also have caught this: a retired card is never coming back,
+                # and the daemon requeueing this job onto another chip wants
+                # to know that rather than reading "not ready yet".
+                raise ValueError(f"card {card} has been retired for this "
+                                 f"session and will not fold again")
             if not self._ready.get(card) or self._busy.get(card) is not None:
                 raise ValueError(
                     f"card {card} is not ready for work "
@@ -477,6 +559,15 @@ class WorkerPool:
             with self._lock:
                 in_flight = self._busy.get(card)
                 self._busy[card] = None
+                # A completed job clears the consecutive-death count. "One bad
+                # fold followed by a crash" is not a bad chip, and a booth
+                # that loses a worker at 09:00 and another at 14:00 must not
+                # retire a card that folded a hundred targets in between.
+                # `worker.idle` deliberately counts even when the fold FAILED
+                # (Task 2 emits it after the try/except either way): what it
+                # proves is that this process survived a whole job, which is
+                # exactly the thing a wedged chip cannot do.
+                self._deaths[card] = 0
             reported = event.get("job_id")
             if in_flight is not None and reported not in (None, in_flight.job_id):
                 # Cleared anyway. A card left marked busy forever is a quarter
@@ -487,42 +578,162 @@ class WorkerPool:
                             "flight; freeing the card anyway",
                             card, reported, in_flight.job_id)
         elif kind == CONTROL_FATAL:
-            # The worker has said it cannot serve. Not dispatchable from this
-            # moment -- retiring it, and deciding not to respawn it, is Task
-            # 7's job; not handing it work is this one's.
+            # The worker has said it cannot serve: not dispatchable from this
+            # moment, and retired the instant it exits. Respawning it twice
+            # more to confirm what it already told us is time the booth would
+            # spend at three chips for no information.
             with self._lock:
                 self._ready[card] = False
-            log.error("card %s: worker reported a fatal condition: %s",
-                      card, event.get("reason"))
+                self._retired[card] = True
+            log.error("card %s: worker reported a fatal condition: %s; this "
+                      "chip is retired for the session", card,
+                      event.get("reason"))
         else:
             log.warning("card %s: ignoring unknown control line %r", card, kind)
 
     def _worker_exited(self, card, handle):
         """One worker's stream ended: it is gone, however it went.
 
-        Task 6 does the part that must be true no matter what: the card stops
-        being dispatchable and stops being marked busy. Task 7 adds the rest
-        (reporting the orphaned job through `on_worker_lost`, respawning
-        after a delay, retiring a chip that keeps dying) around this method.
+        Runs on that worker's own reader thread, as the last thing it does.
+        Touches this card and nothing else -- there is no loop over the other
+        three anywhere in here, and there must never be one: a card-level
+        sweep would free (and orphan the jobs of) three chips that are folding
+        perfectly well.
+
+        The order below is deliberately NOT the brief's numbering. Marking the
+        card undispatchable comes FIRST, before the loss is reported, because
+        Task 8's `on_worker_lost` requeues the orphan and then immediately
+        looks for a free chip: a card that still looked ready at that instant
+        would be handed its own orphaned job right back, into a pipe whose far
+        end is a corpse.
         """
         with self._lock:
             if self._workers.get(card) is not handle:
-                # A replacement worker is already running on this card (Task
-                # 7's respawn). This EOF belongs to the previous one and must
-                # not clear the new one's state.
+                # A replacement worker is already running on this card. This
+                # EOF belongs to the previous one and must not clear the new
+                # one's state, report its job as lost, or spawn a third
+                # process onto the chip.
                 return
             self._ready[card] = False
             orphan = self._busy.get(card)
             self._busy[card] = None
+            # Dropped, not kept: between now and the respawn this card has no
+            # worker at all, and `dispatch` says so rather than writing into a
+            # dead handle. It also makes the identity check above self-arming
+            # for any second EOF from this same handle.
+            self._workers.pop(card, None)
+            self._deaths[card] = self._deaths.get(card, 0) + 1
+            deaths = self._deaths[card]
+            said_fatal = self._retired.get(card, False)
+            retire = said_fatal or deaths >= WORKER_RETIRE_AFTER
+            self._retired[card] = retire
         if self._stopping.is_set():
+            # The booth is going down. No orphan report (there is nobody left
+            # to fold it) and emphatically no respawn: `stop()` has already
+            # snapshotted the workers it intends to reap, and a process
+            # created after that is one nothing will ever close a device for.
+            #
+            # The death WAS counted above, which is only correct because a
+            # pool is never started again after `stop()` -- the daemon builds
+            # one and stops it once. If that ever changes, a restart would
+            # find every card carrying four shutdown "deaths" and retire the
+            # whole booth on its first real crash.
             log.info("card %s: worker exited during shutdown", card)
             return
         if orphan is None:
-            log.warning("card %s: worker exited while idle; this chip is not "
-                        "folding until it is respawned", card)
+            log.warning("card %s: worker exited while idle (death %d); this "
+                        "chip is not folding until it is respawned",
+                        card, deaths)
         else:
-            log.warning("card %s: worker exited with job %s (%s) in flight",
-                        card, orphan.job_id, orphan.target_id)
+            log.warning("card %s: worker exited with job %s (%s) in flight "
+                        "(death %d)", card, orphan.job_id, orphan.target_id,
+                        deaths)
+            self._report_loss(card, orphan)
+        if retire:
+            if said_fatal:
+                log.error("card %s: RETIRED for the rest of this session -- "
+                          "its worker reported a fatal condition and then "
+                          "exited. The booth continues on the other cards.",
+                          card)
+            else:
+                log.error("card %s: RETIRED for the rest of this session -- "
+                          "%d worker deaths in a row with no completed job in "
+                          "between. Something is wrong with this chip; the "
+                          "booth continues on the other cards.", card, deaths)
+            return
+        self._respawn_later(card)
+
+    def _report_loss(self, card, job):
+        """Tell the daemon about one job that died with its worker.
+
+        Called OUTSIDE `_lock`, for the same reason `_forward` is: this is the
+        daemon's code, and Task 8's handler requeues and may dispatch, which
+        comes straight back into this pool.
+
+        The pool does not invent a `job_failed` event to put on the wire. It
+        hands the daemon the card, the job and the target it already had from
+        `dispatch`, and what a UI sees is Task 8's decision -- so exactly one
+        module talks to the socket.
+        """
+        if self._on_worker_lost is None:
+            log.warning("card %s: job %s (%s) was lost with its worker and "
+                        "there is no on_worker_lost to report it to",
+                        card, job.job_id, job.target_id)
+            return
+        try:
+            self._on_worker_lost(card, job.job_id, job.target_id)
+        except Exception:
+            # An exception escaping the daemon's handler must not cost this
+            # card its respawn -- that would turn one lost job into one dark
+            # chip for the rest of the day.
+            log.exception("card %s: on_worker_lost raised for job %s; the "
+                          "chip will still be respawned", card, job.job_id)
+
+    def _respawn_later(self, card):
+        """Wait out the restart delay, then put a new worker on this chip.
+
+        Runs on the dead worker's own reader thread, which has nothing else
+        left to do -- no timer thread, no polling loop elsewhere. The wait is
+        on `_stopping` rather than `time.sleep` so that booth shutdown is not
+        held up by however much of the delay happens to be left.
+
+        Loops only for the case where the spawn ITSELF fails: a failed spawn
+        leaves no process, so no EOF will ever bring us back here, and a chip
+        that lost its worker to a transient EMFILE would otherwise stay dark
+        until the daemon restarted. Each failed attempt counts as a death, so
+        this is bounded by `WORKER_RETIRE_AFTER` exactly like a crash loop is.
+        """
+        while True:
+            if self._stopping.wait(self._restart_delay_s):
+                return
+            with self._lock:
+                if self._stopping.is_set():
+                    return
+                if card in self._workers:
+                    # Somebody else already put a worker here. Never two
+                    # processes on one chip -- that is the exact contention
+                    # `TT_VISIBLE_DEVICES` pinning exists to prevent.
+                    return
+                if self._retired.get(card):
+                    return
+                spec = self._specs.get(card)
+                if spec is None:                  # not a card we manage
+                    return
+                log.info("card %s: respawning its worker after %.2fs",
+                         card, self._restart_delay_s)
+                if self._spawn_worker(spec) is not None:
+                    return
+                # `_spawn_worker` has already logged the exception.
+                self._deaths[card] = self._deaths.get(card, 0) + 1
+                deaths = self._deaths[card]
+                retire = deaths >= WORKER_RETIRE_AFTER
+                self._retired[card] = retire
+            if retire:
+                log.error("card %s: RETIRED for the rest of this session -- "
+                          "its worker could not even be spawned, %d attempts "
+                          "in a row. The booth continues on the other cards.",
+                          card, deaths)
+                return
 
 
 # ---------------------------------------------------------------------------

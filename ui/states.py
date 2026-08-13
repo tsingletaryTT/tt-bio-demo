@@ -21,6 +21,34 @@ and only a fresh `job_start` (the daemon actually recovering) releases it
 screen was built on pre-degrade information (e.g. a gallery the visitor
 opened before the daemon went missing weights).
 
+What this module is NOT, once the booth folds on four chips
+------------------------------------------------------------
+This module speaks for the BOOTH -- one screen, one visitor -- and nothing
+below is per-fold. With four folds in flight at once (see
+docs/superpowers/plans/2026-08-13-multi-chip-folding.md and its normative
+"Per-fold vs global" table), the two halves separate:
+
+  * The showcase dwell that decides what is actually drawn now lives in
+    `ui/slots.py`, one per cell (`SlotState.showcase_dwell_s`). It has to:
+    cell 1 is mid-diffusion while cell 0 holds a finished structure, and one
+    global dwell would suppress frames in all four. The dwell described
+    below is therefore the BOOTH's, not any one fold's.
+  * `BoothState.SHOWCASE` stays global and FOLLOWS THE FOCUS SLOT -- it
+    exists so the gallery, the 45s idle timeout and the `preparing` overlay
+    keep working off one state machine. Frame suppression no longer reads
+    it.
+  * The three predicates at the bottom of this file are unchanged and are
+    NOT duplicated in `ui/slots.py`. `SlotState` spells its showcase state
+    with the same `"showcase"` string `BoothState.SHOWCASE` carries,
+    precisely so they work on a slot as-is: `ui/slots.py` calls
+    `points_are_visible`/`ribbon_may_be_revealed` from here to back its own
+    per-cell properties, and `showcase_ended(previous, current)` is imported
+    from here by whoever holds the pair.
+
+Everything else here -- the five booth states, the idle timeout, the
+deferred touch, `preparing` -- stays exactly as described below and as
+tested in tests/unit/test_states.py.
+
 Why showcase needs a minimum dwell
 -----------------------------------
 Measured on real hardware (see progress.md, "CAMERA REVIEW Important" and

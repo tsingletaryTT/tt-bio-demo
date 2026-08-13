@@ -23,17 +23,31 @@ were closed by the Phase 3b branch:
   longer gets a spurious leg joining one chain's C-terminus to the next chain's
   N-terminus. Task 2; see `ui/geometry.py`.
 
+## Closed in Phase 5 (multi-chip folding) — kept so a reader knows they are closed
+
+- **`--device` was removed rather than plumbed** (was under "From Phase 3a",
+  below). The entry said `get_device()` cannot select a card, that threading
+  `TT_VISIBLE_DEVICES` through was unverified hardware risk, and that the
+  daemon was card-0 only. All three have stopped being true, so this moved
+  here rather than being left where a reader would act on it. **Closed by
+  Task 8** (`runner/daemon.py`): the daemon holds no device at all now — each
+  chip gets its own worker subprocess handed a complete environment, including
+  its own `TT_VISIBLE_DEVICES`, via `Popen(env=...)` before the child
+  interpreter starts. The flag is back, spelled `--devices 0,1,2,3` the way
+  tt-bio's own CLI spells it, and it now selects real hardware rather than
+  moving a thermal counter around. See `DaemonConfig.device_ids`'s comment for
+  the full before/after, `runner/workers.py` for the pinning, and the hardware
+  spike (chip 1 at 33.0 W mid-fold against 13–17 W idle on 0/2/3) for the
+  evidence that the pinning is real.
+
 ## From Phase 3a — worth doing, not urgent
 
-- **`--device` was removed rather than plumbed.** `get_device()` cannot select a
-  card, and threading `TT_VISIBLE_DEVICES` through was judged unverified
-  hardware risk. The daemon is card-0 only and says so. Real multi-card
-  scheduling — one resident model per card — is a separate piece of work with
-  its own memory questions.
-- **A permanent `Folder.load()` failure writes a full traceback per retry.** At
-  the 5 s retry cadence that is roughly 25 MB/day into `daemon.log`, which
-  `--log-budget-gb` does **not** cover (that governs the tt-metal log root
-  only). Bounded by nothing today.
+- **A permanent device-scan failure writes a full traceback per retry.** At
+  `DEVICE_SCAN_RETRY_S` (5 s) that is roughly 25 MB/day into `daemon.log`,
+  which `--log-budget-gb` does **not** cover (that governs the tt-metal log
+  root only). Bounded by nothing today. Was written against `Folder.load()`,
+  whose retry loop this replaced in Task 8 (`Daemon._build_pool`); the
+  arithmetic and the gap are unchanged.
 - **A client connecting during the not-ready window never runs the
   protocol-version check** for that connection's lifetime, because it receives
   `not_ready` instead of `hello`. Later connections are fine — `EventServer`
