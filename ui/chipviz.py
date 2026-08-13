@@ -9,6 +9,38 @@ stage of the fold the booth is running. It sits directly beneath the
 telemetry panel and uses the same left-to-right chip order, so the third
 animation is the third chip's readout's animation.
 
+It is CHROME: closed on every start, opened with `T` (ui/app.py's
+`_TENSIX_KEYS`), and closed again by `Esc` or by five minutes of nobody
+touching the booth. The protein is the hero and this is a decoration
+attached to the booth's smallest claim, so it is asked for rather than
+assumed. While closed it polls nothing and evaluates no JS at all --
+ui/app.py's `_set_chipviz_visible` stops `set_running` with the panel.
+
+Which animation runs when
+--------------------------
+One table, `_MODE_BY_STAGE`, is the whole answer to "when do we use what
+viz", and `viz_mode` is the whole policy around it:
+
+    msa, prep, saving  -> idle        host-side work: MSA lookup, input
+                                      featurisation, writing the mmCIF. The
+                                      chip genuinely is not folding.
+    trunk              -> thinking    the pair/single trunk, reasoning about
+                                      which residues touch which.
+    diffusion          -> diffusion   the denoising sampler -- an expanding
+                                      ring per timestep, the same shape as
+                                      the collapse on the left of the screen.
+    confidence         -> inference   a forward pass scoring its own answer.
+    (anything else)    -> inference   an unknown stage means SOMETHING is
+                                      running and we do not know what; it is
+                                      never `idle`, which would claim
+                                      knowledge we do not have.
+
+`viz_mode` overrides that to `idle` in exactly two cases where the booth
+genuinely knows nothing is folding: the `preparing` state, and no stage seen
+(or a stale one) at all. Every other booth state passes straight through to
+the stage, because none of them says anything about the silicon. The comment
+above `_MODE_BY_STAGE` carries the per-row reasoning; this is the summary.
+
 What is live, and what is not (measured, not assumed)
 ------------------------------------------------------
 Say this accurately, because the whole booth's claim is "this is real":
@@ -50,7 +82,8 @@ The original objection (see the spec and CLAUDE.md) was to a **browser
 serving as the main 3D view** — the protein had to be native GTK4 + OpenGL,
 not WebGL in a Chromium, because that is the part of the demo whose frame
 timing, colour and provenance the booth is claiming to be real. None of that
-applies to a decorative hardware animation in a 430px rail:
+applies to a decorative hardware animation in a fixed-width rail, one that
+is now off by default and opened with a key:
 
 - it is **optional** — `available` is False and the widget hides itself if
   WebKit is missing, if there are no chips, or if the bundled assets cannot
@@ -421,20 +454,35 @@ def flow_params(activity, active):
 _GAP = 6
 
 # How much horizontal room this panel actually has: the rail's fixed width
-# (ui/app.py's `_SIDE_RAIL_WIDTH_PX`, 430) minus the rail's own 18px margins
+# (ui/app.py's `_SIDE_RAIL_WIDTH_PX`, 552) minus the rail's own 18px margins
 # and this panel's 16px padding, both sides. Written out rather than imported
 # from ui/app.py because importing the app module from a widget it builds
 # would be a cycle; `tests/unit/test_chipviz.py` pins the two together so
 # this cannot drift from the real rail width.
-RAIL_INNER_WIDTH_PX = 430 - 2 * 18 - 2 * 16
+#
+# Conservative by one term: the rail's margins sit OUTSIDE its allocation,
+# so a panel actually gets the full `_SIDE_RAIL_WIDTH_PX` less its own
+# padding. Subtracting them anyway leaves this panel 36px of slack it never
+# claims, which is the right direction for the one widget in the rail that
+# must never be the thing setting the column's width.
+RAIL_INNER_WIDTH_PX = 552 - 2 * 18 - 2 * 16
 
 # ONE ROW, one canvas per chip, sized to line each one up under its own cell
 # in the telemetry panel directly above.
 #
-# The size is set by the rail, not by taste: the rail is a fixed 430px column
-# (ui/app.py's `_SIDE_RAIL_WIDTH_PX`), which leaves 394px inside its margins
-# and 362px inside this panel's own padding. Four canvases plus three gaps in
-# 362px is 86px each, and that is the whole budget.
+# The size was set by the rail, not by taste: when this was chosen the rail
+# was a fixed 430px column, which left 362px inside this panel's padding, and
+# four canvases plus three gaps in 362px is 86px each.
+#
+# The rail is 552px now (ui/app.py's `_SIDE_RAIL_WIDTH_PX` -- it grew to hold
+# the telemetry panel's reserved chip cells, see that constant), so there is
+# slack in the budget for the first time. The canvases are deliberately NOT
+# grown into it: they are square-ish because the Tensix core grid they draw
+# is, and stretching them to 116px wide against the same 104px height would
+# distort every core to buy nothing at this size. The page's own
+# `space-between` spreads the four across whatever width it is given, which
+# keeps them under their own telemetry cells to within ~20px -- the same
+# correspondence, to the same tolerance, as before the rail changed.
 #
 # A 2x2 grid at 178x140 -- big enough to watch individual Tensix cores, and
 # what tt-local-generator's corner instrument uses -- was built and looked at
