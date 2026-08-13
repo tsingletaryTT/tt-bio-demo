@@ -48,7 +48,11 @@ Two consequences:
 2. **`tt_bio.runtime` is importable without importing ttnn** — verified — which matters enormously, because device assignment must happen before that import. Reuse:
    - `detect_tenstorrent_devices(device_ids, num_devices, max_workers)` — validates a requested id against `/dev/tenstorrent` and errors clearly on a typo instead of failing later with an opaque device-open error. Returns `[0, 1, 2, 3]` here.
    - `build_local_workers(...)` → `WorkerSlot`s, ids `tsingletaryTT-quietbox:tt:0..3` on this box.
-   - `tt_bio.main._build_worker_device_assignments(...)` — the p300 MGD handling, so we do not hand-roll it.
+   - `tt_bio.main._build_worker_device_assignments(...)` — the p300 MGD handling.
+
+   **Correction (2026-08-13), found while planning:** this section originally implied all three are reachable without importing ttnn. Only `tt_bio.runtime` is. Verified: importing `tt_bio.runtime` leaves both `ttnn` and `torch` unimported; importing `tt_bio.main` pulls in **both** at module scope. The three functions are themselves ttnn-free — `_detect_p300_devices` reads `/sys/class/tenstorrent`, `_find_ttnn_mesh_graph_descriptor` uses `importlib.util.find_spec` — but you cannot reach them without the import.
+
+   The design survives, for a better reason than the original one: importing ttnn *opens no device*, the parent already imports tt-bio during preflight's tap check, and the parent hands each child a complete environment via `Popen(env=...)` — so the child's variables are set **before its interpreter starts**, which is strictly stronger than "set before the import".
 
 **We still cannot simply shell out to `tt-bio predict`.** It returns finished structures; the booth's entire premise is the live per-denoising-step trajectory, which comes from the `dump_fn` tap on the Python API. So: tt-bio's *worker/device machinery*, our own fold loop and event stream on top.
 
