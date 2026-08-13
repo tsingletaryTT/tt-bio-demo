@@ -54,9 +54,9 @@ Two consequences:
 
 ## Feasibility
 
-Measured on this box: one resident folding process is **7.2 GB RSS**. Four would be ~29 GB against 249 GB total (111 GB in use, 137 GB available). Comfortable.
+Superseded by the spike above, which measured rather than estimated: **4.04 GB peak RSS per worker, ~16 GB for four**, against 249 GB total (111 GB in use, 137 GB available). The earlier 7.2 GB figure was the whole daemon process under a different workload, and estimating from it overstated the cost by nearly 2x.
 
-Cold start is the real cost: 5.7 s cold versus 4.35–4.45 s warm for Trp-cage, so each worker pays a one-time model load. Four workers starting together at boot is a slower first fold, not a slower steady state.
+Cold start is the real cost, and four-way contention makes it worse than a naive multiple: model load went from 3.1 s solo to 6.4–9.2 s with four workers loading together. That is paid once at startup, not per fold — but preflight must not report ready before at least one worker can actually fold.
 
 ## What the visitor sees — the design decision
 
