@@ -38,18 +38,21 @@
 # never becomes an on-screen fact for the visitor to check the blurb
 # against, so a blurb should not promise seeing it.
 #
-# `expected_s` on the three new entries is the WARM time a visitor actually
-# meets, measured from a live run of the real daemon+UI over the socket
-# (2026-08-12) -- NOT the cold-start number the timing harness prints. See
-# each entry for its own measurement. Original note follows: measured on
-# this booth's own
-# hardware (2026-08-12) by tests/integration/test_new_targets_timing.py,
-# after a board reset cleared an ethernet-core fault that had been failing
-# every device open. The numbers are a booth-planning fact, not a detail:
-# Trp-cage folds in 4.4s, the other three in 62-75s. Historical note --
-# these shipped with the field omitted, because the cards were unavailable
-# and a guessed number would have read as a measured one. That machinery
-# stays: ui/playlist.py treats a missing `expected_s` as "not yet measured"
+# `expected_s` is the WARM time a visitor actually meets: measured
+# 2026-08-12 from a live run of the real daemon and UI over the socket, with
+# the model resident across folds, which is the state the attract loop keeps
+# the booth in. Trp-cage 4.45s, FKBP12 11.7s, DHFR 19.7s, trypsin 22.3s.
+#
+# These are deliberately NOT the numbers
+# tests/integration/test_new_targets_timing.py prints (62.6 / 69.1 / 74.9s).
+# That harness reloads the model per target, so it measures a COLD fold. The
+# three new entries were first filled in from its output without applying
+# the cold/warm distinction the Trp-cage entry had spelled out since it was
+# written -- which would have shipped a gallery card promising ~74.9s for a
+# fold a visitor watches finish in 22s. Publish what the visitor experiences.
+#
+# The "not yet measured" machinery stays in place even though every entry now
+# has a number: ui/playlist.py treats a missing `expected_s` as unmeasured
 # and ui/gallery.py renders it as an explicit "not yet timed" note rather
 # than a fabricated time, so a future target can be added honestly before
 # anyone has folded it.
