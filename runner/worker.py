@@ -51,6 +51,7 @@ import argparse
 import json
 import logging
 import os
+import signal
 import sys
 
 from runner.folder import Folder, FoldError
@@ -64,6 +65,76 @@ log = logging.getLogger("tt-bio-worker")
 # operator reading the parent's log can tell a worker that reported its own
 # death from one that just fell over.
 FATAL_EXIT_CODE = 3
+
+
+def _make_sigterm_handler():
+    """Build a SIGTERM handler for `main`'s child process.
+
+    `runner/pool.py`'s `terminate()` closes stdin (the clean path an IDLE
+    worker exits through, via `iter(sys.stdin.readline, "")` hitting EOF)
+    and then sends SIGTERM. A worker mid-fold is not reading stdin at all and
+    never sees that EOF -- SIGTERM is the only thing that reaches it. A
+    Python process installs no disposition for SIGTERM on its own, so
+    without this handler the OS's default action (terminate immediately)
+    kills the process without running one further line of Python -- in
+    particular, without ever reaching `WorkerSession.run`'s
+    `finally: self.folder.close()`. The chip is then released by the kernel
+    tearing the process's fds down instead of by tt-bio's own `cleanup()`,
+    which is how this booth ended up needing `tt-smi -r` once already (a
+    reset that is off the table here, so a worker that dies this way cannot
+    be self-healed at all).
+
+    Raising `SystemExit` here reuses the exact unwind path already proven for
+    a real `KeyboardInterrupt` in
+    `test_the_device_is_released_even_when_a_fold_was_in_flight`: neither
+    exception subclasses `Exception`, so both pass straight through every
+    `except Exception` in `WorkerSession._fold` and `_handle_line` and land
+    in the `finally` that closes the folder.
+
+    TWO THINGS THIS DELIBERATELY DOES NOT GUARANTEE:
+
+    - CPython only checks for a pending signal between bytecode instructions
+      on the process's MAIN thread (this worker never starts another one, so
+      that is the only thread there is). A worker deep inside one blocking
+      ttnn/torch call -- mid-kernel, mid-device-op -- does not return to the
+      interpreter loop, and therefore does not see the signal, until that
+      call itself returns. There is no way to interrupt a C extension
+      mid-call from a Python signal handler, this one or any other. What
+      this fix guarantees is a prompt, clean shutdown whenever the
+      interpreter IS executing Python bytecode -- idle on stdin, between
+      diffusion steps inside the `on_frame`/`on_progress` callbacks, during
+      the msa/prep brackets, unwinding through `finally` blocks -- which is
+      most of a fold's wall-clock life but not literally all of it.
+      `runner/pool.py`'s `WORKER_STOP_GRACE_S` and the SIGKILL fallback
+      (`kill()`, deliberately untouched by this change) are what bound the
+      wait either way.
+    - A second SIGTERM landing while the FIRST is already unwinding -- e.g.
+      while `folder.close()` itself is running -- must NOT raise again:
+      `close()` is guarded by `except Exception` (not `except
+      BaseException`, on purpose, so the first SystemExit/KeyboardInterrupt
+      passes through to reach it at all), and a second raise from inside
+      that call would escape the same guard and abort cleanup partway
+      through -- a real double-unwind, not a hypothetical one. So the
+      handler raises on the FIRST call only; every call after that is a
+      deliberate no-op. `kill()` (SIGKILL) remains the one and only true
+      last resort, exactly as Task 6 left it -- nothing about that changes
+      here, and nothing here can change it: SIGKILL cannot be caught.
+    """
+    raised = False
+
+    def handle_sigterm(signum, frame):
+        nonlocal raised
+        if raised:
+            # Already unwinding from the first SIGTERM. Raising again here
+            # could land INSIDE `folder.close()` (see above) and abort it
+            # partway through, which is a worse outcome than a slower-than-
+            # ideal shutdown -- and the caller always has SIGKILL if this
+            # one process is simply taking too long.
+            return
+        raised = True
+        raise SystemExit(0)
+
+    return handle_sigterm
 
 
 class WorkerSession:
@@ -241,6 +312,15 @@ def main(argv=None):
         level=logging.INFO, stream=sys.stderr,
         format=f"%(asctime)s %(levelname)s %(name)s[card {args.card}]: "
                "%(message)s")
+
+    # Installed here, in the CHILD's own entry point -- never at module
+    # import time, and never inside WorkerSession, which the parent's own
+    # tests (and, in principle, the parent process itself) construct
+    # in-process. `runner.pool.WorkerPool` never calls `main()` in-process;
+    # it always spawns a genuinely separate `python -m runner.worker` (see
+    # `runner.pool._SubprocessWorker`), so this line only ever changes the
+    # signal disposition of that one child, never the parent's.
+    signal.signal(signal.SIGTERM, _make_sigterm_handler())
 
     folder = Folder(device_id=args.card)
     # `with`, so the fd is closed on every exit path including the SystemExit
