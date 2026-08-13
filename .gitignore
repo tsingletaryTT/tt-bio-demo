@@ -20,3 +20,7 @@ debian/tt-bio-demo*/
 # tens of MB per fold in the working tree. Ignored so it can never be
 # committed by accident.
 generated/
+
+# Recorded booth demo video (Task 10 deliverable). Large binary; kept out of
+# git but left in the repo root so it is easy to find.
+*.mp4
