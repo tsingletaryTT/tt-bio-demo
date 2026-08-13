@@ -1,0 +1,16 @@
+tt-bio-demo (0.1.0) noble; urgency=medium
+
+  * Initial Debian packaging scaffold (Task 1 of the debian-packaging plan,
+    docs/superpowers/plans/2026-08-13-debian-packaging.md). Adds
+    debian/control, debian/rules, debian/copyright and debian/source/format
+    for four binary packages -- tt-bio-demo, tt-bio-demo-runtime,
+    tt-bio-demo-weights, tt-bio-demo-all -- that build cleanly and ship
+    almost nothing yet. Later tasks add the install list, the shared
+    maintainer-script helpers, the runtime venv build, the weights
+    download, and the systemd user unit.
+  * Establishes VERSION at the repo root as this project's single source
+    of truth for its own version, since none existed before this task
+    (only third-party pins: tt-bio 0.6.2, ttnn 0.68.0). debian/changelog's
+    version is read from it, not invented independently.
+
+ -- Taylor Singletary <tsingletary@tenstorrent.com>  Thu, 13 Aug 2026 05:33:17 -0700

@@ -4,9 +4,12 @@ __pycache__/
 env/
 .venvs/
 debian/.debhelper/
+debian/debhelper-build-stamp
 debian/files
 debian/*.substvars
 debian/*.log
+debian/*.debhelper
+debian/*.debhelper.log
 debian/tt-bio-demo*/
 *.deb
 *.buildinfo

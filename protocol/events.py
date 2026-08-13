@@ -13,12 +13,49 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
-PROTOCOL_VERSION = 1
+# Bumped 1 -> 2 when the socket stopped being one-way. Until v2 the runner
+# only ever broadcast and the UI only ever read, so a visitor's pick could
+# not cause a fold; v2 adds the client->server direction below.
+#
+# This number is load-bearing, not decorative: `hello` carries it, and
+# ui/client.py refuses to interpret a daemon whose version differs from its
+# own -- it logs, sets state "incompatible", and deliberately never retries
+# for the life of the process. That refusal is the intended behaviour in
+# BOTH directions. A v2 UI against a v1 daemon would otherwise send `pick`
+# lines nobody reads, silently promising a capability the booth does not
+# have; a v1 UI against a v2 daemon refuses on its own and cannot be taught
+# otherwise from here. Both halves ship in one Debian package, so a mismatch
+# means a half-finished upgrade -- a thing to notice, not to paper over.
+PROTOCOL_VERSION = 2
 
+# --- server -> client ------------------------------------------------------
+# Unchanged by multi-chip: scheduling across four cards adds no event. The
+# `card_state` event already carried per-card status from Phase 3a.
 EVENT_TYPES = frozenset(
     {"hello", "not_ready", "job_start", "stage", "frame",
      "job_done", "job_error", "card_state"}
 )
+
+# --- client -> server ------------------------------------------------------
+# A SEPARATE frozenset, not extra members of EVENT_TYPES, and that separation
+# is the point rather than a nicety. `EventServer.broadcast` encodes with
+# `encode`, so with two sets it is structurally unable to put a `pick` on the
+# wire to a UI; `EventClient` decodes with `decode`, so it is structurally
+# unable to accept a `pick` as an event and hand it to _handle_event as if
+# the daemon had said it. One shared set makes both of those possible and the
+# two directions quietly become one channel where anything may travel either
+# way -- at which point a client could inject a `job_done` and fake a fold
+# result. Two sets turn a direction error into a ProtocolError at the
+# boundary instead of a mystery three modules later.
+CLIENT_MESSAGE_TYPES = frozenset({"pick"})
+
+# The longest `target_id` a client may send. The daemon reads this off a
+# public socket in a room full of strangers' laptops: a megabyte target_id is
+# a megabyte the daemon should never have allocated, and this limit is the
+# only thing that says so. It bounds LENGTH only -- whether the id names a
+# real playlist entry is a question for the daemon, answered against the
+# playlist rather than against a string.
+MAX_TARGET_ID_LEN = 64
 
 # ---------------------------------------------------------------------------
 # The stage contract: the vocabulary of `stage` events, and how a `frac` on
@@ -162,6 +199,121 @@ def decode(line):
     if event["type"] not in EVENT_TYPES:
         raise ProtocolError(f"unknown event type: {event['type']!r}")
     return event
+
+
+# The longest repr of a client-supplied value that may appear in a
+# ProtocolError message. The values `decode_client_message` rejects are
+# attacker-supplied and unbounded in size -- json.loads has already allocated
+# them, but a daemon that then copies a megabyte `type` string into an error,
+# once per bad line, turns a malformed-input nuisance into a log-flooding
+# vector. Errors need enough of the value to identify it, not all of it.
+_MAX_ERROR_REPR = 40
+
+
+def _brief(value):
+    """repr(value), truncated, for use in a ProtocolError message."""
+    text = repr(value)
+    if len(text) <= _MAX_ERROR_REPR:
+        return text
+    return text[:_MAX_ERROR_REPR] + "... (truncated)"
+
+
+def pick_message(target_id):
+    """Build the one client->server message: "fold this target, now".
+
+    Carries the version it was written against so the daemon can refuse a
+    message from a protocol it does not speak, rather than acting on a field
+    that meant something else two versions ago.
+
+    Does no validation of `target_id` itself -- `encode_client_message` and
+    `decode_client_message` are the boundary, and validating here as well
+    would only mean the same rule written twice, drifting apart.
+    """
+    return {"type": "pick", "version": PROTOCOL_VERSION, "target_id": target_id}
+
+
+def encode_client_message(message):
+    """Serialize one client->server message to a newline-terminated JSON line.
+
+    The mirror of `encode`, against CLIENT_MESSAGE_TYPES rather than
+    EVENT_TYPES -- so this cannot put an event on the wire and `encode`
+    cannot put a `pick` on it.
+
+    The newline is the frame, and json.dumps escapes any newline inside a
+    string value, so a `target_id` containing one cannot split a message into
+    two.
+    """
+    if not isinstance(message, dict):
+        raise ProtocolError(f"not a JSON object: {type(message).__name__}")
+    kind = message.get("type")
+    if kind not in CLIENT_MESSAGE_TYPES:
+        raise ProtocolError(f"unknown client message type: {kind!r}")
+    try:
+        line = json.dumps(message, separators=(",", ":"))
+    except (TypeError, ValueError) as exc:
+        # `encode` lets this escape as a TypeError because it serializes
+        # dicts the daemon itself just built. This one is reachable from UI
+        # code assembling a message from a tap, so an unserializable value
+        # arrives as the same ProtocolError as every other framing failure
+        # and callers need only one except clause.
+        raise ProtocolError(f"unserializable client message: {exc}") from exc
+    return (line + "\n").encode("utf-8")
+
+
+def decode_client_message(line):
+    """Parse one newline-terminated JSON line into a client->server message.
+
+    Deliberately stricter than `decode`. `decode` accepts any well-formed
+    event of a known type because the daemon that sent it is trusted; this
+    one is reading from a process the daemon does not control, over a socket
+    a booth exposes to whatever connects to it. Anything at all that arrives
+    must come back as a ProtocolError rather than an exception the caller did
+    not plan for -- a booth daemon that one bad line can kill is worse than
+    one that cannot be picked from.
+
+    Validates `type`, `version`, and that `target_id` is a non-empty `str` of
+    at most MAX_TARGET_ID_LEN characters. It validates NOTHING about what the
+    target means: whether that id names a real playlist entry is the daemon's
+    question, answered against the playlist.
+    """
+    try:
+        message = json.loads(line)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ProtocolError(f"malformed JSON: {exc}") from exc
+    if not isinstance(message, dict):
+        # Load-bearing, and checked to be: `["pick","trpcage"]` is perfectly
+        # well-formed JSON, and without this guard the next line calls .get()
+        # on a list and raises AttributeError -- an exception no caller of
+        # this function plans for, out of a function whose entire promise is
+        # that anything arriving off the socket comes back as ProtocolError.
+        # (Written as `if "type" not in message` instead, the guard is NOT
+        # load-bearing: `in` on a list is a membership test that happens to
+        # be False, so removing the isinstance check changes nothing and the
+        # test for it cannot fail. That version was tried and rejected.)
+        raise ProtocolError("not a JSON object")
+    kind = message.get("type")
+    if kind not in CLIENT_MESSAGE_TYPES:
+        raise ProtocolError(f"unknown client message type: {_brief(kind)}")
+    if "version" not in message:
+        # Distinguished from a wrong version on purpose: an unversioned
+        # message is one we cannot reason about at all, and the log line
+        # that says so saves someone guessing which side is old.
+        raise ProtocolError("missing 'version'")
+    if message["version"] != PROTOCOL_VERSION:
+        raise ProtocolError(
+            f"client speaks protocol v{_brief(message['version'])}, "
+            f"this build speaks v{PROTOCOL_VERSION}")
+    target_id = message.get("target_id")
+    if not isinstance(target_id, str):
+        raise ProtocolError(
+            f"'target_id' must be a string, got {type(target_id).__name__}")
+    if not target_id:
+        raise ProtocolError("'target_id' must not be empty")
+    if len(target_id) > MAX_TARGET_ID_LEN:
+        raise ProtocolError(
+            f"'target_id' is {len(target_id)} characters, "
+            f"limit is {MAX_TARGET_ID_LEN}")
+    return message
 
 
 def pack_coords(a):

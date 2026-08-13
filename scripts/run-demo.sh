@@ -41,10 +41,9 @@
 #   --targets a,b,c               Which manifest ids to run, as one
 #                                 comma-separated list handed to BOTH
 #                                 processes. (TT_BIO_DEMO_TARGETS)
-#                                 Default: trpcage — 20 residues, no MSA
-#                                 server needed, ~4.4s a fold, and the only
-#                                 target whose whole path (fold -> socket ->
-#                                 ribbon on screen) has been run end to end.
+#                                 Default: every target in the manifest. Pass
+#                                 `--targets trpcage` for the fast single
+#                                 target (20 residues, ~4.4s) while iterating.
 #   --all-targets                 Accepted and harmless: running every target
 #                                 is now the DEFAULT, so this only restates it.
 #                                 (TT_BIO_DEMO_ALL_TARGETS=1)
