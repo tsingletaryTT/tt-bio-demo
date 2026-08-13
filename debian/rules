@@ -1,0 +1,31 @@
+#!/usr/bin/make -f
+# debian/rules -- debhelper build rules for tt-bio-demo.
+#
+# This is a pure Python + data project (GTK4 UI, a compute-daemon source
+# tree, YAML playlist manifests and their input structures): nothing here
+# is compiled, so the sequence stays a thin `dh $@` and every later task
+# should keep it that way. Anything with a branch in it belongs in
+# debian/helpers.sh (Task 3), not inline here -- a `dh` override is glue,
+# not logic.
+#
+# Task 1 deliberately installs nothing: no debian/*.install file exists
+# yet (Task 2 adds tt-bio-demo.install), so `dh_install` is a no-op for
+# every package and each .deb ships only its control metadata, changelog
+# and copyright. That is the point of this task -- a skeleton that builds.
+
+export DH_VERBOSE = 1
+
+# Nothing to compile and no test suite to run as part of the *build*
+# (./scripts/test.sh is this project's test entry point and is not wired
+# into dpkg-buildpackage); disable both so a bare `dh $@` does not go
+# looking for a setup.py/pyproject.toml build system that does not exist.
+export DEB_BUILD_OPTIONS = nocheck nostrip
+
+%:
+	dh $@
+
+# No compiled extensions and no installed .py files yet (Task 1 ships
+# none) -- skip dh_python3's bytecode compilation pass so it has nothing
+# to complain about running against an empty tree.
+override_dh_python3:
+	# intentionally empty
