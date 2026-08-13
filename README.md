@@ -56,6 +56,18 @@ compute daemon so the silicon keeps visibly breathing even if the daemon wedges.
 **The reveal.** Trp-cage, coloured by the model's own per-residue confidence.
 
 </td>
+</tr>
+<tr>
+<td colspan="2">
+
+![Holding the previous structure while the next fold computes](docs/screenshots/05-holds-previous-structure.png)
+
+**Never a blank screen.** Only the diffusion stage produces coordinates, so a big
+protein spends its first ~15 s in `trunk` with nothing to draw. Rather than showing black,
+the viewer holds the last **real** structure — dimmed, and captioned with what it is and
+what is computing now. Nothing is ever fabricated: what you see was actually computed.
+
+</td>
 <td width="50%">
 
 **Four chips on two boards.** A p300c carries two chips, so `tt-smi`'s four entries are
