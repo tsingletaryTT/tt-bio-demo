@@ -407,6 +407,26 @@ class StructureViewer(Gtk.GLArea):
         self._ribbon_buffers = None
         self._ribbon_index_count = 0
 
+        # The ribbon is gone, so the camera cannot still belong to it.
+        #
+        # This is not bookkeeping like the counts above -- it is the one line
+        # that keeps the postage-stamp bug fixed across a GL context loss.
+        # `set_points` only re-frames the camera while the subject is the
+        # point cloud (see `_SUBJECT_*` and `set_points`), so with the
+        # ribbon's buffers zeroed but `_camera_subject` still "ribbon",
+        # nothing on a re-realized context could ever frame the camera
+        # again: the next fold's diffusion cloud would be drawn at whatever
+        # extent the vanished ribbon had, i.e. a few pixels in the middle of
+        # the screen, for the rest of the day. Handing the camera back here
+        # matches what `clear_structure` and `set_blend(0)` already do at the
+        # other two points where a ribbon stops being displayed.
+        #
+        # `_camera_framed` goes with it: the next frame must SNAP to its own
+        # spread rather than easing in from the extent of a structure that no
+        # longer exists (`_frame_camera` only snaps while this is False).
+        self._camera_subject = _SUBJECT_POINTS
+        self._camera_framed = False
+
         self._ready = False
 
     # ── camera ───────────────────────────────────────────────────────────

@@ -407,3 +407,101 @@ def test_empty_frame_leaves_the_camera_alone():
     viewer.set_points(np.zeros((0, 3), dtype=np.float32))
     assert viewer._extent == before
     assert not np.isnan(viewer._center).any()
+
+
+# ---------------------------------------------------------------------------
+# A GL context loss must hand the camera back.
+#
+# Whole-branch review, Important 5: `_on_unrealize` zeroed the ribbon buffers
+# but left `_camera_subject == "ribbon"`. `set_points` only re-frames the
+# camera while the subject is the point cloud, so after a context
+# recreation NOTHING could ever re-frame it again -- the next fold's
+# diffusion cloud (spread ~7400 A) would be drawn at the vanished ribbon's
+# ~9.7 A extent: defect 1 in this module's docstring, reintroduced by a
+# route the fix did not cover.
+# ---------------------------------------------------------------------------
+
+class _NoGL:
+    """Every `GL.gl*` call `_on_unrealize` makes, as no-ops. Attribute
+    access returns a callable for any name, so this cannot silently miss a
+    call the real body makes (it would just do nothing), and no GL context
+    is needed to run the real method body."""
+
+    def __getattr__(self, _name):
+        return lambda *args, **kwargs: None
+
+
+class _RealizableViewer(_FakeViewer):
+    """`_FakeViewer` plus the handful of attributes and methods the real
+    `_on_unrealize` touches, so its ACTUAL body can be run headless."""
+
+    _on_unrealize = StructureViewer._on_unrealize
+
+    def __init__(self):
+        super().__init__()
+        self.animation_stopped = False
+        self.made_current = False
+        self._ready = True
+        self._point_program = 1
+        self._ribbon_program = 2
+        self._point_vao = 3
+        self._point_vbo = 4
+        self._ribbon_vao = 5
+        self._ribbon_buffers = [6, 7, 8]
+
+    def stop_animation(self):
+        self.animation_stopped = True
+
+    def make_current(self):
+        self.made_current = True
+
+
+def test_losing_the_gl_context_hands_the_camera_back_to_the_points(monkeypatch):
+    """The behavioural pin, not a field check: after unrealize, an incoming
+    diffusion frame must be able to re-frame the camera again.
+
+    Mutation this catches: deleting the `_camera_subject = _SUBJECT_POINTS`
+    line from `_on_unrealize`.
+    """
+    import ui.viewer as viewer_module
+    monkeypatch.setattr(viewer_module, "GL", _NoGL())
+
+    viewer = _RealizableViewer()
+    viewer.show_ribbon(ribbon_like_mesh())
+    assert viewer._camera_subject == "ribbon", "precondition"
+    ribbon_extent = viewer._extent
+
+    viewer._on_unrealize(None)
+
+    cloud = real_frames()[0]
+    viewer.set_points(cloud)
+    assert viewer._extent > ribbon_extent * 10, (
+        "after a GL context loss the camera is still framed on a ribbon "
+        "that no longer exists -- every later fold renders as a postage "
+        "stamp in the middle of the screen")
+
+
+def test_the_first_frame_after_a_context_loss_snaps_rather_than_easing(monkeypatch):
+    """`_camera_framed` has to go with the subject: left True, the first
+    frame would ease in from the dead ribbon's extent (`_EASE_OUT` is 0.06 --
+    ~50 frames to converge on a fold that only sends 30) instead of snapping
+    to its own spread."""
+    import ui.viewer as viewer_module
+    monkeypatch.setattr(viewer_module, "GL", _NoGL())
+
+    viewer = _RealizableViewer()
+    viewer.show_ribbon(ribbon_like_mesh())
+    viewer._on_unrealize(None)
+
+    cloud = real_frames()[0]
+    snapped = viewer._spread(cloud, cloud.mean(axis=0), True)
+    viewer.set_points(cloud)
+    # Compared against the camera's OWN robust statistic on purpose, unlike
+    # every other test in this file: the question here is "did it snap or
+    # did it ease", not "is that statistic the right one to snap to" (which
+    # the tests above already pin against `true_spread`). An eased first
+    # frame would land between the dead ribbon's 9.7 A and this, nowhere
+    # near either end.
+    assert viewer._extent == pytest.approx(snapped, rel=1e-6), (
+        "the first frame after a context loss must snap to its own spread, "
+        "not ease in from the extent of a ribbon that no longer exists")

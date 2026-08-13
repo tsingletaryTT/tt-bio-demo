@@ -58,8 +58,14 @@ def _write_stub(path, argv_log, real_python):
     path.chmod(0o755)
 
 
-def _launch(tmp_path, *args):
-    """Run the real launcher with stub interpreters. Returns (proc, runtime)."""
+def _launch(tmp_path, *args, expect_ok=True):
+    """Run the real launcher with stub interpreters. Returns (proc, runtime).
+
+    `expect_ok` asserts the launch succeeded right here, with the script's
+    own stderr in the message -- so a launcher that fell over is reported as
+    that, rather than as a confusing missing-argv-file error several
+    assertions later.
+    """
     prefix = tmp_path / "prefix"
     runtime = tmp_path / "xdg"
     runtime.mkdir(parents=True, exist_ok=True)
@@ -85,6 +91,10 @@ def _launch(tmp_path, *args):
 
     proc = subprocess.run(["bash", str(RUN_DEMO), *args], env=env,
                           capture_output=True, text=True, timeout=120)
+    if expect_ok:
+        assert proc.returncode == 0, (
+            f"run-demo.sh {' '.join(args)} exited {proc.returncode}\n"
+            f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}")
     return proc, tmp_path
 
 
@@ -177,7 +187,7 @@ def test_a_target_dropped_between_runs_stops_being_folded(tmp_path):
 def test_a_typo_in_targets_stops_the_launch_rather_than_shipping_a_subset(tmp_path):
     """Loud, not lenient: silently dropping an unknown id is how a booth
     ends up advertising something nobody can fold."""
-    proc, _ = _launch(tmp_path, "--targets", "trpcage,trpcaeg")
+    proc, _ = _launch(tmp_path, "--targets", "trpcage,trpcaeg", expect_ok=False)
     assert proc.returncode != 0
     assert "trpcaeg" in proc.stderr
     assert not (tmp_path / "venv-runner.argv").exists(), (

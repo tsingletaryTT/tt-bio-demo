@@ -103,11 +103,20 @@ class RecordingPanel:
         self.updates = []
         self.stages = []
         self.resets = 0
+        # How many times the booth's state tick offered this panel a chance
+        # to notice it has gone stale (ui/panels.py's PipelinePanel.tick).
+        self.ticks = 0
 
     def update(self, readings, age_s):
         if self.boom:
             raise RuntimeError("telemetry panel exploded")
         self.updates.append((readings, age_s))
+
+    def tick(self):
+        if self.boom:
+            raise RuntimeError("pipeline panel exploded")
+        self.ticks += 1
+        return False
 
     def set_stage_from_wire(self, stage, wire_frac):
         if self.boom:
@@ -745,3 +754,23 @@ def test_no_target_selection_means_the_whole_manifest():
     two."""
     ids = _gallery_ids(None)
     assert len(ids) > 1 and "trpcage" in ids
+
+
+def test_the_state_tick_lets_the_pipeline_panel_notice_it_is_stale():
+    """The panel owns the threshold and the clock (ui/panels.py's
+    PipelinePanel.tick), but it has no timer of its own -- the booth's 100ms
+    state tick is the only thing that can give it a chance to look. Without
+    this call a dead daemon leaves "DIFFUSION 62%" on screen all day."""
+    app = _app()
+    app._tick_state()
+    assert app.pipeline_panel.ticks == 1
+
+
+def test_a_pipeline_panel_that_raises_cannot_cost_the_booth_its_tick():
+    """Same rule as every other collaborator called from a repeating GLib
+    source: an exception escaping `_tick_state` removes the source
+    permanently -- a booth frozen with nothing on screen saying so."""
+    app = _app()
+    app.pipeline_panel = RecordingPanel(boom=True)
+    app.diagnostics_visible = True
+    assert app._tick_state() is True

@@ -23,6 +23,7 @@ import ui.panels as ui_panels
 from protocol.events import STAGE_ORDER, within_stage_frac
 from ui.panels import (
     MIN_CONTRAST_RATIO,
+    PIPELINE_STALE_AFTER_S,
     PipelinePanel,
     STALE_AFTER_S,
     TelemetryPanel,
@@ -803,3 +804,91 @@ def test_nearest_background_walker_uses_the_true_nearest_registered_background()
     finally:
         ui_panels._PANEL_CSS = original_css
         ui_panels._BACKGROUND_BY_CLASS = original_bg_map
+
+
+# ---------------------------------------------------------------------------
+# The pipeline panel goes stale.
+#
+# Whole-branch review, Important 4: it was reset only on `job_start`, so a
+# daemon that died mid-fold left "DIFFUSION 62%" on screen for the rest of
+# the conference day. TelemetryPanel has STALE_AFTER_S and ChipVizPanel has
+# STAGE_STALE_AFTER_S; this is the same treatment for the third instrument.
+# ---------------------------------------------------------------------------
+
+class _HandClock:
+    """A hand-driven monotonic clock, so staleness is arithmetic rather than
+    twenty real seconds of sleeping."""
+
+    def __init__(self, now=0.0):
+        self.now = now
+
+    def __call__(self):
+        return self.now
+
+
+def _active_rows(panel):
+    return [row for row in panel.last_rows if row[2] == "active"]
+
+
+def test_a_fold_nothing_reports_on_stops_being_shown_as_running():
+    clock = _HandClock()
+    panel = PipelinePanel(clock=clock)
+    panel.set_stage_from_wire("diffusion", 0.5)
+    assert _active_rows(panel), "precondition: a stage is being shown as live"
+
+    clock.now += PIPELINE_STALE_AFTER_S + 0.1
+    panel.tick()
+
+    assert panel.stale is True
+    assert not _active_rows(panel), (
+        "a dead daemon must not leave a stage showing as running")
+    assert all(value == 0.0 for _name, value, _state in panel.last_rows), (
+        "and no bar may keep its last fraction -- that is the progress bar "
+        "that lies")
+
+
+def test_a_fold_in_flight_is_left_alone():
+    """The mutation guard for the test above: a `tick` that cleared
+    unconditionally would pass it while blanking the panel mid-fold.
+
+    The shipped 62-75s targets have genuinely callback-free windows (host
+    featurization, the confidence head, the mmCIF write), so the threshold
+    has to be a real duration, not zero.
+    """
+    clock = _HandClock()
+    panel = PipelinePanel(clock=clock)
+    panel.set_stage_from_wire("diffusion", 0.5)
+    before = list(panel.last_rows)
+
+    clock.now += PIPELINE_STALE_AFTER_S - 0.1
+    panel.tick()
+
+    assert panel.stale is False
+    assert panel.last_rows == before
+
+
+def test_the_next_fold_brings_the_panel_back():
+    """Staleness latches until real progress arrives -- but it must not
+    latch permanently, or a booth that recovers keeps a dead panel."""
+    clock = _HandClock()
+    panel = PipelinePanel(clock=clock)
+    panel.set_stage_from_wire("diffusion", 0.5)
+    clock.now += PIPELINE_STALE_AFTER_S + 0.1
+    panel.tick()
+    assert panel.stale is True
+
+    panel.set_stage_from_wire("trunk", 0.2)
+    assert panel.stale is False
+    assert _active_rows(panel)
+
+
+def test_a_panel_that_has_never_been_told_anything_never_goes_stale():
+    """Before the first fold there is nothing to give up on: the panel is
+    already showing "nothing has happened yet", and calling that stale would
+    make the flag mean two different things."""
+    clock = _HandClock()
+    panel = PipelinePanel(clock=clock)
+    panel._last_update_at = None      # as constructed, before any set_stage
+    clock.now += PIPELINE_STALE_AFTER_S * 10
+    panel.tick()
+    assert panel.stale is False

@@ -39,6 +39,7 @@ reason.
 
 import logging
 import math
+import time
 
 import gi
 
@@ -523,6 +524,30 @@ _STAGE_STATE_CLASSES = ("stage-done", "stage-active", "stage-pending")
 # looking like a live reading indefinitely.
 STALE_AFTER_S = 6.0
 
+# The same idea for the PIPELINE panel, which had none: how long it will keep
+# showing a fold's progress after the last `stage` event before falling back
+# to "nothing is running".
+#
+# Without this the panel was reset only on `job_start` (ui/app.py), so a
+# daemon that died mid-fold left `DIFFUSION 62%` on screen for the rest of
+# the conference day -- a progress bar that lies, which is the one thing this
+# booth's brief rules out. TelemetryPanel has `STALE_AFTER_S` above and
+# ChipVizPanel has `STAGE_STALE_AFTER_S`; this is the third instrument
+# getting the same treatment.
+#
+# 20s, between two real pressures rather than by analogy:
+#   - too long and a dead daemon's last progress reading stands for that long;
+#   - too short and it flickers to empty DURING a legitimate fold. The
+#     shipped 62-75s targets have genuinely callback-free windows -- host
+#     featurization between `prep` and the first trunk progress event, and
+#     the confidence head plus mmCIF write at the end (runner/folder.py) --
+#     and an empty bar mid-fold is its own lie ("nothing is running" while
+#     something is).
+# 20s clears the 4.4s Trp-cage fold's entire event-free span several times
+# over, and is a couple of seconds longer than ChipVizPanel's 15s for the
+# same reason: this panel is the one that would flicker.
+PIPELINE_STALE_AFTER_S = 20.0
+
 
 class TelemetryPanel(Gtk.Box):
     """Renders `ui.telemetry.TelemetrySampler`'s tri-state `latest()` /
@@ -689,10 +714,20 @@ class PipelinePanel(Gtk.Box):
     viewer.
     """
 
-    def __init__(self):
+    def __init__(self, clock=time.monotonic):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         _ensure_css_installed()
         self.add_css_class("pipeline-panel")
+
+        # Injectable for the same reason ui/chipviz.py's and ui/app.py's
+        # are: a test that asserts on staleness should not have to sleep
+        # through PIPELINE_STALE_AFTER_S.
+        self._clock = clock
+        # When the last real progress update arrived, and whether this panel
+        # has since given up on it. `stale` is public: it is what a test (and
+        # a future "the booth looks stuck" diagnostic) reads.
+        self._last_update_at = None
+        self.stale = False
 
         self._rows = {}
         stages = list(STAGE_ORDER)
@@ -723,7 +758,52 @@ class PipelinePanel(Gtk.Box):
         already be the WITHIN-STAGE fraction (see the class docstring) --
         the daemon-driven wiring layer should call `set_stage_from_wire`
         instead, which takes the wire's raw fraction and converts it
-        internally."""
+        internally.
+
+        Also the panel's "I have heard from the fold" stamp: anything
+        arriving here resets the staleness countdown (see `tick`).
+        """
+        try:
+            self._last_update_at = self._clock()
+        except Exception:
+            # A clock that raises must not cost the booth a progress
+            # update; the worst case is that this reading never goes stale.
+            log.exception("clock failed while stamping pipeline progress")
+        self.stale = False
+        self._render(stage, frac)
+
+    def tick(self):
+        """Give up on a fold nothing has reported on for a while.
+
+        Called from the booth's own 100 ms state tick (ui/app.py). Renders
+        the same "nothing is running" state `reset()` does -- every stage
+        pending, every bar empty -- which is the honest reading once the
+        daemon has gone quiet: it is what the panel shows before the first
+        fold of the session, too.
+
+        Deliberately does NOT re-stamp `_last_update_at`: `stale` latches
+        until a real update arrives, so this repaints once rather than
+        rebuilding six rows ten times a second for the rest of the day.
+        """
+        if self.stale or self._last_update_at is None:
+            return False
+        try:
+            idle_s = self._clock() - self._last_update_at
+        except Exception:
+            log.exception("clock failed while checking pipeline staleness")
+            return False
+        if idle_s < PIPELINE_STALE_AFTER_S:
+            return False
+        log.info("no fold progress for %.0fs; clearing the pipeline panel "
+                 "rather than leaving its last reading on screen", idle_s)
+        self.stale = True
+        self._render(None, 0.0)
+        return True
+
+    def _render(self, stage, frac):
+        """Draw `(stage, frac)`, with no opinion about staleness. Split out
+        of `set_stage` so `tick` can clear the panel without stamping it as
+        freshly updated."""
         rows = stage_rows(stage, frac)
         self.last_rows = rows
         for name, value, state in rows:

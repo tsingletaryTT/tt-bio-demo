@@ -1336,6 +1336,21 @@ class DemoApp(Gtk.Application):
             self.states.tick(now)
             self._sync_to_state()
             self._tick_overlays(now)
+            # The pipeline panel's own staleness check, on the same tick.
+            # It is reset by `job_start` and nothing else, so without this a
+            # daemon that died mid-fold would leave e.g. "DIFFUSION 62%" on
+            # screen for the rest of the day -- see ui/panels.py's
+            # PIPELINE_STALE_AFTER_S. The panel owns the clock and the
+            # threshold; this only gives it a chance to look.
+            #
+            # Its own guard, like `_sync_chipviz` and `_note_diagnostics`:
+            # everything after this line in the tick (the diagnostics
+            # repaint) must not be pre-empted by a panel misbehaving.
+            if self.pipeline_panel is not None:
+                try:
+                    self.pipeline_panel.tick()
+                except Exception:
+                    log.exception("pipeline staleness check dropped")
             # The diagnostics panel repaints from here rather than from
             # every appended line: a 30Hz frame stream would otherwise
             # re-label twenty rows thirty times a second to show a list a
