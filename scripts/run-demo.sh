@@ -47,14 +47,21 @@
 #                                 ribbon on screen) has been run end to end.
 #   --all-targets                 Run every target in the manifest instead.
 #                                 (TT_BIO_DEMO_ALL_TARGETS=1)
-#                                 NOT YET VALIDATED END TO END: the other
-#                                 three shipped targets are 62–75s folds
-#                                 (measured), and their long callback-free
-#                                 windows — host featurization, then the
-#                                 confidence head and mmCIF write — have
-#                                 never been run through the socket into the
-#                                 UI, whose read timeout is 5s. Expect to
-#                                 watch it before pointing the public at it.
+#                                 Validated end to end 2026-08-12: a 320s
+#                                 live run completed 21 folds across all four
+#                                 targets with ZERO client drops or
+#                                 reconnects. The UI's 5s read timeout loops
+#                                 rather than disconnecting, so the long
+#                                 callback-free windows (host featurization,
+#                                 then the confidence head and mmCIF write)
+#                                 do not break the socket.
+#
+#   --windowed                    Start the UI in a normal window instead of
+#                                 fullscreen. A development convenience, not
+#                                 a booth setting -- the kiosk always wants
+#                                 fullscreen. Ctrl+F toggles either way at
+#                                 runtime, but without this the app seizes
+#                                 the whole screen before you can reach it.
 #
 # Why a manifest and not a directory: the daemon folds .yaml inputs and the
 # UI shows a gallery built from the manifest, and until this fix those two
@@ -126,6 +133,7 @@ while [[ $# -gt 0 ]]; do
     --playlist)             MANIFEST="$2"; shift 2 ;;
     --targets)              TARGETS="$2"; shift 2 ;;
     --all-targets)          TARGETS=""; shift ;;
+    --windowed)             WINDOWED=1; shift ;;
     --weights)              WEIGHTS="$2"; shift 2 ;;
     --log-budget-gb)        LOG_BUDGET_GB="$2"; shift 2 ;;
     --structures-budget-gb) STRUCTURES_BUDGET_GB="$2"; shift 2 ;;
@@ -276,7 +284,15 @@ echo "run-demo.sh: starting UI..." >&2
 # built from, a few lines above. Passing only --socket here is what shipped
 # a four-card gallery over a one-target daemon; tests/unit/test_run_demo_sh.py
 # now fails if these two ever drift apart again.
+UI_ARGS=""
+# --windowed is a development convenience, not a booth setting: the
+# kiosk always wants fullscreen. Without it the app seizes the whole
+# screen before anyone can reach Ctrl+F, which is hostile on a shared
+# desktop. Ctrl+F still toggles either way at runtime.
+[ "${WINDOWED:-0}" = "1" ] && UI_ARGS="--windowed"
+
 "${VENV_UI}/bin/python3" -m ui.app \
   --socket "$SOCKET" \
   --playlist "$MANIFEST" \
-  --targets "$TARGETS"
+  --targets "$TARGETS" \
+  ${UI_ARGS}

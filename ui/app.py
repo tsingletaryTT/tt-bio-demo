@@ -548,9 +548,13 @@ def _ensure_app_css_installed():
 
 class DemoApp(Gtk.Application):
     def __init__(self, socket_path=None, playlist_path=None, target_ids=None,
-                 clock=None):
+                 clock=None, windowed=False):
         super().__init__(application_id="com.tenstorrent.ttbiodemo")
         self.socket_path = socket_path
+        # Start windowed instead of fullscreen. The booth always wants
+        # fullscreen, but a developer on a shared desktop does not want an
+        # app that seizes the whole screen before they can reach Ctrl+F.
+        self.windowed = windowed
         self.playlist_path = playlist_path
         # Which manifest entries this run actually offers. None/empty means
         # "all of them". scripts/run-demo.sh passes the SAME selection here
@@ -752,8 +756,10 @@ class DemoApp(Gtk.Application):
         window.set_child(root_overlay)
 
         # A kiosk: no chrome, no window management, the protein as large as
-        # the glass allows.
-        window.fullscreen()
+        # the glass allows. --windowed opts out for development; Ctrl+F
+        # toggles either way at runtime.
+        if not self.windowed:
+            window.fullscreen()
         self._connect_visitor_input(window)
         window.present()
 
@@ -1876,12 +1882,16 @@ def main(argv=None):
                              "the daemon was given (scripts/run-demo.sh does "
                              "this for you) -- a gallery card whose target the "
                              "daemon has no input file for can never be folded")
+    parser.add_argument("--windowed", action="store_true",
+                        help="start in a normal window instead of fullscreen "
+                             "(Ctrl+F toggles either way at runtime)")
     args = parser.parse_args(argv)
     target_ids = [part.strip() for part in (args.targets or "").split(",")
                   if part.strip()]
     return DemoApp(socket_path=args.socket,
                    playlist_path=args.playlist,
-                   target_ids=target_ids).run([])
+                   target_ids=target_ids,
+                   windowed=args.windowed).run([])
 
 
 if __name__ == "__main__":
