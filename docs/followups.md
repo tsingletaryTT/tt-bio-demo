@@ -202,3 +202,19 @@ Inspector is now off by default (`TT_METAL_INSPECTOR=1` re-enables it, at the
 cost of `tt-triage` functionality). When a property is about *bounds*, verify it
 over a duration long enough to distinguish bounded from unbounded — and check
 `lsof`, not just the directory.
+
+**And multi-chip folding reintroduced the same trap by a different route.**
+The parent process now holds four `worker.log` files open — one per chip, each
+handed to a `Popen` as that child's stdout and stderr for the life of the
+worker (`runner/pool.py`) — so `prune_log_root`'s oldest-first `unlink` would
+once again take a *name* and free nothing. Task 11 closed it by telling the
+sweep those paths are not its to delete (`protect=`) and bounding them with
+`os.truncate` instead, which is the one operation that returns the blocks while
+an fd is open, and which is safe here only because the files were opened
+`O_APPEND`. `WORKER_LOG_CAP_BYTES` (64 MB, `runner/pool.py`) is the bound. Note
+that the *tests* for this cannot demonstrate unbounded growth either — they are
+too short, exactly as the two-fold sessions were — so
+`test_truncation_frees_the_blocks_a_held_open_writer_is_using` holds a real fd
+across the sweep and asserts on `st_nlink`, `st_ino` and `st_blocks` seen
+*through that fd*. That is the `lsof` check above, written as a unit test: it is
+the only assertion in the file that can tell `unlink` from `truncate` at all.
