@@ -24,11 +24,13 @@ gi.require_version("Gtk", "4.0")
 import pytest
 
 import mark
+from _appfakes import _FakeQuad
 from protocol.events import pack_coords
 from ui import app as app_module
 from ui.app import DemoApp
 
-from test_app_wiring import FakeClock, FakeStack, FakeViewer, RecordingPanel
+from test_app_wiring import (FakeClock, FakeStack, FakeViewer,
+                             RecordingPanel, _cell)
 
 
 class _FakeClient:
@@ -72,7 +74,8 @@ class _Sampler:
 
 def _app(client=None, clock=None):
     app = DemoApp(socket_path=None, clock=clock or FakeClock())
-    app.viewer = FakeViewer()
+    app.quad = _FakeQuad(1, cards=[0], viewer_factory=FakeViewer)
+    app.attach_cards([0])
     app.telemetry_panel = RecordingPanel()
     app.pipeline_panel = RecordingPanel()
     app.sampler = _Sampler()
@@ -319,8 +322,8 @@ def test_an_egg_frame_never_reaches_the_protein_viewer():
     app._on_event(_egg_frame(app, 0))
     app._tick_egg()
     app._drain_frames()
-    assert app.viewer.point_frames == []
-    assert app.viewer.clears == 0
+    assert _cell(app).point_frames == []
+    assert _cell(app).clears == 0
 
 
 # ── and when it did not ─────────────────────────────────────────────────────

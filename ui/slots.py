@@ -355,6 +355,11 @@ class SlotRouter:
     """
 
     def __init__(self, cards, showcase_dwell_s=2.0):
+        # Kept so `add_card` below can build a cell that keeps the same dwell
+        # as the ones built here -- one cell holding a finished structure for
+        # a different length of time than its neighbours would be a bug
+        # nobody would think to look for.
+        self.showcase_dwell_s = showcase_dwell_s
         # More chips than cells: fold on all of them, show the first four.
         self.cards = list(cards)[:MAX_SLOTS]
         self.slots = [SlotState(showcase_dwell_s=showcase_dwell_s, card=card)
@@ -387,6 +392,46 @@ class SlotRouter:
     def slot_for_card(self, card):
         """Which cell shows this chip, or None if this chip has no cell."""
         return self._slot_by_card.get(card)
+
+    def add_card(self, card):
+        """Give a chip the router has not seen before its own cell.
+
+        Returns the new slot index, or None if the chip already has one, is
+        not usable as a card number, or the quad is already full.
+
+        This exists because the card list does NOT always arrive up front.
+        The daemon greets a UI that connects during the model-load window
+        with `not_ready` rather than `hello` (runner/daemon.py's `_hello`) --
+        model load stretched to 6.4-9.2s under four-way contention on the
+        hardware spike, and the socket accepts long before that -- and
+        `hello` is only ever sent at accept time. So the ordinary startup on
+        the real booth is: connect, `not_ready`, and then `card_state` and
+        `job_start` events naming chips the router has never heard of.
+        Without this the booth would show ONE cell for the rest of the day
+        while four chips folded behind it. Measured, not imagined: that is
+        exactly what the first live run of the quad did.
+
+        APPENDS, and never reorders. Existing slots keep their indices and
+        their state, so learning about chip 3 cannot disturb the fold cell 0
+        is in the middle of -- which is the whole reason this is a method
+        here rather than a rebuild in `ui/app.py`.
+        """
+        if card is None or isinstance(card, bool) or not isinstance(card, int):
+            return None
+        if card in self._slot_by_card:
+            return None
+        if len(self.slots) >= MAX_SLOTS:
+            # More chips than cells: fold on all of them, show the first
+            # four. The same rule `__init__` applies to an over-long list.
+            return None
+        index = len(self.slots)
+        self.cards.append(card)
+        self.slots.append(SlotState(showcase_dwell_s=self.showcase_dwell_s,
+                                    card=card))
+        self._slot_by_card[card] = index
+        self._showcase_seq.append(None)
+        self._showcase_keys.append(None)
+        return index
 
     def slot_for_job(self, job_id):
         """Which cell this job's events belong to, or None if the router

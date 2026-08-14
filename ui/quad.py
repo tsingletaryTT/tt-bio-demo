@@ -33,9 +33,15 @@ quad, so it lives on the quad.
 The toggle key
 --------------
 `QUAD_KEYS` below is this view's decided key, and the copy for the `?` card
-travels with it (`QUAD_HELP_LINE`) so the two cannot drift apart. Task 15 is
-what wires them into `ui/app.py`'s `_handle_key` and `_HELP_PANELS`; nothing
-in this module reads a keyboard.
+travels with it (`QUAD_HELP_LINE`) so the two cannot drift apart. Task 15
+wired them into `ui/app.py`'s `_handle_key` and `_HELP_PANELS`; nothing in
+this module reads a keyboard.
+
+The quad is the OPTIONAL view, not the default one: the booth still comes up
+showing one big protein. That is `set_solo_mode` below -- one widget tree,
+with the cells that are not the focus hidden -- and `Q` is what turns the
+other three on. See the comment above `set_solo_mode` for why the hero is a
+cell of this grid rather than a fifth viewer of its own.
 """
 
 import logging
@@ -358,6 +364,11 @@ class QuadView(Gtk.Grid):
 
         self._focus_slot = None
 
+        # Solo mode: the booth's DEFAULT, and what `Q` toggles off. See
+        # `set_solo_mode`.
+        self._solo_mode = True
+        self._apply_solo()
+
         # The notice: one line, spanning the whole quad, under the cells.
         # Hidden rather than emptied when there is nothing to say, so it
         # takes no vertical space at all and the cells do not resize the
@@ -456,6 +467,61 @@ class QuadView(Gtk.Grid):
             self._focus_slot = slot
         else:
             self._focus_slot = None
+        # In solo mode the focused cell is the ONE cell on screen, so moving
+        # the focus moves the hero image. Re-applied from here rather than
+        # left to the caller: two call sites that must both remember is one
+        # call site that will not.
+        self._apply_solo()
+
+    # ── solo (hero) mode ─────────────────────────────────────────────────
+    #
+    # The quad is OPTIONAL, by request: the booth comes up showing one big
+    # protein, exactly as it always has, and `Q` (ui/app.py's `QUAD_KEYS`)
+    # opens all four. That is one widget tree either way -- solo mode simply
+    # hides the cells that are not the focus, and the surviving cell expands
+    # to fill the grid.
+    #
+    # Hiding rather than building a second, separate hero viewer is the whole
+    # point. A fifth `StructureViewer` fed from "whichever cell has the
+    # focus" would need its own camera, its own hold flag and its own copy of
+    # each fold's last real structure -- four folds' worth of per-cell state
+    # back in one object, which is the exact defect this module's docstring
+    # opens by refusing. Here the hero IS cell N: same viewer, same camera,
+    # same held structure, so moving the focus cuts to a cell that is already
+    # showing its own fold rather than to an empty one.
+
+    def set_solo_mode(self, solo):
+        """Show only the focused cell (True) or all of them (False)."""
+        self._solo_mode = bool(solo)
+        self._apply_solo()
+
+    @property
+    def solo_mode(self):
+        return self._solo_mode
+
+    def _apply_solo(self):
+        """Reconcile cell visibility with the mode and the focus.
+
+        With no focus marked, solo mode falls back to cell 0 rather than
+        hiding every cell: an unfocused booth must still show a protein.
+        """
+        if not self._solo_mode:
+            for cell in self._cells:
+                cell.frame.set_visible(True)
+            return
+        hero = self._focus_slot if self._cell(self._focus_slot) is not None else 0
+        for slot, cell in enumerate(self._cells):
+            cell.frame.set_visible(slot == hero)
+
+    @property
+    def visible_slots(self):
+        """Which cells are actually on screen, in slot order.
+
+        Read back off the widgets rather than derived from the mode, for the
+        same reason `focus_slot` is: the two must not be able to disagree.
+        """
+        return tuple(slot for slot, cell in enumerate(self._cells)
+                     if cell.frame.get_visible())
 
     def has_focus_marking(self, slot):
         cell = self._cell(slot)

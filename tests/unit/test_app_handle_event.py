@@ -36,11 +36,27 @@ def test_job_error_is_logged_with_message_detail(caplog):
 
 
 def test_unhandled_event_type_logs_a_warning(caplog):
-    """A future protocol addition (e.g. card_state) must be visible in the
-    logs rather than silently dropped like job_error was before this fix."""
+    """A future protocol addition must be visible in the logs rather than
+    silently dropped like job_error was before this fix.
+
+    `card_state` used to be the example here, and is no longer one: the
+    booth reads the chip number off it to size the quad (ui/app.py's
+    `_note_card`), so it has a branch of its own. Any type this build has
+    never heard of does just as well, and does not go stale the day another
+    event grows a handler.
+    """
+    with caplog.at_level(logging.WARNING, logger="ui.app"):
+        _app()._handle_event({"type": "a_future_protocol_addition"})
+    assert any("a_future_protocol_addition" in r.message
+               for r in caplog.records)
+
+
+def test_a_card_state_is_not_logged_as_unhandled(caplog):
+    """It is handled, and an all-day booth emitting one per fold per chip
+    would otherwise write thousands of warnings about an event it acts on."""
     with caplog.at_level(logging.WARNING, logger="ui.app"):
         _app()._handle_event({"type": "card_state", "card": 0, "state": "idle"})
-    assert any("card_state" in r.message for r in caplog.records)
+    assert not [r for r in caplog.records if "unhandled" in r.message]
 
 
 def test_job_done_without_cif_path_logs_a_warning(caplog):

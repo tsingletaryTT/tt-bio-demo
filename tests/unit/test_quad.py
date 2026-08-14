@@ -473,6 +473,11 @@ def test_at_a_real_booth_size_no_label_is_ellipsized_away():
     either turns this red.
     """
     quad = QuadView(cards=[0, 1, 2, 3])
+    # All four cells on screen: a `QuadView` starts in SOLO mode (the booth's
+    # default single-protein view -- see `set_solo_mode`), and a hidden cell
+    # is allocated nothing, so every label in it reads as ellipsized. This
+    # test is about the QUAD's layout, so it asks for the quad.
+    quad.set_solo_mode(False)
     for slot, text in enumerate(_DISTINCT_CAPTIONS):
         quad.set_caption(slot, text)
     quad.set_notice("HEMOGLOBIN — NEXT UP")
@@ -716,3 +721,76 @@ def test_the_quad_renders_exactly_the_text_it_is_given_and_invents_none():
     assert quad.notice_text() == ""
     quad.set_notice("")
     assert quad.notice_text() == ""
+
+
+# ---------------------------------------------------------------------------
+# Solo mode: the booth's default single-protein view.
+#
+# The quad is OPTIONAL, by request -- one big protein is what a visitor walks
+# up to and `Q` (ui/app.py's `_handle_key`) is what opens all four. The
+# mechanism is deliberately NOT a fifth viewer fed from "whichever cell has
+# the focus": four folds' worth of camera, hold flag and last real structure
+# back in one object is the exact defect ui/quad.py's docstring opens by
+# refusing. The hero IS cell N.
+# ---------------------------------------------------------------------------
+
+def test_a_quad_starts_showing_one_cell():
+    quad = QuadView(cards=[0, 1, 2, 3])
+    assert quad.solo_mode is True
+    assert quad.visible_slots == (0,)
+
+
+def test_the_toggle_shows_all_four_and_goes_back():
+    quad = QuadView(cards=[0, 1, 2, 3])
+    quad.set_solo_mode(False)
+    assert quad.visible_slots == (0, 1, 2, 3)
+    quad.set_solo_mode(True)
+    assert len(quad.visible_slots) == 1
+
+
+def test_the_hero_is_the_focused_cell_not_always_cell_zero():
+    """The whole reason this is a solo MODE rather than "show cell 0": the
+    single large view has to follow the fold the booth is following, or a
+    visitor's pick would take the focus and the screen would keep showing
+    somebody else's protein.
+
+    Mutation this catches: hard-coding slot 0 as the hero.
+    """
+    quad = QuadView(cards=[0, 1, 2, 3])
+    quad.set_focus(2)
+    assert quad.visible_slots == (2,)
+    assert quad.chip_label_text(2) == "CHIP 2"
+
+
+def test_moving_the_focus_moves_the_hero():
+    """`set_focus` re-applies the mode itself, so no caller has to remember
+    to -- two call sites that must both remember is one that will not."""
+    quad = QuadView(cards=[0, 1, 2, 3])
+    quad.set_focus(3)
+    assert quad.visible_slots == (3,)
+    quad.set_focus(1)
+    assert quad.visible_slots == (1,)
+
+
+def test_an_unfocused_booth_still_shows_a_protein():
+    """No focus marked is ordinary -- nothing has folded yet. Hiding every
+    cell would be a black screen, which is the one outcome this project's
+    whole viewer story exists to prevent."""
+    quad = QuadView(cards=[0, 1, 2, 3])
+    quad.set_focus(None)
+    assert quad.visible_slots == (0,)
+
+
+def test_a_focus_outside_the_cells_does_not_blank_the_screen():
+    """Slot indices reach this class from wire-shaped data."""
+    quad = QuadView(cards=[0, 1])
+    quad.set_focus(9)
+    assert quad.visible_slots == (0,)
+
+
+def test_the_quad_view_shows_every_cell_whatever_the_focus_is():
+    quad = QuadView(cards=[0, 1, 2, 3])
+    quad.set_solo_mode(False)
+    quad.set_focus(2)
+    assert quad.visible_slots == (0, 1, 2, 3)
+    assert quad.has_focus_marking(2), "the focus ring is still marked in the quad"
