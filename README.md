@@ -293,13 +293,17 @@ imported, and it is load-bearing for the booth rather than a development conveni
 
 ## What it deliberately does not do yet
 
-**A visitor cannot choose what folds next.** The gallery is a catalogue of what the booth
-folds, not a queue you can jump: the socket protocol is one-way (the daemon broadcasts; the
-UI never sends), so a tap closes the gallery and returns to the fold already running. The
-daemon's priority queue exists and reserves a slot for exactly this, but the client→server
-message does not exist yet. The gallery and the `?` help card both say so on screen; nothing
-a visitor reads claims otherwise. When the protocol grows that message, `ui/app.py`'s
-`_on_pick` and the copy in `ui/gallery.py` are what change together.
+**A visitor's pick does not reach the screen yet — but the machinery underneath it now
+works.** The socket stopped being one-way at `PROTOCOL_VERSION` 3: the UI can send, the
+daemon reads, and the daemon turns a pick into queued work at the head of its priority
+queue — a path that had been dead code since Phase 3a and had literally never run. A pick
+never pre-empts a running fold; it waits, bounded by the earliest-finishing of the folds in
+flight, because tearing down mid-device-operation is a documented instability source and
+pre-empting would blank a cell someone is watching.
+
+What is still missing is the last hop: `ui/app.py`'s `_on_pick` sending it, and the gallery
+copy changing in the same commit. Until then the gallery and the `?` card both say plainly
+that a tap does not queue anything — nothing a visitor reads claims otherwise.
 
 ## What is on screen
 
