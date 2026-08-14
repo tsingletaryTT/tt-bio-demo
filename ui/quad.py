@@ -262,15 +262,27 @@ class _Cell:
         self.viewer.set_hexpand(True)
         self.viewer.set_vexpand(True)
 
+        # halign FILL + xalign 0, NOT halign START, and that is a fix rather
+        # than a preference: an ellipsizing label given `halign START` is
+        # allocated its NATURAL width, which `max-width-chars` caps -- and
+        # `max-width-chars` is an average-character estimate, so a line of
+        # capitals is cut well before the count suggests. Looking at the
+        # real thing is what caught it: cell labels rendered "CHIP …" and
+        # captions were cut mid-word ("TRYPSIN — 2…") with two thirds of the
+        # cell empty beside them. FILL hands the label the cell's width and
+        # `xalign 0` keeps the text left; ellipsizing then happens at the
+        # cell's actual edge, which is the only place it should.
         self.chip_label = Gtk.Label(label=f"CHIP {card}")
         self.chip_label.add_css_class("quad-chip-label")
-        self.chip_label.set_halign(Gtk.Align.START)
+        self.chip_label.set_halign(Gtk.Align.FILL)
+        self.chip_label.set_xalign(0.0)
         self.chip_label.set_ellipsize(Pango.EllipsizeMode.END)
         self.chip_label.set_max_width_chars(_CHIP_LABEL_MAX_CHARS)
 
         self.caption = Gtk.Label(label="")
         self.caption.add_css_class("quad-caption")
-        self.caption.set_halign(Gtk.Align.START)
+        self.caption.set_halign(Gtk.Align.FILL)
+        self.caption.set_xalign(0.0)
         self.caption.set_ellipsize(Pango.EllipsizeMode.END)
         self.caption.set_max_width_chars(_CAPTION_MAX_CHARS)
 
@@ -281,7 +293,10 @@ class _Cell:
         text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         text.append(self.chip_label)
         text.append(self.caption)
-        text.set_halign(Gtk.Align.START)
+        # FILL horizontally so the two labels above really do get the cell's
+        # width to ellipsize against; END vertically so they sit along the
+        # bottom edge rather than over the middle of the protein.
+        text.set_halign(Gtk.Align.FILL)
         text.set_valign(Gtk.Align.END)
         text.set_margin_start(10)
         text.set_margin_end(10)
@@ -349,11 +364,20 @@ class QuadView(Gtk.Grid):
         # moment a visitor taps.
         self._notice_label = Gtk.Label(label="")
         self._notice_label.add_css_class("quad-notice-text")
+        # Same FILL-and-align fix as the cell labels, centred rather than
+        # left: with `halign CENTER` the notice was cut at roughly 39
+        # capitals despite a 52-character cap, for the reason spelled out on
+        # `_Cell.__init__`. `max-width-chars` still bounds the NATURAL width
+        # -- which is the number that could widen the quad -- so the guard
+        # this file is under is unaffected.
+        self._notice_label.set_halign(Gtk.Align.FILL)
+        self._notice_label.set_xalign(0.5)
         self._notice_label.set_ellipsize(Pango.EllipsizeMode.END)
         self._notice_label.set_max_width_chars(_NOTICE_MAX_CHARS)
+        self._notice_label.set_hexpand(True)
         self._notice = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         self._notice.add_css_class("quad-notice")
-        self._notice.set_halign(Gtk.Align.CENTER)
+        self._notice.set_halign(Gtk.Align.FILL)
         self._notice.append(self._notice_label)
         self._notice.set_visible(False)
         self.attach(self._notice, 0, _NOTICE_ROW, _COLUMNS, 1)

@@ -456,6 +456,37 @@ def test_a_long_chip_label_cannot_widen_the_quad():
     assert _natural_width(wide) <= _natural_width(narrow) + 1
 
 
+def test_at_a_real_booth_size_no_label_is_ellipsized_away():
+    """FOUND BY LOOKING AT IT, and by nothing else in this file.
+
+    The first version of the quad set every label `halign START`. An
+    ellipsizing label with `halign START` is allocated its NATURAL width,
+    which `max-width-chars` caps -- and that cap is an average-character
+    estimate, so a line of capitals is cut well before the count suggests.
+    On the real booth the cells said "CHIP …" and captions were cut
+    mid-word ("TRYPSIN — 2…") with two thirds of the cell empty beside
+    them. Every test in this file stayed green: they read `get_label()`,
+    which returns the full string whatever Pango draws.
+
+    So this one allocates the quad at a real booth size and asks PANGO what
+    it actually rendered. `halign FILL` + `xalign` is the fix, and reverting
+    either turns this red.
+    """
+    quad = QuadView(cards=[0, 1, 2, 3])
+    for slot, text in enumerate(_DISTINCT_CAPTIONS):
+        quad.set_caption(slot, text)
+    quad.set_notice("HEMOGLOBIN — NEXT UP")
+    # 1368x860 is the hero slot on the booth's own 1920x1080 fullscreen
+    # window (1920 minus ui/app.py's `_SIDE_RAIL_WIDTH_PX`), i.e. the size
+    # this actually has to be right at.
+    quad.allocate(1368, 860, -1, None)
+
+    ellipsized = [label.get_label() for label in iter_labels(quad)
+                  if label.get_label() and label.get_layout().is_ellipsized()]
+    assert not ellipsized, (
+        f"cut off at a full booth width: {ellipsized}")
+
+
 def test_a_cleared_notice_takes_no_vertical_space():
     """Not merely blank: HIDDEN. A notice row that keeps its height when
     empty steals a slice of the hero image from all four cells for the whole
