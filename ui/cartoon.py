@@ -51,9 +51,15 @@ RING = 12
 #: Cross-section dimensions in angstroms: (half-width, half-thickness).
 #: A cartoon helix ribbon is a little wider than a strand's body, and both are
 #: thin; a loop is round and thin enough to read as subordinate to both.
+#: A SHEET IS WIDER THAN A HELIX, which is the convention and was backwards
+#: here until a real fold could be looked at. It matters more than it sounds:
+#: on this booth's DHFR the assignment calls 87 of 187 residues strand, so
+#: sheet is most of what a visitor sees, and a strand drawn narrower than a
+#: helix makes the two indistinguishable at booth scale -- which defeats the
+#: point of drawing a cartoon rather than a tube.
 DIMS = {
     HELIX: (1.15, 0.22),
-    STRAND: (1.00, 0.22),
+    STRAND: (1.35, 0.20),
     COIL: (0.25, 0.25),
 }
 
