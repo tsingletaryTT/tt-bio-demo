@@ -339,17 +339,21 @@ a visitor reads claims otherwise. When the protocol grows that message, `ui/app.
 | Key | What it does |
 |---|---|
 | `?` or `F1` | the help card, from any screen |
-| `D` | show/hide the diagnostics panel |
-| `Esc` | close the help card, or the diagnostics panel |
+| `D` | show/hide the diagnostics panel — the live protocol tap |
+| `T` | show/hide the Tensix activity grid, one per chip |
+| `Ctrl` + `G` | an easter egg: the Tenstorrent mark, computed on a chip |
+| `Esc` | close the help card, or either rail panel |
 | any other key, or a tap anywhere | wake the booth and show what it folds |
 | `Ctrl` + `F` | leave/return to fullscreen — for the operator |
 | `Ctrl` + `Q` | quit — for the operator |
 
 ## Not yet built
 
-Debian packaging, thumbnail art for the gallery cards, pre-cached MSAs (every shipped
-target is `msa: empty` today), and the client→server protocol message a visitor's pick
-would need — see [What it deliberately does not do yet](#what-it-deliberately-does-not-do-yet).
+Debian packaging, pre-cached MSAs (every shipped target is `msa: empty` today — which is
+why three of the four proteins come back yellow and orange), the 2×2 quad view for folding
+on all four chips at once, and the daemon side of a visitor's pick. The wire format for
+that pick exists as of `PROTOCOL_VERSION` 3; what is missing is the daemon turning one into
+work. See [What it deliberately does not do yet](#what-it-deliberately-does-not-do-yet).
 See [`docs/followups.md`](docs/followups.md) for known gotchas and
 [`docs/superpowers/plans/`](docs/superpowers/plans/) for the phase plans.
 
