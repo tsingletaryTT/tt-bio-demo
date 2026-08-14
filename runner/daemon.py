@@ -93,7 +93,7 @@ from runner.env import log_root_size, prune_log_root, runner_environ
 # writes into that directory agree on where it is without copying the path
 # into two modules.
 from runner.folder import _structures_dir_for
-from runner.pool import WorkerPool
+from runner.pool import WORKER_LOG_CAP_BYTES, WorkerPool
 from runner.preflight import not_ready_event, run_preflight
 from runner.queue import VISITOR_PRIORITY, Job, JobQueue
 from runner.server import EventServer
@@ -276,6 +276,11 @@ class Daemon:
         # not need and which `--preflight-only` has no business doing either.
         self.pool = None
         self._cards = None
+        # Both None means "derive me" (from `_structures_dir_for` and from the
+        # pool respectively); a list means a caller has overridden it. See the
+        # two properties below.
+        self._structures_dirs = None
+        self._worker_log_paths = None
         self._stop = threading.Event()
         # Set whenever something has happened that `run()`'s next pass should
         # act on immediately -- today, a visitor's pick -- and by `stop()`, so
@@ -364,9 +369,44 @@ class Daemon:
         is what lets `_prune_structures` sweep each independently: an
         oldest-first sweep over a single shared root would delete one chip's
         structures to make room for another's.
+
+        Derived by default and assignable, exactly like `cards`, so a test can
+        point the janitor at a tmp_path instead of the real system temp
+        directory a running booth is writing into.
         """
+        if self._structures_dirs is not None:
+            return list(self._structures_dirs)
         return [str(_structures_dir_for(card))
                 for card in self.cards.all_indices()]
+
+    @structures_dirs.setter
+    def structures_dirs(self, value):
+        self._structures_dirs = list(value)
+
+    @property
+    def worker_log_paths(self):
+        """Every `<log-root>/card-<n>/worker.log` the parent holds open.
+
+        Read off the pool (`WorkerPool.worker_log_paths`) rather than rebuilt
+        here from `config.log_root`, because the pool is the thing that
+        actually opened these files -- two independently-computed lists is two
+        chances for the janitor to protect a path nobody is writing to while
+        unlinking the one that is.
+
+        `[]` when there is no pool yet, or a pool that does not report any
+        (every fake in the tests). An empty protected set is the *safe*
+        default here only because it is also the honest one: no pool means no
+        held-open fds, so there is nothing for `_prune_logs` to spare.
+
+        Assignable for the same reason `cards` and `structures_dirs` are.
+        """
+        if self._worker_log_paths is not None:
+            return list(self._worker_log_paths)
+        return list(getattr(self.pool, "worker_log_paths", None) or [])
+
+    @worker_log_paths.setter
+    def worker_log_paths(self, value):
+        self._worker_log_paths = list(value)
 
     # -- the socket --------------------------------------------------------
 
@@ -598,7 +638,7 @@ class Daemon:
                 log.exception("card %s: claiming the card for %r failed",
                               card, event.get("job_id"))
 
-        self._emit(event)
+        self._emit_and_track(card, event)
 
         if kind in ("job_done", "job_error"):
             try:
@@ -607,14 +647,46 @@ class Daemon:
                 log.exception("card %s: settling %r left this card's state "
                               "stale on the wire", card, event.get("job_id"))
 
+    def _emit_and_track(self, card, event):
+        """Broadcast one worker event, first recording any file it points at.
+
+        The tracking half is what stops `_prune_structures` deleting a `.cif`
+        the UI has been told about but has not read yet: `job_done` carries a
+        `cif_path`, the UI opens it from a `GLib.idle_add` queued behind
+        whatever else is on the GTK main loop, and `ribbon_from_cif` alone
+        measured ~1.22 s on a 3000-residue structure. The record is kept **per
+        card** (`PROTECTED_STRUCTURE_COUNT`'s comment explains why a single
+        shared deque of three across four folding chips protects less than one
+        fold each), which is the whole reason this takes a `card`.
+
+        **Recorded before the broadcast, never after.** The instant an event
+        leaves this process, a UI may be reading the file it names; a janitor
+        pass that ran in the window between the broadcast and the bookkeeping
+        would see that file as unprotected. The window is small and the
+        ordering is free, so there is no reason to leave it open.
+
+        Every event goes through here, not just `job_done` -- the condition is
+        "does this event name a file", not "is this the event type that
+        currently happens to". An event with no `cif_path` is broadcast and
+        nothing is recorded.
+        """
+        cif_path = event.get("cif_path")
+        if cif_path:
+            self._recent_structures[card].append(cif_path)
+        self._emit(event)
+
     def _job_finished(self, card, event, *, failed):
-        """A fold on `card` ended: settle the target's count, free the card."""
+        """A fold on `card` ended: settle the target's count, free the card.
+
+        The `.cif` this event names was already recorded against this card by
+        `_emit_and_track`, which ran on the way out to the wire -- it is not
+        done here, because a structure must be protected from the moment a UI
+        could be reading it, not from the moment the daemon gets round to the
+        bookkeeping behind it.
+        """
         target_id = event.get("target_id") or self._in_flight.get(card)
         self._in_flight.pop(card, None)
         if not failed:
-            cif_path = event.get("cif_path")
-            if cif_path:
-                self._recent_structures[card].append(cif_path)
             if target_id is not None:
                 # A target that works is a target with no history: two
                 # failures then a success must reset the count, not creep
@@ -1038,11 +1110,88 @@ class Daemon:
 
     # -- the janitors ------------------------------------------------------
 
+    def _bound_worker_logs(self):
+        """Truncate any over-cap `worker.log` in place. Never fatal.
+
+        **The parent holds every one of these files open** -- `_SubprocessWorker`
+        opens it in append mode and hands it to `Popen` as the child's stdout
+        and stderr, for the life of that worker. That single fact is why this
+        method exists instead of letting `prune_log_root` handle them like
+        everything else under the root:
+
+        - `unlink` would remove the file's NAME and free nothing. The writer
+          keeps writing into a now-nameless inode that no directory walk can
+          see, so `log_root_size()` would report the root shrinking while the
+          disk kept filling. That is not a hypothetical: docs/followups.md
+          measured exactly this against tt-metal's own held-open
+          `mesh_workloads_log.yaml`, at 13-14 MB/s into a tmpfs, invisible to
+          the metric the daemon logged and trusted. Four workers is four more
+          chances at it.
+        - `os.truncate` is the operation that actually returns the blocks
+          while the fd stays open, and it is safe precisely because the file
+          was opened `O_APPEND`: every subsequent write seeks to the (new)
+          end first, so the writer cannot leave a sparse hole behind or write
+          past where it thinks it is.
+
+        **Truncated to zero, not to the cap.** `os.truncate(path, cap)` keeps
+        the FIRST `cap` bytes, which for a log is the wrong half -- hours-old
+        device bring-up chatter kept, and the traceback from the crash that
+        just happened thrown away. There is no in-place way to keep the tail
+        instead without racing the child that is appending to it. So the whole
+        file goes, and the daemon's own log records how much was dropped, from
+        which path: a worker that reaches `WORKER_LOG_CAP_BYTES` is a worker
+        in a repeating-error loop, and that log line is the diagnostic that
+        matters about it.
+
+        A path that does not exist yet is skipped, not created. Workers open
+        their own logs (`_SubprocessWorker.__init__`); a janitor that created
+        the file first would only be guessing at the path.
+        """
+        for path in self.worker_log_paths:
+            try:
+                size = os.path.getsize(path)
+            except OSError:
+                # Not spawned yet, already gone, or a directory that has
+                # turned strange. Nothing to bound either way.
+                continue
+            if size <= WORKER_LOG_CAP_BYTES:
+                continue
+            try:
+                os.truncate(path, 0)
+            except OSError:
+                log.warning("could not truncate %s (%.1f MB); it is still "
+                            "protected from unlinking", path, size / 1e6)
+                continue
+            log.warning("worker log %s reached %.1f MB (cap %.1f MB) and was "
+                        "truncated in place; that worker is producing output "
+                        "at a rate a healthy one does not",
+                        path, size / 1e6, WORKER_LOG_CAP_BYTES / 1e6)
+
     def _prune_logs(self):
-        """Keep tt-metal's log output inside its budget. Never fatal."""
+        """Keep tt-metal's log output inside its budget. Never fatal.
+
+        Two halves, guarded separately so a failure in either still leaves the
+        other doing its job: the held-open `worker.log` files are bounded by
+        truncation (`_bound_worker_logs`), and everything else under the root
+        is swept oldest-first by `prune_log_root` -- which is told, via
+        `protect`, that the worker logs are not its to delete.
+
+        Truncation runs FIRST. `prune_log_root` decides whether to sweep at
+        all by totalling the bytes it finds, and a 64 MB worker log it is
+        forbidden to delete would otherwise push it into deleting tt-metal
+        files to make room for something that was about to be freed anyway.
+        """
+        try:
+            self._bound_worker_logs()
+        except Exception:
+            # Same rule as below, and its own guard rather than a shared one:
+            # a booth whose worker logs cannot be bounded must still get its
+            # tt-metal tree swept.
+            log.exception("bounding the worker logs failed; continuing")
         try:
             freed, removed = prune_log_root(self.config.log_root,
-                                            self.config.log_budget_bytes)
+                                            self.config.log_budget_bytes,
+                                            protect=set(self.worker_log_paths))
             if removed:
                 log.info("log root pruned: %d file(s), %.1f MB freed, now %.1f MB",
                          len(removed), freed / 1e6,
