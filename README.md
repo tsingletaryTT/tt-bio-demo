@@ -68,6 +68,16 @@ chips — not four boards. The panel says so, because a visitor reading "4 cards
 picture the wrong machine. Folds are timed on this hardware, warm: Trp-cage **4.4 s**,
 FKBP12 **11.7 s**, DHFR **19.7 s**, trypsin **22.3 s**.
 
+**Four chips, four proteins — one protein per chip.** The booth runs one worker process per
+chip, each pinned to its own physical device, each holding its own resident copy of the
+model; press `Q` for the 2×2 quad view and you are watching four independent folds at four
+independent points in their pipelines. What that is *not* is one protein folded four times
+faster: **a single target is a single-card fold**, which is tt-bio's own documented limit and
+not something this demo works around. Four chips buy the booth four proteins at once, and
+they buy a visitor's pick a chip to land on sooner — they do not make any one fold quicker.
+Measured on this box: four workers reach "model resident, chip open" in **4.8 s** from a cold
+start, and all four then fold Trp-cage concurrently to pLDDT 95.2–95.3.
+
 ---
 
 ## Quick start
@@ -154,6 +164,7 @@ the authoritative list. The ones you are most likely to want:
 | `--playlist FILE` | `playlist/manifest.yaml` | The playlist **manifest** both processes are driven from |
 | `--targets a,b` | `trpcage` | Which manifest ids to run, for both processes |
 | `--all-targets` | off | Run every target in the manifest instead |
+| `--devices 0,2` | every detected chip | Which physical chips the booth folds on |
 | `--log-root PATH` | `<runtime-dir>/logs` | Where tt-metal's own log output is pinned |
 | `--log-budget-gb` | 2 | Sweep budget for tt-metal logs between folds |
 | `--structures-budget-gb` | 0.2 | Sweep budget for emitted `.cif` structures, per device |
@@ -190,15 +201,22 @@ also if either half's path selector matches **zero** tests, since a silently emp
 looks identical to a passing one.
 
 **The hardware half is opt-in.** `tests/integration/` opens every Tenstorrent chip on the
-box. On a shared machine that is antisocial — mutation testing alone re-runs the suite a
-dozen times per change — so it only runs with `--hw` (or `TT_BIO_DEMO_HW_TESTS=1`). The
-skip is announced before the run and restated in the verdict, so a software-only pass can
-never be mistaken for one that exercised the silicon:
+box — `test_four_workers.py` opens all four at once and folds on each. On a shared machine
+that is antisocial — mutation testing alone re-runs the suite a dozen times per change — so
+it only runs with `--hw` (or `TT_BIO_DEMO_HW_TESTS=1`). The skip is announced before the run
+and restated in the verdict, so a software-only pass can never be mistaken for one that
+exercised the silicon:
 
 ```
 hardware:    SKIPPED -- pass --hw (or TT_BIO_DEMO_HW_TESTS=1) to run them
 OVERALL: PASS (both halves green, hardware tests NOT run)
 ```
+
+`--hw` reports the four-chip test on its own line, because it runs in its own pytest
+process. That is not tidiness: a process that has opened a Tenstorrent device cannot spawn a
+child that opens one — the child deadlocks in UMD's bring-up path and never returns. The
+other hardware tests open a device in-process; this one spawns four workers. Details and
+the measurement are in [`docs/followups.md`](docs/followups.md).
 
 Anything after the flag is passed through to pytest: `./scripts/test.sh -k telemetry -v`.
 
@@ -272,10 +290,16 @@ imported, and it is load-bearing for the booth rather than a development conveni
 ## What works today
 
 - **Event protocol** — newline-delimited JSON over a Unix socket (`protocol/events.py`).
-- **Compute daemon** (`runner/`) — opens a device once and holds the model resident across
-  folds (~4.3–4.5 s warm vs. ~5.7 s cold), folds every `.yaml` in a playlist directory,
-  samples `tt-smi` for chip health and quarantines an unsafe chip rather than handing it
-  out, and contains tt-metal's own log output to a configured root with a swept budget.
+- **Compute daemon** (`runner/`) — holds no device itself; it runs **one worker process per
+  chip**, each pinned to its own physical device and holding its own resident model
+  (~4.3–4.5 s warm vs. ~5.7 s cold per fold), folds every `.yaml` in a playlist directory
+  across all four, samples `tt-smi` for chip health and quarantines an unsafe chip rather
+  than handing it out, and contains tt-metal's own log output to a configured root with a
+  swept budget. A worker that dies takes its chip and nothing else: measured on hardware
+  with `kill -9` mid-fold, the other three chips kept folding, the dead chip's cell did not
+  strand, and a replacement worker was folding again **8.7 s later** (a deliberate 5 s
+  restart delay plus 3.6 s to reopen the device and reload the model). Four resident
+  workers cost **17.9 GB** of RSS together (4.5–4.6 GB each) plus ~0.9 GB for the daemon.
 - **Renderer** (`ui/`) — streams the live diffusion point cloud, then cross-fades into a
   pLDDT-colored ribbon. Ribbon geometry is built off the GTK main loop, and multi-chain
   structures are splined per chain rather than as one continuous tube. The socket client
@@ -297,11 +321,19 @@ imported, and it is load-bearing for the booth rather than a development conveni
 UI sends a `pick`, the daemon reads it and turns it into queued work at the head of its
 priority queue, and `ui/app.py`'s `_on_pick` is the last hop that connects the tap to both.
 
-**A pick never pre-empts a running fold.** It waits at the head of the queue, bounded by
-the earliest-finishing of the four folds in flight — because tearing a fold down
-mid-device-operation is a documented instability source, and pre-empting would blank a cell
-someone is watching. In practice that is seconds, not an instant, and the copy says so:
-"next", never "now". The booth acknowledges the tap immediately, on a one-line notice under
+**A pick never pre-empts a running fold.** It goes to the head of the queue and folds on the
+**next chip to come free** — bounded by the earliest-finishing of the four folds in flight,
+never by the longest. Nothing already running is cancelled to make room, because tearing a
+fold down mid-device-operation is a documented instability source and pre-empting would blank
+a cell someone is watching. In practice that is seconds, not an instant, and the copy says
+so: "next", never "now". Measured on this box across two live sessions, pick to that
+target's dispatch in the daemon log: **0.25–5.5 s with all four chips busy** (8 samples,
+median ≈ 2 s), and **0.50 s** in the one window a booth ever has a free chip — the second
+or two at start-up before the attract loop fills them. And **most taps queue nothing at
+all**: with five targets on four chips the tapped protein is usually already folding
+(15 of 24 picks), so the cell folding it simply takes the focus. The busy-case ceiling is
+the *shortest* fold in flight, so a playlist with no short target in it would be slower —
+see [`docs/followups.md`](docs/followups.md). The booth acknowledges the tap immediately, on a one-line notice under
 the quad, so the wait never reads as a booth that ignored you; the notice says more if the
 wait runs past ten seconds, and clears the moment the picked fold starts.
 

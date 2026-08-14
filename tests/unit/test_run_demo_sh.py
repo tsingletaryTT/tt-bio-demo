@@ -83,13 +83,18 @@ def _write_stub(path, argv_log, real_python, *, sentinel, wait_for_sentinel):
     path.chmod(0o755)
 
 
-def _launch(tmp_path, *args, expect_ok=True):
+def _launch(tmp_path, *args, expect_ok=True, env_overrides=None):
     """Run the real launcher with stub interpreters. Returns (proc, runtime).
 
     `expect_ok` asserts the launch succeeded right here, with the script's
     own stderr in the message -- so a launcher that fell over is reported as
     that, rather than as a confusing missing-argv-file error several
     assertions later.
+
+    `env_overrides` is applied AFTER the scrubbing below, which is the only
+    order that works: this harness deliberately deletes the launcher's env
+    knobs so nothing leaks in from the developer's shell, and a test that is
+    specifically about one of those knobs has to be able to put it back.
     """
     prefix = tmp_path / "prefix"
     runtime = tmp_path / "xdg"
@@ -119,6 +124,11 @@ def _launch(tmp_path, *args, expect_ok=True):
     # the repo manifest) but not something to rely on accidentally -- drop
     # them entirely instead.
     del env["TT_BIO_DEMO_PLAYLIST"], env["TT_BIO_DEMO_TARGETS"]
+    # TT_BIO_DEMO_DEVICES is scrubbed for the same reason and, unlike the two
+    # above, must not merely be emptied: an empty value is itself one of the
+    # cases under test (see test_no_chip_selection_means_no_flag_at_all).
+    env.pop("TT_BIO_DEMO_DEVICES", None)
+    env.update(env_overrides or {})
 
     proc = subprocess.run(["bash", str(RUN_DEMO), *args], env=env,
                           capture_output=True, text=True, timeout=120)
@@ -254,3 +264,53 @@ def test_the_ui_is_never_launched_without_its_share_of_the_playlist(tmp_path, fl
     fallback, which is the whole bug."""
     _launch(tmp_path)
     assert flag in _argv(tmp_path, "venv-ui")
+
+
+# --- --devices (Task 18) ----------------------------------------------------
+# The daemon has had a `--devices` flag since Task 8 and the launcher had no
+# way to reach it, so the only way to run the booth on a subset of a shared
+# machine's chips was to bypass run-demo.sh and start both processes by hand.
+
+
+def test_the_chip_selection_reaches_the_daemon(tmp_path):
+    _launch(tmp_path, "--devices", "0,2", "--targets", "trpcage")
+    assert _flag(_argv(tmp_path, "venv-runner"), "--devices") == "0,2"
+
+
+def test_the_chip_selection_can_come_from_the_environment(tmp_path):
+    """Every other knob in this launcher has an env-var twin (see its header);
+    a flag that only works as a flag is one systemd's own unit file cannot
+    set."""
+    _launch(tmp_path, "--targets", "trpcage",
+            env_overrides={"TT_BIO_DEMO_DEVICES": "1,3"})
+    assert _flag(_argv(tmp_path, "venv-runner"), "--devices") == "1,3"
+
+
+def test_no_chip_selection_means_no_flag_at_all_not_an_empty_one(tmp_path):
+    """The mutation this exists to fail against: appending `--devices
+    "$DEVICES"` unconditionally.
+
+    That is not a cosmetic difference. `--devices ""` reaches the daemon as an
+    explicit selection and goes straight through to
+    `tt_bio.runtime.detect_tenstorrent_devices` (runner/daemon.py passes it
+    UNVALIDATED, on purpose), where an empty selection is a different request
+    from the default `None` -- "every detected chip". A booth that quietly
+    asked for no chips would come up serving `not_ready` forever, which looks
+    exactly like a driver problem.
+    """
+    _launch(tmp_path, "--targets", "trpcage")
+    assert "--devices" not in _argv(tmp_path, "venv-runner")
+
+
+def test_the_ui_is_not_told_which_chips_to_expect(tmp_path):
+    """The UI learns the booth's inventory from `hello`, never from argv.
+
+    A `--devices 0,1` echoed into `ui.app` would be a second source of truth
+    for "which chips exist" -- and the wrong one: a chip that fails to come up,
+    or that the pool retires mid-session (runner/pool.py's
+    WORKER_RETIRE_AFTER), still appears on a command line and no longer
+    appears in `hello`. The screen must show what the daemon has, not what the
+    operator asked for.
+    """
+    _launch(tmp_path, "--devices", "0,2", "--targets", "trpcage")
+    assert "--devices" not in _argv(tmp_path, "venv-ui")

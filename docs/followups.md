@@ -36,9 +36,135 @@ were closed by the Phase 3b branch:
   interpreter starts. The flag is back, spelled `--devices 0,1,2,3` the way
   tt-bio's own CLI spells it, and it now selects real hardware rather than
   moving a thermal counter around. See `DaemonConfig.device_ids`'s comment for
-  the full before/after, `runner/workers.py` for the pinning, and the hardware
-  spike (chip 1 at 33.0 W mid-fold against 13–17 W idle on 0/2/3) for the
-  evidence that the pinning is real.
+  the full before/after and `runner/workers.py` for the pinning. **The evidence
+  cited here used to be the spike's "chip 1 at 33.0 W mid-fold against 13–17 W
+  idle on 0/2/3"; that has been retracted — see "The spike's power evidence for
+  chip pinning does not hold" below.** The pinning is real, and what proves it is
+  `tests/integration/test_four_workers.py` plus `tt_bio.device_lease`'s flock.
+
+## From Phase 5 Task 18 — the first hardware run of the four-chip booth
+
+Everything below is measured on this QB2 (4× p300c), not reasoned about. The
+raw numbers live in `.superpowers/sdd/2026-08-13-multi-chip-folding/task-18-report.md`.
+
+- **A process that has opened a device cannot spawn a child that opens one.**
+  The sharpest finding of the task, and the one with teeth outside the test
+  suite. Once a process calls `tt_bio.tenstorrent.get_device()`, any child it
+  spawns afterwards deadlocks inside `ttnn.open_device` — parked in
+  `futex_do_wait` in UMD's cross-process bring-up path, which is exactly the
+  hang `tt_bio.tenstorrent._device_init_lock`'s own docstring was written to
+  prevent — and never returns, *while holding that host-wide init flock*, so
+  every other worker queues behind it too. It happens even though the parent's
+  `cleanup()` returned cleanly and the parent holds no `/dev/tenstorrent` fd.
+  Measured, deterministic, both directions:
+
+  | parent | child `runner.worker` becomes ready |
+  |---|---|
+  | never opened a device | **3.5 s** |
+  | opened + `cleanup()`d one first | **never — still not ready at 120 s** |
+
+  **Production is already safe, by accident of a decision made for another
+  reason.** `runner/daemon.py` holds no device at all and deliberately does not
+  import `Folder` (see its import comment) — so the process that spawns workers
+  has never opened a chip. That decision is now load-bearing for a second
+  reason nobody knew about: adding an in-process device open to the daemon
+  would not merely waste a lease, it would make **every worker respawn deadlock
+  for the rest of the session**, and Task 7's whole recovery story with it.
+  Anything that ever wants to open a device in the daemon has to fork the
+  worker pool first, or not open it at all.
+  What it cost here: `pytest tests/integration` as one process wedged four
+  workers on all four cards, because `test_egg_on_device.py` and
+  `test_real_fold.py` open a device in the pytest process and
+  `test_four_workers.py` spawns children. `scripts/test.sh` now runs the
+  child-spawning test as its own pytest invocation, and
+  `_forbid_a_poisoned_process` in that file fails in two seconds with the
+  explanation if anyone ever runs it the other way.
+  **Recovery, since `tt-smi -r` is off the table:** SIGKILL the wedged workers.
+  Verified — the kernel drops the init flock and the per-card lease on process
+  death, all four chips returned to 800 MHz, and no reset was needed.
+
+- **The spike's power evidence for chip pinning does not hold. Use `aiclk`, not
+  watts.** The Phase 5 spike concluded that a worker pinned to chip 1 really ran
+  on chip 1 because `tt-smi` showed **33.0 W on chip 1 against 13–17 W idle on
+  0/2/3**. Task 18 sampled this box's *idle* telemetry 80 chip-samples deep with
+  nothing running at all: the idle band is **12–33 W**, and 4 of those 80 samples
+  read over 30 W — including two at 33.0 W and one at 35.0 W, on chips doing
+  nothing. A single 33 W reading is therefore indistinguishable from idle, and the
+  spike's inference was luck, not evidence.
+  What *does* separate the two, with no overlap at all:
+
+  | | idle (80 samples) | four-way folding (408 chip-samples) |
+  |---|---|---|
+  | power | 12–33 W | 34–199 W (per-chip medians 79–89 W) |
+  | **aiclk** | **800 MHz, every sample** | **1281–1350 MHz, every sample** |
+  | temperature | 45–49 °C | 54–77 °C |
+
+  `aiclk` is the honest discriminator: idle is pinned at 800 MHz and a chip with
+  work on it never once dropped below 1281 MHz. Any future "is this chip actually
+  working" check should read the clock, and should read a *series* rather than one
+  sample. (Power is still the right thing to show a visitor — it is the number
+  that means something to them — but it must not be load-bearing for a claim.)
+
+- **A visitor's tap most often lands on a target that is already folding.** With
+  the shipped five-target playlist on four chips, four of the five are in flight
+  at any instant, so most picks hit a target already folding: the daemon logs
+  `pick '<id>' is already folding; queueing nothing` and the cell folding it takes
+  the focus. Measured across two live sessions: **15 of 24 picks**. This is correct
+  behaviour and it is what Task 9 and Task 17 designed for — recorded because it
+  means the *queued*-pick path is the minority case at a real booth, and anyone
+  reading only the queue code will have the frequencies backwards.
+
+- **At a running booth there is never a free chip, so every queued pick is a
+  "busy" pick.** `Daemon.run` re-enqueues the whole playlist the instant the queue
+  empties (`if len(self.queue) == 0: self._enqueue_playlist()`), so all four chips
+  are permanently occupied from the first second. The only window in which a pick
+  meets a free chip is the sub-second one during start-up, before the attract loop
+  saturates. Measured there: **0.500 s** from pick to dispatch — and even that was
+  bounded by the *next worker finishing its model load*, not by anything queue-
+  related. Busy-case picks measured **0.250 s – 5.503 s** (8 samples; median
+  ≈ 2.0 s), pick to dispatch, which brackets Task 17's 1.75–3.25 s on both sides
+  and stays nowhere near the twenty seconds the Task 18 brief asked us to watch
+  for. The tap-to-daemon hop itself is 3–24 ms (measured twice against the
+  wall-clock of the `xdotool` click), so "tap to dispatch" and "pick to dispatch"
+  are the same number to three decimal places.
+  **The ceiling is the shortest fold in flight, not the average.** The shipped
+  playlist contains Trp-cage (4.4 s) and the DNA duplex (4.6 s), so something frees
+  up constantly. A playlist made only of the 60–75 s targets would push the busy
+  case toward those numbers, and the visitor-facing copy ("starting on the next
+  free chip") would then be describing a much longer wait. Worth re-measuring
+  before shipping a playlist without a short target in it.
+
+- **The version guard stops the send but not the promise.** Verified by running
+  the real UI against a daemon whose `PROTOCOL_VERSION` was 999: the UI logs the
+  mismatch exactly once, goes `incompatible`, never reconnects, shows the neutral
+  "Preparing / Getting the booth ready" overlay, and sends **zero** picks (the
+  daemon's log confirms it received none). All of that is right.
+  What is wrong is that a tap *also* still raises the quad notice —
+  **"NEXT UP: FKBP12 — starting on the next free chip"** — on top of a booth that
+  has just decided it cannot talk to this daemon. `ui/app.py`'s `_on_pick` calls
+  `self.router.select_target(...)` *before* `_send_pick`, and `_send_pick`'s
+  `incompatible` branch returns `False` without ever unwinding that selection, so
+  `SlotRouter.pick_status` reports `queued` for a fold that was never requested.
+  The visitor reads a promise the booth has already refused to make, next to copy
+  saying the booth is not ready. Two contradictory sentences on one screen.
+  Not fixed in Task 18: it is a `ui/app.py` change and this was a hardware task
+  whose file scope was `run-demo.sh`, the README and the new hardware test. The
+  fix is small — have `_on_pick` roll the selection back (or not make it) when
+  `_send_pick` returns `False` for `incompatible` — but it needs its own test, and
+  the honest version of that test has to drive `_on_pick` with the connection
+  state set, not drive the router directly (a `SlotRouter`-only test could not
+  fail against this bug, since the router is behaving exactly as asked).
+  Screenshot: the mismatch capture in the Task 18 report.
+
+- **`kill -INT` on `run-demo.sh`'s pid alone does nothing.** The launcher's `INT`
+  trap cannot run until its foreground command (the UI) returns, and signalling
+  only bash leaves the UI untouched — the booth just keeps folding. A terminal
+  Ctrl-C works because the tty signals the whole foreground process *group*. This
+  is normal job control and not a bug in the script, but it costs an operator (or
+  an automation harness) several confused minutes: to stop the booth without a
+  terminal, signal the group — `kill -INT -$(ps -o pgid= -p <pid>)`. Worth a line
+  in the README's troubleshooting section if the booth is ever run under a
+  supervisor that stops it by pid.
 
 ## From Phase 3a — worth doing, not urgent
 

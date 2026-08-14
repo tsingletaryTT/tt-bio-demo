@@ -77,6 +77,31 @@
 # daemon that had exactly one input file — tap "Trypsin · ~74.9s" and a
 # 20-residue Trp-cage arrived four seconds later. One manifest, one target
 # list, both processes.
+#   --devices IDS                 Which physical chips the booth folds on, as
+#                                 a comma-separated list of device indices
+#                                 (e.g. `--devices 0,1`). (TT_BIO_DEMO_DEVICES)
+#                                 Default: EVERY detected chip, capped at
+#                                 runner.workers.MAX_WORKERS (4) -- which is
+#                                 what a booth wants, so this flag is for
+#                                 sharing the machine, not for running it.
+#                                 Passed straight through to the daemon's own
+#                                 --devices and from there, unvalidated by us,
+#                                 to tt_bio.runtime.detect_tenstorrent_devices,
+#                                 so `--devices 7` on a four-card box is that
+#                                 function's clear error naming the ids that do
+#                                 exist -- never a silently smaller booth.
+#                                 Omitted from the daemon's command line
+#                                 entirely when unset: `--devices ""` is not
+#                                 the same request as "every chip", and the
+#                                 daemon must not have to guess which was meant.
+#                                 NOTE the UI is NOT given this list. It learns
+#                                 which chips exist from the daemon's `hello`
+#                                 (runner/daemon.py's _hello reports the pool's
+#                                 own cards), which is the only source that can
+#                                 be right: a chip that failed to come up, or
+#                                 was retired mid-session, is a fact the daemon
+#                                 has and a command line cannot.
+#
 #   --weights DIR                 tt-bio's weights cache. (TT_BIO_DEMO_WEIGHTS)
 #                                 Default: ~/.boltz
 #   --log-budget-gb N             Forwarded to the daemon's own
@@ -110,6 +135,7 @@ LOG_ROOT="${TT_BIO_DEMO_LOG_ROOT:-${RUNTIME_DIR}/logs}"
 WEIGHTS="${TT_BIO_DEMO_WEIGHTS:-${HOME}/.boltz}"
 MANIFEST="${TT_BIO_DEMO_PLAYLIST:-${REPO_ROOT}/playlist/manifest.yaml}"
 TARGETS="${TT_BIO_DEMO_TARGETS-}"   # empty == every target in the manifest
+DEVICES="${TT_BIO_DEMO_DEVICES-}"   # empty == every chip the daemon detects
 LOG_BUDGET_GB="${TT_BIO_DEMO_LOG_BUDGET_GB:-2.0}"
 STRUCTURES_BUDGET_GB="${TT_BIO_DEMO_STRUCTURES_BUDGET_GB:-0.2}"
 
@@ -139,6 +165,7 @@ while [[ $# -gt 0 ]]; do
     --log-root)             LOG_ROOT="$2"; shift 2 ;;
     --playlist)             MANIFEST="$2"; shift 2 ;;
     --targets)              TARGETS="$2"; shift 2 ;;
+    --devices)              DEVICES="$2"; shift 2 ;;
     --all-targets)          TARGETS=""; shift ;;
     --windowed)             WINDOWED=1; shift ;;
     --weights)              WEIGHTS="$2"; shift 2 ;;
@@ -235,6 +262,7 @@ echo "run-demo.sh: socket:                                       ${SOCKET}"
 echo "run-demo.sh: playlist manifest:                            ${MANIFEST}"
 echo "run-demo.sh: targets (${PLAYLIST_COUNT}):                              ${TARGETS:-<all>}"
 echo "run-demo.sh: fold inputs built for the daemon:             ${PLAYLIST_DIR}"
+echo "run-demo.sh: chips:                                        ${DEVICES:-<all detected>}"
 echo "run-demo.sh: weights:                                      ${WEIGHTS}"
 if [[ -z "$TARGETS" || "$TARGETS" != "trpcage" ]]; then
   echo "run-demo.sh: NOTE — targets other than trpcage are 62–75s folds whose" >&2
@@ -268,11 +296,27 @@ trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
 echo "run-demo.sh: starting daemon..." >&2
+# `--devices` is appended only when the operator asked for one, as a real
+# array rather than an unquoted string: an empty DEVICES must produce NO flag
+# at all (see the header). `--devices ""` would reach
+# detect_tenstorrent_devices as an explicit empty selection, which is a
+# different request from "every chip" and not one the booth ever means.
+#
+# Spelled as an `if` rather than `[[ ... ]] && DEVICE_ARGS=(...)`: under
+# `set -e` the one-liner's exit status is that of a failed test whenever
+# DEVICES is empty, which is the common case, and relying on bash's
+# and-list exemption to not abort the launcher there is a subtlety the
+# next reader should not have to know.
+DEVICE_ARGS=()
+if [[ -n "$DEVICES" ]]; then
+  DEVICE_ARGS=(--devices "$DEVICES")
+fi
 "${VENV_RUNNER}/bin/python3" -m runner.daemon \
   --socket "$SOCKET" \
   --weights "$WEIGHTS" \
   --playlist "$PLAYLIST_DIR" \
   --log-root "$LOG_ROOT" \
+  ${DEVICE_ARGS[@]+"${DEVICE_ARGS[@]}"} \
   --log-budget-gb "$LOG_BUDGET_GB" \
   --structures-budget-gb "$STRUCTURES_BUDGET_GB" \
   >"$DAEMON_LOG" 2>&1 &

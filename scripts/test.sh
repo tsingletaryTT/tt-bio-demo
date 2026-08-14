@@ -60,6 +60,15 @@
 # directory actually exists — see run_half below — so this script does not
 # need editing the day the Phase 3a plan creates it.)
 #
+# Under --hw there is a THIRD invocation, run before the two above:
+#
+#   venv-runner/bin/python3 -m pytest tests/integration/test_four_workers.py [args...]
+#
+# It is separate for a hardware reason, not a venv one: a process that has
+# opened a Tenstorrent device cannot spawn a child that opens one, and the
+# other hardware tests open one in-process while this one spawns four workers.
+# See the long comment above HW_POOL_TEST. It gets its own line in the verdict.
+#
 # Exit status: 0 only if BOTH halves pass. Either half failing outright, OR
 # either half's selector matching zero tests (pytest's own exit code 5, "no
 # tests ran" — a selector matching nothing must be loud, not quietly green),
@@ -81,6 +90,12 @@ actually run it, and reports one combined pass/fail:
 
   venv-ui/bin/python3     -m pytest tests/unit --ignore=tests/unit/runner [args...]
   venv-runner/bin/python3 -m pytest tests/unit/runner [tests/integration] [args...]
+
+Under --hw the four-chip test (tests/integration/test_four_workers.py) runs as
+a third, separate pytest process and is reported on its own line: a process
+that has opened a Tenstorrent device cannot spawn a child that opens one, and
+the other hardware tests open one in-process. See the comment above
+HW_POOL_TEST in this script.
 
 How the split is decided: DIRECTORY. tests/unit/runner/ (and tests/integration/,
 once it exists) runs only under venv-runner; everything else in tests/unit/
@@ -214,17 +229,53 @@ run_half() {
 
 run_half UI "${VENV_UI}/bin/python3" tests/unit --ignore=tests/unit/runner
 
+# The one hardware test that spawns worker CHILDREN, and why it gets its own
+# pytest process.
+#
+# Measured on this box (Task 18, /tmp reproducer kept in that task's report):
+# once a process has opened a Tenstorrent device via
+# `tt_bio.tenstorrent.get_device()`, a child process it spawns afterwards
+# CANNOT open one. The child deadlocks inside `ttnn.open_device` -- parked in
+# `futex_do_wait` in UMD's cross-process bring-up path -- and stays there
+# forever, while holding tt-bio's host-wide device-init flock, so every other
+# worker queues behind it too. This happens even though the parent's
+# `cleanup()` returned cleanly and the parent holds no `/dev/tenstorrent` fd.
+# Numbers: a worker child spawned from a clean process is ready in 3.5 s; the
+# same child spawned from a process that had opened and closed a device was
+# still not ready after 120 s.
+#
+# tests/integration/test_egg_on_device.py and test_real_fold.py both open a
+# device IN THE PYTEST PROCESS. tests/integration/test_four_workers.py spawns
+# four worker children. Run in one pytest invocation, the first kind poisons
+# the second kind -- deterministically, and expensively (it wedges four
+# workers on all four cards until something kills them).
+#
+# So they are two invocations, child-spawner FIRST. This is not a workaround
+# for a flaky test; it is the constraint the production daemon is already
+# built around -- runner/daemon.py holds no device precisely so that the
+# process spawning workers has never opened one (see its import comment about
+# NOT importing Folder). The suite has to obey the same rule the daemon does.
+HW_POOL_TEST="tests/integration/test_four_workers.py"
 RUNNER_PATHS=(tests/unit/runner)
 HW_NOTE="not present"
+RUN_HW_POOL=0
 if [[ -d "${REPO_ROOT}/tests/integration" ]]; then
   if [[ "$RUN_HW" -eq 1 ]]; then
-    RUNNER_PATHS+=(tests/integration)
+    RUNNER_PATHS+=(tests/integration --ignore="${HW_POOL_TEST}")
+    RUN_HW_POOL=1
     HW_NOTE="INCLUDED (--hw) -- this opens every Tenstorrent card on the box"
   else
     HW_NOTE="SKIPPED -- pass --hw (or TT_BIO_DEMO_HW_TESTS=1) to run them"
   fi
   echo
   echo "hardware tests (tests/integration): ${HW_NOTE}"
+fi
+
+# First, so the process that spawns worker children is the freshest one there
+# is. See the comment above for why this cannot share a process with the
+# in-process device tests.
+if [[ "$RUN_HW_POOL" -eq 1 ]]; then
+  run_half HWPOOL "${VENV_RUNNER}/bin/python3" "$HW_POOL_TEST"
 fi
 run_half RUNNER "${VENV_RUNNER}/bin/python3" "${RUNNER_PATHS[@]}"
 
@@ -242,6 +293,18 @@ if [[ "$RUNNER_RC" -eq 0 ]]; then
 else
   echo "runner half: FAILED (exit ${RUNNER_RC})   (${RUNNER_SUMMARY})"
   overall_rc=1
+fi
+# Reported as its own line, never folded into the runner half's: it is a
+# separate pytest process for a hardware reason (see HW_POOL_TEST above), and
+# a reader has to be able to see that the four-chip test ran and passed
+# rather than infer it from a combined number.
+if [[ "$RUN_HW_POOL" -eq 1 ]]; then
+  if [[ "$HWPOOL_RC" -eq 0 ]]; then
+    echo "four-chip:   passed   (${HWPOOL_SUMMARY})"
+  else
+    echo "four-chip:   FAILED (exit ${HWPOOL_RC})   (${HWPOOL_SUMMARY})"
+    overall_rc=1
+  fi
 fi
 if [[ -d "${REPO_ROOT}/tests/integration" ]]; then
   # Restated here, not only above: by the time the suite finishes, the opt-in
