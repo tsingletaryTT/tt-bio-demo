@@ -210,6 +210,40 @@ log = logging.getLogger(__name__)
 # `missing` in any way.
 _PREPARING_MESSAGE = "Getting the booth ready. Please check back shortly."
 
+# ── what the booth says about a visitor's pick ──────────────────────────────
+#
+# One line across the whole quad (ui/quad.py's notice row), between the tap
+# and the fold that answers it. It exists because of one specific failure: a
+# visitor taps, four chips are mid-fold, and for twenty seconds the screen
+# says nothing -- at which point the booth reads as broken. So this goes up at
+# TAP TIME and waits on nothing: `SlotRouter.pick_status` decides which of
+# these to show, off the router's own knowledge, with no daemon involved.
+#
+# Every word here is constrained, and the constraints are not stylistic:
+#
+# - it says what the booth DOES -- that protein goes next -- and never
+#   promises "instantly" or "now". With four chips busy the pick starts when
+#   one frees, usually within seconds, and a claim of instant is a claim the
+#   booth breaks in front of the person most likely to be watching for it;
+# - the longer wait explains itself as the feature it is. A pick waits at the
+#   head of the daemon's queue and never pre-empts a running fold (Task 9's
+#   ruling: tearing a fold down mid-device-operation is a documented
+#   instability source, and pre-empting blanks a cell somebody is watching).
+#   That is also exactly why the other three cells keep moving, so saying it
+#   is what makes a few seconds read as deliberate rather than broken;
+# - no error text, no version numbers, no paths, ever -- a `send_pick` that
+#   fails goes to the log and the diagnostics rail and changes nothing here,
+#   because a socket being down is not the visitor's problem and is not
+#   something they can act on.
+#
+# The two lines are deliberately worded so that only the SECOND one talks
+# about the folds already running. That is what makes it more informative
+# rather than merely louder -- and it is what lets a test tell the two apart
+# by their content instead of by identity.
+_PICK_QUEUED_NOTICE = "NEXT UP: {name} — starting on the next free chip"
+_PICK_WAITING_NOTICE = ("NEXT UP: {name} — letting the folds already running "
+                        "finish first")
+
 # ── the held-structure caption ──────────────────────────────────────────────
 #
 # Two lines over the 3D view, shown only while the viewer is holding
@@ -372,11 +406,17 @@ class _SlotView:
     it finishes is "is my fold still the newest one THIS CELL knows about",
     and a job-keyed counter would answer a different question -- one whose
     answer is always yes, since a job is only ever its own newest.
+
+    `stage` is what this cell's fold is doing RIGHT NOW -- the last `stage`
+    event routed to it, cleared when its fold starts, finishes or fails. It
+    is per cell for the same reason everything else here is: four chips fold
+    at once, and one booth-wide stage would animate whichever fold spoke last
+    on all four of the Tensix panel's canvases (see `_chip_stages`).
     """
 
     __slots__ = ("awaiting_first_frame", "current_job_id", "current_target_id",
                  "shown_target_id", "has_structure", "ribbon_generation",
-                 "pending_ribbon")
+                 "pending_ribbon", "stage")
 
     def __init__(self):
         self.awaiting_first_frame = False
@@ -386,6 +426,7 @@ class _SlotView:
         self.has_structure = False
         self.ribbon_generation = 0
         self.pending_ribbon = None
+        self.stage = None
 
 
 # ── booth timing ────────────────────────────────────────────────────────────
@@ -1143,10 +1184,25 @@ _HELP_INTRO = (
     # Stated as a fact rather than an apology, and paired with what IS on
     # offer -- see ui/gallery.py's own module docstring, which carries the
     # same rule for the copy on that screen.
-    "The booth works through its proteins one after another, all day. You "
-    "can look through them at any time; asking it to fold a particular one "
-    "on demand isn't wired up yet, so what you see next is whatever it "
-    "reaches next.",
+    #
+    # The first sentence changed with Task 16 and not before: "one after
+    # another" was true of a booth folding on card 0, and four chips fold at
+    # once now.
+    # The disclosure became an offer with Task 17, in the same commit as
+    # `_on_pick` learning to send. What it must NOT become is a promise of an
+    # instant fold: with four chips busy the pick starts when one frees,
+    # usually within seconds, and "instantly" is a claim the booth breaks in
+    # front of the one visitor watching for it. The second half is the wait
+    # stated as the feature it is -- not interrupting is exactly why the
+    # other three cells keep moving.
+    #
+    # Kept to the same number of wrapped lines as the copy it replaced: the
+    # `?` card is 913px of the booth's 1080 and every line added to it costs
+    # the operator keys at the bottom of the KEYS column (see
+    # `test_the_help_card_still_fits_the_booth_s_own_screen`).
+    "The booth folds four proteins at a time, one on each chip, all day. Tap "
+    "any of them to put it next: it starts on the next chip to come free, "
+    "because the folds already running are left to finish.",
 )
 
 # Every key the booth answers to, and what it does. This table is the ONE
@@ -1201,15 +1257,22 @@ _HELP_PANELS = (
     # cut rather than left as a nice-sounding thing the screen does not
     # actually do. What IS live and per-chip is the clock number, and the
     # temperatures directly above it.
+    # Rewritten with Task 16, in the same commit as the behaviour. This
+    # paragraph was walked back once (whole-branch review, Critical 3) to say
+    # the fold "runs on one chip" and that the others "sit idle" -- true then,
+    # a lie now that all four fold at once. What it must NOT do is overshoot
+    # in the other direction: the panel counts the chips that are actually
+    # animating work, so a chip between folds really is drawn resting and the
+    # card has to say so or it promises four grids of motion at every moment.
     "Tensix activity (press T) — one animated Tensix core grid per chip, in "
-    "the same left-to-right order as the readouts above it. Only the chip actually "
-    "running this fold animates the work — a spreading ring while the model "
-    "is denoising atom positions, a steady glow while it is reasoning about "
-    "which residues touch — and the others sit idle, because today the fold "
-    "runs on one chip and the header says which. The number beside it is the "
-    "fastest clock any of these chips is running at right now, read from the "
-    "driver every second. It is a picture of the work, not a trace of "
-    "individual cores.",
+    "the same left-to-right order as the readouts above it. Each grid follows "
+    "its own chip's fold: a spreading ring while that chip is denoising atom "
+    "positions, a steady glow while it is reasoning about which residues "
+    "touch, and quiet when it is between folds. Four chips fold at the same "
+    "time, so the header says how many are working right now — or names the "
+    "one, if only one is. The number beside it is the fastest clock any of "
+    "these chips is running at, read from the driver every second. It is a "
+    "picture of the work, not a trace of individual cores.",
 )
 
 _APP_CSS_INSTALLED = False
@@ -1411,6 +1474,20 @@ class DemoApp(Gtk.Application):
         # (see `_HELP_IDLE_S`). None means "nobody has touched this booth
         # yet", which is exactly when there is nothing to time out.
         self._last_input_at = None
+
+        # The clock reading the last state tick was given (`_tick_state_at`),
+        # and when the visitor's current pick was made, on that same reading.
+        #
+        # Two separate things that both have to be the TICK's reading rather
+        # than `self._clock()`: `SlotRouter.pick_status` is asked with the
+        # tick's `now`, so a pick stamped off a different reading would have
+        # its ten-second window measured between two clocks. 0.0 rather than
+        # None because a pick before the first tick cannot happen on the real
+        # booth (it needs a window, a gallery and a touch, all of which come
+        # up after `_start_timers`) and a None here would only add a branch
+        # to every reader.
+        self._tick_now = 0.0
+        self._pick_at = 0.0
 
         # Neutral copy for the preparing overlay plus the raw `missing`
         # detail, which goes to the log and NEVER to the screen. The state
@@ -2469,6 +2546,13 @@ class DemoApp(Gtk.Application):
         # nothing at all unless its own answer changed), so running it on
         # every tick costs a comparison.
         self._sync_viewer_hold()
+        # Before the early return too, and for the same reason: the pick's
+        # status changes without the booth's state changing at all (the
+        # daemon starts the fold; the ten-second window passes; the pick
+        # expires), and a visitor standing in front of a stale banner is
+        # exactly the failure the banner exists to prevent. Idempotent --
+        # `QuadView.set_notice` no-ops on an unchanged string.
+        self._sync_quad_notice(self._tick_now)
 
         if state == previous and not force:
             return
@@ -2479,7 +2563,15 @@ class DemoApp(Gtk.Application):
                 else "viewer")
 
         if self._preparing_box is not None:
-            is_preparing = state == "preparing"
+            # `incompatible` gets the SAME neutral overlay as `not_ready`
+            # (Task 3's ruling, landed with Task 17's copy). From a visitor's
+            # side the two are one thing: a booth that is not going to fold
+            # anything for them. The two protocol version numbers that
+            # produced it go to the log and the diagnostics rail and never to
+            # the glass -- `_PREPARING_MESSAGE` is a constant and is never
+            # composed from anything.
+            is_preparing = (state == "preparing"
+                            or self._connection_state == "incompatible")
             self._preparing_box.set_visible(is_preparing)
             if is_preparing:
                 self._preparing_message_label.set_label(self.display_message)
@@ -3147,30 +3239,175 @@ class DemoApp(Gtk.Application):
             self._set_chipviz_visible(False)
 
     def _on_pick(self, target_id):
-        """A visitor picked a target off the gallery.
+        """A visitor picked a target off the gallery, and the booth asks the
+        daemon to fold it next.
 
-        The pick drives the state machine and closes the gallery. It does
-        NOT yet reach the daemon: the socket protocol is one-way
-        (runner/server.py broadcasts; there is no client->server message),
-        so the daemon's priority queue -- which exists and reserves a
-        higher priority for exactly this -- cannot currently be reached
-        from here. Logged, and recorded as a known gap in this task's
-        report; the booth still shows the visitor the fold that is running.
+        Four things, in this order, and the order is the design:
 
-        Every visitor-facing string that used to contradict this paragraph
-        has been reworded (whole-branch review, Critical 2): the gallery
-        says what it is rather than "TAP TO FOLD", and the help card says
-        plainly that picking on demand is not wired up. If this method ever
-        DOES reach the daemon, that copy is what changes with it --
-        ui/gallery.py's module docstring and `_HELP_INTRO` above both point
-        back here.
+        1. the ROUTER is told first (`select_target`). It is what decides the
+           focus and what the booth says about the pick, and it must know
+           before anything below can reconcile the screen against it.
+        2. the STATE MACHINE closes the gallery, exactly as it always did.
+        3. the DAEMON is asked (`_send_pick`), guarded. The request is a
+           request: the daemon takes it at the head of its priority queue
+           (Task 9) and dispatches it to the next chip to free, and it
+           deliberately does NOT pre-empt a fold already running -- tearing a
+           fold down mid-device-operation is a documented instability source,
+           and pre-empting would blank a cell somebody is watching. With four
+           chips the wait is bounded by the earliest-finishing of four folds.
+        4. the SCREEN is reconciled, which puts the acknowledgement up.
+
+        Nothing here waits on the daemon answering, and that is the whole
+        point of the ordering: the acknowledgement is on screen at tap time
+        whether the socket is healthy, wedged or absent. A visitor who taps
+        and sees nothing concludes the booth is broken, and they are the one
+        person in the room guaranteed to be watching.
+
+        A failed send costs nothing visible. It is logged and it reaches the
+        diagnostics rail; it never reaches the glass (see
+        `_PICK_QUEUED_NOTICE`).
         """
         log.info("visitor picked %s", target_id)
         self._note_input()
         self._note_diagnostics(
             self.diagnostics.note, f"visitor picked {target_id}", KIND_MARK)
+        if self.router is not None:
+            # The SAME clock reading the state tick uses, kept in
+            # `_tick_now`. A pick stamped off `self._clock()` while
+            # `pick_status` is asked with the tick's reading would measure
+            # the ten-second window between two different clocks, and the
+            # booth would announce a long wait for a pick made a moment ago.
+            self.router.select_target(target_id, now=self._tick_now)
+            # Recorded here too, and from the same reading, because the
+            # expiry below needs it and reaching into the router's private
+            # `_selected_at` for it would be a second source of truth for one
+            # number.
+            self._pick_at = self._tick_now
         self.states.on_pick(target_id)
+        self._send_pick(target_id)
         self._sync_to_state()
+        # The focus rule is the router's (ui/slots.py) and this is what
+        # applies it. It matters at tap time for exactly one case, and it is
+        # the case that would otherwise do nothing at all: a pick for a
+        # target ALREADY folding. The daemon queues nothing then, so a UI
+        # that waited for a `job_start` would wait forever.
+        self._sync_focus()
+
+    def _send_pick(self, target_id):
+        """Ask the daemon to fold `target_id` next. Returns whether it queued.
+
+        Its own method so the three "nobody is going to answer" paths are one
+        branch each rather than a `getattr` chain inside `_on_pick`, and so a
+        test can drive every answer without a socket. The shape (and the
+        reasoning) is `_ask_for_an_egg`'s.
+
+        Nothing is sent to a daemon this build has refused to interpret. That
+        is not merely tidy: talking to it anyway would be the booth promising
+        "your tap folds this" to a daemon on the other end that has no idea
+        how to honour it. `EventClient.send` refuses too, but the guard
+        belongs here as well -- the UI should not be forming the request at
+        all once it has declared it cannot speak to this daemon.
+        """
+        if self._connection_state == "incompatible":
+            log.info("not asking a daemon this build cannot interpret to "
+                     "fold %s", target_id)
+            return False
+        client = getattr(self, "_client", None)
+        if client is None:
+            return False
+        try:
+            return bool(client.send_pick(target_id))
+        except Exception:
+            # `send_pick` promises not to raise; this is the belt-and-braces
+            # every GLib callback in this file wears, because an exception
+            # here would freeze the gallery's tap handler for the life of the
+            # process. The message may name a socket path and must never
+            # reach a screen -- `log.exception` is the whole of its audience.
+            log.exception("could not ask the daemon to fold %s", target_id)
+            return False
+
+    def _sync_quad_notice(self, now):
+        """Say one thing across the quad about the visitor's pick, or stop
+        saying it.
+
+        Driven ENTIRELY by `SlotRouter.pick_status(now)` -- see ui/slots.py,
+        which owns that rule and explains why it is decided there. A second
+        opinion here about whether a pick has started is how the screen and
+        the daemon end up disagreeing, and it is also how the booth ends up
+        announcing NEXT UP over the protein it is already folding.
+
+        `folding` and `None` both clear it: once the pick has become the
+        thing on screen there is nothing left to announce, and a banner still
+        naming it is the booth talking over itself.
+        """
+        if self.quad is None or self.router is None:
+            return
+        try:
+            status = self.router.pick_status(now)
+        except Exception:
+            log.exception("pick status unavailable; clearing the notice")
+            status = None
+        if status == "queued":
+            text = _PICK_QUEUED_NOTICE.format(
+                name=self._pick_display_name(self.router.selected_target))
+        elif status == "waiting":
+            text = _PICK_WAITING_NOTICE.format(
+                name=self._pick_display_name(self.router.selected_target))
+        else:
+            text = None
+        try:
+            self.quad.set_notice(text)
+        except Exception:
+            log.exception("quad notice update dropped")
+
+    def _pick_display_name(self, target_id):
+        """What to CALL the visitor's pick on screen.
+
+        `_target_name` deliberately refuses to fall back to the raw id --
+        ids are wire data and read like internals (`trpcage_no_msa`). This
+        one does fall back, and the difference is deliberate: the visitor
+        just tapped a card, so the booth naming something else, or nothing,
+        would be worse than naming it plainly. Underscores and hyphens become
+        spaces so the fallback reads as words rather than as a filename.
+
+        A fallback only happens when the playlist has changed under a running
+        booth; on the ordinary path the playlist's own display name wins.
+        """
+        name = self._target_name(target_id)
+        if name:
+            return name
+        return str(target_id or "").replace("_", " ").replace("-", " ").strip()
+
+    def _expire_stale_pick(self, now):
+        """Let go of a pick the daemon never started.
+
+        A visitor who picks and walks away must not pin the focus, or the
+        notice, for the rest of the day.
+
+        The number is the booth's own idle timeout and NOT a second one:
+        `self.states.idle_timeout_s` is already "how long before the booth
+        decides the visitor has gone", and a separate constant here would be
+        a second thing to get wrong and to drift. It rides the existing 100ms
+        state tick for the same reason -- no second timer.
+
+        A pick that IS being folded is never expired here. It is released by
+        ui/slots.py when the cell holding it stops (Task 12), which is the
+        right moment: expiring it early would drop the focus off the hero
+        mid-fold.
+        """
+        if self.router is None or self.router.selected_target is None:
+            return
+        try:
+            if self.router.pick_status(now) == "folding":
+                return
+        except Exception:
+            log.exception("pick status unavailable while expiring a pick")
+            return
+        if (now - self._pick_at) < self.states.idle_timeout_s:
+            return
+        log.info("visitor's pick %r expired after %.0fs with no fold",
+                 self.router.selected_target, now - self._pick_at)
+        self.router.release_target()
 
     # ── GLib sources ─────────────────────────────────────────────────────
 
@@ -3218,7 +3455,14 @@ class DemoApp(Gtk.Application):
         drives this directly wants a failure to be visible rather than
         logged.
         """
+        # Stamped before anything reads it: `_on_pick` uses this to time the
+        # visitor's pick on the same clock `pick_status` is asked with, and
+        # `_sync_to_state` uses it to decide what the notice says.
+        self._tick_now = now
         self.states.tick(now)
+        # Before the router's own tick, so a pick that has just expired
+        # cannot be reported as still queued for one more frame.
+        self._expire_stale_pick(now)
         # Every cell's own dwell, and ONLY the cells that actually moved.
         # This is called at UI frame rate; re-captioning and re-draining all
         # four on every tick would repaint the whole quad a hundred times a
@@ -3253,6 +3497,12 @@ class DemoApp(Gtk.Application):
                 self.pipeline_panel.tick()
             except Exception:
                 log.exception("pipeline staleness check dropped")
+        # The Tensix panel's own staleness check, on the same tick and for
+        # the same reason: a daemon that dies mid-fold would otherwise leave
+        # four core grids animating "denoising" for the rest of the day. See
+        # ui/chipviz.py's STAGE_STALE_AFTER_S; the panel owns the clock and
+        # the threshold, this only gives it a chance to look.
+        self._tick_chipviz_staleness()
         # The diagnostics panel repaints from here rather than from
         # every appended line: a 30Hz frame stream would otherwise
         # re-label twenty rows thirty times a second to show a list a
@@ -3365,19 +3615,36 @@ class DemoApp(Gtk.Application):
             self._sync_to_state()
             self._note_diagnostics(self.diagnostics.note_event, event)
             # Re-aim the Tensix animation. A `stage` event carries the one
-            # thing that says what the SILICON is doing; every other event
-            # only refreshes the booth state (which is what turns the
-            # animation off while the daemon is `preparing`). See
+            # thing that says what a chip's SILICON is doing; the three
+            # lifecycle events say that a chip's fold has begun or ended, and
+            # every other event only refreshes the booth state (which is what
+            # turns the animation off while the daemon is `preparing`). See
             # ui/chipviz.py's `viz_mode` for why the stage, not the screen,
             # decides.
-            self._sync_chipviz(
-                event.get("stage") if kind == "stage" else None,
-                # Only job_start carries which chip claimed the fold, and
-                # that is what lets the panel animate THAT chip rather than
-                # claiming all four are working. Passing None for every
-                # other event leaves the last attribution in place, which
-                # is correct for the stage events that follow.
-                card=event.get("card") if kind == "job_start" else None)
+            #
+            # PER CELL, and that is the load-bearing word. Four chips fold at
+            # once, so one booth-wide stage would be the same claim the panel
+            # was walked back for (Critical 3): whichever fold sent the last
+            # `stage` event would be animated on all four canvases. Each
+            # cell's own stage is stored on its own `_SlotView` and the panel
+            # is handed the whole picture below.
+            if kind in ("stage", "job_start", "job_done", "job_error"):
+                view = self._slot_view(slot)
+                if view is not None:
+                    # `job_start` clears it as surely as `job_done` does: a
+                    # fold that has begun but has not said what it is doing
+                    # yet is not folding on silicon (it is in `msa`/`prep`,
+                    # both host-side), and inheriting the PREVIOUS fold's
+                    # stage would animate denoising for a fold that has not
+                    # reached it.
+                    view.stage = (event.get("stage") if kind == "stage"
+                                  else None)
+            elif kind == "not_ready":
+                # The daemon has stopped folding entirely -- every cell, not
+                # just one.
+                for view in self._slots:
+                    view.stage = None
+            self._sync_chipviz()
 
             if kind == "job_start":
                 log.info("folding %s (%s residues) on chip %s",
@@ -3608,9 +3875,31 @@ class DemoApp(Gtk.Application):
         except Exception:
             log.exception("quad caption for slot %r dropped", slot)
 
-    def _sync_chipviz(self, stage=None, card=None):
-        """Tell the Tensix activity panel what the booth is doing, and
-        (when a `job_start` just said so) which chip is doing it.
+    def _chip_stages(self):
+        """`{chip index: that chip's own current stage}` for every cell.
+
+        The mapping the Tensix panel wants (ui/chipviz.py's
+        `set_chip_stages`), built from the only place that knows it: each
+        cell's own `_SlotView.stage`, set by that cell's `stage` events and
+        cleared when its fold starts, ends or fails. A cell between folds
+        contributes `None`, which the panel draws as a resting chip.
+
+        Keyed by CHIP, not by slot. `self.cards` is the daemon's own card
+        list in the order the cells were built, and the panel's canvases are
+        in `chip_dirs()` order -- the same left-to-right order the telemetry
+        readouts above it use. Handing it slot indices instead would put chip
+        2's fold under chip 0's thermometer on any booth whose card list does
+        not happen to start at zero.
+        """
+        stages = {}
+        for slot, view in enumerate(self._slots):
+            if slot < len(self.cards):
+                stages[self.cards[slot]] = view.stage
+        return stages
+
+    def _sync_chipviz(self):
+        """Tell the Tensix activity panel what the booth is doing and which
+        chips are doing what.
 
         Its own guard, for the same reason `_note_diagnostics` has one: an
         animation is the least important thing happening in `_handle_event`,
@@ -3623,11 +3912,26 @@ class DemoApp(Gtk.Application):
         if self.chipviz_panel is None:
             return
         try:
-            if card is not None:
-                self.chipviz_panel.set_folding_chip(card)
-            self.chipviz_panel.set_mode(self.states.state, stage)
+            self.chipviz_panel.set_state(self.states.state)
+            self.chipviz_panel.set_chip_stages(self._chip_stages())
         except Exception:
             log.exception("Tensix activity panel update dropped")
+
+    def _tick_chipviz_staleness(self):
+        """Give the Tensix panel a chance to stand down a chip nothing has
+        said anything about for a while (ui/chipviz.py's
+        `STAGE_STALE_AFTER_S`).
+
+        On the state tick rather than on events, because the case it exists
+        for is precisely that no more events are coming. Guarded like every
+        other panel call for the reason `_sync_chipviz` spells out.
+        """
+        if self.chipviz_panel is None:
+            return
+        try:
+            self.chipviz_panel.tick_staleness()
+        except Exception:
+            log.exception("Tensix activity staleness check dropped")
 
     def _note_dropped(self, key, message):
         """Log a failure that can repeat every frame, without flooding.
@@ -3954,11 +4258,25 @@ class DemoApp(Gtk.Application):
             # that follows a reconnect does not come up claiming the socket
             # is still down.
             self._connection_state = state
+            if state == "incompatible":
+                # This build has refused to interpret this daemon's protocol
+                # (ui/client.py sets it and never retries), so nothing is
+                # ever going to fold. To a visitor that is the same thing as
+                # `not_ready`, and it gets the same neutral words: the
+                # version numbers are in the log line ui/client.py already
+                # wrote and in the diagnostics rail, and they never reach the
+                # glass. `_sync_to_state` below is what puts the overlay up.
+                self.display_message = _PREPARING_MESSAGE
             if self.quad is not None:
                 # EVERY cell (`QuadView.set_connection_state`): a quad where
                 # one cell knows the daemon is gone and three do not is worse
                 # than one where none of them do.
                 self.quad.set_connection_state(state)
+            # The overlay is decided in one place, and a connection state is
+            # not a booth state -- so this has to ask for the reconcile
+            # explicitly, with `force`, since `self.states.state` has not
+            # moved.
+            self._sync_to_state(force=True)
         except Exception:
             log.exception("dropping unrecognized connection state %r", state)
         return False
