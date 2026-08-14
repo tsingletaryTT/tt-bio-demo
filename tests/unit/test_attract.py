@@ -52,8 +52,10 @@ def test_the_threshold_is_longer_than_the_booths_own_idle_timeout():
 # ── the score itself ────────────────────────────────────────────────────────
 
 def test_it_opens_and_then_closes_both_panels():
+    panels = {OPEN_DIAGNOSTICS, CLOSE_DIAGNOSTICS, OPEN_TENSIX, CLOSE_TENSIX}
     ch = Choreography()
-    seq = [a for _, a in _run(ch, until=START_AFTER_IDLE_S + CYCLE_S - 1)]
+    seq = [a for _, a in _run(ch, until=START_AFTER_IDLE_S + CYCLE_S - 1)
+           if a in panels]
     assert seq == [OPEN_DIAGNOSTICS, CLOSE_DIAGNOSTICS, OPEN_TENSIX, CLOSE_TENSIX], seq
 
 
@@ -174,3 +176,35 @@ def test_ticking_costs_nothing_when_the_booth_is_busy():
     ch = Choreography()
     for t in range(0, 40):
         assert ch.tick(float(t), idle_s=0.0) == []
+
+
+# ── the menu ────────────────────────────────────────────────────────────────
+
+def test_the_gallery_is_shown_and_then_put_away():
+    from ui.attract import HIDE_GALLERY, SHOW_GALLERY
+    ch = Choreography()
+    seq = [a for _, a in _run(ch, until=START_AFTER_IDLE_S + CYCLE_S - 1)]
+    assert SHOW_GALLERY in seq, seq
+    assert seq.index(HIDE_GALLERY) > seq.index(SHOW_GALLERY), seq
+
+
+def test_the_gallery_is_the_briefest_cue():
+    """It is the only one that REPLACES the protein rather than sitting
+    beside it, and the protein is what people stop for."""
+    from ui.attract import (CLOSE_DIAGNOSTICS, HIDE_GALLERY, OPEN_DIAGNOSTICS,
+                            SHOW_GALLERY)
+    at = dict((a, o) for o, a in SCORE)
+    gallery = at[HIDE_GALLERY] - at[SHOW_GALLERY]
+    panel = at[CLOSE_DIAGNOSTICS] - at[OPEN_DIAGNOSTICS]
+    assert gallery < panel, f"gallery {gallery}s is not briefer than {panel}s"
+
+
+def test_an_interruption_puts_the_gallery_away_too():
+    from ui.attract import HIDE_GALLERY
+    ch = Choreography()
+    # Run the cycle rather than jumping to the cue: the first tick after the
+    # idle threshold STARTS the cycle, so a single late tick would only fire
+    # the cue at offset zero.
+    _run(ch, until=START_AFTER_IDLE_S + 70)
+    assert ch.owns("gallery")
+    assert HIDE_GALLERY in ch.interrupted()

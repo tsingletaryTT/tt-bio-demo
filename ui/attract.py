@@ -50,6 +50,8 @@ log = logging.getLogger(__name__)
 # stop for. A booth that flickered panels every few seconds would be a booth
 # nobody could photograph.
 
+SHOW_GALLERY = "show_gallery"
+HIDE_GALLERY = "hide_gallery"
 OPEN_DIAGNOSTICS = "open_diagnostics"
 CLOSE_DIAGNOSTICS = "close_diagnostics"
 OPEN_TENSIX = "open_tensix"
@@ -68,6 +70,14 @@ SCORE = (
     (18.0, CLOSE_DIAGNOSTICS),
     (33.0, OPEN_TENSIX),
     (51.0, CLOSE_TENSIX),
+    # The menu, last in the cycle and briefest of the three. A visitor who
+    # never touches the booth has no way of learning it can be driven at all,
+    # so it shows them -- but the gallery is the one cue that replaces the
+    # protein rather than sitting beside it, and the protein is what people
+    # stop for. Eight seconds is long enough to register "I could pick one"
+    # and short enough not to interrupt a fold anybody is watching.
+    (66.0, SHOW_GALLERY),
+    (74.0, HIDE_GALLERY),
 )
 CYCLE_S = 90.0
 
@@ -169,6 +179,14 @@ class Choreography:
                 return None
             self._owned.discard("tensix")
             return action
+        if action == SHOW_GALLERY:
+            self._owned.add("gallery")
+            return action
+        if action == HIDE_GALLERY:
+            if "gallery" not in self._owned:
+                return None
+            self._owned.discard("gallery")
+            return action
         return action
 
     def disown(self, panel):
@@ -190,6 +208,13 @@ class Choreography:
             closes.append(CLOSE_DIAGNOSTICS)
         if "tensix" in self._owned:
             closes.append(CLOSE_TENSIX)
+        if "gallery" in self._owned:
+            # A visitor arriving mid-showcase gets the gallery they can see,
+            # not one yanked away -- but the booth must not be left believing
+            # IT opened the menu, so ownership is released either way. The
+            # caller decides what to do with a gallery a visitor is now
+            # looking at; see `ui/app.py`.
+            closes.append(HIDE_GALLERY)
         self._owned.clear()
         if self._cycle_start is not None:
             log.info("attract choreography interrupted by input")
