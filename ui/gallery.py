@@ -1,21 +1,31 @@
 """The booth's gallery: what this booth folds, and what tapping one does.
 
-WHAT A TAP ACTUALLY DOES TODAY -- read this before editing any copy in
-this file. A tap calls `on_pick(target_id)`, which ui/app.py logs and hands
-to the state machine, which closes the gallery and puts the live fold back
-on screen. It does NOT reach the daemon: the socket protocol is one-way
-(runner/server.py broadcasts; ui/client.py never sends), so the daemon's
-priority queue -- which exists, and reserves a higher priority for exactly
-this -- cannot be reached from here yet. The daemon keeps working through
-its playlist in its own order regardless.
+WHAT A TAP ACTUALLY DOES -- read this before editing any copy in this file.
+A tap calls `on_pick(target_id)`, which ui/app.py hands to the state machine
+(closing this screen and putting the live folds back up), to the slot router
+(which is what moves the focus to the pick and what the booth says about it),
+and to the daemon as a `pick` message. The daemon takes it at the head of its
+priority queue and dispatches it to the next chip to come free.
 
-Every visitor-facing string in this module used to contradict that
-("TAP TO FOLD", a `Fold {name}` tooltip), which the whole-branch review
-called out as the booth promising a capability it does not have. The copy
-here now says what the screen genuinely is: a catalogue of what the booth
-folds, with a plainly-stated note that choosing one on demand is not wired
-up. When the protocol grows a client->server message, this is the copy to
-change back -- not before.
+What a tap does NOT do, and what the copy here must therefore not promise:
+it does not interrupt anything. The folds already running are left to finish
+-- tearing one down mid-device-operation is a documented instability source,
+and pre-empting would blank a cell somebody is watching -- so a pick starts
+in seconds rather than instantly, bounded by the earliest-finishing of four
+folds. "Next", never "now". That wait is also exactly why the other three
+cells keep moving, which is worth saying rather than apologising for.
+
+This copy has been wrong in both directions and the history is the reason it
+is written out here. It first over-promised ("TAP TO FOLD", a `Fold {name}`
+tooltip) back when the socket carried nothing but the daemon's own
+broadcasts, which the whole-branch review called out as the booth promising a
+capability it did not have; it was then walked back to a catalogue with a
+plainly-stated note that choosing one was not wired up. Task 3 gave the
+protocol a client->server message, Task 9 gave the daemon the dispatch, and
+Task 17 connected the tap to both -- so the walked-back copy became the
+opposite lie and changed back in that same commit. The rule that survives
+both mistakes: this copy and `ui/app.py`'s `_on_pick` move together, in one
+commit, in whichever direction.
 
 Two things, kept deliberately separate per the task brief ("keep the pure
 part small and real: grid_shape decides layout and is tested; the widget
@@ -407,22 +417,32 @@ def _ensure_css_installed():
 # Visitor-facing copy for the screen as a whole.
 #
 # True as written, and checked against what the code actually does -- see
-# this module's docstring: a tap closes this screen and returns to the live
-# fold, and nothing a visitor presses here changes what the daemon folds
-# next. The second sentence is the disclosure, deliberately stated as a
-# fact about the booth rather than as an apology; the invitation ("watch
-# it happen") is what a visitor is actually being offered, and it is real.
+# this module's docstring. Three claims, each one the booth can back up:
+# four chips fold at once (Phase 5, measured); a tap puts that protein next
+# (Task 17, `ui/app.py`'s `_on_pick` -> `EventClient.send_pick`); and the
+# folds already running are left to finish, which is why the wait exists and
+# why the other cells keep moving.
+#
+# What is deliberately absent: "instantly", "now", "straight away". The pick
+# starts on the next chip to come free, usually within seconds, and the one
+# visitor who times it is the one who would catch the booth in the claim.
 # ---------------------------------------------------------------------------
 _CAPTION_TITLE = "What this booth folds"
 _CAPTION_BODY = (
-    "It works through these one after another, all day, on the Tenstorrent "
-    "chips a few feet away. Tap anything to go back and watch the fold that "
-    "is running right now — asking for one on demand isn't wired up yet."
+    "Four of these are folding at once, one on each Tenstorrent chip a few "
+    "feet away. Tap any of them to put it next: it starts on the chip that "
+    "finishes first, because the folds already running are left to finish "
+    "rather than interrupted."
 )
 
-# The per-card line, in the same place the old "TAP TO FOLD" sat. A
-# statement about the target, not an instruction that over-promises.
-_CARD_HINT = "IN THE ROTATION"
+# The per-card line, in the same place the old "TAP TO FOLD" sat.
+#
+# It has been all three things this feature has been. "TAP TO FOLD" promised
+# a capability the booth did not have; "IN THE ROTATION" was the walk-back to
+# a plain statement about the target; this is the instruction again, now that
+# a tap really does put that protein next -- and worded as "next" rather than
+# "now" for the reason above.
+_CARD_HINT = "TAP TO FOLD NEXT"
 
 
 # ---------------------------------------------------------------------------

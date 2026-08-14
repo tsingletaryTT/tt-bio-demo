@@ -122,9 +122,13 @@ STAGE_TEACHING = {
         "# msa: line up evolutionary relatives of the sequence --",
         "#   residues that co-evolve tend to touch in 3D.",
     ),
+    # "this fold", not "the fold": four folds run at once, each on its own
+    # chip, so a line that says "the chip that will run the fold" reads as a
+    # booth with one chip in it -- the same claim the Tensix panel and the
+    # help card were both corrected for in Task 16.
     "prep": (
         "# prep: sequence and features become tensors, laid out",
-        "#   for the Tenstorrent chip that will run the fold.",
+        "#   for the Tenstorrent chip that will run this fold.",
     ),
     "trunk": (
         "# trunk: 10 refinement cycles build the model's map of",
