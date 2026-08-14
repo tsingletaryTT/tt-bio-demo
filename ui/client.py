@@ -77,6 +77,86 @@ class LatestFrame:
             return frame
 
 
+class LatestFrameByJob:
+    """`LatestFrame`'s contract, once per `job_id`.
+
+    Four chips fold at once, so there are up to four live frame streams and
+    one shared slot is exactly wrong for them: whichever fold happened to be
+    fastest would overwrite the other three every drain, and every cell on
+    screen would show that one fold's coordinates. Latest-wins is still the
+    right rule -- a diffusion frame is advisory, and the newest coordinates
+    for a fold beat a backlog of its older ones -- so it is applied PER
+    FOLD rather than abandoned.
+
+    It lives beside `LatestFrame` because this is where that argument (and
+    the one-slot buffer it produced) already lives, and because a second
+    module holding half of it is a second place for the two halves to drift.
+
+    Bounded, deliberately. An all-day booth folds thousands of jobs and a
+    dict that remembered every one is a leak with a screen attached; a job
+    that stopped producing frames an hour ago has nothing anyone wants to
+    draw. Past `max_jobs`, the OLDEST job's slot is evicted -- oldest by
+    when it last produced a frame, which is the only ordering this class can
+    honestly know.
+
+    Thread-safe the same way `LatestFrame` is: `put` runs on the socket
+    reader thread, `take_all` on the GTK main loop.
+    """
+
+    def __init__(self, max_jobs=8):
+        self._lock = threading.Lock()
+        # job_id -> newest event for that job, least-recently-written first.
+        self._frames = collections.OrderedDict()
+        self.max_jobs = max(1, int(max_jobs))
+        self.dropped = 0
+
+    def __len__(self):
+        """How many jobs currently have a frame waiting.
+
+        Public because the bound is a BEHAVIOUR: a test that reached into
+        `_frames` would be testing something adjacent to it (this project's
+        recurring test defect -- docs/followups.md).
+        """
+        with self._lock:
+            return len(self._frames)
+
+    def put(self, event):
+        """Keep this frame as its job's newest, evicting an old job if need be.
+
+        A frame with no `job_id` gets its own slot under `None`. It cannot be
+        routed to a cell (`SlotRouter` binds job ids to cells, and only
+        `job_start` carries a `card`), so ui/app.py drops it at drain time --
+        but dropping it HERE would mean the buffer silently disagreed with
+        the caller about what "latest wins" applies to.
+        """
+        job_id = event.get("job_id") if hasattr(event, "get") else None
+        with self._lock:
+            if job_id in self._frames:
+                # Superseded before it was ever drawn -- the ordinary case at
+                # 30Hz, counted for the same reason `LatestFrame` counts it.
+                self.dropped += 1
+                del self._frames[job_id]
+            self._frames[job_id] = event
+            while len(self._frames) > self.max_jobs:
+                self._frames.popitem(last=False)
+                self.dropped += 1
+
+    def take_all(self):
+        """Every job's newest frame, as `{job_id: event}`, emptying the buffer.
+
+        All of them in one call rather than one job at a time: the caller
+        draws four cells from one drain, and asking per job would make the
+        set of jobs it has to ask about a second thing to keep right.
+        A caller that decides not to draw one of them (a cell holding a
+        finished structure) puts that frame back -- see ui/app.py's
+        `_drain_frames`, where suppressed-not-discarded is the rule that lets
+        a cell cut straight to live diffusion when its dwell expires.
+        """
+        with self._lock:
+            frames, self._frames = dict(self._frames), collections.OrderedDict()
+            return frames
+
+
 class EventClient:
     """Connects to the runner, decodes events, reconnects when dropped.
 

@@ -50,8 +50,8 @@ from ui.playlist import Target
 # re-declared: what a `FakeViewer` models is one decision (see that file's
 # module docstring), and a second copy of it here is exactly the drift
 # docs/followups.md warns about.
-from test_app_wiring import (
-    FakeClock, _app, _job_done, _job_start, _land_ribbon, fake_ribbon,  # noqa: F401
+from test_app_wiring import (  # noqa: F401
+    FakeClock, _app, _cell, _job_done, _job_start, _land_ribbon, fake_ribbon,
 )
 
 _FIXTURE = (pathlib.Path(__file__).resolve().parents[1]
@@ -142,9 +142,9 @@ def _fold_to_a_finished_ribbon(app, *, job_id, target_id, coords):
     _deliver(app, _frame(job_id, coords))
     app._handle_event(_job_done(job_id))
     _land_ribbon(app)
-    assert app.viewer.shown is not None and app.viewer.shown[0] == "ribbon", \
+    assert _cell(app).shown is not None and _cell(app).shown[0] == "ribbon", \
         "setup failed: the fold did not end with a ribbon on screen"
-    return app.viewer.shown
+    return _cell(app).shown
 
 
 # ---------------------------------------------------------------------------
@@ -179,9 +179,9 @@ def test_a_long_silent_trunk_holds_the_previous_structure_instead_of_going_black
     blank_at = []
     wrong_at = []
     for now in _silent_phase(app, clock, job_id="n+1", seconds=15.0):
-        if app.viewer.shown is None:
+        if _cell(app).shown is None:
             blank_at.append(round(now, 1))
-        elif app.viewer.shown != ribbon:
+        elif _cell(app).shown != ribbon:
             wrong_at.append(round(now, 1))
 
     assert not blank_at, (
@@ -191,7 +191,7 @@ def test_a_long_silent_trunk_holds_the_previous_structure_instead_of_going_black
     assert not wrong_at, (
         f"the held structure was replaced by something else at {wrong_at[:3]} "
         "with no new coordinates having arrived")
-    assert app.viewer.shown == ribbon
+    assert _cell(app).shown == ribbon
 
 
 def test_the_held_structure_is_replaced_by_the_first_real_frame_and_not_before(
@@ -213,30 +213,30 @@ def test_the_held_structure_is_replaced_by_the_first_real_frame_and_not_before(
 
     ribbon = _fold_to_a_finished_ribbon(
         app, job_id="n", target_id="trpcage", coords=frames[-1])
-    clears_after_setup = app.viewer.clears
+    clears_after_setup = _cell(app).clears
 
     app._handle_event(_job_start("n+1", target_id="trypsin"))
     for _ in _silent_phase(app, clock, job_id="n+1", seconds=15.0):
         pass
 
     # Not before.
-    assert app.viewer.shown == ribbon
-    assert app.viewer.clears == clears_after_setup, \
+    assert _cell(app).shown == ribbon
+    assert _cell(app).clears == clears_after_setup, \
         "the viewer was cleared while there was nothing to put in its place"
 
     # Not later: the FIRST frame does it.
     opening_cloud = frames[0]
     _deliver(app, _frame("n+1", opening_cloud))
 
-    assert app.viewer.clears == clears_after_setup + 1, \
+    assert _cell(app).clears == clears_after_setup + 1, \
         "the first real frame did not retire the held structure"
-    kind, payload = app.viewer.shown
+    kind, payload = _cell(app).shown
     assert kind == "points"
     assert np.array_equal(payload, opening_cloud), \
         "the viewer is not showing the new fold's own first frame"
-    assert app.viewer.blend == 0.0, \
+    assert _cell(app).blend == 0.0, \
         "the new fold's cloud is being drawn under the old fold's ribbon"
-    assert app.viewer.held is False, \
+    assert _cell(app).held is False, \
         "the new fold's live diffusion is still being dimmed as a leftover"
 
 
@@ -257,7 +257,7 @@ def test_the_very_first_fold_of_the_day_says_what_it_is_doing(fake_ribbon):
     app._handle_event(_job_start("first", target_id="trypsin"))
 
     for _ in _silent_phase(app, clock, job_id="first", seconds=15.0):
-        assert app.viewer.shown is None, \
+        assert _cell(app).shown is None, \
             "nothing has been computed yet -- anything on screen is invented"
         assert app._caption == ("Folding Trypsin",
                                 app_module._CAPTION_EMPTY_SUB), \
@@ -266,8 +266,8 @@ def test_the_very_first_fold_of_the_day_says_what_it_is_doing(fake_ribbon):
     # And it fills, with the fold's own first real coordinates.
     opening_cloud = real_frames()[0]
     _deliver(app, _frame("first", opening_cloud))
-    assert app.viewer.shown[0] == "points"
-    assert np.array_equal(app.viewer.shown[1], opening_cloud)
+    assert _cell(app).shown[0] == "points"
+    assert np.array_equal(_cell(app).shown[1], opening_cloud)
     assert app._caption is None, "the caption outlived the empty screen"
 
 
@@ -309,13 +309,13 @@ def test_a_job_error_mid_flight_leaves_no_in_flight_claim_over_the_held_structur
 
     assert app._caption is None, \
         "the booth is still claiming to fold a job that failed"
-    assert app.viewer.held is False, \
+    assert _cell(app).held is False, \
         "the structure is still dimmed as a leftover with nothing superseding it"
 
     # Ten more seconds with a dead daemon: still honest, still not blank.
     for _ in _silent_phase(app, clock, job_id="n+1", seconds=10.0,
                            stage_every_ms=10_000_000):
-        assert app.viewer.shown == ribbon, \
+        assert _cell(app).shown == ribbon, \
             "a failed fold blanked the last real structure the booth had"
         assert app._caption is None
 
@@ -350,7 +350,7 @@ def test_a_straggler_frame_from_the_previous_fold_cannot_pose_as_the_new_folds_f
 
     ribbon = _fold_to_a_finished_ribbon(
         app, job_id="n", target_id="trpcage", coords=frames[-1])
-    clears_after_setup = app.viewer.clears
+    clears_after_setup = _cell(app).clears
 
     app._handle_event(_job_start("n+1", target_id="trypsin"))
     for _ in _silent_phase(app, clock, job_id="n+1", seconds=3.0):
@@ -358,44 +358,62 @@ def test_a_straggler_frame_from_the_previous_fold_cannot_pose_as_the_new_folds_f
 
     # Fold N's straggler, arriving late.
     _deliver(app, _frame("n", frames[-2]))
-    assert app.viewer.shown == ribbon, \
+    assert _cell(app).shown == ribbon, \
         "a frame from the PREVIOUS fold retired the finished structure"
-    assert app.viewer.clears == clears_after_setup
+    assert _cell(app).clears == clears_after_setup
 
     # Fold N+1's own first frame, arriving next.
     _deliver(app, _frame("n+1", frames[0]))
-    assert app.viewer.shown[0] == "points"
-    assert np.array_equal(app.viewer.shown[1], frames[0])
-    assert app.viewer.clears == clears_after_setup + 1
+    assert _cell(app).shown[0] == "points"
+    assert np.array_equal(_cell(app).shown[1], frames[0])
+    assert _cell(app).clears == clears_after_setup + 1
 
 
-def test_a_frame_with_no_job_id_is_still_shown(fake_ribbon):
-    """"Cannot tell whose frame this is" must not become "show nothing" --
-    that is the failure mode this whole file is about. A frame with no
-    `job_id` (a recorded stream from before the field existed, a future
-    runner that drops it) performs the handover rather than being dropped.
+def test_a_frame_with_no_job_id_holds_rather_than_guessing(fake_ribbon):
+    """The one rule in this file that MULTI-CHIP FOLDING CHANGED, and it is
+    written down here rather than quietly deleted.
 
-    Mutation this catches: an unguarded `frame["job_id"] != self._current_job_id`
-    comparison, or one written as `frame.get("job_id") != ...`, either of
-    which discards every such frame forever and leaves the booth holding
-    one structure for the rest of the day.
+    While the booth folded on one chip there was only one cell a frame could
+    belong to, so a frame with no `job_id` was accepted: "cannot tell" must
+    not become "show nothing". With four cells that argument runs the other
+    way. The router binds a job to a cell at `job_start` -- the only event
+    carrying a `card` -- so an anonymous frame belongs to NO cell, and the
+    only way to draw it is to pick one, which means drawing one fold's
+    coordinates under another fold's caption in front of a visitor. Holding
+    the last real structure is the honest answer, and it is the answer this
+    whole file exists to make the default.
+
+    What is NOT allowed is for it to blank anything: the previous structure
+    stays exactly as it was, dimmed and captioned.
+
+    Mutation this catches: routing an unroutable frame to slot 0.
     """
     clock = FakeClock()
     app = _app(clock)
     frames = real_frames()
 
-    _fold_to_a_finished_ribbon(app, job_id="n", target_id="trpcage",
-                              coords=frames[-1])
+    ribbon = _fold_to_a_finished_ribbon(app, job_id="n", target_id="trpcage",
+                                        coords=frames[-1])
     app._handle_event(_job_start("n+1", target_id="trypsin"))
     for _ in _silent_phase(app, clock, job_id="n+1", seconds=3.0):
         pass
+    clears_before = _cell(app).clears
 
     anonymous = _frame("n+1", frames[0])
     del anonymous["job_id"]
     _deliver(app, anonymous)
 
-    assert app.viewer.shown[0] == "points"
-    assert np.array_equal(app.viewer.shown[1], frames[0])
+    assert _cell(app).shown == ribbon, \
+        "the held structure was replaced by a frame belonging to no cell"
+    assert _cell(app).clears == clears_before, \
+        "an unroutable frame blanked a cell"
+
+    # ...and the fold's OWN next frame, which does carry its job id, still
+    # performs the handover. Without this the test above would also pass
+    # against a booth that had stopped drawing frames altogether.
+    _deliver(app, _frame("n+1", frames[0]))
+    assert _cell(app).shown[0] == "points"
+    assert np.array_equal(_cell(app).shown[1], frames[0])
 
 
 # ---------------------------------------------------------------------------
@@ -428,14 +446,14 @@ def test_the_showcase_dwell_is_neither_dimmed_nor_captioned(fake_ribbon):
     app._tick_state()
     assert app.states.state == "showcase"
     assert app._caption is None, "the hero image was captioned as a leftover"
-    assert app.viewer.held is False, "the hero image was dimmed"
+    assert _cell(app).held is False, "the hero image was dimmed"
 
     # Past it.
     clock.advance(0.5)
     app._tick_state()
     assert app.states.state == "attract"
     assert app._caption == ("Previous fold: Trp-cage", "Now folding Trypsin")
-    assert app.viewer.held is True, \
+    assert _cell(app).held is True, \
         "a held leftover is being shown at the same brightness as a live fold"
 
 
@@ -463,8 +481,8 @@ def test_not_ready_takes_the_in_flight_claim_down_with_it(fake_ribbon):
 
     assert app.states.state == "preparing"
     assert app._caption is None
-    assert app.viewer.shown == ribbon
-    assert app.viewer.held is False
+    assert _cell(app).shown == ribbon
+    assert _cell(app).held is False
 
 
 # ---------------------------------------------------------------------------

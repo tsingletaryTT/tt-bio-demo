@@ -24,6 +24,7 @@ import pathlib
 
 import pytest
 
+from _appfakes import _FakeQuad
 from protocol.events import pack_coords
 from ui.app import DemoApp
 from ui.telemetry import ChipReading
@@ -212,11 +213,34 @@ def _reading(index=0, temperature_c=41.0):
                        aiclk_mhz=800.0)
 
 
-def _app(clock=None, *, viewer=True, sampler=None, stack=False):
-    """A `DemoApp` with fakes in every collaborator slot."""
+def _cell(app, slot=0):
+    """The cell these tests drive, as a `FakeViewer`.
+
+    `DemoApp` has no `self.viewer` any more, deliberately (see ui/app.py's
+    fourth docstring section): there are four cells and the app writes to
+    whichever one the router names. So a test's handle on "the viewer" is now
+    a handle on a SLOT, and these single-chip tests hold slot 0 -- which is
+    also what keeps them honest about which cell they are asserting on.
+    """
+    return app.quad.viewer_for_slot(slot)
+
+
+def _app(clock=None, *, viewer=True, sampler=None, stack=False, cards=(0,)):
+    """A `DemoApp` with fakes in every collaborator slot.
+
+    One cell, chip 0, unless a test asks for more: nearly everything here
+    predates multi-chip folding and is about the sequencing of ONE fold, so a
+    single cell keeps those tests saying what they always said. The quad goes
+    in before `attach_cards`, which is what binds the router's slots to it.
+    """
     clock = clock if clock is not None else FakeClock()
     app = DemoApp(socket_path=None, clock=clock)
-    app.viewer = FakeViewer() if viewer else None
+    if viewer:
+        app.quad = _FakeQuad(len(cards), cards=list(cards),
+                             viewer_factory=FakeViewer)
+    else:
+        app.quad = None
+    app.attach_cards(list(cards))
     app.telemetry_panel = RecordingPanel()
     app.pipeline_panel = RecordingPanel()
     app.sampler = sampler if sampler is not None else FakeSampler()
@@ -421,11 +445,17 @@ def test_the_pipeline_panel_is_driven_through_the_wire_converter():
     starts and never reaching 100%).
     """
     app = _app()
-    app._handle_event({"type": "stage", "stage": "diffusion", "frac": 0.55})
+    # A `stage` carries only a job_id, so the fold has to have STARTED before
+    # the booth can say which cell (and therefore which bar) it belongs to.
+    # That is the daemon's real arrival order, not scaffolding.
+    app._handle_event(_job_start("n"))
+    app._handle_event({"type": "stage", "job_id": "n", "stage": "diffusion",
+                       "frac": 0.55})
     assert app.pipeline_panel.stages == [("diffusion", 0.55)]
 
+    resets_before = app.pipeline_panel.resets
     app._handle_event(_job_start())
-    assert app.pipeline_panel.resets == 1
+    assert app.pipeline_panel.resets == resets_before + 1
 
 
 # ---------------------------------------------------------------------------
@@ -441,14 +471,15 @@ def test_a_job_start_during_a_showcase_does_not_clear_the_finished_structure(fak
     the `job_start` branch.
     """
     app = _app()
+    app._handle_event(_job_start("n"))
     app._handle_event(_job_done("n"))
     _land_ribbon(app)
-    assert app.viewer.crossfades == 1
+    assert _cell(app).crossfades == 1
 
-    clears_before = app.viewer.clears
+    clears_before = _cell(app).clears
     app._handle_event(_job_start("n+1"))
     assert app.states.state == "showcase"
-    assert app.viewer.clears == clears_before, \
+    assert _cell(app).clears == clears_before, \
         "the next fold's job_start wiped the structure being showcased"
 
 
@@ -466,7 +497,7 @@ def test_point_frames_are_suppressed_while_a_finished_structure_is_showcased(fak
 
     app._on_event(_frame_event("n+1", spread=10000.0))
     app._drain_frames()
-    assert app.viewer.point_frames == [], \
+    assert _cell(app).point_frames == [], \
         "the next fold's noise was drawn under the structure being showcased"
 
 
@@ -481,22 +512,23 @@ def test_the_buffered_frame_lands_the_moment_the_dwell_expires(fake_ribbon):
     """
     clock = FakeClock()
     app = _app(clock)
+    app._handle_event(_job_start("n"))
     app._handle_event(_job_done("n"))
     _land_ribbon(app)
     app._handle_event(_job_start("n+1"))
     app._on_event(_frame_event("n+1"))
     app._drain_frames()
-    assert app.viewer.point_frames == []
+    assert _cell(app).point_frames == []
 
     app._tick_state()
     clock.advance(app.states.showcase_dwell_s + 0.5)
     app._tick_state()
 
     assert app.states.state == "attract"
-    assert app.viewer.clears == 1, "the deferred clear never happened"
-    assert len(app.viewer.point_frames) == 1, \
+    assert _cell(app).clears == 1, "the deferred clear never happened"
+    assert len(_cell(app).point_frames) == 1, \
         "the buffered frame did not land when the showcase ended"
-    assert app.viewer.blend == 0.0
+    assert _cell(app).blend == 0.0
 
 
 def test_the_finished_structure_stays_up_when_no_new_fold_has_started(fake_ribbon):
@@ -508,6 +540,7 @@ def test_the_finished_structure_stays_up_when_no_new_fold_has_started(fake_ribbo
     """
     clock = FakeClock()
     app = _app(clock)
+    app._handle_event(_job_start("n"))
     app._handle_event(_job_done("n"))
     _land_ribbon(app)
 
@@ -516,8 +549,8 @@ def test_the_finished_structure_stays_up_when_no_new_fold_has_started(fake_ribbo
     app._tick_state()
 
     assert app.states.state == "attract"
-    assert app.viewer.clears == 0
-    assert app.viewer.blend == 1.0, "the finished structure was blanked for nothing"
+    assert _cell(app).clears == 0
+    assert _cell(app).blend == 1.0, "the finished structure was blanked for nothing"
 
 
 def test_a_ribbon_that_arrives_after_the_dwell_is_not_thrown_over_live_diffusion(fake_ribbon):
@@ -540,11 +573,11 @@ def test_a_ribbon_that_arrives_after_the_dwell_is_not_thrown_over_live_diffusion
 
     app._on_event(_frame_event("n+1"))
     app._drain_frames()
-    assert len(app.viewer.point_frames) == 1
+    assert len(_cell(app).point_frames) == 1
 
     _land_ribbon(app)                          # fold N's ribbon, far too late
-    assert app.viewer.ribbons == []
-    assert app.viewer.blend == 0.0, \
+    assert _cell(app).ribbons == []
+    assert _cell(app).blend == 0.0, \
         "a stale ribbon was cross-faded over the next fold's live diffusion"
 
 
@@ -559,6 +592,7 @@ def test_the_showcase_dwell_is_measured_from_the_reveal_not_from_job_done(fake_r
     """
     clock = FakeClock()
     app = _app(clock)
+    app._handle_event(_job_start("n"))
     app._handle_event(_job_done("n"))
     app._tick_state()                        # dwell would start here...
     clock.advance(app.states.showcase_dwell_s - 0.2)
@@ -610,7 +644,7 @@ def test_live_diffusion_is_visible_for_a_substantial_share_of_each_cycle(fake_ri
             f"cycle {index}: the finished structure held the screen for only "
             f"{showcase_share:.0%} of the cycle")
 
-    assert app.viewer.crossfades == len(cycles), \
+    assert _cell(app).crossfades == len(cycles), \
         "every fold must reveal its own structure exactly once"
 
 
@@ -651,13 +685,13 @@ def _replay(app, clock, stream, repeats, *, ribbon_delay_ms=150, tick_ms=100):
             payload = {k: v for k, v in event.items() if k != "_delay_ms"}
             kind = payload["type"]
             if kind == "frame":
-                before = len(app.viewer.point_frames)
+                before = len(_cell(app).point_frames)
                 app._on_event(payload)
                 app._drain_frames()
                 if cycles:
                     cycles[-1]["frames"] += 1
-                    if (len(app.viewer.point_frames) > before
-                            and app.viewer.blend == 0.0):
+                    if (len(_cell(app).point_frames) > before
+                            and _cell(app).blend == 0.0):
                         cycles[-1]["visible_frames"] += 1
                 continue
             if kind == "job_start":
@@ -813,9 +847,12 @@ def test_a_broken_frame_stream_logs_once_not_thirty_times_a_second(caplog):
     must not.
     """
     app = _app()
-    app.states.on_event(_job_start())     # points visible, so frames drain
+    # Routable AND drawable: the fold has to have started (so the frame
+    # belongs to a cell at all) and that cell must not be showcasing.
+    app._handle_event(_job_start("n"))
     for _ in range(30):
-        app._frames.put({"type": "frame", "coords_b64": "not base64 at all!"})
+        app._frames.put({"type": "frame", "job_id": "n",
+                         "coords_b64": "not base64 at all!"})
         app._drain_frames()
 
     with_traceback = [record for record in caplog.records

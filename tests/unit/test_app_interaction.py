@@ -24,6 +24,7 @@ import pytest
 from gi.repository import Gtk
 
 import _legibility
+from _appfakes import _FakeQuad
 from protocol.events import pack_coords
 from ui import app as app_module
 from ui import chipviz as chipviz_module
@@ -38,7 +39,8 @@ from ui.telemetry import ChipReading
 # The wiring tests' fakes are the right ones here too -- reusing them is
 # also what keeps "what a FakeViewer models" a single decision (see
 # test_app_wiring.py's module docstring on why FakeViewer models `blend`).
-from test_app_wiring import FakeClock, FakeStack, FakeViewer, RecordingPanel
+from test_app_wiring import (FakeClock, FakeStack, FakeViewer,
+                             RecordingPanel, _cell)
 
 
 class FakeSampler:
@@ -105,7 +107,8 @@ class FakeGesture:
 def _app(clock=None, *, stack=True):
     clock = clock if clock is not None else FakeClock()
     app = DemoApp(socket_path=None, clock=clock)
-    app.viewer = FakeViewer()
+    app.quad = _FakeQuad(1, cards=[0], viewer_factory=FakeViewer)
+    app.attach_cards([0])
     app.telemetry_panel = RecordingPanel()
     app.pipeline_panel = RecordingPanel()
     app.sampler = FakeSampler()
@@ -136,6 +139,19 @@ def _drive_to(app, state):
     assert app.states.state == state
     app._sync_to_state()
     return app
+
+
+def _a_fold_starting(job_id="j1", card=0, target_id="t"):
+    """The `job_start` every later event of a fold depends on.
+
+    Not scaffolding: `job_start` is the only event carrying a `card`, so it
+    is where the router binds a job id to a cell. A `stage` or a `frame`
+    posted without one belongs to no cell at all, which is the daemon's
+    behaviour too -- it just never happens on the wire, because a fold
+    always starts before it runs.
+    """
+    return {"type": "job_start", "job_id": job_id, "target_id": target_id,
+            "model": "m", "card": card, "n_residues": 20}
 
 
 def _frame_event(spread=10.0, n=8, step=3):
@@ -304,13 +320,22 @@ def test_the_operator_can_quit_from_anywhere_including_behind_the_help_card():
 def test_a_bare_q_does_not_quit_the_booth():
     """The reason quit is a CHORD: a visitor mashing the keyboard must not
     be able to close the demo. Mutation this catches: dropping the `ctrl`
-    condition."""
+    condition.
+
+    Bare `Q` is the quad view (ui/quad.py's `QUAD_KEYS`), so it is no longer
+    a plain visitor touch either -- but the thing this test is about is
+    unchanged and is if anything sharper: the near-miss for `Ctrl+Q` now
+    lands on a toggle a second press undoes, rather than on the gallery.
+    """
     app = _app()
     quits = []
     app.quit = lambda: quits.append(True)
     app._handle_key("q")
     assert quits == []
-    assert app.states.state == "gallery"      # ...it was just a touch
+    assert app.quad_visible is True
+    app._handle_key("q")
+    assert app.quad_visible is False
+    assert quits == []
 
 
 def test_the_fullscreen_chord_is_harmless_with_no_window_yet():
@@ -414,9 +439,9 @@ def test_the_fold_keeps_running_behind_the_help_card():
     app = _app(clock)
     app._handle_key("question")
 
-    app._handle_event({"type": "job_start", "job_id": "j1", "target_id": "t",
-                       "model": "m", "card": 0, "n_residues": 20})
-    app._handle_event({"type": "stage", "stage": "diffusion", "frac": 0.55})
+    app._handle_event(_a_fold_starting())
+    app._handle_event({"type": "stage", "job_id": "j1",
+                       "stage": "diffusion", "frac": 0.55})
     app._frames.put(_frame_event())
     app._drain_frames()
     app._handle_event({"type": "job_done", "job_id": "j1", "wall_s": 4.4,
@@ -425,7 +450,7 @@ def test_the_fold_keeps_running_behind_the_help_card():
     clock.advance(5.0)
     app._tick_state()               # ...and expires it
 
-    assert app.viewer.point_frames, "diffusion frames stopped reaching the viewer"
+    assert _cell(app).point_frames, "diffusion frames stopped reaching the viewer"
     assert app.pipeline_panel.stages, "the pipeline panel stopped being driven"
     assert app.states.state == "attract", "the showcase dwell never expired"
     assert app.help_visible is True, "the card closed itself for no reason"
@@ -454,6 +479,9 @@ def test_drawn_frames_reach_the_diagnostics_log_with_their_geometry():
     """Frames are logged where they are DRAWN, so the log can honestly say
     a visitor saw them."""
     app = _app()
+    # Routable: a frame reaches a cell (and therefore the log) only once its
+    # own fold has started -- `job_start` is the only event carrying a card.
+    app._handle_event(_a_fold_starting())
     app._frames.put(_frame_event(step=42))
     app._drain_frames()
     blob = "\n".join(text for _s, _k, text in app.diagnostics.tail(50))
@@ -511,7 +539,7 @@ def test_a_diagnostics_failure_cannot_cost_the_booth_an_event():
     assert app.pipeline_panel.resets == 1, "the pipeline panel was never reset"
     app._frames.put(_frame_event())
     app._drain_frames()
-    assert app.viewer.point_frames, "the frame never reached the viewer"
+    assert _cell(app).point_frames, "the frame never reached the viewer"
 
 
 # ---------------------------------------------------------------------------
@@ -629,6 +657,37 @@ def test_the_help_card_explains_what_a_visitor_is_actually_looking_at():
     assert "not a recording" in intro
     assert "denois" in intro           # what the model is actually doing
     assert "200" in intro              # ...over how many steps
+
+
+def test_the_help_card_still_fits_the_booth_s_own_screen():
+    """Every line added to this card costs vertical space, and a card taller
+    than the glass silently loses its last rows -- the operator keys are at
+    the bottom of the KEYS column, so `Ctrl + Q` is the first thing to go.
+
+    Measured at the booth's real fullscreen size, which is the only size that
+    matters: 1920x1080 (see `_SIDE_RAIL_WIDTH_PX`'s own comment and the
+    windowed default of 1280x800, which this card has never fitted and does
+    not have to).
+
+    Found by looking at it: adding the quad's key row and its paragraph took
+    the card from 838px to 913px.
+    """
+    app = _app()
+    card = app_module.DemoApp._build_help_overlay(app)
+
+    # A widget measures 0 while it is hidden, and the card is built hidden.
+    def show(widget):
+        widget.set_visible(True)
+        child = widget.get_first_child()
+        while child is not None:
+            show(child)
+            child = child.get_next_sibling()
+
+    show(card)
+    _minimum, natural, _, _ = card.measure(Gtk.Orientation.VERTICAL, 1920)
+    assert natural <= 1080, (
+        f"the help card wants {natural}px of a 1080px screen; its last rows "
+        f"(the operator's Ctrl+Q among them) are off the bottom")
 
 
 def test_the_help_card_explains_both_rail_panels():
@@ -853,7 +912,9 @@ def test_a_broken_tensix_panel_cannot_cost_the_booth_an_event():
             raise RuntimeError("web process died")
 
     app.chipviz_panel = Exploding()
-    app._handle_event({"type": "stage", "stage": "diffusion", "frac": 0.5})
+    app._handle_event(_a_fold_starting())
+    app._handle_event({"type": "stage", "job_id": "j1", "stage": "diffusion",
+                       "frac": 0.5})
     # The pipeline panel is rendered AFTER the chipviz call, so this proves
     # the failure did not pre-empt anything.
     assert app.pipeline_panel.stages[-1] == ("diffusion", 0.5)
@@ -863,7 +924,9 @@ def test_the_booth_tolerates_having_no_tensix_panel_at_all():
     """Headless tests, and the moment before do_activate runs."""
     app = _app()
     app.chipviz_panel = None
-    app._handle_event({"type": "stage", "stage": "trunk", "frac": 0.3})
+    app._handle_event(_a_fold_starting())
+    app._handle_event({"type": "stage", "job_id": "j1", "stage": "trunk",
+                       "frac": 0.3})
     assert app.pipeline_panel.stages[-1] == ("trunk", 0.3)
 
 
@@ -951,7 +1014,7 @@ def _target(target_id, name, tagline):
 def test_the_caption_describes_the_protein_that_is_on_screen():
     app = _app()
     app.targets = [_target("trpcage", "Trp-cage", "Twenty amino acids.")]
-    app._shown_target_id = "trpcage"
+    app._slots[0].shown_target_id = "trpcage"
     app._sync_target_info()
     assert app._target_info == ("Trp-cage", "Twenty amino acids.")
 
@@ -962,8 +1025,8 @@ def test_the_caption_names_the_fold_in_flight_before_anything_is_on_screen():
     naming nothing."""
     app = _app()
     app.targets = [_target("dhfr", "Dihydrofolate Reductase", "Builds DNA.")]
-    app._shown_target_id = None
-    app._current_target_id = "dhfr"
+    app._slots[0].shown_target_id = None
+    app._slots[0].current_target_id = "dhfr"
     app._sync_target_info()
     assert app._target_info == ("Dihydrofolate Reductase", "Builds DNA.")
 
@@ -985,10 +1048,10 @@ def test_the_caption_keeps_describing_the_held_protein_during_a_silent_fold():
     app = _app()
     app.targets = [_target("trpcage", "Trp-cage", "Twenty amino acids."),
                    _target("trypsin", "Trypsin", "Cuts up your meal.")]
-    app._shown_target_id = "trpcage"
-    app._current_target_id = "trypsin"
-    app._awaiting_first_frame = True
-    app._viewer_has_structure = True
+    app._slots[0].shown_target_id = "trpcage"
+    app._slots[0].current_target_id = "trypsin"
+    app._slots[0].awaiting_first_frame = True
+    app._slots[0].has_structure = True
     app._sync_viewer_hold()
 
     # The two captions, reconciled in the same pass, saying different things
@@ -1003,13 +1066,13 @@ def test_the_caption_follows_the_new_protein_once_its_first_frame_lands():
     app = _app()
     app.targets = [_target("trpcage", "Trp-cage", "Twenty amino acids."),
                    _target("trypsin", "Trypsin", "Cuts up your meal.")]
-    app._shown_target_id = "trpcage"
-    app._current_target_id = "trypsin"
+    app._slots[0].shown_target_id = "trpcage"
+    app._slots[0].current_target_id = "trypsin"
     app._sync_target_info()
     assert app._target_info[0] == "Trp-cage"
 
     # What the frame drain does when the new fold's first frame arrives.
-    app._shown_target_id = app._current_target_id
+    app._slots[0].shown_target_id = app._slots[0].current_target_id
     app._sync_target_info()
     assert app._target_info == ("Trypsin", "Cuts up your meal.")
 
@@ -1019,7 +1082,7 @@ def test_a_target_with_no_tagline_is_captioned_with_its_name_alone():
     the name rather than inventing copy or rendering a blank second line."""
     app = _app()
     app.targets = [_target("newthing", "New Thing", None)]
-    app._shown_target_id = "newthing"
+    app._slots[0].shown_target_id = "newthing"
     info = app._build_target_info()
     assert info is not None
     assert app._target_info == ("New Thing", None)
@@ -1041,7 +1104,7 @@ def test_a_protein_the_playlist_cannot_name_gets_no_caption_at_all():
     """
     app = _app()
     app.targets = []
-    app._shown_target_id = "some_id_the_playlist_never_heard_of"
+    app._slots[0].shown_target_id = "some_id_the_playlist_never_heard_of"
     info = app._build_target_info()
     assert app._target_info is None
     assert app._target_info_caption_box.get_visible() is False
@@ -1086,7 +1149,7 @@ def test_every_label_on_the_protein_caption_is_legible():
     app.targets = [_target("trpcage", "Trp-cage",
                            "Twenty amino acids — one of the smallest "
                            "proteins that folds itself.")]
-    app._shown_target_id = "trpcage"
+    app._slots[0].shown_target_id = "trpcage"
     _assert_legible(app._build_target_info(), context="protein caption")
 
 
@@ -1220,7 +1283,7 @@ def test_the_confidence_legend_costs_the_protein_no_height():
     for target in targets:
         app = _app()
         app.targets = [target]
-        app._shown_target_id = target.id
+        app._slots[0].shown_target_id = target.id
         strip = app._build_target_info()
         with_legend = _strip_height(strip, hero_width)
         # `unparent`, not `strip.remove(...)`: the legend has to come out of
@@ -1255,7 +1318,7 @@ def test_the_confidence_legend_never_takes_the_screen_from_the_protein():
     app.targets = [_target("dna", "DNA double helix",
                            "The double helix, twelve rungs of it — and the "
                            "only thing this booth folds that is not a protein.")]
-    app._shown_target_id = "dna"
+    app._slots[0].shown_target_id = "dna"
     strip = app._build_target_info()
     hero_width = app_module._GALLERY_WIDTH_PX
 
@@ -1302,7 +1365,7 @@ def _widget_trees_this_file_builds():
 
     app = _app()
     app.targets = [_target("trpcage", "Trp-cage", "Twenty amino acids.")]
-    app._shown_target_id = "trpcage"
+    app._slots[0].shown_target_id = "trpcage"
     yield "protein caption under the render", app._build_target_info()
 
     app = _app()
@@ -1647,12 +1710,20 @@ def test_the_egg_never_touches_the_protein_or_the_state_machine():
     """
     app = _app()
     _drive_to(app, "folding")
-    app._on_event({"type": "job_start", "job_id": "j1",
-                   "target_id": "trpcage", "card": 0})
+    # `_handle_event`, not `_on_event`: the latter marshals to the main loop
+    # via GLib.idle_add and there is no main loop here, so the fold would
+    # never start and its frames would belong to no cell.
+    app._handle_event({"type": "job_start", "job_id": "j1",
+                       "target_id": "trpcage", "card": 0})
     app._on_event({"type": "frame", "job_id": "j1", "step": 1,
                    "coords_b64": pack_coords([[1.0, 2.0, 3.0]] * 4)})
     app._drain_frames()
-    before_frames = len(app.viewer.point_frames)
+    before_frames = len(_cell(app).point_frames)
+    # AFTER the handover, not before it: that first frame legitimately clears
+    # the cell (hold-until-superseded's one clear, in ui/app.py's
+    # `_draw_frame`). What this test is about is that NOTHING the egg does
+    # adds another.
+    clears_before = _cell(app).clears
     before_state = app.states.state
 
     app._handle_key("g", ctrl=True)
@@ -1663,9 +1734,10 @@ def test_the_egg_never_touches_the_protein_or_the_state_machine():
                    "coords_b64": pack_coords([[4.0, 5.0, 6.0]] * 4)})
     app._drain_frames()
 
-    assert len(app.viewer.point_frames) == before_frames + 1, (
+    assert len(_cell(app).point_frames) == before_frames + 1, (
         "the fold must keep drawing into the real viewer behind the egg")
-    assert app.viewer.clears == 0
+    assert _cell(app).clears == clears_before, \
+        "the egg blanked the fold underneath it"
     assert app.states.state == before_state
 
 

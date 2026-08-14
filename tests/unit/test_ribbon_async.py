@@ -14,6 +14,7 @@ guided by what the tests need.
 import threading
 import time
 
+from _appfakes import _FakeQuad, _start
 from ui.app import DemoApp
 
 
@@ -22,7 +23,7 @@ class _FakeViewer:
     been drawn, without needing a live GL context. Every method the real
     viewer exposes that `_handle_event`/`_drain_pending_ribbon` might call
     on the ribbon-reveal path is present here, so a headless `DemoApp` with
-    `app.viewer = _FakeViewer()` never hits an AttributeError on that path.
+    `_viewer(app) = _FakeViewer()` never hits an AttributeError on that path.
     """
 
     def __init__(self):
@@ -49,6 +50,28 @@ class _FakeViewer:
         self.crossfades += 1
 
 
+def _fold_app(cards=(0,), jobs=("j1",)):
+    """A headless `DemoApp` with one cell per card and a fake viewer in each.
+
+    A fold now has to START somewhere before it can finish: `job_done`
+    carries only a `job_id`, and the router binds a job to a cell at
+    `job_start` (the only event carrying a `card`). So every test below opens
+    its fold properly rather than posting a `job_done` into the void -- which
+    is not scaffolding, it is the arrival order the daemon really produces.
+    """
+    app = DemoApp(socket_path=None)
+    app.quad = _FakeQuad(len(cards), cards=list(cards),
+                         viewer_factory=_FakeViewer)
+    app.attach_cards(list(cards))
+    for index, job_id in enumerate(jobs):
+        app._handle_event(_start(job_id, card=cards[index % len(cards)]))
+    return app
+
+
+def _viewer(app, slot=0):
+    return app.quad.viewer_for_slot(slot)
+
+
 def _join_ribbon_worker(app, timeout=5.0):
     """Block until every ribbon-construction worker thread `app` has
     spawned so far has actually finished, so a test can then call
@@ -56,17 +79,15 @@ def _join_ribbon_worker(app, timeout=5.0):
     result that is deterministically already there, instead of racing the
     background thread.
 
-    Joins every thread `DemoApp` has ever recorded (not just the most
-    recent one): test 4 fires two `job_done` events back to back, so two
-    workers are in flight and both must be allowed to finish before the
-    test inspects the outcome, regardless of which one the app considers
-    current.
+    `DemoApp._join_ribbon_workers` is the app's own seam for this (it joins
+    EVERY thread it has recorded, not just the newest -- two folds finishing
+    back to back put two workers in flight). This wrapper adds the assertion:
+    the app logs a hung worker and carries on, which is right for a booth and
+    useless for a test.
     """
-    for worker in list(app._ribbon_threads):
-        worker.join(timeout=timeout)
-        assert not worker.is_alive(), (
-            f"ribbon worker {worker.name!r} did not finish within "
-            f"{timeout}s -- ribbon_from_cif is presumably hung")
+    assert app._join_ribbon_workers(timeout=timeout), (
+        "a ribbon worker did not finish in time -- ribbon_from_cif is "
+        "presumably hung")
 
 
 class _SlowGeometry:
@@ -98,8 +119,7 @@ def test_ribbon_construction_does_not_run_on_the_calling_thread(monkeypatch):
     slow = _SlowGeometry()
     monkeypatch.setattr(mod, "ribbon_from_cif", slow)
 
-    app = DemoApp(socket_path=None)
-    app.viewer = _FakeViewer()
+    app = _fold_app()
     caller = threading.current_thread().name
     app._handle_event({"type": "job_done", "job_id": "j1", "cif_path": "/tmp/x.cif",
                        "wall_s": 5.0, "mean_plddt": 95.0})
@@ -111,13 +131,12 @@ def test_ribbon_construction_does_not_run_on_the_calling_thread(monkeypatch):
 def test_the_viewer_is_updated_after_the_work_completes(monkeypatch):
     from ui import app as mod
     monkeypatch.setattr(mod, "ribbon_from_cif", _SlowGeometry(delay=0.05))
-    app = DemoApp(socket_path=None)
-    app.viewer = _FakeViewer()
+    app = _fold_app()
     app._handle_event({"type": "job_done", "job_id": "j1", "cif_path": "/tmp/x.cif",
                        "wall_s": 5.0, "mean_plddt": 95.0})
     _join_ribbon_worker(app, timeout=5.0)
     app._drain_pending_ribbon()            # what the main loop would do
-    assert app.viewer.ribbons == 1
+    assert _viewer(app).ribbons == 1
 
 
 def test_a_geometry_failure_leaves_the_previous_view_intact(monkeypatch):
@@ -128,14 +147,13 @@ def test_a_geometry_failure_leaves_the_previous_view_intact(monkeypatch):
         raise GeometryError("bad cif")
 
     monkeypatch.setattr(mod, "ribbon_from_cif", explode)
-    app = DemoApp(socket_path=None)
-    app.viewer = _FakeViewer()
+    app = _fold_app()
     app._handle_event({"type": "job_done", "job_id": "j1", "cif_path": "/tmp/x.cif",
                        "wall_s": 5.0, "mean_plddt": 95.0})
     _join_ribbon_worker(app, timeout=5.0)
     app._drain_pending_ribbon()
-    assert app.viewer.ribbons == 0
-    assert app.viewer.cleared == 0, "a failed ribbon must not blank the screen"
+    assert _viewer(app).ribbons == 0
+    assert _viewer(app).cleared == 0, "a failed ribbon must not blank the screen"
 
 
 def test_a_non_geometry_error_also_leaves_the_previous_view_intact(monkeypatch, caplog):
@@ -162,15 +180,14 @@ def test_a_non_geometry_error_also_leaves_the_previous_view_intact(monkeypatch, 
         raise ValueError("truncated atom record")
 
     monkeypatch.setattr(mod, "ribbon_from_cif", explode)
-    app = DemoApp(socket_path=None)
-    app.viewer = _FakeViewer()
+    app = _fold_app()
     with caplog.at_level(logging.ERROR, logger="ui.app"):
         app._handle_event({"type": "job_done", "job_id": "j1", "cif_path": "/tmp/x.cif",
                            "wall_s": 5.0, "mean_plddt": 95.0})
         _join_ribbon_worker(app, timeout=5.0)
         app._drain_pending_ribbon()
-    assert app.viewer.ribbons == 0
-    assert app.viewer.cleared == 0
+    assert _viewer(app).ribbons == 0
+    assert _viewer(app).cleared == 0
     assert any("truncated atom record" in r.message or
                "truncated atom record" in str(r.exc_info)
                for r in caplog.records), (
@@ -182,8 +199,7 @@ def test_a_second_fold_supersedes_a_slow_first_one(monkeypatch):
     """Two folds in flight must not race to update the viewer out of order."""
     from ui import app as mod
     monkeypatch.setattr(mod, "ribbon_from_cif", _SlowGeometry(delay=0.2))
-    app = DemoApp(socket_path=None)
-    app.viewer = _FakeViewer()
+    app = _fold_app(jobs=("j1", "j2"))
     app._handle_event({"type": "job_done", "job_id": "j1", "cif_path": "/tmp/a.cif",
                        "wall_s": 5.0, "mean_plddt": 95.0})
     app._handle_event({"type": "job_done", "job_id": "j2", "cif_path": "/tmp/b.cif",
@@ -196,10 +212,10 @@ def test_a_second_fold_supersedes_a_slow_first_one(monkeypatch):
     # the second (superseding) fold's, not the first's. _SlowGeometry
     # returns cif_path as the "verts" slot precisely so last_ribbon can be
     # checked against which fold produced it.
-    assert app.viewer.ribbons == 1, (
+    assert _viewer(app).ribbons == 1, (
         "exactly one ribbon should land -- zero means every result was "
         "dropped, which is not 'the newest fold won'")
-    assert app.viewer.last_ribbon[0] == "/tmp/b.cif", (
+    assert _viewer(app).last_ribbon[0] == "/tmp/b.cif", (
         "the ribbon that landed must be the second (newest) fold's "
         "('/tmp/b.cif'), not the first's ('/tmp/a.cif')")
 
@@ -246,8 +262,7 @@ def test_a_stale_first_fold_cannot_clobber_a_faster_newer_one(monkeypatch):
     monkeypatch.setattr(mod, "ribbon_from_cif", _VariableGeometry(
         {"/tmp/slow-first.cif": 0.60, "/tmp/fast-second.cif": 0.02}))
 
-    app = DemoApp(socket_path=None)
-    app.viewer = _FakeViewer()
+    app = _fold_app(jobs=("j1", "j2"))
     app._handle_event({"type": "job_done", "job_id": "j1",
                        "cif_path": "/tmp/slow-first.cif",
                        "wall_s": 5.0, "mean_plddt": 95.0})
@@ -260,10 +275,10 @@ def test_a_stale_first_fold_cannot_clobber_a_faster_newer_one(monkeypatch):
     # workers themselves, not the order the main loop happened to run in.
     app._drain_pending_ribbon()
 
-    assert app.viewer.ribbons == 1, (
+    assert _viewer(app).ribbons == 1, (
         "exactly one ribbon should land -- zero means every result was "
         "dropped, which is not 'the newest fold won'")
-    assert app.viewer.last_ribbon[0] == "/tmp/fast-second.cif", (
+    assert _viewer(app).last_ribbon[0] == "/tmp/fast-second.cif", (
         "the superseded first fold clobbered the newest one: it finished "
         "LAST (0.60s vs 0.02s), so nothing but the generation stamp can "
         "stop it reaching the screen")

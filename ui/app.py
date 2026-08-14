@@ -7,8 +7,15 @@ and gets narrower as it gets longer -- it carries decisions out, it does
 not make them:
 
 - what the booth's state IS, and what each state means for the screen,
-  belongs to `ui.states` (including the three named predicates this module
-  reads: `points_are_visible`, `ribbon_may_be_revealed`, `showcase_ended`);
+  belongs to `ui.states`;
+- which CELL an event belongs to, whether that cell's dwell has expired,
+  which cell the booth is following and what to say about a visitor's pick
+  all belong to `ui.slots` (`SlotRouter`, `SlotState`, and the two
+  predicates this module reads off a slot: `points_are_visible` and
+  `ribbon_may_be_revealed`);
+- what four folds on screen at once LOOK like belongs to `ui.quad`,
+  including which cells are visible in the booth's default single-protein
+  view (`QuadView.set_solo_mode`);
 - what a panel looks like belongs to `ui.panels` (including the wire->
   within-stage fraction conversion, which is why this module calls
   `set_stage_from_wire` and never `set_stage`);
@@ -64,18 +71,18 @@ places, none of which decide anything on their own:
 1. `job_start` never clears the screen (see the next section -- this used
    to be "does not clear DURING A SHOWCASE, defers it until the dwell
    expires", which is the half-fix that left the viewer empty).
-2. Point frames arriving during a showcase are SUPPRESSED, not drawn --
-   and not discarded either: they stay in the one-slot latest-wins buffer
-   (`ui.client.LatestFrame`), which is what lets step 3 cut straight to
+2. Point frames arriving during a cell's showcase are SUPPRESSED, not drawn
+   -- and not discarded either: they stay in that job's latest-wins slot
+   (`ui.client.LatestFrameByJob`), which is what lets step 3 cut straight to
    live diffusion with no blank gap. Suppressing them is also what keeps
    the cross-fade honest: the points still on screen underneath the
    arriving ribbon are fold N's OWN final cloud, so the structure
    condenses out of the cloud it actually came from.
-3. When the dwell expires, `showcase_ended` fires once and drains the
-   buffered frame, so the next fold's diffusion appears in the same instant
-   the structure stops being the booth's subject.
-4. A ribbon that arrives after its own dwell has expired is dropped
-   (`ribbon_may_be_revealed`): by then the booth is showing the next fold's
+3. When a cell's dwell expires, that cell's buffered frame is drained, so
+   the next fold's diffusion appears in the same instant the structure
+   stops being that cell's subject.
+4. A ribbon that arrives after its own cell's dwell has expired is dropped
+   (`SlotState.ribbon_may_be_revealed`): by then the cell is showing the next fold's
    live diffusion, and cross-fading the previous structure over it is the
    same defect by another route.
 
@@ -120,13 +127,41 @@ from reading it as the fold currently in progress. The pipeline panel is
 already reporting the live stage of the NEW fold next to it, so the two
 must not be allowed to look like the same claim.
 
-`_awaiting_first_frame` is the flag that carries all of this, and it is
+`awaiting_first_frame` is the flag that carries all of this, and it is
 cleared by exactly three things: the new fold's first frame landing
 (superseded, the ordinary path), `job_error` (that fold will never produce
 one), and `not_ready` (the daemon has stopped folding entirely). The last
 two matter because the caption asserts "now folding X" -- an assertion that
 must stop the moment it stops being true, or a dead daemon leaves a stale
 structure under a permanent lie.
+
+Four folds, four of everything that was one
+--------------------------------------------
+The booth folds on every chip it has. So each of the fields the two
+sections above describe is now held PER CELL, in `_SlotView` below, and the
+routing decision -- which cell does this event belong to -- is made once, by
+`ui.slots.SlotRouter`, and carried out here. There is deliberately no
+`self.viewer`: an alias for "the one viewer" is where four folds quietly
+become one again, and every one of these fields is one a second fold could
+otherwise clobber:
+
+  * the frame buffer (`ui.client.LatestFrameByJob`, one slot per `job_id` --
+    a single one would show whichever fold was fastest in all four cells);
+  * the ribbon generation counter, keyed per cell, so a `job_done` on chip 3
+    cannot mark chip 0's in-flight ribbon build stale;
+  * `awaiting_first_frame` / `current_job_id` / `shown_target_id` and the
+    dim-and-caption decision they drive;
+  * the showcase dwell itself, which lives in `ui.slots.SlotState` -- cell 1
+    is mid-diffusion while cell 0 holds a finished structure, and a global
+    dwell would suppress frames in all four.
+
+What stays global is what is genuinely about the BOOTH: `ui.states`'s state
+machine (attract, gallery, preparing), the idle timeout, the overlays, the
+telemetry, the diagnostics log, and the visitor's one pick.
+
+The default view is still ONE protein, large: `QuadView` starts in solo mode
+showing the focused cell, and `Q` (`ui.quad.QUAD_KEYS`) turns the other
+three on. Both are the same four viewers.
 """
 
 import argparse
@@ -145,24 +180,25 @@ gi.require_version("Gdk", "4.0")
 
 from gi.repository import Gdk, GLib, Gtk
 
-from protocol.events import unpack_coords
+from protocol.events import STAGE_ORDER, unpack_coords
 from ui.chipviz import ChipVizPanel
-from ui.client import EventClient, LatestFrame
+from ui.client import EventClient, LatestFrameByJob
 from ui.diagnostics import KIND_MARK, DiagnosticsLog, DiagnosticsPanel
 from ui.gallery import Gallery
 from ui.geometry import PLDDT_STOPS, ribbon_from_cif
 from ui.panels import PipelinePanel, TelemetryPanel
 from ui.playlist import PlaylistError, load_playlist, select_targets
-from ui.states import (
-    StateMachine, points_are_visible, ribbon_may_be_revealed, showcase_ended,
-)
+from ui.quad import QUAD_HELP_LINE, QUAD_KEYS, QuadView
+from ui.slots import MAX_SLOTS, SlotRouter
+from ui.states import StateMachine
 from ui.telemetry import TelemetrySampler
 # Not `ui.mark` any more: the easter egg's geometry runs on the chips now, so
 # the module the descent is defined in has to be importable from the runner's
 # venv too and moved to the repo root beside `protocol/`. See mark.py's own
 # docstring; nothing about what it computes changed with the move.
 from mark import BRAND_PURPLE, POINTS as MARK_POINTS, MarkCondensation
-from ui.viewer import StructureViewer
+from ui.viewer import StructureViewer   # the easter egg's own viewer; the
+                                        # folds' four live in ui/quad.py
 
 log = logging.getLogger(__name__)
 
@@ -288,6 +324,68 @@ def target_info_subject(*, shown_target_id, folding_target_id):
     above for why "what is on screen" wins over "what is being folded".
     """
     return shown_target_id or folding_target_id
+
+
+# ── one cell's caption ──────────────────────────────────────────────────────
+#
+# Two words at most, under the chip label, inside a quarter of the hero
+# image. It says what that chip is folding and what it is doing to it, and it
+# is the only per-cell text on screen -- so it is also the only place a
+# runner-supplied string could reach a visitor. It cannot: the NAME comes
+# from this booth's own playlist (`_target_name` returns None rather than a
+# raw wire id), and the STAGE is looked up in `STAGE_ORDER` and dropped if it
+# is not there. Nothing else from the wire is interpolated, ever -- a
+# `job_error`'s `message` least of all.
+
+
+def cell_caption(*, name, stage):
+    """What one quad cell says about its fold, as a single line.
+
+    Pure, for the reason this file keeps making the same split: what the
+    booth claims is a decision and must be testable with no display. `""`
+    means "say nothing", which is what `QuadView.set_caption` renders as an
+    empty caption rather than as a blank claim.
+    """
+    parts = []
+    if name:
+        parts.append(str(name))
+    if stage in STAGE_ORDER:
+        parts.append(stage.upper())
+    return " · ".join(parts)
+
+
+class _SlotView:
+    """The app's half of one cell: what it is showing and what it awaits.
+
+    `ui.slots.SlotState` owns the fold's own state -- its phase, its dwell,
+    the two events deferred behind that dwell -- and is pure by construction.
+    This holds the things that only mean anything next to a widget, and it
+    exists because every field on it used to be a single scalar on `DemoApp`
+    that four folds would have taken turns overwriting:
+
+    `awaiting_first_frame` / `current_job_id` / `current_target_id` /
+    `shown_target_id` / `has_structure` are the hold-until-superseded
+    bookkeeping (see the module docstring's second section), per cell.
+
+    `ribbon_generation` / `pending_ribbon` are the ribbon worker's, per cell.
+    Keyed on the SLOT and not on the job id: the question a worker asks when
+    it finishes is "is my fold still the newest one THIS CELL knows about",
+    and a job-keyed counter would answer a different question -- one whose
+    answer is always yes, since a job is only ever its own newest.
+    """
+
+    __slots__ = ("awaiting_first_frame", "current_job_id", "current_target_id",
+                 "shown_target_id", "has_structure", "ribbon_generation",
+                 "pending_ribbon")
+
+    def __init__(self):
+        self.awaiting_first_frame = False
+        self.current_job_id = None
+        self.current_target_id = None
+        self.shown_target_id = None
+        self.has_structure = False
+        self.ribbon_generation = 0
+        self.pending_ribbon = None
 
 
 # ── booth timing ────────────────────────────────────────────────────────────
@@ -532,6 +630,13 @@ _DIAGNOSTICS_KEYS = frozenset({"d"})
 # booth comes up protein-first and a visitor or an operator asks for it.
 # Nothing about it is persisted: a restart at the venue is a clean booth.
 _TENSIX_KEYS = frozenset({"t"})
+# The quad view's key is DECIDED IN `ui/quad.py`, beside the view it opens and
+# beside the `?`-card copy that describes it (`QUAD_HELP_LINE`), so the
+# binding and the words a visitor reads about it cannot drift apart. Imported
+# rather than restated for the same reason -- a second `frozenset({"q"})` here
+# would be a second place to change it. `_handle_key` reads it exactly the way
+# it reads the two above.
+_QUAD_KEYS = QUAD_KEYS
 
 # ── the easter egg ──────────────────────────────────────────────────────────
 #
@@ -1052,6 +1157,8 @@ _HELP_INTRO = (
 # folklore.
 _KEY_HELP = (
     ("?  or  F1", "this card — from any screen, at any time"),
+    ("Q", "the quad view: all four chips at once, one protein per chip — "
+          "press it again for the single large view"),
     ("T", "Tensix activity: the live core-grid animation, one grid per chip"),
     ("D", "diagnostics: the live protocol log in the right-hand rail"),
     ("Esc", "close this card, or close whichever rail panel is open"),
@@ -1062,6 +1169,14 @@ _KEY_HELP = (
 )
 
 _HELP_PANELS = (
+    # The quad view's own line, imported from `ui/quad.py` rather than
+    # re-typed here: the key, the view and the words describing it are one
+    # decision, and a hand-copied second sentence is where a booth ends up
+    # documenting a key it no longer has. It leads this column because it is
+    # the only entry that changes what the hero image IS, rather than what
+    # sits in the rail beside it.
+    QUAD_HELP_LINE,
+
     "Pipeline — one row per stage of a fold: msa, prep, trunk, diffusion, "
     "confidence, saving. The bright row is the stage running right now; "
     "diffusion owns most of the bar because it does most of the work.",
@@ -1166,7 +1281,13 @@ class DemoApp(Gtk.Application):
         # here so every one of them is a real attribute from construction --
         # a headless test substitutes a recorder, and `_sync_to_state` and
         # the tick callbacks all tolerate `None`.
-        self.viewer = None
+        #
+        # There is NO `self.viewer`, deliberately, and it is not aliased to
+        # `self.quad`'s first cell either: an alias is where four folds
+        # quietly become one again. Everything that draws goes through
+        # `_viewer_for(slot)`, which is the one place a slot index becomes a
+        # widget.
+        self.quad = None
         self.gallery = None
         self.screens = None
         self.telemetry_panel = None
@@ -1180,6 +1301,18 @@ class DemoApp(Gtk.Application):
         self._preparing_box = None
         self._preparing_message_label = None
         self._window = None
+        # The slot in the widget tree the quad lives in, so a `hello` naming a
+        # different set of chips can replace it. None until do_activate, which
+        # is exactly what makes `attach_cards` safe to call headlessly: with
+        # no widget tree there is no widget to rebuild, and a test's fake quad
+        # is left precisely as the test installed it.
+        self._viewer_page = None
+        # The quad is the OPTIONAL view (see ui/quad.py). The booth comes up
+        # showing one big protein -- the focused cell, alone -- and `Q` turns
+        # the other three on. A plain bool a headless test can drive, exactly
+        # like `help_visible` and the two panel flags, and NOT read back off
+        # the widgets: the decision must be testable with no display.
+        self.quad_visible = False
 
         # ── the easter egg (Ctrl+G; mark.py, `_EGG_KEYS`) ─────────────
         #
@@ -1288,11 +1421,16 @@ class DemoApp(Gtk.Application):
         self.missing = []
         self.display_message = ""
 
-        # Diffusion frames, one slot, latest wins. Created here rather than
-        # in `_start_client` so `_drain_frames` is callable with no socket
-        # at all (headless tests, and a booth started with no --socket).
-        self._frames = LatestFrame()
+        # Diffusion frames, one slot PER JOB, latest wins within each. Created
+        # here rather than in `_start_client` so `_drain_frames` is callable
+        # with no socket at all (headless tests, and a booth started with no
+        # --socket).
+        self._frames = LatestFrameByJob()
         self._client = None
+        # What the socket last said it was doing, so a quad rebuilt on a
+        # `hello` starts out knowing (`_ensure_quad`). Not read back off a
+        # widget, for the usual reason: the widgets may not exist yet.
+        self._connection_state = "disconnected"
 
         # How many times each kind of repeating failure has been logged --
         # see _note_dropped and _DROP_LOG_EVERY. Per-app rather than
@@ -1300,13 +1438,14 @@ class DemoApp(Gtk.Application):
         # another's (or into another test's).
         self._drop_counts = {}
 
-        # ── what the viewer is holding, and what it is waiting for ───────
+        # ── what each cell is holding, and what it is waiting for ────────
         #
-        # See the module docstring's second section. Together these are the
-        # whole of "hold the previous structure until the new fold has
-        # something real to show":
+        # See the module docstring's second and fourth sections. Together
+        # these are the whole of "hold the previous structure until the new
+        # fold has something real to show", once per cell -- they live on
+        # `_SlotView` above and are built by `attach_cards` below:
         #
-        # `_awaiting_first_frame` -- a fold has started and has not yet
+        # `awaiting_first_frame` -- a fold has started and has not yet
         # produced a single coordinate. True from `job_start` until that
         # fold's first frame is DRAWN (not merely received: a frame
         # suppressed during a showcase, or one that fails to decode, has not
@@ -1315,30 +1454,34 @@ class DemoApp(Gtk.Application):
         # the caption asserts "now folding X" and must not outlive the fold
         # it names.
         #
-        # `_current_job_id` -- which fold that is, so a straggling frame
+        # `current_job_id` -- which fold that is, so a straggling frame
         # from the PREVIOUS fold cannot be mistaken for the new fold's first
         # one and wipe a finished structure in favour of an older fold's
         # noise. `frame` events carry `job_id` (runner/shaping.py's
-        # `frame_event`); a frame that carries none is accepted rather than
-        # dropped, since "cannot tell" must not mean "show nothing".
+        # `frame_event`), and with four folds in flight a frame that carries
+        # none can no longer be placed at all: it belongs to no cell, and
+        # drawing it into whichever cell happens to be first would be worse
+        # than dropping it. That is the one rule this section changed when
+        # the booth grew from one chip to four.
         #
-        # `_current_target_id` / `_shown_target_id` -- what is being folded
+        # `current_target_id` / `shown_target_id` -- what is being folded
         # and whose coordinates are on screen, for the caption. Kept as ids
         # and resolved to display names only at the moment of captioning
         # (`_target_name`), so nothing here depends on the playlist having
         # loaded.
         #
-        # `_viewer_has_structure` -- whether the viewer has anything in it
-        # at all. Deliberately a separate flag from `_shown_target_id`
+        # `has_structure` -- whether that cell's viewer has anything in it
+        # at all. Deliberately a separate flag from `shown_target_id`
         # rather than `is not None` on it: a `job_start` with no `target_id`
         # is wire-shaped input we must tolerate, and conflating "no name for
         # what is on screen" with "nothing is on screen" would put the booth
         # back to captioning a populated viewer as an empty one.
-        self._awaiting_first_frame = False
-        self._current_job_id = None
-        self._current_target_id = None
-        self._shown_target_id = None
-        self._viewer_has_structure = False
+        #
+        # `_slots` and `self.router` are built together, by `attach_cards`,
+        # so a slot index is always valid in both or in neither.
+        self.cards = []
+        self.router = None
+        self._slots = []
         # The caption's current copy, as `viewer_hold_caption` returns it
         # (a (title, subtitle) pair, or None for "nothing to say"). Held as
         # a plain field, not read back off the widgets, for the same reason
@@ -1372,23 +1515,140 @@ class DemoApp(Gtk.Application):
         # _ribbon_worker_main, and _drain_pending_ribbon below for the full
         # scheme; the fields here are just its state:
         #
-        # _ribbon_lock guards the two fields below it against concurrent
-        # access from worker threads and the main thread at once.
-        # _ribbon_generation is a monotonic counter, bumped once per
-        # job_done that actually starts a worker -- it is the answer to
-        # "which fold is the newest one in flight", independent of which
-        # worker happens to finish first. _pending_ribbon holds at most one
-        # not-yet-applied result, as (generation, cif_path, outcome) --
-        # never more than one, because a fold that is superseded before its
-        # result is even applied should never reach the screen at all (see
-        # _ribbon_worker_main's docstring for the ordering argument).
+        # _ribbon_lock guards every slot's two fields against concurrent
+        # access from worker threads and the main thread at once. ONE lock
+        # for four cells, not four: it is held for two comparisons and an
+        # assignment, and four locks would be four chances to take them in a
+        # different order somewhere.
+        #
+        # `_SlotView.ribbon_generation` is a monotonic counter PER CELL,
+        # bumped once per job_done on that cell that actually starts a worker
+        # -- it is the answer to "which fold is the newest one in flight ON
+        # THIS CHIP", independent of which worker happens to finish first.
+        # Per cell is the whole point: with one global counter a job_done on
+        # chip 3 bumps the generation and chip 0's in-flight ribbon is
+        # dropped as stale, silently, every cycle, forever.
+        #
+        # `_SlotView.pending_ribbon` holds at most one not-yet-applied result
+        # per cell, as (generation, cif_path, outcome) -- never more, because
+        # a fold superseded before its result is even applied should never
+        # reach the screen at all (see _ribbon_worker_main's docstring for
+        # the ordering argument).
+        #
         # _ribbon_threads is bookkeeping only (test joins + shutdown
         # visibility) -- nothing about correctness depends on this list;
         # the generation check is what actually decides what lands.
         self._ribbon_lock = threading.Lock()
-        self._ribbon_generation = 0
-        self._pending_ribbon = None
         self._ribbon_threads = []
+
+        # One cell, chip 0, until something says otherwise -- `do_activate`
+        # (a booth with no socket still renders) or a `hello` (the daemon's
+        # real card list). Built HERE and not merely declared, so that every
+        # method below can assume a router exists: an event can reach this
+        # app before any widget does, and "is there a router yet" is not a
+        # question thirty call sites should each have to ask.
+        self.attach_cards([0])
+
+    # ── the cells, and the chips they show ───────────────────────────────
+
+    def attach_cards(self, cards):
+        """Build the per-cell state for this booth's chips, and size the quad.
+
+        Called from exactly two places, and the two are the same decision
+        arriving from different directions: `do_activate` with a single-card
+        default, so a booth with no socket at all still renders a cell; and
+        `hello`, with the daemon's real card list. A booth on two chips must
+        build TWO cells, not four empty ones, which is why this takes a list
+        of card numbers and never a count.
+
+        Idempotent on the card list. A dropped socket reconnects and says
+        `hello` again, and rebuilding the router on every reconnect would
+        blank four cells and forget four folds for no reason at all.
+        """
+        cards = list(cards)[:MAX_SLOTS]
+        if not cards:
+            # A daemon that reported no chips still gets a cell to say so in.
+            # Zero cells would mean no viewer, no caption and nothing on
+            # screen -- the booth would look broken rather than idle.
+            cards = [0]
+
+        if self.router is None or self.cards != cards:
+            self.cards = cards
+            self.router = SlotRouter(cards, showcase_dwell_s=_SHOWCASE_DWELL_S)
+            self._slots = [_SlotView() for _ in cards]
+            # A frame buffered against the old shape names a job no cell can
+            # claim any more; start clean rather than draining ghosts.
+            self._frames = LatestFrameByJob()
+
+        self._ensure_quad(cards)
+        self._sync_viewer_hold()
+
+    def _note_card(self, card):
+        """Give a chip the booth has just heard of its own cell.
+
+        `hello` is not a promise the booth will ever get. The daemon greets a
+        UI that connects during the model-load window with `not_ready`
+        instead (runner/daemon.py's `_hello`), and it only ever greets at
+        accept time -- so on the real booth the ordinary startup is: connect,
+        `not_ready`, and then `card_state` and `job_start` events naming
+        chips the router has never heard of. Found by looking at it: the
+        first live run of the quad logged four folds on four chips and drew
+        one cell, because the card list never arrived.
+
+        Appending rather than rebuilding (`SlotRouter.add_card`) is what
+        makes this safe to do at any moment: existing cells keep their
+        indices, their folds and their cameras.
+        """
+        if self.router is None:
+            return
+        index = self.router.add_card(card)
+        if index is None:
+            return
+        self._slots.append(_SlotView())
+        self.cards = list(self.router.cards)
+        log.info("chip %s named by the daemon; giving it cell %d", card, index)
+        self._ensure_quad(self.cards)
+
+    def _ensure_quad(self, cards):
+        """Make the on-screen quad show exactly these chips.
+
+        A no-op with no widget tree (`_viewer_page is None`): headless tests
+        install their own fake quad and this must not replace it. A no-op
+        too when the real quad already shows these cards, which is what keeps
+        a reconnect from tearing down four live GL contexts.
+        """
+        if self._viewer_page is None:
+            return
+        if isinstance(self.quad, QuadView) and list(self.quad.cards) == list(cards):
+            return
+        quad = QuadView(cards)
+        quad.set_solo_mode(not self.quad_visible)
+        quad.set_focus(self.router.focus_slot)
+        try:
+            quad.set_connection_state(self._connection_state)
+        except Exception:
+            log.exception("connection state not applied to the new quad")
+        self._viewer_page.set_child(quad)
+        self.quad = quad
+        for viewer in quad.viewers:
+            viewer.start_animation()
+        log.info("quad now showing chip(s) %s", list(cards))
+
+    def _viewer_for(self, slot):
+        """The `StructureViewer` cell `slot` draws into, or None.
+
+        The ONE place a slot index becomes a widget. None is ordinary, not an
+        error: a headless test builds no quad at all, and a `hello` naming
+        more chips than the quad on screen was built for is wire-shaped input
+        rather than a programming mistake.
+        """
+        if self.quad is None or slot is None:
+            return None
+        try:
+            return self.quad.viewer_for_slot(slot)
+        except Exception:
+            log.exception("no viewer for slot %r", slot)
+            return None
 
     # ── the one source of truth ─────────────────────────────────────────
     #
@@ -1415,10 +1675,6 @@ class DemoApp(Gtk.Application):
 
         _ensure_app_css_installed()
 
-        self.viewer = StructureViewer()
-        self.viewer.set_hexpand(True)
-        self.viewer.set_vexpand(True)
-
         # The preparing overlay sits on top of the viewer, not in place of
         # it, and its visibility is driven purely by the booth state -- it
         # has no dependency on the viewer ever having held a ribbon or even
@@ -1436,7 +1692,15 @@ class DemoApp(Gtk.Application):
         viewer_page = Gtk.Overlay()
         viewer_page.set_hexpand(True)
         viewer_page.set_vexpand(True)
-        viewer_page.set_child(self.viewer)
+        self._viewer_page = viewer_page
+        # The quad goes in as this overlay's CHILD, so both overlays below
+        # sit over whichever view is up -- and so a `hello` naming a
+        # different set of chips can swap the whole grid without disturbing
+        # them. `attach_cards` is what actually builds it (`_ensure_quad`),
+        # from the card list this booth has so far: `[0]` until the daemon
+        # says otherwise, which is what lets a booth with no socket at all
+        # come up showing a viewer rather than a hole.
+        self.attach_cards(self.cards)
         viewer_page.add_overlay(self._build_viewer_caption())
         viewer_page.add_overlay(self._build_preparing_overlay())
 
@@ -1506,7 +1770,11 @@ class DemoApp(Gtk.Application):
         self._connect_visitor_input(window)
         window.present()
 
-        self.viewer.start_animation()
+        # Every cell spins on its own tick callback -- `_ensure_quad` starts
+        # any cell it builds later, so this only ever covers the ones already
+        # on screen when the window is presented.
+        for viewer in (self.quad.viewers if self.quad is not None else ()):
+            viewer.start_animation()
         self._sync_to_state(force=True)
 
         self.sampler.start()
@@ -1935,9 +2203,13 @@ class DemoApp(Gtk.Application):
         reconciles on every event, touch, pick and 100ms tick, and headless
         tests that build no widgets at all still drive the decision.
         """
+        # The FOCUS cell's, because this line sits under the hero image and
+        # describes the molecule in it. Four cells' worth of it would be four
+        # captions under one picture.
+        focus = self._slot_view(self.router.focus_slot if self.router else 0)
         subject = target_info_subject(
-            shown_target_id=self._shown_target_id,
-            folding_target_id=self._current_target_id,
+            shown_target_id=focus.shown_target_id if focus else None,
+            folding_target_id=focus.current_target_id if focus else None,
         )
         name = self._target_name(subject)
         self._target_info = (
@@ -2110,7 +2382,8 @@ class DemoApp(Gtk.Application):
 
     def _build_help_panels(self):
         column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-        column.append(self._help_label("THE PANELS ON THE RIGHT", "help-section"))
+        column.append(self._help_label("THE QUAD, AND THE PANELS ON THE RIGHT",
+                                       "help-section"))
         for paragraph in _HELP_PANELS:
             label = self._help_label(paragraph, "help-desc", wrap=True)
             label.set_max_width_chars(52)
@@ -2179,22 +2452,15 @@ class DemoApp(Gtk.Application):
         the clock -- and idempotent, so calling it more often than
         necessary costs nothing.
 
-        The moment the dwell expires (module docstring, step 3) the booth
-        drains the buffered diffusion frame, so the next fold's collapse
-        appears in the same instant the finished structure stops being the
-        subject rather than after a blank gap. If there is no buffered frame
-        -- the long targets, where diffusion is fifteen seconds away -- the
-        drain is a no-op and the structure simply stays up, now dimmed and
-        captioned by `_sync_viewer_hold` below.
+        Note what is NOT here any more: the buffered-frame drain that used
+        to fire on the booth-wide `showcase_ended` edge. A cell's dwell is
+        that cell's own now (`ui.slots.SlotState`), and draining all four
+        cells because ONE of them finished a showcase is the single global
+        buffer's defect wearing the state machine's clothes. `_tick_state_at`
+        drains the cells the router reports as actually changed.
         """
         state = self.states.state
         previous, self._last_state = self._last_state, state
-
-        if showcase_ended(previous, state):
-            # Not a fresh frame -- the newest SUPPRESSED one, still sitting
-            # in the latest-wins buffer. This is the whole reason frames are
-            # suppressed rather than dropped.
-            self._drain_frames()
 
         # BEFORE the early return below, not after: leaving a showcase is a
         # state change, but so is the ordinary tick that finds nothing has
@@ -2237,45 +2503,85 @@ class DemoApp(Gtk.Application):
                 return target.name
         return None
 
-    def _end_fold_in_flight(self):
-        """The fold that was running has stopped without producing a frame
-        (`job_error`), or the daemon has stopped folding at all
-        (`not_ready`).
+    def _end_fold_in_flight(self, slot):
+        """The fold that was running on cell `slot` has stopped without
+        producing a frame (`job_error`), or the daemon has stopped folding at
+        all (`not_ready`, which ends all of them).
 
-        Takes down the "now folding X" claim and nothing else. What is on
-        screen is deliberately left alone: it is a real structure that was
-        really computed, and replacing it with an empty viewer is the defect
-        this file's second docstring section exists to remove -- a failed
-        fold is a reason to stop asserting, not a reason to blank the booth.
-        The next fold's first frame will supersede it in the ordinary way.
+        Takes down that cell's "now folding X" claim and nothing else. What
+        is on screen is deliberately left alone: it is a real structure that
+        was really computed, and replacing it with an empty viewer is the
+        defect this file's second docstring section exists to remove -- a
+        failed fold is a reason to stop asserting, not a reason to blank the
+        booth. The next fold's first frame will supersede it in the ordinary
+        way. And it is ONE cell: a fold failing on chip 1 says nothing at all
+        about the three folds still running beside it.
         """
-        self._awaiting_first_frame = False
-        self._current_job_id = None
-        self._current_target_id = None
+        view = self._slot_view(slot)
+        if view is None:
+            return
+        view.awaiting_first_frame = False
+        view.current_job_id = None
+        view.current_target_id = None
         self._sync_viewer_hold()
 
+    def _slot_view(self, slot):
+        """Cell `slot`'s `_SlotView`, or None if there is no such cell.
+
+        The bounds check, in one place, for the same reason `QuadView._cell`
+        is: a slot index reaches this class from wire-shaped data (a `card`
+        the router turned into an index), so an out-of-range one is ordinary
+        input and must not raise out of a GLib callback.
+        """
+        if not isinstance(slot, int) or isinstance(slot, bool):
+            return None
+        if 0 <= slot < len(self._slots):
+            return self._slots[slot]
+        return None
+
     def _sync_viewer_hold(self):
-        """Reconcile the two things that say "the structure on screen
-        belongs to a fold that is over, and a new one is being computed":
-        the viewer's dim, and the caption over it.
+        """Reconcile, for every cell, the two things that say "the structure
+        on screen belongs to a fold that is over, and a new one is being
+        computed": that cell's dim, and the caption over the hero.
 
         Idempotent and safe to call from anywhere -- it is called from
         `_sync_to_state` (so every event, touch, pick and 100ms tick
-        reconciles it) and directly from the three branches that change the
-        answer without changing the booth's state: `job_start`, `job_error`
-        and the frame drain.
+        reconciles it) and directly from the branches that change the answer
+        without changing the booth's state: `job_start`, `job_error` and the
+        frame drain.
+
+        The DIM is per cell, because whether a structure is a leftover is a
+        fact about the fold that produced it. The words are not: there is one
+        hero caption, over one hero image, and it speaks for the cell the
+        booth is following (`SlotRouter.focus_slot`). Two cells' captions in
+        one overlay would be two claims about one picture.
 
         Tolerates every collaborator being absent, like the rest of this
-        file: headless tests substitute a viewer and build no caption at
-        all, and both halves below are independently guarded.
+        file: headless tests substitute a quad and build no caption at all,
+        and every half below is independently guarded.
         """
-        caption = viewer_hold_caption(
-            awaiting_first_frame=self._awaiting_first_frame,
-            has_structure=self._viewer_has_structure,
-            showcasing=self.states.state == "showcase",
-            folding_name=self._target_name(self._current_target_id),
-            held_name=self._target_name(self._shown_target_id),
-        )
+        focus = self.router.focus_slot if self.router is not None else 0
+        caption = None
+        for index, view in enumerate(self._slots):
+            slot_caption = viewer_hold_caption(
+                awaiting_first_frame=view.awaiting_first_frame,
+                has_structure=view.has_structure,
+                showcasing=self.router.slots[index].state == "showcase",
+                folding_name=self._target_name(view.current_target_id),
+                held_name=self._target_name(view.shown_target_id),
+            )
+            if index == focus:
+                caption = slot_caption
+            viewer = self._viewer_for(index)
+            if viewer is not None:
+                # Dim exactly when the caption explains why. Deriving both
+                # from the one decision is what stops a dimmed structure from
+                # ever appearing without the words that make it honest --
+                # and, in the other direction, stops the caption from
+                # appearing over a viewer with nothing in it to dim
+                # (`slot_caption` is truthy in the empty case too, hence the
+                # second term).
+                viewer.set_held(slot_caption is not None and view.has_structure)
         self._caption = caption
 
         # Driven from here rather than from its own timer so the two
@@ -2283,16 +2589,6 @@ class DemoApp(Gtk.Application):
         # reconciled from the same fields in the same pass. See the block
         # above `target_info_subject` for how the two divide the work.
         self._sync_target_info()
-
-        if self.viewer is not None:
-            # Dim exactly when the caption explains why. Deriving both from
-            # the one decision is what stops a dimmed structure from ever
-            # appearing without the words that make it honest -- and, in the
-            # other direction, stops the caption from appearing over a
-            # viewer with nothing in it to dim (`caption` is truthy in the
-            # empty case too, hence the second term).
-            self.viewer.set_held(caption is not None
-                                 and self._viewer_has_structure)
 
         if self._caption_box is None:
             return
@@ -2351,8 +2647,11 @@ class DemoApp(Gtk.Application):
            the gallery behind it".
         3. `?` opens the card from anywhere -- attract, gallery, folding,
            showcase, preparing. It is chrome; it does not touch booth state.
-        4. `D` toggles diagnostics and `T` toggles the Tensix activity
-           panel; `Esc` closes whichever of them is open.
+        4. `D` toggles diagnostics, `T` toggles the Tensix activity panel and
+           `Q` toggles the quad; `Esc` closes whichever of the two panels is
+           open. `Q` is deliberately NOT closed by `Esc`: the quad is a view
+           of the same four folds, not something laid over them, so there is
+           nothing for `Esc` to get out of the way of.
         5. Everything else is a visitor touch, exactly as before.
         """
         self._note_input()
@@ -2392,6 +2691,9 @@ class DemoApp(Gtk.Application):
             return True
         if lowered in _TENSIX_KEYS:
             self._toggle_chipviz()
+            return True
+        if lowered in _QUAD_KEYS:
+            self._toggle_quad()
             return True
         if lowered == "escape":
             # Nothing to close but the two rail panels; and if both are shut
@@ -2481,6 +2783,40 @@ class DemoApp(Gtk.Application):
                 log.exception("Tensix activity panel visibility change dropped")
         if self._tensix_toggle_label is not None:
             self._tensix_toggle_label.set_label(self._tensix_hint_text())
+
+    # ── the quad ─────────────────────────────────────────────────────────
+
+    def _toggle_quad(self):
+        self._set_quad_visible(not self.quad_visible)
+
+    def _set_quad_visible(self, visible):
+        """Show all four chips at once, or go back to one large protein.
+
+        The booth's default is one: four cells is the answer to "is this
+        really running on four chips", and the single large view is the
+        answer to "what does a protein look like" -- which is the question
+        most visitors actually walked up with. So this is a toggle, by
+        request, and the single view is what it starts from.
+
+        It is not chrome. Nothing is covered, nothing is hidden behind it,
+        and `_tick_overlays` deliberately does NOT close it after an idle
+        period the way it closes the help card and the two rail panels: a
+        visitor who walks away from the quad leaves a booth showing four
+        honest folds, which is a perfectly good attract screen and not a
+        state anyone needs rescuing from.
+
+        The mechanism is `QuadView.set_solo_mode`, which hides the cells that
+        are not the focus. One widget tree either way -- see the comment
+        above that method for why the hero is a cell of the quad rather than
+        a fifth viewer with its own camera.
+        """
+        self.quad_visible = bool(visible)
+        if self.quad is None:
+            return
+        try:
+            self.quad.set_solo_mode(not self.quad_visible)
+        except Exception:
+            log.exception("quad view toggle dropped")
 
     # ── the easter egg ───────────────────────────────────────────────────
 
@@ -2862,38 +3198,72 @@ class DemoApp(Gtk.Application):
         spelled out in `_drain_frames`: this is a REPEATING source, and an
         exception escaping it removes the source permanently -- a booth
         frozen mid-showcase with nothing on screen saying so.
+
+        The work itself is `_tick_state_at`, which takes the clock reading
+        rather than fetching one. That split is the test seam: driving four
+        cells' dwells apart from each other needs the clock supplied, and a
+        test that had to monkeypatch `self._clock` to do it would be testing
+        the patch as much as the tick.
         """
         try:
-            now = self._clock()
-            self.states.tick(now)
-            self._sync_to_state()
-            self._tick_overlays(now)
-            # The pipeline panel's own staleness check, on the same tick.
-            # It is reset by `job_start` and nothing else, so without this a
-            # daemon that died mid-fold would leave e.g. "DIFFUSION 62%" on
-            # screen for the rest of the day -- see ui/panels.py's
-            # PIPELINE_STALE_AFTER_S. The panel owns the clock and the
-            # threshold; this only gives it a chance to look.
-            #
-            # Its own guard, like `_sync_chipviz` and `_note_diagnostics`:
-            # everything after this line in the tick (the diagnostics
-            # repaint) must not be pre-empted by a panel misbehaving.
-            if self.pipeline_panel is not None:
-                try:
-                    self.pipeline_panel.tick()
-                except Exception:
-                    log.exception("pipeline staleness check dropped")
-            # The diagnostics panel repaints from here rather than from
-            # every appended line: a 30Hz frame stream would otherwise
-            # re-label twenty rows thirty times a second to show a list a
-            # human reads at reading speed. `refresh` is a no-op when the
-            # log has not moved (revision check) and the panel is skipped
-            # entirely while it is closed.
-            if self.diagnostics_panel is not None and self.diagnostics_visible:
-                self.diagnostics_panel.refresh(self.diagnostics)
+            self._tick_state_at(self._clock())
         except Exception:
             log.exception("state tick failed")
         return True
+
+    def _tick_state_at(self, now):
+        """One state tick, with the clock supplied. See `_tick_state`.
+
+        Unguarded on purpose -- its caller owns the guard, and a test that
+        drives this directly wants a failure to be visible rather than
+        logged.
+        """
+        self.states.tick(now)
+        # Every cell's own dwell, and ONLY the cells that actually moved.
+        # This is called at UI frame rate; re-captioning and re-draining all
+        # four on every tick would repaint the whole quad a hundred times a
+        # second (`SlotRouter.tick`).
+        changed = self.router.tick(now)
+        self._sync_to_state()
+        if changed:
+            # The dwell that just expired was suppressing that cell's frames.
+            # Draining here is what lets the cell cut straight to live
+            # diffusion rather than to a blank gap -- and it is a drain of
+            # the whole buffer, which is exactly right: every OTHER cell's
+            # frame is either drawable (and overdue) or suppressed again and
+            # put straight back.
+            self._drain_frames()
+            for slot in changed:
+                self._sync_cell_caption(slot)
+            self._sync_focus()
+            self._sync_viewer_hold()
+        self._tick_overlays(now)
+        # The pipeline panel's own staleness check, on the same tick.
+        # It is reset by `job_start` and nothing else, so without this a
+        # daemon that died mid-fold would leave e.g. "DIFFUSION 62%" on
+        # screen for the rest of the day -- see ui/panels.py's
+        # PIPELINE_STALE_AFTER_S. The panel owns the clock and the
+        # threshold; this only gives it a chance to look.
+        #
+        # Its own guard, like `_sync_chipviz` and `_note_diagnostics`:
+        # everything after this line in the tick (the diagnostics
+        # repaint) must not be pre-empted by a panel misbehaving.
+        if self.pipeline_panel is not None:
+            try:
+                self.pipeline_panel.tick()
+            except Exception:
+                log.exception("pipeline staleness check dropped")
+        # The diagnostics panel repaints from here rather than from
+        # every appended line: a 30Hz frame stream would otherwise
+        # re-label twenty rows thirty times a second to show a list a
+        # human reads at reading speed. `refresh` is a no-op when the
+        # log has not moved (revision check) and the panel is skipped
+        # entirely while it is closed.
+        if self.diagnostics_panel is not None and self.diagnostics_visible:
+            try:
+                self.diagnostics_panel.refresh(self.diagnostics)
+            except Exception:
+                log.exception("diagnostics repaint dropped")
 
     def _tick_telemetry(self):
         """Repaint the telemetry panel from the SAMPLER, never from the
@@ -2958,6 +3328,27 @@ class DemoApp(Gtk.Application):
         try:
             kind = event["type"]
 
+            # The daemon's card list arrives before anything it can route:
+            # `hello` is what decides how many cells this booth has, and a
+            # `job_start` for chip 2 belongs to no cell until it does.
+            if kind == "hello":
+                self.attach_cards(event.get("cards") or [0])
+            elif kind in ("job_start", "card_state"):
+                # The two events that name a chip without being the greeting.
+                # A booth that connected before the daemon's workers were
+                # ready never got a `hello` at all, so these are how it
+                # learns what hardware it is watching. See `_note_card`.
+                self._note_card(event.get("card"))
+
+            # WHICH CELL, decided once, by ui/slots.py -- and decided BEFORE
+            # any rendering, because every branch below needs the answer and
+            # a second opinion about it in this file is exactly what that
+            # module exists to prevent. `None` means "no cell": a fold on a
+            # chip this booth has no cell for, or an event for a job the
+            # router has never seen. Drawing those into whichever cell
+            # happens to be first is worse than dropping them.
+            slot = self.router.on_event(event)
+
             # The machine first, and the screen reconciled second, BEFORE
             # any of the per-event rendering below: what the booth is doing
             # must not depend on a panel or a viewer call succeeding. (The
@@ -2992,8 +3383,20 @@ class DemoApp(Gtk.Application):
                 log.info("folding %s (%s residues) on chip %s",
                          event.get("target_id"), event.get("n_residues"),
                          event.get("card"))
-                if self.pipeline_panel is not None:
-                    self.pipeline_panel.reset()
+                view = self._slot_view(slot)
+                if view is None:
+                    # A fold on a chip this booth has no cell for. Logged
+                    # above, and nothing else: it is a real fold on real
+                    # silicon and the log should say so, but there is no
+                    # honest place to draw it.
+                    log.warning("no cell for chip %r; its fold will not be "
+                                "shown", event.get("card"))
+                    return False
+                if slot == self.router.focus_slot:
+                    # ONE panel, ONE bar. Reset it only for the fold the
+                    # booth is actually following -- four folds feeding one
+                    # progress bar makes it run backwards.
+                    self._reset_pipeline_panel()
                 # NOT a clear. This branch used to blank the viewer here
                 # (or, during a showcase, arrange for it to be blanked two
                 # seconds later), and on a long target that is fifteen
@@ -3003,15 +3406,18 @@ class DemoApp(Gtk.Application):
                 # frame that can replace what is on screen -- see
                 # `_drain_frames` and the module docstring's second section.
                 #
-                # Recorded, not applied: which fold this is, so a straggling
-                # frame from the previous one cannot pose as this fold's
-                # first, and what it is folding, for the caption.
-                self._awaiting_first_frame = True
-                self._current_job_id = event.get("job_id")
-                self._current_target_id = event.get("target_id")
+                # Recorded, not applied, and recorded ON THIS CELL: which
+                # fold this is, so a straggling frame from the previous one
+                # cannot pose as this fold's first, and what it is folding,
+                # for the caption.
+                view.awaiting_first_frame = True
+                view.current_job_id = event.get("job_id")
+                view.current_target_id = event.get("target_id")
                 # The state machine has already been driven and the screen
                 # already reconciled (both above, before this branch), so
-                # this is what puts the caption up for the flags just set.
+                # these are what put the captions up for the flags just set.
+                self._sync_cell_caption(slot)
+                self._sync_focus()
                 self._sync_viewer_hold()
             elif kind == "not_ready":
                 # The daemon's preflight or model load hasn't finished.
@@ -3030,25 +3436,40 @@ class DemoApp(Gtk.Application):
                 # the preparing overlay), but the caption's "now folding X"
                 # is now false and comes down with the fold that made it
                 # true. See `viewer_hold_caption`.
-                self._end_fold_in_flight()
+                for index in range(len(self._slots)):
+                    self._end_fold_in_flight(index)
             elif kind == "stage":
                 log.info("stage %s %.0f%%", event.get("stage"),
                          100.0 * event.get("frac", 0.0))
-                if self.pipeline_panel is not None:
+                # Every cell says its own stage, under its own chip label.
+                self._sync_cell_caption(slot, stage=event.get("stage"))
+                if slot is not None and slot == self.router.focus_slot:
+                    # ONE panel, ONE bar, fed by ONE fold: the cell the booth
+                    # is following. Two jobs feeding it makes it run
+                    # backwards -- 62%, then 8%, then 71% -- which reads as a
+                    # broken booth rather than as two folds.
+                    #
                     # The wire carries a WHOLE-FOLD fraction; the panel
                     # wants a within-stage one. set_stage_from_wire is the
                     # one place that conversion lives, which is precisely
                     # why this call site uses it and never set_stage.
-                    self.pipeline_panel.set_stage_from_wire(
+                    self._call_pipeline_panel(
+                        "set_stage_from_wire",
                         event.get("stage"), event.get("frac", 0.0))
             elif kind == "job_done":
                 log.info("done in %.2fs", event.get("wall_s", 0.0))
+                self._sync_cell_caption(slot)
+                self._sync_focus()
+                self._sync_viewer_hold()
                 cif_path = event.get("cif_path")
-                if cif_path:
+                if cif_path and slot is not None:
                     # ribbon_from_cif's cost moved off this thread -- see
                     # _spawn_ribbon_worker. The result comes back later, via
                     # _drain_pending_ribbon on the main loop, not here.
-                    self._spawn_ribbon_worker(cif_path)
+                    self._spawn_ribbon_worker(slot, cif_path)
+                elif cif_path:
+                    log.warning("job_done for %s belongs to no cell; nothing "
+                                "to render", event.get("job_id"))
                 else:
                     # A misconfigured runner sending job_done with nothing
                     # to render used to no-op here silently; log it so it's
@@ -3072,7 +3493,15 @@ class DemoApp(Gtk.Application):
                 # in-flight claim over it, not a permanent lie; and the
                 # pipeline panel's own staleness check (ui/panels.py) takes
                 # the stage readout down beside it.
-                self._end_fold_in_flight()
+                #
+                # ONE cell, and that is the load-bearing word: a fold failing
+                # on chip 1 says nothing about the three still running.
+                # `message` is not passed to anything that draws -- the
+                # caption below is rebuilt from this booth's own playlist and
+                # `STAGE_ORDER`, never from the wire.
+                self._end_fold_in_flight(slot)
+                self._sync_cell_caption(slot)
+                self._sync_focus()
             elif kind == "egg_refused":
                 # The daemon could not give the egg a chip. `message`, if it
                 # is there at all, is runner-side detail and must never reach
@@ -3086,17 +3515,34 @@ class DemoApp(Gtk.Application):
                     # `_advance_egg`, on the egg's own timer, so that every
                     # transition this feature makes happens in one method.
                     self._egg_refusal = event.get("reason")
+            elif kind == "card_state":
+                # Acted on at the top of this method, and ONLY for the chip
+                # number it names: that is what lets a booth which never got
+                # a `hello` still learn what hardware it is watching.
+                #
+                # Nothing else in it reaches the screen, and that must stay
+                # true. `card_state` carries per-chip status, and this file
+                # rendering it would be exactly the coupling ui/telemetry.py
+                # exists to prevent -- the chip panel is fed from an
+                # independent tt-smi sampler so that a dead daemon still
+                # leaves the silicon visibly breathing. Nothing on the wire
+                # feeds that panel.
+                log.debug("card %s is %s", event.get("card"),
+                          event.get("state"))
+            elif kind == "hello":
+                # Already acted on, at the top of this method -- it is the
+                # one event that changes how many cells this booth has, so it
+                # has to be applied before anything tries to route by one.
+                # Named here so it does not land in the "unhandled event
+                # type" branch below, which would be a warning per reconnect.
+                log.info("daemon says hello: chips %s, models %s",
+                         event.get("cards"), event.get("models"))
             else:
                 # A future protocol addition should be visible in the logs,
                 # not silently dropped the way job_error was before this fix.
-                #
-                # `card_state` lands here deliberately, and must keep landing
-                # here: it carries per-chip telemetry, and this file
-                # rendering it would be exactly the coupling ui/telemetry.py
-                # exists to prevent -- the panel is fed from an independent
-                # tt-smi sampler so that a dead daemon still leaves the
-                # silicon visibly breathing. Nothing on the wire feeds that
-                # panel.
+                # (`card_state` used to land here; it has its own branch
+                # above now, because the booth reads the chip number off it
+                # to size the quad -- and only the chip number.)
                 log.warning("unhandled event type %r", kind)
         except Exception:
             # Rate-limited: a protocol change this build cannot parse would
@@ -3105,6 +3551,62 @@ class DemoApp(Gtk.Application):
             kind = event.get("type")
             self._note_dropped(f"event:{kind!r}", f"dropping malformed {kind!r} event")
         return False
+
+    # ── the one pipeline bar ─────────────────────────────────────────────
+    #
+    # Guarded the same way `_sync_chipviz` and `_note_diagnostics` are, and
+    # for the same reason: a panel is the least important thing happening in
+    # `_handle_event`, and a failure inside one must not pre-empt the
+    # rendering below it or turn a perfectly good event into a "dropping
+    # malformed ..." log line. Before this the panel calls sat bare inside
+    # the branch, so an exploding panel cost the whole event.
+
+    def _call_pipeline_panel(self, method, *args):
+        if self.pipeline_panel is None:
+            return
+        try:
+            getattr(self.pipeline_panel, method)(*args)
+        except Exception:
+            log.exception("pipeline panel %s dropped", method)
+
+    def _reset_pipeline_panel(self):
+        self._call_pipeline_panel("reset")
+
+    def _sync_focus(self):
+        """Mark the cell the booth is following, on screen.
+
+        The rule is `SlotRouter.focus_slot`'s and is not restated here --
+        a second copy of it is how the daemon and the screen end up
+        disagreeing about which fold the booth is about. In solo mode this
+        also decides which single cell IS the screen (`QuadView.set_focus`).
+        """
+        if self.quad is None or self.router is None:
+            return
+        try:
+            self.quad.set_focus(self.router.focus_slot)
+        except Exception:
+            log.exception("quad focus update dropped")
+
+    def _sync_cell_caption(self, slot, stage=None):
+        """Say what cell `slot` is folding, and what it is doing to it.
+
+        Only the cell the event belonged to: three cells re-captioned because
+        the fourth got a `stage` event is the single-viewer defect in its
+        smallest form. Everything that reaches the screen from here goes
+        through `cell_caption`, which takes a playlist name and a stage from
+        `STAGE_ORDER` and nothing else -- see the comment above it.
+        """
+        if self.quad is None:
+            return
+        view = self._slot_view(slot)
+        if view is None:
+            return
+        name = (self._target_name(view.current_target_id)
+                or self._target_name(view.shown_target_id))
+        try:
+            self.quad.set_caption(slot, cell_caption(name=name, stage=stage))
+        except Exception:
+            log.exception("quad caption for slot %r dropped", slot)
 
     def _sync_chipviz(self, stage=None, card=None):
         """Tell the Tensix activity panel what the booth is doing, and
@@ -3191,8 +3693,8 @@ class DemoApp(Gtk.Application):
     # actually promise), and no queue that could let a superseded ribbon
     # sit and apply later.
 
-    def _spawn_ribbon_worker(self, cif_path):
-        """Move ribbon_from_cif's cost onto a background thread.
+    def _spawn_ribbon_worker(self, slot, cif_path):
+        """Move ribbon_from_cif's cost onto a background thread, for one cell.
 
         Threads, not e.g. a process pool: the payload (a cif_path string
         in, four numpy arrays out) is small, gemmi/numpy release the GIL
@@ -3204,10 +3706,20 @@ class DemoApp(Gtk.Application):
         killed outright when the process exits, never blocking it, and it
         never touches a GTK widget itself (only _drain_pending_ribbon does,
         and only from the main loop).
+
+        The generation is bumped on THIS CELL's counter and no other. With
+        one counter for the booth, a `job_done` on chip 3 bumps the
+        generation and chip 0's in-flight ribbon build is dropped as stale --
+        silently, every cycle, forever, and with four chips folding that is
+        most ribbons the booth ever builds.
         """
+        view = self._slot_view(slot)
+        if view is None:
+            log.warning("no cell for a finished fold; %s not rendered", cif_path)
+            return
         with self._ribbon_lock:
-            self._ribbon_generation += 1
-            generation = self._ribbon_generation
+            view.ribbon_generation += 1
+            generation = view.ribbon_generation
 
         # Bookkeeping only (test joins + a bound on how many dead Thread
         # objects accumulate across a long attract-loop session) -- prune
@@ -3217,14 +3729,37 @@ class DemoApp(Gtk.Application):
 
         worker = threading.Thread(
             target=self._ribbon_worker_main,
-            args=(generation, cif_path),
-            name=f"ribbon-worker-{generation}",
+            args=(slot, generation, cif_path),
+            name=f"ribbon-worker-{slot}-{generation}",
             daemon=True,
         )
         self._ribbon_threads.append(worker)
         worker.start()
 
-    def _ribbon_worker_main(self, generation, cif_path):
+    def _join_ribbon_workers(self, timeout=5.0):
+        """Block until every ribbon worker spawned so far has finished.
+
+        A test seam, and used by `do_shutdown` for tidiness. Returns whether
+        they all finished: a caller that cares (a test) can assert on it, and
+        the booth itself only logs -- a worker still inside gemmi at shutdown
+        is a daemon thread and the process is going away regardless.
+
+        Joins EVERY thread this app has recorded, not just the newest: four
+        chips finishing within a few milliseconds of each other put four
+        workers in flight at once, and a test that inspected the outcome
+        after joining only the last one would be racing three others.
+        """
+        alive = []
+        for worker in list(self._ribbon_threads):
+            worker.join(timeout=timeout)
+            if worker.is_alive():
+                alive.append(worker.name)
+        if alive:
+            log.warning("ribbon worker(s) %s still running after %.1fs",
+                        alive, timeout)
+        return not alive
+
+    def _ribbon_worker_main(self, slot, generation, cif_path):
         """Runs entirely off the main loop -- must never raise out of this
         method. A plain threading.Thread whose target raises doesn't freeze
         anything the way an uncaught exception in a GLib source would (see
@@ -3243,21 +3778,29 @@ class DemoApp(Gtk.Application):
             outcome = ("ok", result)
 
         with self._ribbon_lock:
-            # Stale: a newer fold has started since this worker was
-            # spawned -- drop this result outright, it must never reach
-            # the screen even if nothing else is waiting to replace it.
-            stale = generation != self._ribbon_generation
+            view = self._slot_view(slot)
+            if view is None:
+                # The booth was re-sized (a `hello` naming different chips)
+                # while this worker ran. Its cell is gone; so is the fold it
+                # belonged to, as far as the screen is concerned.
+                return
+            # Stale: a newer fold has started ON THIS CELL since this worker
+            # was spawned -- drop this result outright, it must never reach
+            # the screen even if nothing else is waiting to replace it. On
+            # this cell, and not on any other: another chip finishing a fold
+            # in the meantime is not a reason to throw this one away.
+            stale = generation != view.ribbon_generation
             # Superseded-in-slot: a *result* from a newer generation is
             # already waiting to be drained. Guards the opposite race from
             # `stale` above -- a straggler finishing after a faster, newer
             # worker must not clobber the newer result that's already
             # sitting in the slot before the main loop got to it.
             superseded_in_slot = (
-                self._pending_ribbon is not None
-                and generation < self._pending_ribbon[0]
+                view.pending_ribbon is not None
+                and generation < view.pending_ribbon[0]
             )
             if not stale and not superseded_in_slot:
-                self._pending_ribbon = (generation, cif_path, outcome)
+                view.pending_ribbon = (generation, cif_path, outcome)
 
         # Wake the main loop regardless of whether this worker's result was
         # the one actually stored -- GLib.idle_add is safe to call from any
@@ -3286,31 +3829,45 @@ class DemoApp(Gtk.Application):
         whatever is on screen exactly as it is.
         """
         with self._ribbon_lock:
-            pending = self._pending_ribbon
-            self._pending_ribbon = None
-            current_generation = self._ribbon_generation
+            # Every cell's, in one pass: four workers can finish inside one
+            # idle callback, and asking about only the newest would leave the
+            # other three sitting in their cells until something else woke
+            # the main loop.
+            pending = []
+            for slot, view in enumerate(self._slots):
+                if view.pending_ribbon is not None:
+                    pending.append((slot, view.pending_ribbon,
+                                    view.ribbon_generation))
+                    view.pending_ribbon = None
 
-        if pending is None:
-            return False
+        for slot, (generation, cif_path, outcome), current_generation in pending:
+            self._apply_ribbon(slot, generation, current_generation,
+                               cif_path, outcome)
+        return False
 
-        generation, cif_path, outcome = pending
+    def _apply_ribbon(self, slot, generation, current_generation, cif_path,
+                      outcome):
+        """Put one cell's finished structure on screen, or decide not to."""
         if generation != current_generation:
-            # A newer fold started after this result was produced (it was
-            # stored back when it was still current) -- it's stale now.
-            return False
+            # A newer fold started ON THIS CELL after this result was
+            # produced (it was stored back when it was still current) --
+            # it's stale now.
+            return
 
-        if not ribbon_may_be_revealed(self.states.state):
+        if not self.router.slots[slot].ribbon_may_be_revealed:
             # The dwell this structure was built for has already expired
-            # (a slow build can outlast it), so the booth has moved on to
+            # (a slow build can outlast it), so this cell has moved on to
             # the next fold's live diffusion. Cross-fading this ribbon in
             # now would hide that diffusion behind a structure from a fold
             # that is over -- the headline defect, arriving late instead of
-            # early. Drop it and say so in the log.
+            # early. THIS cell's dwell, not the booth's: another chip
+            # showcasing is no licence to draw over this one.
             log.info("ribbon for %s finished after its showcase ended; "
                      "not revealing it over live diffusion", cif_path)
-            return False
+            return
 
         kind, payload = outcome
+        viewer = self._viewer_for(slot)
         try:
             if kind == "error":
                 # Leave whatever's on screen (the last diffusion frame, or
@@ -3318,21 +3875,46 @@ class DemoApp(Gtk.Application):
                 # a stack trace on screen, never a crash. set_ribbon and
                 # begin_crossfade below are only reached on success, so a
                 # bad CIF simply forfeits the ribbon reveal for this job
-                # instead of corrupting the current view.
+                # instead of corrupting the current view. And it forfeits it
+                # for ONE cell: three good folds beside it are untouched.
                 log.error("could not build ribbon for %s", cif_path,
                           exc_info=payload)
-            else:
-                verts, norms, colors, idx = payload
-                self.viewer.set_ribbon(verts, norms, colors, idx)
-                self.viewer.begin_crossfade()
-                # The structure is only NOW something a visitor can see, so
-                # this is when its dwell starts -- not back at job_done,
-                # which is separated from this instant by the build above
-                # and the 0.8s cross-fade below it.
+                return
+            verts, norms, colors, idx = payload
+            if viewer is not None:
+                viewer.set_ribbon(verts, norms, colors, idx)
+                viewer.begin_crossfade()
+            view = self._slot_view(slot)
+            if view is not None:
+                # This cell is now showing a real structure -- which is what
+                # lets the NEXT fold on this chip be held against it rather
+                # than against nothing.
+                #
+                # `shown_target_id` is deliberately NOT touched here, and the
+                # reason is a defect this line caused and looking at the real
+                # booth found. By the time a ribbon lands, the daemon has
+                # usually already started the next fold on the same chip, so
+                # `current_target_id` names the fold that is STARTING, not
+                # the one this ribbon belongs to. Copying it here labelled a
+                # held structure with the wrong protein's name, under the
+                # picture, in front of a visitor. The moment the picture
+                # really changes is the moment a frame is drawn, and that is
+                # where `shown_target_id` is set -- see `_draw_frame`.
+                view.has_structure = True
+            # The structure is only NOW something a visitor can see, so
+            # this is when its dwell starts -- not back at job_done,
+            # which is separated from this instant by the build above
+            # and the 0.8s cross-fade below it.
+            self.router.slots[slot].on_structure_revealed()
+            if slot == self.router.focus_slot:
+                # The booth-wide machine follows the cell the booth is
+                # following, so the attract/idle timing a visitor experiences
+                # is measured against the fold they are actually looking at.
                 self.states.on_structure_revealed()
+            self._sync_cell_caption(slot)
+            self._sync_viewer_hold()
         except Exception:
             log.exception("dropping ribbon result for %s", cif_path)
-        return False
 
     def _on_state(self, state):
         # The display must survive the runner dying: log the transition and
@@ -3368,37 +3950,81 @@ class DemoApp(Gtk.Application):
         try:
             log.info("runner connection: %s", state)
             self._note_diagnostics(self.diagnostics.note_connection, state)
-            self.viewer.connection_state = state
+            # Remembered as well as applied, so a quad rebuilt on the `hello`
+            # that follows a reconnect does not come up claiming the socket
+            # is still down.
+            self._connection_state = state
+            if self.quad is not None:
+                # EVERY cell (`QuadView.set_connection_state`): a quad where
+                # one cell knows the daemon is gone and three do not is worse
+                # than one where none of them do.
+                self.quad.set_connection_state(state)
         except Exception:
             log.exception("dropping unrecognized connection state %r", state)
         return False
 
     def _drain_frames(self):
-        """Put the newest diffusion frame on screen -- unless a finished
-        structure is currently holding it.
+        """Put each fold's newest diffusion frame into its own cell -- unless
+        that cell is holding a finished structure.
 
         Suppressed rather than discarded (see the module docstring, step 2):
-        the frame stays in the one-slot latest-wins buffer, so the moment
-        the dwell expires `_sync_to_state` drains it and the booth cuts
-        straight to live diffusion. Taking it here and throwing it away
-        would leave a blank screen for one frame interval at exactly the
-        transition a visitor is watching.
+        a suppressed frame goes straight back into its job's latest-wins
+        slot, so the moment that cell's dwell expires `_tick_state_at` drains
+        it and the cell cuts straight to live diffusion. Taking it here and
+        throwing it away would leave a blank cell for one frame interval at
+        exactly the transition a visitor is watching.
 
-        This is also where the PREVIOUS structure is finally cleared -- see
-        the module docstring's second section. The clear used to live in
-        `job_start`, which on a long target meant blanking the viewer
+        PER CELL, both halves of that. Four folds stream at once, so a single
+        buffer would show whichever one was fastest in all four cells, and a
+        single "is a showcase running" question would suppress all four
+        because one of them finished.
+
+        Guarded, with the `return True` OUTSIDE the try: this is a REPEATING
+        GLib source and an exception escaping it removes the source
+        permanently -- a silent freeze, worse than a crash for an unattended
+        booth since nothing signals it happened.
+        """
+        try:
+            for job_id, frame in self._frames.take_all().items():
+                slot = self.router.slot_for_job(job_id)
+                if slot is None:
+                    # An event for a job the router has never seen (a frame
+                    # that beat its own `job_start` through the idle queue, a
+                    # fold on a chip with no cell, or a frame carrying no
+                    # `job_id` at all). It belongs to NO cell; drawing it
+                    # into whichever cell happens to be first would put one
+                    # fold's coordinates under another fold's caption.
+                    continue
+                if not self.router.slots[slot].points_are_visible:
+                    self._frames.put(frame)
+                    continue
+                self._draw_frame(slot, frame)
+        except Exception:
+            # Rate-limited: see _note_dropped. Only reachable if the router
+            # or the buffer itself misbehaves -- a single frame's own failure
+            # is caught inside `_draw_frame`, so one bad payload cannot cost
+            # the other three cells their frames.
+            self._note_dropped("frames", "dropping a frame drain")
+        return True
+
+    def _draw_frame(self, slot, frame):
+        """Draw one decoded frame into one cell.
+
+        This is also where that cell's PREVIOUS structure is finally cleared
+        -- see the module docstring's second section. The clear used to live
+        in `job_start`, which on a long target meant blanking the viewer
         fifteen seconds before there was anything to put in its place. Here
         it is a single instant: clear, then draw, with a real frame already
-        decoded and in hand.
+        decoded and in hand. One cell's clear, at that: chip 3 starting a
+        fold must not blank the finished structure a visitor is looking at on
+        chip 0.
         """
-        if not points_are_visible(self.states.state):
-            return True
+        view = self._slot_view(slot)
+        viewer = self._viewer_for(slot)
+        if view is None or viewer is None:
+            return
 
-        frame = self._frames.take()
-        if frame is None:
-            return True
-
-        if self._awaiting_first_frame:
+        if view.awaiting_first_frame:
             # Is this frame actually the new fold's, or a straggler from the
             # one before it? The daemon does not stop the world between
             # folds, so a frame emitted by fold N can arrive after fold
@@ -3408,16 +4034,16 @@ class DemoApp(Gtk.Application):
             # replaced. `job_id` is on every frame (runner/shaping.py's
             # `frame_event`), so this is a comparison, not a guess.
             #
-            # A frame carrying NO job_id is accepted rather than dropped:
-            # "cannot tell" must not become "show nothing", which is the
-            # failure mode this whole change is about. That also keeps a
-            # recorded stream from before the field existed replayable.
+            # A frame that got this far has already been routed to this cell
+            # BY its job id, so "which fold is this" is settled; what is left
+            # is whether it is the fold this cell is currently waiting on, or
+            # one of that cell's own earlier folds still draining.
             frame_job = frame.get("job_id")
-            if frame_job is not None and frame_job != self._current_job_id:
+            if frame_job is not None and frame_job != view.current_job_id:
                 log.debug("frame from job %r arrived while waiting for %r's "
                           "first frame; holding the previous structure",
-                          frame_job, self._current_job_id)
-                return True
+                          frame_job, view.current_job_id)
+                return
 
         # unpack_coords raises protocol.events.ProtocolError on truncated
         # base64 or a byte count that isn't a whole number of 3-vectors, and
@@ -3433,7 +4059,7 @@ class DemoApp(Gtk.Application):
         # set_points() itself reshapes wire-shaped data too.
         try:
             coords = unpack_coords(frame["coords_b64"])
-            if self._awaiting_first_frame:
+            if view.awaiting_first_frame:
                 # Decoded FIRST, cleared second. A frame that fails to
                 # unpack must not be able to blank the booth: it raises
                 # above this line, the structure on screen survives, and the
@@ -3446,15 +4072,18 @@ class DemoApp(Gtk.Application):
                 # below snaps to this frame's own spread. That pairing is
                 # unchanged from when the clear lived in `job_start` -- it
                 # is only much closer together now, with no window at all in
-                # which the camera belongs to a structure that is gone.
-                self.viewer.clear_structure()
-                self._viewer_has_structure = False
-            self.viewer.set_points(coords)
-            self._viewer_has_structure = True
-            if self._awaiting_first_frame:
-                # The handover is complete: this fold now owns the screen.
-                self._awaiting_first_frame = False
-                self._shown_target_id = self._current_target_id
+                # which the camera belongs to a structure that is gone. And
+                # it is THIS cell's camera: each cell owns its own, which is
+                # what stops one fold's noise rescaling another's ribbon.
+                viewer.clear_structure()
+                view.has_structure = False
+            viewer.set_points(coords)
+            view.has_structure = True
+            if view.awaiting_first_frame:
+                # The handover is complete: this fold now owns this cell.
+                view.awaiting_first_frame = False
+                view.shown_target_id = view.current_target_id
+                self._sync_cell_caption(slot)
                 self._sync_viewer_hold()
             # Logged where it is DRAWN, not where it arrives: the buffer
             # between socket and screen is latest-wins, so this is the only
@@ -3464,9 +4093,9 @@ class DemoApp(Gtk.Application):
             # Rate-limited, and this is the call site that most needs it:
             # this source runs every 33ms, so a systematically malformed
             # frame stream produced ~30 tracebacks a second. See
-            # _note_dropped.
+            # _note_dropped. Per FRAME, so one cell's bad payload costs the
+            # other three nothing.
             self._note_dropped("frame", "dropping malformed frame")
-        return True
 
 
 def main(argv=None):

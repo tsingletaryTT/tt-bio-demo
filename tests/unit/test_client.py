@@ -6,7 +6,7 @@ import time
 
 from protocol.events import PROTOCOL_VERSION, encode
 from runner.mock import MockRunner, load_stream
-from ui.client import EventClient, LatestFrame
+from ui.client import EventClient, LatestFrame, LatestFrameByJob
 
 FIXTURE = pathlib.Path("tests/fixtures/streams/short_fold.jsonl")
 
@@ -33,6 +33,74 @@ def test_latest_frame_empties_after_take():
     buf.put({"type": "frame", "step": 1})
     assert buf.take()["step"] == 1
     assert buf.take() is None
+
+
+# ---------------------------------------------------------------------------
+# LatestFrameByJob: the same contract, once per fold.
+#
+# Four chips fold at once, so there are up to four live frame streams. Every
+# test below distinguishes the streams from each other -- four identical
+# frames would make "each job kept its own newest" and "one shared slot was
+# written four times" the same assertion, which is exactly the defect this
+# class exists to remove.
+# ---------------------------------------------------------------------------
+
+def test_each_job_keeps_its_own_newest_frame():
+    buf = LatestFrameByJob()
+    for job in ("a", "b"):
+        for step in (1, 2, 3):
+            buf.put({"type": "frame", "job_id": job, "step": step})
+    taken = buf.take_all()
+    assert {job: event["step"] for job, event in taken.items()} == {"a": 3, "b": 3}
+
+
+def test_one_folds_frames_never_overwrite_anothers():
+    """The single-slot buffer's failure mode, stated directly: fold b is
+    faster, so with one slot every cell would show b's coordinates."""
+    buf = LatestFrameByJob()
+    buf.put({"type": "frame", "job_id": "a", "step": 7})
+    for step in range(50):
+        buf.put({"type": "frame", "job_id": "b", "step": step})
+    assert buf.take_all()["a"]["step"] == 7
+
+
+def test_taking_empties_the_buffer():
+    buf = LatestFrameByJob()
+    buf.put({"type": "frame", "job_id": "a", "step": 1})
+    assert buf.take_all()["a"]["step"] == 1
+    assert buf.take_all() == {}
+    assert len(buf) == 0
+
+
+def test_the_buffer_is_bounded_by_jobs_not_by_frames():
+    """An all-day booth folds thousands of jobs; a dict that remembered every
+    one is a leak with a screen attached."""
+    buf = LatestFrameByJob(max_jobs=4)
+    for n in range(200):
+        buf.put({"type": "frame", "job_id": f"j{n}", "step": 0})
+    assert len(buf) == 4
+
+
+def test_the_oldest_job_is_the_one_evicted():
+    """Oldest by when it last produced a frame -- the only ordering this
+    class can honestly know. A fold still streaming must outlive one that
+    stopped."""
+    buf = LatestFrameByJob(max_jobs=2)
+    buf.put({"type": "frame", "job_id": "old", "step": 0})
+    buf.put({"type": "frame", "job_id": "still-going", "step": 0})
+    buf.put({"type": "frame", "job_id": "still-going", "step": 1})
+    buf.put({"type": "frame", "job_id": "new", "step": 0})
+    assert set(buf.take_all()) == {"still-going", "new"}
+
+
+def test_a_frame_with_no_job_id_gets_its_own_slot():
+    """It cannot be routed to a cell -- ui/app.py drops it at drain time --
+    but dropping it HERE would mean the buffer silently disagreed with its
+    caller about what latest-wins applies to."""
+    buf = LatestFrameByJob()
+    buf.put({"type": "frame", "step": 1})
+    buf.put({"type": "frame", "job_id": "a", "step": 2})
+    assert set(buf.take_all()) == {None, "a"}
 
 
 def test_client_receives_all_non_frame_events(tmp_path):
