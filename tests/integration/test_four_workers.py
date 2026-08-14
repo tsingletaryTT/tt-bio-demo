@@ -198,19 +198,34 @@ def _forbid_a_poisoned_process():
 def four_workers(tt_device, tmp_path_factory, monkeypatch_module):
     """A real `WorkerPool` over every chip on this box, torn down for real.
 
-    Yields `(pool, specs, events, pids)`. `pids` are the CHILDREN's real pids,
-    captured through the `spawn` seam -- so the teardown can verify (and, if
-    the pool failed to, enforce) that no worker outlives this module.
+    Yields `(pool, specs, events, pids, envs, log_root, shared)`. `pids` are
+    the CHILDREN's real pids, captured through the `spawn` seam -- so the
+    teardown can verify (and, if the pool failed to, enforce) that no worker
+    outlives this module. `envs` is the environment each child was actually
+    launched with, `log_root` the pool's own root, and `shared` the ambient
+    `TT_METAL_LOGS_PATH` the daemon's shape puts in the way.
     """
-    # Production-like per-card log namespacing. tests/integration/conftest.py's
-    # session-autouse fixture puts TT_METAL_LOGS_PATH in os.environ for
-    # containment, and `worker_environ` sets that variable with `setdefault` --
-    # so leaving it there would collapse all four workers' tt-metal output into
-    # ONE tree, which is the exact thing worker_environ's per-card root exists
-    # to prevent, silently, in the one test that folds on four chips at once.
-    # Dropped here so each worker derives its own `<log_root>/card-N`;
-    # containment is preserved because `log_root` below is under tmp_path.
-    monkeypatch_module.delenv("TT_METAL_LOGS_PATH", raising=False)
+    # NOTE this fixture used to `monkeypatch_module.delenv("TT_METAL_LOGS_PATH")`
+    # here, because `worker_environ` set that variable with `setdefault` and
+    # tests/integration/conftest.py's session-autouse fixture puts it in
+    # os.environ for containment -- so leaving it in place collapsed all four
+    # workers' tt-metal output into ONE tree.
+    #
+    # The delenv is GONE on purpose. Task 19's soak found that the shipped
+    # daemon always has that ambient variable set (it runs
+    # `os.environ.update(runner_environ(...))` before spawning anything), so
+    # deleting it here made the one test that folds on four chips at once the
+    # only place in the world where the per-card split happened. The variable
+    # is now a plain assignment in `worker_environ`, and this fixture leaves
+    # the ambient value alone precisely so this test runs in the shape
+    # production runs in. Containment still holds: the assignment derives
+    # from `log_root` below, which is under tmp_path.
+    #
+    # It goes further than "leave it alone": the ambient value is SET here, to
+    # a root that is not any worker's, so this fixture reproduces the daemon's
+    # shape rather than merely tolerating it.
+    shared = tmp_path_factory.mktemp("ambient-shared-log-root")
+    monkeypatch_module.setenv("TT_METAL_LOGS_PATH", str(shared))
 
     specs = worker_specs()
     assert len(specs) >= 2, (
@@ -220,8 +235,14 @@ def four_workers(tt_device, tmp_path_factory, monkeypatch_module):
     log_root = tmp_path_factory.mktemp("four-workers-logs")
     events = _Events()
     pids = []
+    envs = {}
 
     def spawn(spec, env):
+        # The env each child is ACTUALLY launched with, captured at the seam
+        # rather than rebuilt by the test. Task 19 found the per-card
+        # tt-metal root was never reaching a real worker while three tests
+        # that rebuilt it themselves stayed green.
+        envs[spec.card] = dict(env)
         handle = _spawn_subprocess(spec, env, log_root=str(log_root))
         pids.append(handle._proc.pid)
         return handle
@@ -235,7 +256,7 @@ def four_workers(tt_device, tmp_path_factory, monkeypatch_module):
                       restart_delay_s=10_000.0)
     try:
         pool.start()
-        yield pool, specs, events, pids
+        yield pool, specs, events, pids, envs, log_root, shared
     finally:
         pool.stop()
         # Belt and braces, and deliberately not conditional on the assertions
@@ -289,7 +310,7 @@ def test_every_chip_on_this_box_folds_at_the_same_time(four_workers):
     ordering to avoid re-folding, and the failure this exists to catch (chip 4
     never came up) makes every one of them fail identically anyway.
     """
-    pool, specs, events, pids = four_workers
+    pool, specs, events, pids, envs, log_root, shared = four_workers
     cards = [spec.card for spec in specs]
 
     # 1. Every worker opened a chip and loaded the model.
@@ -367,6 +388,49 @@ def test_every_chip_on_this_box_folds_at_the_same_time(four_workers):
         frames_per_card[card] = frames_per_card.get(card, 0) + 1
     assert sorted(frames_per_card) == sorted(cards)
     assert all(n >= 25 for n in frames_per_card.values()), frames_per_card
+
+    # 3b. Four chips, four tt-metal log trees -- against the daemon's own
+    # ambient TT_METAL_LOGS_PATH, which is the whole point.
+    #
+    # Task 19's soak read /proc/<worker>/environ on the live booth and found
+    # all four workers launched with the SHARED root, because
+    # `worker_environ` used `setdefault` and `runner/daemon.py:main` always
+    # puts that variable in `os.environ` first. `lsof` then showed all four
+    # holding one `generated/watcher/kernel_names.txt` and one
+    # `kernel_elf_paths.txt` open for write, same inode. Three unit tests
+    # asserted the per-card split the whole time and every one of them
+    # deleted the ambient variable before looking -- including, until now,
+    # this fixture.
+    #
+    # Asserted on the env each child was ACTUALLY spawned with (captured at
+    # the `spawn` seam), and then on what landed on disk, because the first
+    # alone would not notice tt-metal ignoring the variable.
+    assert sorted(envs) == sorted(cards), (
+        f"expected one captured environment per chip, got {sorted(envs)}")
+    roots = {card: envs[card]["TT_METAL_LOGS_PATH"] for card in cards}
+    assert len(set(roots.values())) == len(cards), (
+        f"four workers were launched with {len(set(roots.values()))} "
+        f"tt-metal log root(s), not {len(cards)}: {roots}")
+    for card in cards:
+        assert roots[card] == str(pathlib.Path(log_root).resolve()
+                                  / f"card-{card}"), (
+            f"card {card} was launched with TT_METAL_LOGS_PATH={roots[card]!r}")
+    # The collapse signature on disk: tt-metal builds `generated/` under
+    # whatever root it was given, so a `generated/` inside the AMBIENT root
+    # means the workers wrote there rather than into their own card trees.
+    # This process opens no device (`_forbid_a_poisoned_process`), so nothing
+    # else in this test can create it.
+    assert not (pathlib.Path(shared) / "generated").exists(), (
+        f"the ambient TT_METAL_LOGS_PATH ({shared}) collected a tt-metal "
+        f"tree: the per-card split did not reach the workers")
+    # Reported, not asserted: what each card's own tree actually received.
+    # Asserting a specific filename here would pin tt-metal's internals; the
+    # assertions that matter are the ones above.
+    for card in cards:
+        tree = pathlib.Path(roots[card])
+        files = sorted(p.relative_to(tree) for p in tree.rglob("*")
+                       if p.is_file()) if tree.is_dir() else []
+        print(f"card {card} tt-metal tree {tree}: {[str(f) for f in files]}")
 
     # 4. Every chip is free again, and stop() leaves nothing behind.
     assert sorted(pool.ready_cards()) == sorted(cards), (

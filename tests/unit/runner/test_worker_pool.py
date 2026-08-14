@@ -387,10 +387,19 @@ def test_each_worker_gets_the_whole_worker_environment(pool, monkeypatch):
     assert solo != four_up, (
         f"this box cannot tell n_workers=1 ({solo}) from n_workers=4 "
         f"({four_up}); the thread-cap assertion below is vacuous here")
-    # An ambient value would be honoured by worker_environ's setdefault, which
-    # is deliberate but would make this test read the operator's environment
-    # instead of the pool's decision.
-    monkeypatch.delenv("TT_METAL_LOGS_PATH", raising=False)
+    # Only OMP_NUM_THREADS needs clearing now. It is still a `setdefault` in
+    # `worker_environ`, so an ambient value would make this test read the
+    # operator's environment instead of the pool's decision.
+    #
+    # TT_METAL_LOGS_PATH used to be cleared here for the same reason, and
+    # that deletion was how this test stayed green against a bug it was
+    # written to catch: `worker_environ` set it with `setdefault` too, and
+    # the real daemon ALWAYS has it set (`os.environ.update(runner_environ(
+    # ...))`), so the per-card root asserted below never once reached a
+    # shipped worker. Task 19's soak found it on hardware. The variable is a
+    # plain assignment now, and this test deliberately no longer clears it --
+    # so it fails if that ever regresses.
+    monkeypatch.setenv("TT_METAL_LOGS_PATH", "/an/ambient/shared/root")
     monkeypatch.delenv("OMP_NUM_THREADS", raising=False)
 
     pool.start()

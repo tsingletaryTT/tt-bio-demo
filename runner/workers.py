@@ -87,9 +87,27 @@ class WorkerSpec:
     opens logical id ``TT_BIO_LOGICAL_DEVICE_ID`` within that set, default
     0). Pinning one physical chip to ``visible_devices`` and always using
     logical id 0 is what makes "worker for chip 3" and "the chip that
-    actually opens" the same chip -- the exact thing the hardware spike
-    existed to verify (chip 1 pinned this way drew 33.0 W mid-fold against
-    13-17 W idle on 0/2/3; no silent fallback to chip 0).
+    actually opens" the same chip, with no silent fallback to chip 0.
+
+    **What proves that is the kernel, not a wattmeter.** This docstring used
+    to cite the Phase 5 spike's "chip 1 pinned this way drew 33.0 W mid-fold
+    against 13-17 W idle on 0/2/3". Task 18 retracted that number: this box's
+    *idle* power band is 12-33 W across 80 chip-samples, four of them over
+    30 W and two at exactly 33.0 W on chips doing nothing, so a single 33 W
+    reading is indistinguishable from idle and the spike's inference was
+    luck. The evidence that survives is ``tt_bio.device_lease``'s exclusive
+    flock -- two processes cannot hold one physical card, so four workers
+    reaching ``worker.ready`` at once is four distinct chips, enforced rather
+    than inferred (``tests/integration/test_four_workers.py``). If you ever
+    do want a telemetry signal, use ``aiclk`` -- but read it as "idle or
+    not", never as "how fast": idle is pinned at exactly 800 MHz, and Task
+    18's four-way folding never dropped below 1281 MHz. Task 19's two-hour
+    soak then found the busy band is much wider than that on a hot box.
+    Chips 0 and 2 held 1293-1350 MHz for 121 straight samples, while chips 1
+    and 3 -- which run 3-4 C hotter on this chassis -- throttled as low as
+    **906 MHz** mid-fold. So >900 MHz still means "working" and 800 MHz
+    still means "resting", which is all this docstring's claim needs; a
+    *specific* clock says nothing about which chip a worker opened.
     """
 
     card: int
@@ -200,9 +218,11 @@ def worker_environ(spec, *, log_root, n_workers, base=None):
 
     `base` behaves exactly like runner/env.py's `runner_environ`: `None`
     means "start from the current process environment", an explicit dict
-    (including `{}`) is used as-is and never mutated in place. Every
-    variable below is filled in with `setdefault` -- an operator who set it
-    deliberately keeps their choice -- with ONE deliberate exception:
+    (including `{}`) is used as-is and never mutated in place. Most
+    variables below are filled in with `setdefault` -- an operator who set
+    one deliberately keeps their choice -- with TWO deliberate exceptions,
+    both of them per-worker facts the caller has already decided and which
+    must never lose to an ambient leftover:
 
     `TT_VISIBLE_DEVICES` is a plain assignment, never setdefault. It is the
     single variable that decides which physical chip a worker opens (see
@@ -216,6 +236,33 @@ def worker_environ(spec, *, log_root, n_workers, base=None):
     `device_ids`/`worker_specs(device_ids=...)` for that; this function's
     caller has already decided which single chip THIS worker gets, and that
     decision must never lose to an ambient leftover.
+
+    `TT_METAL_LOGS_PATH` is the second, and it was setdefault until the
+    Task 19 soak proved from `/proc/<pid>/environ` that the per-card tree it
+    was supposed to produce **had never once existed in the shipped daemon**.
+    The chain: `runner/daemon.py:main` runs
+    `os.environ.update(runner_environ(args.log_root))` before anything is
+    spawned -- correctly, so the daemon's own tt-metal output is contained --
+    which puts `TT_METAL_LOGS_PATH=<log_root>` into this process's
+    `os.environ`; `base=None` then copies that environment; and the
+    `setdefault` below found the key already present and did nothing. All
+    four workers were launched with the *shared root*, and on the soak box
+    all four held one `<log_root>/generated/watcher/kernel_names.txt` and one
+    `kernel_elf_paths.txt` open for write, on the same inode (`lsof` NODE
+    numbers identical across the four pids).
+
+    Three tests asserted the per-card behaviour and all three were green
+    throughout, because every one of them removes the ambient variable first
+    -- `base={}` in tests/unit/runner/test_worker_specs.py and
+    test_janitors_four_up.py, `monkeypatch.delenv` in
+    test_worker_pool.py and tests/integration/test_four_workers.py. Each
+    deletion was deliberate and each carries a comment explaining that
+    leaving the variable in place would collapse the four trees into one.
+    They were describing production and calling it a test artifact.
+
+    An operator's `--log-root` is still honoured in full: it *is* `log_root`
+    here, and the per-card directory hangs off it. What an ambient
+    `TT_METAL_LOGS_PATH` may no longer do is un-split the booth.
     """
     env = dict(os.environ if base is None else base)
 
@@ -228,8 +275,13 @@ def worker_environ(spec, *, log_root, n_workers, base=None):
     # writers into one root makes a crash unattributable, and the pruner's
     # oldest-first sweep (runner/env.py's prune_log_root) would delete
     # another worker's evidence right out from under it.
+    #
+    # ASSIGNED, not setdefault -- see the docstring. The daemon's own
+    # `os.environ` always carries `TT_METAL_LOGS_PATH=<log_root>` by the time
+    # this runs, so a setdefault here is unconditionally a no-op in the only
+    # process that ever calls it for real.
     card_root = Path(log_root).resolve() / f"card-{spec.card}"
-    env.setdefault("TT_METAL_LOGS_PATH", str(card_root))
+    env["TT_METAL_LOGS_PATH"] = str(card_root)
 
     # Same reasoning as runner/env.py's runner_environ: Inspector's
     # mesh_workloads_log.yaml is opened once at device bring-up and held

@@ -106,12 +106,61 @@ def test_the_environment_pins_visibility_before_the_interpreter_starts(fake_tt_b
 
 def test_each_worker_gets_its_own_tt_metal_log_root(fake_tt_bio):
     """Four writers into one tree makes a crash unattributable, and makes
-    the pruner's oldest-first sweep delete another worker's evidence."""
+    the pruner's oldest-first sweep delete another worker's evidence.
+
+    NOTE this test passes `base={}`, so it cannot fail against the bug the
+    one below exists for. Kept because it is still the cheapest statement of
+    the intent; `test_the_per_card_log_root_survives_the_daemons_own_ambient
+    _one` is the one with teeth.
+    """
     roots = {worker_environ(s, log_root="/logs", n_workers=4,
                             base={})["TT_METAL_LOGS_PATH"]
              for s in worker_specs()}
     assert len(roots) == 4
     assert all(r.startswith("/logs/") for r in roots)
+
+
+def test_the_per_card_log_root_survives_the_daemons_own_ambient_one(fake_tt_bio):
+    """The production case, which every other test of this deletes first.
+
+    `runner/daemon.py:main` runs `os.environ.update(runner_environ(...))`
+    before it spawns anything, so by the time `worker_environ` is called for
+    real the environment ALWAYS already contains
+    `TT_METAL_LOGS_PATH=<log_root>`. While this was a `setdefault`, that made
+    the per-card root below unreachable in the shipped daemon -- proved on
+    hardware in Task 19's soak by reading `/proc/<worker>/environ`, where all
+    four workers showed the shared root, and by `lsof`, where all four held
+    the same `generated/watcher/*.txt` inodes open for write.
+
+    Every existing test of this behaviour removes the ambient variable
+    (`base={}` here and in test_janitors_four_up.py, `monkeypatch.delenv` in
+    test_worker_pool.py and tests/integration/test_four_workers.py), each
+    with a comment explaining that leaving it would collapse the four trees
+    into one. So this test passes the ambient value IN, deliberately: it is
+    the only one in the suite that can go red if the assignment ever becomes
+    a setdefault again.
+
+    Mutation it fails against: `env["TT_METAL_LOGS_PATH"] = ...` back to
+    `env.setdefault("TT_METAL_LOGS_PATH", ...)`.
+    """
+    ambient = {"TT_METAL_LOGS_PATH": "/shared/root/the/daemon/set"}
+    roots = {}
+    for spec in worker_specs():
+        env = worker_environ(spec, log_root="/logs", n_workers=4,
+                             base=dict(ambient))
+        roots[spec.card] = env["TT_METAL_LOGS_PATH"]
+
+    assert len(set(roots.values())) == 4, (
+        f"four workers must get four tt-metal log trees, not "
+        f"{len(set(roots.values()))}: {roots}")
+    for card, root in roots.items():
+        assert root == f"/logs/card-{card}", (
+            f"card {card} was launched with {root!r}; an ambient "
+            f"TT_METAL_LOGS_PATH must not un-split the booth")
+
+    # GUARD: and the ambient dict the caller handed in is not mutated, which
+    # is the contract the docstring states for every `base`.
+    assert ambient == {"TT_METAL_LOGS_PATH": "/shared/root/the/daemon/set"}
 
 
 def test_the_inspector_stays_off_in_every_worker(fake_tt_bio):
