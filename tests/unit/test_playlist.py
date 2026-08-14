@@ -322,3 +322,80 @@ def test_the_cli_fails_with_one_line_and_no_traceback(tmp_path, capsys):
     assert captured.out == ""
     assert len(captured.err.strip().splitlines()) == 1
     assert "not found" in captured.err
+
+
+# ── copy that has to stay true as the playlist grows ────────────────────────
+#
+# The failure these guard against is not a crash: it is a gallery card
+# confidently telling a visitor something that stopped being true when a
+# later target shipped. That has now happened once (the DNA duplex called
+# itself "the only thing this booth folds that is not a protein", and stayed
+# that way through the whole of the tRNA entry landing), which is what these
+# are written from.
+
+def _entity_types(target):
+    """Which entity kinds a target's own input file actually contains.
+
+    Read out of the YAML rather than out of the blurb, which is the point:
+    it is the input that decides what the chips fold.
+    """
+    import yaml
+
+    spec = yaml.safe_load(target.input_path.read_text())
+    kinds = set()
+    for entry in spec.get("sequences", []):
+        kinds.update(entry.keys())
+    return kinds
+
+
+def test_no_target_claims_to_be_the_only_one_of_its_kind_once_it_is_not():
+    """Mutation: restoring the DNA tagline's "the only thing this booth
+    folds that is not a protein" while the tRNA entry ships. Red.
+
+    Deliberately keyed on "the only", not on the old sentence: the next
+    version of this mistake will be worded differently, and a test that only
+    knows the exact sentence it was written for cannot catch it.
+    """
+    targets = load_playlist("playlist/manifest.yaml")
+    non_protein = [t for t in targets
+                   if not _entity_types(t) & {"protein"}]
+    if len(non_protein) < 2:
+        pytest.skip("only one non-protein target ships; the claim is true")
+    for t in non_protein:
+        for field in ("tagline", "blurb"):
+            text = (getattr(t, field) or "").lower()
+            assert "the only thing" not in text, (
+                f"{t.id}'s {field} calls itself the only one of its kind, "
+                f"but {len(non_protein)} non-protein targets ship: "
+                f"{', '.join(sorted(x.id for x in non_protein))}")
+
+
+def test_the_playlist_folds_more_than_one_kind_of_molecule():
+    """The booth's whole pitch is that this model does nucleic acids and
+    ligands, not proteins alone (docs/index.html says so). A playlist that
+    quietly became all-protein would make that page wrong.
+
+    Mutation: dropping the DNA and tRNA entries. Red.
+    """
+    kinds = set()
+    for t in load_playlist("playlist/manifest.yaml"):
+        kinds |= _entity_types(t)
+    assert {"protein", "dna", "rna"} <= kinds, (
+        f"the shipped playlist folds only {sorted(kinds)}")
+
+
+def test_every_shipped_target_has_a_measured_time():
+    """`expected_s` is optional by design -- a target added before anyone has
+    folded it must load, and the gallery says "not yet timed" rather than
+    inventing a number (see the tests above). But nothing SHIPPED should be
+    in that state: the number is measured on this booth's own hardware and
+    the manifest records how.
+
+    Mutation: shipping a target with no expected_s. Red -- which is the
+    reminder to go and fold it.
+    """
+    for t in load_playlist("playlist/manifest.yaml"):
+        assert t.expected_s is not None, (
+            f"{t.id} ships with no measured fold time; fold it on the card "
+            f"and record the warm number (see the manifest's own comments)")
+        assert 0.0 < t.expected_s < 120.0, f"{t.id}: {t.expected_s}s"

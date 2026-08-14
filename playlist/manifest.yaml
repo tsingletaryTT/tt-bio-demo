@@ -4,14 +4,16 @@
 # relative path below resolves against THIS FILE'S OWN DIRECTORY -- not the
 # process's working directory, which differs between the daemon and the UI.
 #
-# Five targets ship today: four proteins and one piece of DNA. Trp-cage
-# shipped first (Phase 3a), vendored into examples/ specifically to remove a
-# cross-repo absolute path (~/code/tt-boltz/examples/trpcage_no_msa.yaml)
+# Six targets ship today: four proteins, a DNA duplex and a transfer RNA --
+# which between them are the three kinds of molecule this model handles, and
+# (in that order) the three steps of the path from a gene to a protein.
+# Trp-cage shipped first (Phase 3a), vendored into examples/ specifically to
+# remove a cross-repo absolute path (~/code/tt-boltz/examples/trpcage_no_msa.yaml)
 # that this project does not control -- see that file's own header comment;
 # the three proteins below it were added in the same spirit, chosen out of
 # six `msa: empty` candidates found in the upstream tt-boltz checkout. The
-# DNA duplex (last entry) came later and is written from scratch, because
-# upstream ships no nucleic-acid example at all.
+# two nucleic acids (last two entries) came later and are both written from
+# scratch, because upstream ships no nucleic-acid example at all.
 #
 # Why these three and not the other two candidates (see this task's own
 # report for the fuller reasoning):
@@ -189,9 +191,15 @@
   input: ../examples/dna_dickerson.yaml
   name: DNA double helix
   thumbnail: thumbnails/dna.png
+  # "one of the two things" since the tRNA entry below joined it. This line
+  # used to read "the only thing this booth folds that is not a protein",
+  # which stopped being true the moment a second nucleic acid shipped -- and
+  # the same claim is on the docs site twice (the molecule card and the
+  # "The molecule that is not a protein" heading), so all three moved
+  # together.
   tagline: >-
-    The double helix, twelve rungs of it — and the only thing this booth
-    folds that is not a protein.
+    The double helix, twelve rungs of it — one of the two things this booth
+    folds that are not proteins.
   blurb: >-
     Twelve rungs of the double helix. Both strands spell the same twelve
     letters, CGCGAATTCGCG, because each one read backwards is the other --
@@ -225,3 +233,51 @@
   # 24 nucleotides is the smallest input on the playlist after Trp-cage's 20
   # residues, and it lands within 0.2s of it.
   expected_s: 4.6
+
+- id: trna
+  input: ../examples/trna_phe.yaml
+  name: Transfer RNA
+  thumbnail: thumbnails/trna.png
+  tagline: >-
+    The go-between: it reads three letters of the genetic message and
+    carries the matching amino acid.
+  blurb: >-
+    DNA holds the message and proteins do the work -- this is the molecule
+    that gets from one to the other, and the booth folds all three. Three
+    bases at one end read one word of the genetic code (these three are
+    GAA, which matches the code word for phenylalanine) and the far end of
+    the molecule, the whole length of it away, is where that amino acid
+    rides. Yeast tRNA-Phe was the first RNA whose three-dimensional shape
+    was ever worked out, in 1974, and the surprise then is the thing to
+    watch for now: the flat cloverleaf of base pairs biochemists had drawn
+    on paper folds back on itself in space, putting its two working ends at
+    opposite corners of a compact hinged shape.
+  # WHAT THE MODEL ACTUALLY PRODUCED, measured on the fold this entry ships
+  # a thumbnail of, because the blurb above makes a claim about the SHAPE
+  # and this playlist's rule is that a blurb is accurate to the molecule on
+  # screen. All four stems come back correctly Watson-Crick paired --
+  # C1'-C1' distances of 10.6-10.7 A across the acceptor stem (1:72, 2:71),
+  # the anticodon stem (28:42) and the T stem (49:65), against the
+  # canonical ~10.5 -- and the whole thing is as compact as the real
+  # molecule: radius of gyration 23.3 A against 23-24 A for crystal tRNA.
+  # The two working ends land 71 A apart (crystal: ~75-80 A).
+  #
+  # WHERE IT DIFFERS, and why the blurb says "hinged" rather than "the
+  # famous L": the corner is measured at ~124 degrees here against the
+  # crystal structure's ~90, so what a visitor sees is a wide, open elbow
+  # rather than the right angle in the textbook picture. Both arms are
+  # right and the fold is right; the hinge between them is opened out. The
+  # copy is written to describe what is on the screen -- two ends at
+  # opposite corners of a hinged shape -- and deliberately does not promise
+  # an L the render does not deliver.
+  #
+  # Measured on this booth's own hardware, in the WARM state a visitor
+  # actually meets: 6 folds on card 0, 2026-08-14, protenix-v2. 57.68s cold
+  # (first fold after the model loads), then 8.66 / 8.59 / 8.57 / 8.57 /
+  # 8.61s warm -- mean 8.60, and the tightest spread of any target here.
+  # Mean pLDDT 88.6 on every one of the six, identical to three decimal
+  # places: this input is deterministic in a way none of the proteins are.
+  # That sits between the DNA duplex (95.7) and the three MSA-less proteins
+  # (39.5-52.9), which is what the DNA entry's copy about base-pairing
+  # being chemically determined would predict.
+  expected_s: 8.6

@@ -256,7 +256,7 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
   <p class="lede">
     tt-bio runs Boltz-2 and eight other biomolecular models on Tenstorrent
     accelerators. This page is about what those models do, the research they
-    come from, and how a demo that folds five known structures makes any of it
+    come from, and how a demo that folds six known structures makes any of it
     visible.
   </p>
   <div class="cta">
@@ -399,9 +399,9 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
   <div class="wrap">
     <div class="col">
       <span class="eyebrow">What the booth folds</span>
-      <h2>Five molecules, and why each one is there</h2>
+      <h2>Six molecules, and why each one is there</h2>
       <p>
-        The demo folds the same five structures on a loop. None of them is a
+        The demo folds the same six structures on a loop. None of them is a
         discovery &mdash; every one has been solved in a laboratory, and that is
         the point: the known answer is what makes the prediction checkable.
       </p>
@@ -460,8 +460,18 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
         <img src="thumbnails/dna.png" alt="A twelve-base-pair DNA duplex, coloured by confidence — deep blue almost throughout.">
         <div class="card-body">
           <h3>DNA double helix</h3>
-          <p>The double helix, twelve rungs of it &mdash; and the only thing this booth folds that is not a protein.</p>
+          <p>The double helix, twelve rungs of it &mdash; one of the two things this booth folds that are not proteins.</p>
           <p class="meta">12 base pairs &middot; 4.6 s</p>
+        </div>
+      </article>
+
+      <article class="card">
+        <div class="card-stripe" style="background:var(--c-certain)"></div>
+        <img src="thumbnails/trna.png" alt="Yeast tRNA-Phe, folded, coloured by confidence — blue throughout, the chain doubling back on itself.">
+        <div class="card-body">
+          <h3>Transfer RNA</h3>
+          <p>The go-between: it reads three letters of the genetic message and carries the matching amino acid.</p>
+          <p class="meta">76 nucleotides &middot; 8.6 s</p>
         </div>
       </article>
     </div>
@@ -474,15 +484,15 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
       </p>
       <p>
         The stripe on each card is that molecule's measured confidence, taken
-        from the picture below it rather than asserted: Trp-cage and the DNA
-        duplex resolve deep blue, and the three enzymes are substantially
+        from the picture below it rather than asserted: Trp-cage, the DNA duplex
+        and the tRNA resolve deep blue, and the three enzymes are substantially
         orange.
       </p>
 
       <p>
         <strong>Look closely at FKBP12 and DHFR and there is a second molecule
         in the picture</strong>, drawn as balls and sticks in the usual element
-        colours. Three of these five fold a bound <em>ligand</em> alongside the
+        colours. Three of these six fold a bound <em>ligand</em> alongside the
         protein &mdash; and DHFR's is methotrexate, the cancer drug its card
         describes. The booth is not folding the enzyme and then illustrating
         the drug: both are predicted together, in the same pass, because where
@@ -717,7 +727,7 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
     </blockquote>
 
     <p>
-      <strong>The booth does not do any of this.</strong> It folds five known
+      <strong>The booth does not do any of this.</strong> It folds six known
       structures on a loop. Designing a candidate molecule is not a thing to
       watch for thirty seconds at a conference stand &mdash; it is a campaign,
       run against a target someone has a reason to care about, and the result
@@ -848,13 +858,19 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
       output.
     </p>
 
-    <h3>The molecule that is not a protein</h3>
+    <h3>The two that are not proteins</h3>
     <p>
       The playlist quietly includes a DNA duplex &mdash; twelve rungs, and both
       strands spell <span class="num">CGCGAATTCGCG</span>, because each read
       backwards is the other. The six in the middle, <span class="num">GAATTC</span>,
       are the mark that EcoRI &mdash; one of the first gene-cutting enzymes ever
       put to work &mdash; recognises and cuts.
+    </p>
+    <p>
+      And a transfer RNA, which is the molecule that connects the other two:
+      three bases at one end read one word of the genetic code, and the far end
+      carries the amino acid that word calls for. Fold all three and you have
+      watched the path from a gene to a protein, one step per card.
     </p>
   </div>
 </section>

@@ -79,7 +79,7 @@ no secondary-structure records, so which residues are helix and which are sheet 
 out from the C-alpha geometry (`ui/secstruct.py`).
 
 Look at chips 0 and 1 and you can see a small molecule in the protein's pocket, drawn
-ball-and-stick in the usual element colours. Three of the five targets fold a **bound
+ball-and-stick in the usual element colours. Three of the six targets fold a **bound
 ligand** alongside the protein — FKBP12 with a binder, trypsin with benzamidine, and DHFR
 with methotrexate, the cancer drug its gallery card names.
 
@@ -233,14 +233,16 @@ the authoritative list. The ones you are most likely to want:
 | `--structures-budget-gb` | 0.2 | Sweep budget for emitted `.cif` structures, per device |
 
 **The default is every target in the manifest** — the booth shows what it can do rather
-than the one safe thing. A full cycle is ~63 s: Trp-cage 4.4 s, FKBP12 11.7 s, DHFR 19.7 s,
-trypsin 22.3 s, DNA 4.6 s, all measured warm on this hardware. Use `--targets trpcage` to
+than the one safe thing. A full cycle is ~71 s: Trp-cage 4.4 s, FKBP12 11.7 s, DHFR 19.7 s,
+trypsin 22.3 s, DNA 4.6 s, tRNA 8.6 s, all measured warm on this hardware. Use `--targets trpcage` to
 fold a single target while iterating, which is much faster.
 
 The four proteins ship because they need no MSA server; most curated tt-bio playlist
-entries do need one, and the venue is offline. The fifth target is a **DNA duplex** — the
-Dickerson–Drew dodecamer — which needs no alignment for a different reason: base-pairing
-is chemistry, not evolutionary inference. It is also the target that shows what the
+entries do need one, and the venue is offline. The other two are nucleic acids, which need
+no alignment for a different reason — base-pairing is chemistry, not evolutionary
+inference: a **DNA duplex** (the Dickerson–Drew dodecamer) and a **transfer RNA** (yeast
+tRNA-Phe, the first RNA structure ever solved), which between them make the playlist a
+walk from a gene to a protein. The duplex is also the target that shows what the
 ribbon's colours are worth. It comes back at mean pLDDT 95.7 where the three larger
 MSA-less proteins come back at 50.8, 52.9 and 39.5, and the confidence legend under the
 render is what lets a visitor read that off the screen for themselves.
@@ -393,7 +395,7 @@ so: "next", never "now". Measured on this box across two live sessions, pick to 
 target's dispatch in the daemon log: **0.25–5.5 s with all four chips busy** (8 samples,
 median ≈ 2 s), and **0.50 s** in the one window a booth ever has a free chip — the second
 or two at start-up before the attract loop fills them. And **most taps queue nothing at
-all**: with five targets on four chips the tapped protein is usually already folding
+all**: with six targets on four chips the tapped protein is usually already folding
 (15 of 24 picks), so the cell folding it simply takes the focus. The busy-case ceiling is
 the *shortest* fold in flight, so a playlist with no short target in it would be slower —
 see [`docs/followups.md`](docs/followups.md). The booth acknowledges the tap immediately, on a one-line notice under

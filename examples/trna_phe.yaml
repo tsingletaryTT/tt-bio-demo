@@ -1,0 +1,74 @@
+# Yeast tRNA-Phe: transfer RNA, and the third kind of molecule this booth
+# folds.
+#
+# Vendored here like every other input this booth folds (see
+# examples/trpcage_no_msa.yaml's header for why nothing in the playlist may
+# point outside this repository). Like examples/dna_dickerson.yaml, and for
+# the same reason, it is written from scratch rather than lifted from an
+# upstream tt-boltz example: upstream ships no nucleic-acid example at all.
+#
+# WHAT IT IS
+# ----------
+# The 76-nucleotide phenylalanine transfer RNA of baker's yeast
+# (Saccharomyces cerevisiae) -- PDB 1EHZ at 1.93 A, and before that 4TNA and
+# 1TRA, the same molecule that in 1974 became the FIRST RNA whose
+# three-dimensional structure was ever solved. Two groups (Aaron Klug's in
+# Cambridge and Alexander Rich's at MIT) got there within months of each
+# other, and what they found is the reason this molecule is in every
+# textbook: the cloverleaf of base pairs that biochemists had drawn on paper
+# folds up in space into a compact L.
+#
+# WHY THIS TARGET, FOR THIS PLAYLIST
+# ----------------------------------
+# It completes the set. The booth already folds proteins and a DNA duplex;
+# tRNA is the molecule that connects them -- it reads three letters of the
+# genetic message at one end of the L and carries the matching amino acid at
+# the other, which is the physical step where a nucleic-acid sequence becomes
+# a protein sequence. A visitor who has just watched DNA and a protein fold
+# can be told, truthfully, that this is the part in between.
+#
+# THE SEQUENCE IS THE UNMODIFIED ONE, AND THAT IS WORTH KNOWING
+# -------------------------------------------------------------
+# Real yeast tRNA-Phe is one of the most heavily decorated RNAs known: it
+# carries dihydrouridine in the D-arm, ribothymidine and pseudouridine in the
+# T-arm, 2'-O-methylations, and wybutosine -- a large tricyclic base -- next
+# to the anticodon. Those modifications are chemistry the cell adds after
+# transcription, and this input format has no way to spell most of them, so
+# what folds here is the plain A/C/G/U sequence of the same molecule. The
+# fold is of an unmodified tRNA-Phe; the blurb in playlist/manifest.yaml is
+# written to say what is on screen and not to claim otherwise. This is the
+# same rule the trypsin entry follows about being bovine rather than human.
+#
+# 1  GCGGAUUUAG   acceptor stem (5' half) into the D-arm
+# 11 CUCAGUUGGG   D-loop
+# 21 AGAGCGCCAG   D-stem back out, into the anticodon stem
+# 31 ACUGAAGAUC   anticodon loop -- GAA at 34-36 reads the Phe codon UUC
+# 41 UGGAGGUCCU   anticodon stem back out, variable loop
+# 51 GUGUUCGAUC   T-arm: the "T-psi-C" loop every tRNA has
+# 61 CACAGAAUUC   T-stem back out
+# 71 GCACCA       acceptor stem (3' half), ending in the universal CCA that
+#                 the amino acid is attached to
+#
+# NO `msa:` KEY
+# -------------
+# Same as the DNA duplex, and for the same reason: a nucleic-acid entity has
+# no MSA field in this input format at all, so it is not the `msa: empty`
+# setting the four proteins carry. See examples/dna_dickerson.yaml's own
+# header and playlist/manifest.yaml's DNA entry for the measured comparison
+# that copy is built on.
+#
+# RENDERING
+# ---------
+# No C-alpha atoms and no peptide plane, so this draws through the same
+# nucleic-acid path the DNA duplex forced into existence: `P` (with `C1'` as
+# the fallback for the 5'-terminal residue that has no phosphate) as the
+# backbone anchor in ui/geometry.py, and the plain-tube fallback in
+# ui/structure_view.py rather than a cartoon, because there is no secondary
+# structure to assign. Unlike the duplex this is a SINGLE chain that folds
+# back on itself, so it is also the first input to exercise that path on a
+# shape that is not two straight strands.
+version: 1
+sequences:
+  - rna:
+      id: A
+      sequence: GCGGAUUUAGCUCAGUUGGGAGAGCGCCAGACUGAAGAUCUGGAGGUCCUGUGUUCGAUCCACAGAAUUCGCACCA
