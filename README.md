@@ -13,13 +13,14 @@ exception](#the-one-webkit-exception) for a small hardware-activity animation.
      which is the same footage cut shorter to keep it a sane size. -->
 [![The booth folding proteins on Tenstorrent Blackhole](docs/screenshots/booth-loop.gif)](docs/screenshots/booth-loop-30s.mp4)
 
-*Thirty seconds of the booth, captured at 1920×1080 · 60 fps from the running application —
-the 2×2 quad view, four chips of a Blackhole p300c each folding a different protein at its
-own point in the pipeline. Those dots are the model's actual denoising trajectory, streamed
-one step at a time and condensing into structure; the right-hand rail is the live protocol
-tap showing the same events arrive. Cut from a 150-second master in which 59 folds
-completed across all four chips. Every image on this page is the real thing on real silicon
-— no mockups, no reconstructions.*
+*Thirty seconds of the booth, captured at 1920&times;1080 · 60 fps from the running
+application — the 2×2 quad view, four chips of a Blackhole p300c each folding a different
+molecule at its own point in the pipeline. Structures are drawn as a cartoon: helices as
+ribbons, sheets as arrows. Those dots are the model's actual denoising trajectory, streamed
+one step at a time and condensing into structure. The panels opening and closing are the
+booth demonstrating its own instruments — it does that on its own when nobody has touched
+it. Cut from a 170-second master in which 58 folds completed across all four chips. Every
+image on this page is the real thing on real silicon — no mockups, no reconstructions.*
 
 ---
 
