@@ -66,12 +66,11 @@ booth runs unattended all day.
 labelled with the chip it runs on, the protein, and the stage it has reached. Four
 independent folds at four independent points in their pipelines, on one screen.
 
-**Read the labels before the colours here.** Three of these four cells say `TRUNK`, and a
-cell in `trunk` is drawing the **previous** fold on that chip — so the ribbon in the cell
-labelled "DNA double helix" is not DNA, and its colour says nothing about DNA. This
-screenshot predates the caption fix that now names both molecules (`Trypsin — now folding
-Dihydrofolate Reductase · TRUNK`), and it is kept as an illustration of why that fix was
-needed. Chip 1 is mid-diffusion — the cloud that has not become a shape yet.
+**Read the labels before the colours.** Three of these cells say `TRUNK`, and only the
+diffusion stage produces coordinates — so a cell in `trunk` is holding the **previous**
+fold on that chip rather than going black (see [Never a blank screen](#never-a-blank-screen)).
+Each cell names both molecules when that happens: `Trypsin — now folding Dihydrofolate
+Reductase · TRUNK`. Chip 1 is mid-diffusion, the cloud that has not become a shape yet.
 
 Measured from the gallery thumbnails, which are single finished folds: Trp-cage and the DNA
 duplex resolve almost entirely deep blue; trypsin is ~94% orange, and FKBP12 and DHFR are
@@ -321,8 +320,8 @@ the event schema, the stage order, and the per-stage progress bands.
 
 ### The one WebKit exception
 
-This README used to say "no browser" flatly. That is not true and has not been since the
-Tensix activity panel shipped, so here is what is actually the case.
+The booth is native GTK4 and OpenGL with exactly one exception, scoped to a single
+decorative panel.
 
 `ui/chipviz.py` renders one `WebKit.WebView` in the 430 px side rail, holding a vendored copy
 of [tensix-viz](ui/assets/tensix-viz/PROVENANCE.md) — the small animated Tensix core grids
