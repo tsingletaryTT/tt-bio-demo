@@ -449,6 +449,24 @@ discs) from a finished ribbon (a few fat tubes), so ranking 10 s windows by how
 much it **rises** finds the moments where dots actually become shapes. It picked
 t=43, 72, 104.
 
+**The first cut of that video looked laggy, and the app was not the reason.**
+Worth recording because the intuition points the wrong way: measuring exact
+duplicate frames (OBS captures at a fixed 60 fps, so a frame the app did not
+redraw arrives bit-identical) shows the **quad running at a solid 60 fps, 0%
+duplicates**, while the *solo* view sits at 4.5–39.8 fps — up to 92% duplicates,
+including one 3.1-second frozen run. Solo spends most of its time holding a
+finished structure that is not moving; the quad always has one of four cells
+mid-diffusion. Four GL contexts cost nothing visible here.
+
+The lag was entirely in the encode, and both causes were mine: a GIF dropped
+from 12.5 to 6.25 fps to hit a size target, and a 1920→1280 downscale. The
+downscale was the bigger one — the diffusion cloud is **1–2 px dots**, which do
+not survive it, and h.264 smears the remains across moving frames in a way that
+reads as stutter rather than softness. Native 1080p at crf 30 measures *better*
+than 720p at crf 20 while being 40% smaller. **Spend bytes on pixels, not on
+bitrate for pixels already thrown away**; when a GIF must shrink, take it out of
+the duration, never the frame rate. Full table in `recordings/README.md`.
+
 Two defects the quad screenshots exposed, both open:
 
 - A cell in `trunk` shows the **previous** fold's structure (correct, and the
