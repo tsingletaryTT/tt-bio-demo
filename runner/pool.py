@@ -134,6 +134,30 @@ WORKER_RESTART_DELAY_S = 5.0
 # costs the OTHER three their device-init lock.
 WORKER_RETIRE_AFTER = 3
 
+# The largest a single worker's `worker.log` may get before the daemon's
+# janitor bounds it (runner/daemon.py's `_prune_logs`).
+#
+# This file is the one thing under the log root that the PARENT holds open for
+# the whole life of a worker (`_SubprocessWorker.__init__` opens it in append
+# mode and hands it to `Popen` as stdout/stderr), which makes it the exact
+# shape of the failure docs/followups.md already paid for once: tt-metal's
+# Inspector held `mesh_workloads_log.yaml` open, the janitor's oldest-first
+# sweep unlinked it, and 13-14 MB/s kept flowing into a now-nameless inode
+# that no directory walk could see. Unlinking frees a NAME, not blocks. So
+# `prune_log_root` is told never to touch these paths, and this cap plus
+# `os.truncate` is what bounds them instead -- truncation is the one operation
+# that actually returns the blocks while a process holds the fd.
+#
+# 64 MB per card, so four co-resident workers cost at most 256 MB -- an eighth
+# of DEFAULT_LOG_BUDGET_BYTES, which leaves the byte budget still mostly about
+# the tt-metal tree it was written for. It is also enormous next to what a
+# healthy worker actually writes: the whole point of this file is tt-metal's
+# C++ bring-up chatter on fd 1/2, which is measured in kilobytes per worker
+# per session (`generated/` was 16-36 KB for a bare open/close). A worker that
+# reaches 64 MB is a worker in a repeating-error loop, and the last thing a
+# booth needs is that loop filling a tmpfs log root overnight.
+WORKER_LOG_CAP_BYTES = 64 * 1024**2
+
 # Minimum seconds between "that line was garbage" log lines, per worker. The
 # same reasoning as `EventServer`'s own limiter (runner/server.py's
 # `_BadLineLog`): a worker spraying its event fd would otherwise write one
