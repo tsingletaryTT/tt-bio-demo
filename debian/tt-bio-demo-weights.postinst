@@ -1,0 +1,134 @@
+#!/bin/sh
+# tt-bio-demo-weights postinst.
+#
+# Fetches the two artifacts the booth cannot fold without, and verifies them.
+#
+# WHY THERE IS NO curl AND NO URL HERE. tt-bio resolves its own weights
+# through huggingface_hub (`hf_artifact(PROTENIX_REPO, "protenix-v2.pt")` and
+# `hf_artifact(BOLTZ2_REPO, "mols.tar")`). Reimplementing that would mean
+# hardcoding a URL this project does not control, and would throw away the
+# hub client's resume-and-verify behaviour -- which matters when the thing
+# being fetched is 3.7 GB over a conference-hotel connection. So this asks
+# tt-bio to do the fetch, and then checks what landed.
+set -e
+
+. /usr/share/debconf/confmodule
+. /usr/share/tt-bio-demo/helpers.sh
+
+PREFIX="$(tt_bio_demo_prefix)"
+# Derived exactly as tt_bio.main derives it, so the shell half and the
+# python half below can never disagree about where the files landed.
+CACHE="${BOLTZ_CACHE:-${HOME:-/root}/.boltz}"
+
+# ---------------------------------------------------------------------------
+# THE ARTIFACT TABLE. One line per artifact: <filename> <sha256>.
+#
+# These hashes were MEASURED on 2026-08-14 from the copies on the development
+# box -- the same files that produced this project's verified folds (Trp-cage
+# to pLDDT 95.2-95.3). They are not invented and they are not upstream's
+# published values, because upstream publishes none.
+#
+# A MISMATCH MEANS ONE OF TWO THINGS and the message says so: either the
+# download is corrupt, or upstream published a new revision of the artifact.
+# The second is a real possibility and is not an error in itself -- but it
+# must be a human decision to accept it, not a silent one.
+#
+# To add an artifact: add a line. An artifact with no hash FAILS the install
+# (see the loop below); it is never silently skipped.
+# ---------------------------------------------------------------------------
+ARTIFACTS="
+protenix-v2.pt 8f931f9774a396b67033d0e58628e1834f4a1448165e04254b40a780b0c0d599
+mols.tar 39e076d96dbec6b4e86982bbda16f3a53a2a60c9bdc17828d88f6f9a0c7d1fd7
+"
+
+tt_bio_demo_weights_verify_all() {
+    rc=0
+    # `while read` over a here-doc, not a pipe: a pipeline runs the loop in a
+    # subshell and `rc` set inside it would be discarded.
+    while read -r name sha; do
+        [ -n "$name" ] || continue
+        if [ -z "$sha" ]; then
+            tt_bio_demo_log "MISSING CHECKSUM for $name -- refusing to accept it."
+            tt_bio_demo_log "  Add its sha256 to the ARTIFACTS table in this script."
+            rc=1
+            continue
+        fi
+        if tt_bio_demo_verify_sha256 "${CACHE}/${name}" "$sha"; then
+            tt_bio_demo_log "verified ${name}"
+        else
+            tt_bio_demo_log "  Either ${name} downloaded corrupt, or upstream"
+            tt_bio_demo_log "  published a new revision. Check, then update the"
+            tt_bio_demo_log "  ARTIFACTS table in this script if the new one is right."
+            rc=1
+        fi
+    done <<ARTIFACT_EOF
+${ARTIFACTS}
+ARTIFACT_EOF
+    return $rc
+}
+
+case "$1" in
+    configure)
+        db_get tt-bio-demo-weights/download || true
+        if [ "$RET" != "true" ]; then
+            tt_bio_demo_log "not downloading weights (declined, or unattended)."
+            tt_bio_demo_log "The booth cannot fold until they are present. When you want them:"
+            tt_bio_demo_log ""
+            tt_bio_demo_log "    sudo dpkg-reconfigure tt-bio-demo-weights"
+            tt_bio_demo_log ""
+            tt_bio_demo_log "That is ~3.7 GB and must happen BEFORE the venue (it is offline)."
+            exit 0
+        fi
+
+        runner_py="${PREFIX}/.venvs/venv-runner/bin/python3"
+        if [ ! -x "$runner_py" ]; then
+            tt_bio_demo_log "cannot download yet: venv-runner does not exist."
+            tt_bio_demo_log "Build it first:"
+            tt_bio_demo_log "    sudo ${PREFIX}/scripts/setup-venvs.sh --prefix ${PREFIX}"
+            tt_bio_demo_log "then:  sudo dpkg-reconfigure tt-bio-demo-weights"
+            exit 0
+        fi
+
+        tt_bio_demo_log "fetching weights via tt-bio's own resolver (resumable)..."
+        # Resolution, not a copy: hf_artifact returns the cached path and
+        # downloads only what is missing, so re-running this is cheap and an
+        # interrupted download continues where it stopped.
+        "$runner_py" - <<'PYEOF'
+import os
+import sys
+from pathlib import Path
+
+try:
+    # These four names are the packaging<->tt-bio contract, and
+    # `test_the_weights_postinst_uses_the_tt_bio_api_that_actually_exists`
+    # checks them against the pinned tt-bio's own source so a rename upstream
+    # breaks the test suite rather than an operator's install.
+    from tt_bio.main import PROTENIX_REPO, download_mols, hf_artifact
+except Exception as exc:                                  # noqa: BLE001
+    print(f"cannot import tt_bio: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+
+# The same cache tt-bio itself uses, derived the same way it derives it.
+cache = Path(os.environ.get("BOLTZ_CACHE", str(Path("~/.boltz").expanduser())))
+cache.mkdir(parents=True, exist_ok=True)
+
+hf_artifact(PROTENIX_REPO, "protenix-v2.pt", cache)
+# download_mols, not a bare hf_artifact: the booth needs the EXTRACTED mols/
+# directory, and this fetches the tar and unpacks it in one resumable step.
+download_mols(cache)
+PYEOF
+
+        if tt_bio_demo_weights_verify_all; then
+            tt_bio_demo_log "weights present and verified. The booth can fold offline."
+        else
+            tt_bio_demo_log "WEIGHTS DID NOT VERIFY -- see above."
+            exit 1
+        fi
+        ;;
+
+    abort-upgrade|abort-remove|abort-deconfigure)
+        ;;
+esac
+
+#DEBHELPER#
+exit 0

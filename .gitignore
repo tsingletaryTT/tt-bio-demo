@@ -40,3 +40,4 @@ recordings/
 
 # Subagent worktrees (superpowers:subagent-driven-development).
 .claude/worktrees/
+dist/

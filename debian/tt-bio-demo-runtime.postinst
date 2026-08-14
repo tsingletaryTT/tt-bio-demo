@@ -38,9 +38,9 @@ case "$1" in
         # noninteractive frontend, which is the whole point.
         db_get tt-bio-demo-runtime/install-deps || true
         if [ "$RET" = "true" ]; then
-            if tt_bio_demo_have_command tt-bio; then
+            if tt_bio_bin="$(tt_bio_demo_tt_bio_bin)"; then
                 tt_bio_demo_log "running 'tt-bio install-deps' as requested"
-                tt-bio install-deps
+                "$tt_bio_bin" install-deps
             else
                 tt_bio_demo_log "asked to run 'tt-bio install-deps', but tt-bio is not on PATH yet."
                 tt_bio_demo_log "It arrives with venv-runner; run it after the step below."

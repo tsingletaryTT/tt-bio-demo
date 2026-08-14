@@ -1,0 +1,48 @@
+[Unit]
+# The compute daemon, as a supervised `systemd --user` service.
+#
+# USER, not system (spec: "less display-stack surface to debug at a venue").
+# The daemon opens Tenstorrent devices and serves a Unix socket in the user's
+# runtime directory; running it as root would put that socket somewhere the
+# UI -- which is an ordinary desktop application -- cannot reach without
+# extra permission plumbing that has no upside at a conference booth.
+Description=tt-bio-demo compute daemon (folds proteins on Tenstorrent hardware)
+Documentation=https://github.com/tsingletaryTT/tt-bio-demo
+After=graphical-session.target
+
+[Service]
+Type=simple
+
+# venv-runner's interpreter, ALWAYS. venv-ui has GTK and no torch; this venv
+# has torch/ttnn/tt-bio and no GTK. A bare `python3` here imports neither.
+ExecStart=/opt/tt-bio-demo/.venvs/venv-runner/bin/python3 -m runner.daemon \
+    --socket %t/tt-bio-demo/runner.sock \
+    --playlist /opt/tt-bio-demo/playlist \
+    --log-root %t/tt-bio-demo/logs \
+    --log-budget-gb 2.0 \
+    --structures-budget-gb 0.2
+WorkingDirectory=/opt/tt-bio-demo
+
+# --log-root IS NOT OPTIONAL, and this unit is the one place it cannot be
+# forgotten. tt-metal writes its Inspector/Watcher output RELATIVE TO THE
+# WORKING DIRECTORY, and a service has no obvious CWD. This project measured
+# tt-metal writing 13-14 MB/s into a file it had already unlinked -- invisible
+# to a directory walk, and enough to exhaust a tmpfs in about 31 minutes.
+# %t is the user's runtime directory, which systemd creates and cleans.
+RuntimeDirectory=tt-bio-demo
+RuntimeDirectoryPreserve=no
+
+# The booth runs unattended all day: a dead daemon must come back by itself.
+# `on-failure` rather than `always` so that a clean operator shutdown
+# (`systemctl --user stop`) stays stopped.
+Restart=on-failure
+RestartSec=5
+
+# A wedged card can make a fold hang; give the daemon time to release its
+# devices on stop before SIGKILL, because a killed process holding a chip is
+# the state that needs a reboot to clear.
+TimeoutStopSec=90
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=default.target

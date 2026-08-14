@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=tt-bio Protein Folding Demo
+GenericName=Protein Structure Prediction
+Comment=Watch a protein fold in real time on Tenstorrent Blackhole hardware
+# run-demo.sh, not `venv-ui/bin/python3 -m ui.app`: the launcher starts the
+# daemon too and tears it down on exit, which is what someone double-clicking
+# an icon expects. It picks venv-ui for the UI half itself.
+Exec=/opt/tt-bio-demo/scripts/run-demo.sh
+Icon=tt-bio-demo
+Terminal=false
+Categories=Science;Biology;Education;
+Keywords=protein;folding;tenstorrent;blackhole;
+StartupNotify=true

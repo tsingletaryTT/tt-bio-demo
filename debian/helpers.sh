@@ -111,3 +111,27 @@ tt_bio_demo_verify_sha256() {
     fi
     return 0
 }
+
+# Where tt-bio actually is, as an absolute path.
+#
+# NEVER `command -v tt-bio` from a maintainer script. dpkg runs maintainer
+# scripts with a FIXED PATH of /usr/sbin:/usr/bin:/sbin:/bin -- not the
+# caller's, and nothing ever adds a venv to it. tt-bio is pip-installed into
+# <prefix>/.venvs/venv-runner/, so a PATH lookup cannot find it on any real
+# machine, and code guarded by one is dead code that looks fine in review and
+# in a container where a shim happens to sit in /usr/bin.
+#
+# Checked in order: the venv this project builds, then PATH (for an operator
+# who installed tt-bio system-wide themselves).
+tt_bio_demo_tt_bio_bin() {
+    candidate="$(tt_bio_demo_prefix)/.venvs/venv-runner/bin/tt-bio"
+    if [ -x "$candidate" ]; then
+        printf '%s\n' "$candidate"
+        return 0
+    fi
+    if tt_bio_demo_have_command tt-bio; then
+        command -v tt-bio
+        return 0
+    fi
+    return 1
+}

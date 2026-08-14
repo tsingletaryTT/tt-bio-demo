@@ -1,0 +1,6 @@
+# helpers.sh is NOT shipped here: it is owned by the base package
+# tt-bio-demo, which this package depends on. Two packages shipping
+# the same path is a conflict dpkg refuses when both are installed.
+
+# Shipped for the same reason the runtime package ships it: this package's
+# postinst sources it, and debian/ is build metadata that is not installed.

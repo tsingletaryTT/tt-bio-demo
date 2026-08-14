@@ -1,0 +1,15 @@
+Template: tt-bio-demo-weights/download
+Type: boolean
+Default: false
+Description: Download the model weights now (3.7 GB)?
+ The booth needs two artifacts before it can fold anything:
+ protenix-v2.pt (1.86 GB) and the CCD molecule library mols.tar (1.85 GB).
+ Together that is about 3.7 GB.
+ .
+ THE VENUE IS OFFLINE. This has to happen before the machine leaves for the
+ conference, which is why it is offered at install time -- but 3.7 GB is not
+ something an unattended install should start on its own, so the default is
+ to decline and the exact command is printed instead.
+ .
+ The download is resumable and is fetched through tt-bio's own Hugging Face
+ client, so an interrupted attempt continues rather than restarting.

@@ -9,6 +9,7 @@ Runs under venv-ui (see scripts/test.sh) purely because that is the "software
 half"; it does not import gi or anything GTK-specific -- only subprocess and
 pathlib.
 """
+import re
 import subprocess
 import pathlib
 import pytest
@@ -454,15 +455,297 @@ def test_postinst_is_idempotent_in_shape():
     assert "set -e" in _runtime("postinst")
 
 
-def test_the_runtime_package_ships_the_helpers_it_sources():
-    """postinst sources helpers.sh, which lives in debian/ (build metadata,
-    not installed by default). If it is not shipped, every install dies on
-    the first line -- and dies AFTER unpacking, which is the worst moment."""
-    installed = (REPO / "debian" / "tt-bio-demo-runtime.install").read_text()
-    assert "helpers.sh" in installed, "postinst sources a file nobody ships"
-    sourced = [ln for ln in _runtime("postinst").splitlines()
-               if ln.strip().startswith(". ") and "helpers.sh" in ln]
-    assert sourced, "postinst does not source helpers.sh"
-    path = sourced[0].split()[1]
-    assert path.lstrip("/").rsplit("/", 1)[0] in installed, \
-        f"postinst sources {path} but the install file puts it elsewhere"
+def test_whoever_sources_helpers_depends_on_whoever_ships_it():
+    """postinst sources /usr/share/tt-bio-demo/helpers.sh, which lives in
+    debian/ (build metadata, not installed by default). If it is not shipped,
+    every install dies on its first line -- AFTER unpacking, the worst moment
+    for a maintainer script to fail.
+
+    It is shipped by the BASE package, once. Shipping it from both dependent
+    packages (which is how this was first written) puts two packages in
+    ownership of one path, and dpkg refuses to install them together.
+    """
+    shipped_by = {p.name.split(".install")[0]
+                  for p in (REPO / "debian").glob("*.install")
+                  if any(ln.strip().startswith("debian/helpers.sh")
+                         for ln in p.read_text().splitlines())}
+    assert shipped_by == {"tt-bio-demo"}, (
+        f"helpers.sh should be owned by exactly the base package, not {shipped_by}")
+
+    control = (REPO / "debian" / "control").read_text()
+    for pkg in ("tt-bio-demo-runtime", "tt-bio-demo-weights"):
+        script = (REPO / "debian" / f"{pkg}.postinst").read_text()
+        assert "/usr/share/tt-bio-demo/helpers.sh" in script
+        stanza = control.split(f"Package: {pkg}")[1].split("\nPackage:")[0]
+        assert "tt-bio-demo (=" in stanza, (
+            f"{pkg} sources a file from tt-bio-demo without depending on it")
+
+
+def test_tt_bio_is_found_by_path_not_by_PATH(tmp_path):
+    """dpkg runs maintainer scripts with PATH=/usr/sbin:/usr/bin:/sbin:/bin,
+    and NOTHING adds the venv to it. `tt-bio` lives in
+    <prefix>/.venvs/venv-runner/bin/, so a PATH lookup can never find it --
+    which would make the accept branch of the install-deps prompt dead code
+    on every real machine, including reinstalls where the venv exists.
+
+    Driven with PATH scrubbed to exactly what dpkg provides.
+    """
+    prefix = tmp_path / "opt"
+    bindir = prefix / ".venvs" / "venv-runner" / "bin"
+    bindir.mkdir(parents=True)
+    fake = bindir / "tt-bio"
+    fake.write_text("#!/bin/sh\nexit 0\n")
+    fake.chmod(0o755)
+
+    r = _sh("tt_bio_demo_tt_bio_bin",
+            TT_BIO_DEMO_PREFIX=str(prefix),
+            PATH="/usr/sbin:/usr/bin:/sbin:/bin")
+    assert r.returncode == 0, f"tt-bio in the venv was not found: {r.stderr}"
+    assert r.stdout.strip() == str(fake)
+
+
+def test_tt_bio_lookup_fails_when_it_is_genuinely_absent(tmp_path):
+    r = _sh("tt_bio_demo_tt_bio_bin",
+            TT_BIO_DEMO_PREFIX=str(tmp_path / "nothing-here"),
+            PATH="/usr/sbin:/usr/bin:/sbin:/bin")
+    assert r.returncode != 0, "reported a tt-bio that does not exist"
+    assert r.stdout.strip() == ""
+
+
+def test_the_postinst_does_not_rely_on_PATH_to_find_tt_bio():
+    """The bug this pins: `command -v tt-bio` in a maintainer script."""
+    p = _runtime("postinst")
+    assert "tt_bio_demo_tt_bio_bin" in p, \
+        "postinst must resolve tt-bio by absolute path, not via PATH"
+    assert "tt_bio_demo_have_command tt-bio" not in p
+
+
+# ── Task 6: the weights package, and the checksum that must not lie ─────────
+
+def _weights(name):
+    return (REPO / "debian" / f"tt-bio-demo-weights.{name}").read_text()
+
+
+def test_the_weights_package_ships_no_weights(built):
+    deb = next(built.glob("tt-bio-demo-weights_*.deb"))
+    size = deb.stat().st_size
+    assert size < 200_000, f"weights package is {size} bytes; it should be scripts only"
+
+
+def test_every_artifact_the_package_fetches_is_checksum_verified():
+    """An unverified download is a booth that folds garbage, or nothing.
+
+    ADAPTED from the brief, which counted `curl` calls. This package does not
+    curl: tt-bio resolves its own weights through huggingface_hub, and
+    reimplementing that would mean hardcoding a URL this project does not
+    control and losing the hub client's resume-and-verify behaviour. So the
+    invariant is expressed against the artifact TABLE instead -- every
+    artifact listed must have a hash listed beside it.
+    """
+    p = _weights("postinst")
+    assert "tt_bio_demo_verify_sha256" in p, "nothing is verified"
+    artifacts = re.findall(r"^\s*([A-Za-z0-9._-]+\.(?:pt|tar))\s+([a-f0-9]{64})\s*$",
+                           p, re.MULTILINE)
+    assert artifacts, "no artifact/sha256 table found in the postinst"
+    for name, sha in artifacts:
+        assert len(sha) == 64, f"{name} has a malformed sha256"
+
+
+def test_an_artifact_with_no_hash_is_a_loud_failure_not_a_skip():
+    """The plan's hard rule: an unset hash must fail the install with a
+    message naming what to fill in, and must NEVER silently skip
+    verification."""
+    p = _weights("postinst")
+    assert "tt_bio_demo_verify_sha256" in p
+    # The empty-hash path must exist and must be fatal, not a `continue`.
+    assert re.search(r"(no sha256|hash is (unset|missing)|MISSING CHECKSUM)", p, re.I), \
+        "no explicit handling for an artifact whose hash is unset"
+
+
+def test_the_prompt_explains_the_download_size():
+    """An operator on a hotel connection deserves to know before it starts."""
+    t = _weights("templates")
+    assert "Type: boolean" in t
+    assert re.search(r"\d+(\.\d+)?\s?(GB|MB)", t), "the prompt must state the size"
+
+
+def test_the_weights_prompt_defaults_to_declining_offline():
+    """Same reasoning as install-deps: a multi-gigabyte download is not
+    something an unattended install should start on its own."""
+    t = _weights("templates")
+    block = [b for b in t.split("\n\n") if "download" in b.lower()]
+    assert block, "no download template"
+    assert "Default: false" in _weights("templates")
+
+
+def test_the_weights_postinst_is_posix_sh():
+    r = subprocess.run(["sh", "-n", str(REPO / "debian" / "tt-bio-demo-weights.postinst")],
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+
+
+def test_a_noninteractive_install_downloads_nothing(container):
+    """3.7 GB must never start on its own. Behavioural, in a container."""
+    result = container.install("tt-bio-demo-weights",
+                               env={"DEBIAN_FRONTEND": "noninteractive"})
+    assert result.installed, result.log
+    assert result.status("tt-bio-demo-weights") == "install ok installed"
+
+
+def test_the_weights_postinst_uses_the_tt_bio_api_that_actually_exists():
+    """The packaging<->tt-bio contract, checked against the PINNED tt-bio's
+    own source.
+
+    The first draft of this postinst called `hf_artifact(repo, filename)` --
+    it takes three arguments -- and imported `ccd_mols_dir`, which does not
+    exist. Both would have failed at install time on a real machine and
+    nowhere else: the container tests never reach this branch (they decline
+    the download), and no unit test imports tt_bio.
+
+    Parsed with `ast` rather than imported, because importing tt_bio.main
+    pulls torch into a test that has no business being that slow.
+    """
+    import ast
+
+    venv = REPO / ".venvs" / "venv-runner"
+    main_py = next(venv.glob("lib/python3.*/site-packages/tt_bio/main.py"), None)
+    if main_py is None:
+        pytest.fail("venv-runner is not built; cannot check the tt-bio API "
+                    "contract. Run scripts/setup-venvs.sh.")
+
+    tree = ast.parse(main_py.read_text())
+    functions = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+    assigned = {t.id for n in tree.body if isinstance(n, ast.Assign)
+                for t in n.targets if isinstance(t, ast.Name)}
+
+    postinst = _weights("postinst")
+    for name in ("PROTENIX_REPO",):
+        assert name in postinst and name in assigned, \
+            f"postinst imports {name}, which tt-bio no longer defines"
+    for name in ("hf_artifact", "download_mols"):
+        assert name in postinst and name in functions, \
+            f"postinst imports {name}, which tt-bio no longer defines"
+
+    # Arity, which is what the first draft got wrong.
+    args = functions["hf_artifact"].args.args
+    assert len(args) == 3, (
+        f"hf_artifact now takes {len(args)} args; the postinst calls it with 3")
+
+
+# ── Task 7: the systemd user unit and the desktop entry ─────────────────────
+
+def test_the_unit_is_a_user_service_not_a_system_one(built):
+    c = _contents(_app_deb(built))
+    assert "/lib/systemd/user/" in c or "/usr/lib/systemd/user/" in c
+    assert "/lib/systemd/system/" not in c
+
+
+def test_the_daemon_restarts_if_it_dies():
+    """The booth is unattended; a dead daemon must come back on its own."""
+    u = (REPO / "debian" / "tt-bio-demo.user.service").read_text()
+    assert "Restart=" in u
+    assert "Restart=no" not in u
+
+
+def test_the_unit_pins_the_log_root_and_budgets():
+    """tt-metal writes gigabytes RELATIVE TO CWD unless pinned, and a service
+    has no obvious CWD. Not hypothetical: this project measured tt-metal
+    writing 13-14 MB/s into a file it had already unlinked -- invisible to a
+    directory walk -- which would have exhausted a tmpfs in ~31 minutes."""
+    u = (REPO / "debian" / "tt-bio-demo.user.service").read_text()
+    assert "--log-root" in u
+    assert "--log-budget-gb" in u
+
+
+def test_the_unit_runs_the_daemon_from_the_runner_venv():
+    """The UI venv has no torch and the runner venv has no GTK. A unit that
+    invoked a bare `python3` would import neither."""
+    u = (REPO / "debian" / "tt-bio-demo.user.service").read_text()
+    assert "venv-runner/bin/python3" in u, "unit must use venv-runner's interpreter"
+    assert "runner.daemon" in u
+    assert not re.search(r"ExecStart=/usr/bin/python3\b", u), "bare system python3"
+
+
+def test_the_desktop_entry_is_valid_and_names_the_ui():
+    d = (REPO / "debian" / "tt-bio-demo.desktop").read_text()
+    assert d.startswith("[Desktop Entry]")
+    for key in ("Type=Application", "Name=", "Exec="):
+        assert key in d
+
+
+def test_the_desktop_entry_launches_the_ui_venv_not_the_runner():
+    d = (REPO / "debian" / "tt-bio-demo.desktop").read_text()
+    exec_line = [l for l in d.splitlines() if l.startswith("Exec=")][0]
+    assert "venv-ui" in exec_line or "run-demo.sh" in exec_line, exec_line
+    assert "venv-runner/bin/python3 -m ui" not in exec_line
+
+
+# ── Task 9: one command that builds and reports ─────────────────────────────
+
+def _uncommented(text):
+    """Shell source with comments removed, for tests about what a script RUNS.
+
+    A raw substring search cannot tell `apt install` from a comment saying
+    "this script must never run apt install" -- and the second is the
+    opposite of the defect. Strips full-line and trailing comments; good
+    enough for shell, which has no block comments. Quoted `#` inside a string
+    would be a false strip, but no line here relies on one.
+    """
+    out = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        out.append(line.split(" #", 1)[0])
+    return "\n".join(out)
+
+
+def test_the_build_script_refuses_to_install_anything():
+    """This box is shared and these packages load kernel modules.
+
+    Checked against the script's CODE, not its prose -- see `_uncommented`.
+    The header deliberately names what it refuses to do, and an earlier
+    version of this test failed on that comment.
+    """
+    s = _uncommented((REPO / "scripts" / "build-deb.sh").read_text())
+    for forbidden in ("dpkg -i", "apt install", "apt-get install", "install-deps"):
+        assert forbidden not in s, f"build script must not run: {forbidden}"
+
+
+def test_the_build_script_is_posix_sh_or_bash_and_parses():
+    r = subprocess.run(["bash", "-n", str(REPO / "scripts" / "build-deb.sh")],
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+
+
+def test_the_build_script_cleans_up_after_itself():
+    """dpkg-buildpackage writes to the PARENT directory, which here is a
+    shared workspace holding other projects. Same defect the test fixture
+    had."""
+    s = (REPO / "scripts" / "build-deb.sh").read_text()
+    assert ".buildinfo" in s and ".changes" in s, \
+        "build script does not account for the non-.deb artefacts"
+
+
+def test_the_build_report_names_the_maintainer_scripts(built):
+    """The report exists so a reviewer can judge a package WITHOUT installing
+    it, and the maintainer scripts are the part that can do damage -- so
+    "which hooks will run" is the single most important line in it.
+
+    The first version parsed `dpkg-deb --info`, whose columns shift depending
+    on whether a file is executable, and reported "<none>" for the runtime
+    package, which has config, postinst, prerm and postrm. A report that
+    confidently says "nothing will run" about a package that runs four
+    scripts is worse than no report.
+    """
+    deb = next(built.glob("tt-bio-demo-runtime_*.deb"))
+    listing = subprocess.run(["dpkg-deb", "--ctrl-tarfile", str(deb)],
+                             capture_output=True)
+    names = subprocess.run(["tar", "-t"], input=listing.stdout,
+                           capture_output=True).stdout.decode()
+    for hook in ("config", "postinst", "prerm"):
+        assert hook in names, f"the runtime package lost its {hook}"
+
+    s = (REPO / "scripts" / "build-deb.sh").read_text()
+    assert "--ctrl-tarfile" in s, \
+        "build report parses maintainer scripts from human-readable output"
