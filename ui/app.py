@@ -189,11 +189,12 @@ from ui.geometry import PLDDT_STOPS, ribbon_from_cif
 from ui.structure_view import structure_mesh
 from ui.panels import PipelinePanel, TelemetryPanel
 from ui.playlist import PlaylistError, load_playlist, select_targets
-from ui.attract import (CLOSE_DIAGNOSTICS, CLOSE_TENSIX,
-                        OPEN_DIAGNOSTICS, OPEN_TENSIX, Choreography)
+from ui.attract import (CLOSE_DIAGNOSTICS, CLOSE_TENSIX, HIDE_GALLERY,
+                        OPEN_DIAGNOSTICS, OPEN_TENSIX, SHOW_GALLERY,
+                        Choreography)
 from ui.quad import QUAD_HELP_LINE, QUAD_KEYS, QuadView
 from ui.slots import MAX_SLOTS, SlotRouter
-from ui.states import StateMachine
+from ui.states import BoothState, StateMachine
 from ui.telemetry import TelemetrySampler
 # Not `ui.mark` any more: the easter egg's geometry runs on the chips now, so
 # the module the descent is defined in has to be importable from the runner's
@@ -2877,6 +2878,32 @@ class DemoApp(Gtk.Application):
                     self._set_diagnostics_visible(False)
                 elif cue == CLOSE_TENSIX and self.chipviz_visible:
                     self._set_chipviz_visible(False)
+                # HIDE_GALLERY is deliberately NOT applied here. If someone
+                # arrives while the menu is up, that menu is the screen they
+                # are looking at and the thing they are most likely about to
+                # use -- snatching it back the instant they touch anything
+                # would be the worst possible moment. Ownership is released
+                # above, so the choreography will not close it later either;
+                # the state machine's own 45s idle timeout returns the booth
+                # to the protein if they walk away.
+                elif cue == SHOW_GALLERY:
+                    # ONLY FROM ATTRACT. The gallery is a state, not chrome,
+                    # and this must never interrupt a fold somebody is
+                    # watching or cut a finished structure's dwell short.
+                    # From anywhere else the cue is dropped and its ownership
+                    # released, so the matching hide cannot fire either.
+                    if self.states.state == BoothState.ATTRACT:
+                        self.states.on_touch()
+                        self._sync_to_state()
+                    else:
+                        self.attract.disown("gallery")
+                elif cue == HIDE_GALLERY:
+                    # Back to the protein. Guarded on the state actually
+                    # being the gallery: if a visitor has since picked a
+                    # target, the booth is folding and must be left alone.
+                    if self.states.state == BoothState.GALLERY:
+                        self.states.state = BoothState.ATTRACT
+                        self._sync_to_state()
         except Exception:
             log.exception("attract choreography could not be interrupted")
 
@@ -3341,6 +3368,24 @@ class DemoApp(Gtk.Application):
                         self._set_chipviz_visible(True)
                 elif cue == CLOSE_TENSIX and self.chipviz_visible:
                     self._set_chipviz_visible(False)
+                elif cue == SHOW_GALLERY:
+                    # ONLY FROM ATTRACT. The gallery is a state, not chrome,
+                    # and this must never interrupt a fold somebody is
+                    # watching or cut a finished structure's dwell short.
+                    # From anywhere else the cue is dropped and its ownership
+                    # released, so the matching hide cannot fire either.
+                    if self.states.state == BoothState.ATTRACT:
+                        self.states.on_touch()
+                        self._sync_to_state()
+                    else:
+                        self.attract.disown("gallery")
+                elif cue == HIDE_GALLERY:
+                    # Back to the protein. Guarded on the state actually
+                    # being the gallery: if a visitor has since picked a
+                    # target, the booth is folding and must be left alone.
+                    if self.states.state == BoothState.GALLERY:
+                        self.states.state = BoothState.ATTRACT
+                        self._sync_to_state()
             except Exception:
                 log.exception("attract cue %r could not be applied", cue)
 

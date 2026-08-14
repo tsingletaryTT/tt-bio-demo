@@ -2258,3 +2258,77 @@ def test_a_visitor_opened_panel_survives_the_choreography(monkeypatch):
         app._tick_attract(t, idle_s=t)
     assert app.diagnostics_visible is True, \
         "the choreography closed a panel the visitor had opened"
+
+
+# ── the gallery cue, where it meets the state machine ──────────────────────
+
+def _idle_until_gallery(app, base=1000.0):
+    """Run the attract choreography far enough to reach its gallery cue."""
+    t = base
+    while t < base + 90.0:
+        app._tick_attract(t, idle_s=t - base + 61.0)
+        t += 1.0
+        if app.attract.owns("gallery"):
+            return t
+    return None
+
+
+def test_the_choreography_shows_the_gallery_from_attract():
+    """A visitor who never touches the booth has no way of learning it can be
+    driven at all, so the booth shows them the menu."""
+    from ui.states import BoothState
+    app = _app()
+    app.states.state = BoothState.ATTRACT
+    assert _idle_until_gallery(app), "the gallery cue never fired"
+    assert app.states.state == BoothState.GALLERY
+
+
+def test_the_choreography_never_interrupts_a_fold():
+    """THE ONE THAT WOULD RUIN THE DEMO. The gallery is a state, not chrome:
+    showing it mid-fold would take a protein off the screen somebody is
+    watching."""
+    from ui.states import BoothState
+    app = _app()
+    app.states.state = BoothState.FOLDING
+    _idle_until_gallery(app)
+    assert app.states.state == BoothState.FOLDING, \
+        "the attract choreography cut into a fold"
+
+
+def test_a_gallery_it_could_not_show_is_disowned():
+    """If the cue was dropped, the matching hide must not fire later and
+    yank a screen the choreography never opened."""
+    from ui.states import BoothState
+    app = _app()
+    app.states.state = BoothState.FOLDING
+    _idle_until_gallery(app)
+    assert not app.attract.owns("gallery")
+
+
+def test_the_gallery_goes_away_again_on_its_own():
+    """An unattended booth must end up back on the protein, or it spends the
+    rest of the day showing a menu nobody is reading."""
+    from ui.states import BoothState
+    app = _app()
+    app.states.state = BoothState.ATTRACT
+    base = 1000.0
+    for k in range(120):
+        app._tick_attract(base + k, idle_s=61.0 + k)
+    assert app.states.state == BoothState.ATTRACT, \
+        "the booth was left sitting on the gallery"
+
+
+def test_a_visitor_arriving_keeps_the_menu_they_can_see():
+    """Snatching the gallery back the instant somebody touches the booth is
+    the worst possible moment to do it -- that menu is the screen they are
+    looking at and the thing they are about to use."""
+    from ui.states import BoothState
+    app = _app()
+    app.states.state = BoothState.ATTRACT
+    assert _idle_until_gallery(app)
+    assert app.states.state == BoothState.GALLERY
+
+    app._handle_key("x")                      # a visitor arrives
+
+    assert app.states.state == BoothState.GALLERY, \
+        "the menu was taken away the moment a visitor touched the booth"
