@@ -196,6 +196,13 @@ def test_the_egg_is_dispatched_before_folds_and_its_chip_is_not_reused(tmp_path)
     Mutation this catches: reading `ready_cards()` before dispatching the
     egg, which leaves the egg's card in the fold loop's snapshot and sends a
     fold command to a worker that has just been given an egg.
+
+    Asserted on `attempts` -- every card `dispatch` was CALLED for -- and not
+    only on `dispatched`. That distinction is exactly why `_FakePool` has both
+    (see its comment): the real pool defends itself, so under this mutation
+    the fold to the egg's card raises, is requeued, and leaves `dispatched`
+    looking perfectly correct. The first version of this test asserted on
+    `dispatched` alone and the mutation SURVIVED it.
     """
     daemon = _daemon(tmp_path, _EggPool())
     for i in range(6):
@@ -204,8 +211,9 @@ def test_the_egg_is_dispatched_before_folds_and_its_chip_is_not_reused(tmp_path)
     daemon.on_client_message(_egg())
     daemon.dispatch_once()
     egg_card = daemon.pool.eggs[0][0]
+    assert egg_card not in daemon.pool.attempts, (
+        "a fold was offered to the chip the egg had just been given")
     fold_cards = [card for card, _job, _t in daemon.pool.dispatched]
-    assert egg_card not in fold_cards
     assert sorted(fold_cards + [egg_card]) == [0, 1, 2, 3]
 
 
@@ -261,18 +269,18 @@ def test_a_dying_egg_costs_no_target_a_failure(tmp_path):
         card = daemon._dispatch_egg()
         daemon.on_worker_lost(card, "e1", None)
         daemon.pool.finish(card)
-        daemon._egg_settled(card)
     assert daemon._failures == {}
     assert daemon._quarantined == set()
 
 
 def test_a_fold_dying_on_a_chip_that_ran_an_egg_earlier_is_still_a_fold(tmp_path):
-    """The stale-state test. `_egg_on_card` is what makes the branch above
-    fire, so a run that is over must clear it -- otherwise the NEXT fold to
-    die on that chip is reported as a refused egg and the UI sits in
-    `folding` forever.
+    """The branch above must fire for an EGG and only for an egg.
 
-    Mutation this catches: never clearing `_egg_on_card`.
+    `_egg_on_card` is deliberately never cleared (see `on_event`), so this is
+    also the test that makes that safe: a card that ran an egg, finished it,
+    and later lost a FOLD must produce a `job_error` and a failure counted
+    against the target -- which it does, because the entry is compared against
+    the job id that died and no fold can carry an egg's uuid.
     """
     daemon = _daemon(tmp_path, _EggPool())
     daemon.on_client_message(_egg())

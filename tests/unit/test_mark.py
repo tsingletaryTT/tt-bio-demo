@@ -389,19 +389,53 @@ def _occupancy(points):
     return grid
 
 
-def _looks_like_the_mark(points):
-    """IoU of the cloud's occupancy against the shipped artwork's mask.
+def _mark_scores(points):
+    """`(precision, coverage)` of a cloud against the shipped artwork's mask.
 
-    Measured on this build: a settled cloud scores 0.73-0.81 over eight seeds
-    and the same cloud before it has descended scores 0.38-0.42, so 0.65 sits
-    in the gap with room on both sides.
+    * **precision** -- what fraction of the POINTS land on an ink cell. This
+      is the "is it the mark" number.
+    * **coverage** -- what fraction of the ink CELLS have a point in them.
+      This is the "does it fill the mark rather than collapse into a corner
+      of it" number.
+
+    Measured over 25 random runs each at 3,000 / 4,000 / 6,000 points:
+
+    | | settled | starting noise |
+    |---|---|---|
+    | precision | 0.92 - 0.96 | 0.09 - 0.17 |
+    | coverage  | 0.61 - 0.94 | 0.44 - 0.89 |
+
+    **Occupancy IoU was tried first and is not a usable threshold**, which is
+    worth recording because it looked fine on fixed seeds. IoU charges the
+    cloud for every ink cell it happens to miss, so it depends on the point
+    count and on where the draw fell: 0.616 to 0.772 over 30 random draws at
+    4,000 points, against a floor of 0.65. That is a test that fails about one
+    run in three, and it did -- on hardware, where it is slowest to diagnose.
+    Precision has no such dependence, and coverage is only ever used as the
+    second half of a pair, never as the discriminator (noise covers plenty of
+    ink cells simply by being everywhere).
     """
-    occupied = _occupancy(points)
     truth = _mask_array()
-    return float((occupied & truth).sum() / (occupied | truth).sum())
+    size = len(LOGO_MASK)
+    col = np.round(points[:, 0] * _MASK_SCALE + _MASK_CENTRE[0]).astype(int)
+    row = np.round(-points[:, 1] * _MASK_SCALE + _MASK_CENTRE[1]).astype(int)
+    inside = (col >= 0) & (col < size) & (row >= 0) & (row < size)
+    on_ink = np.zeros(len(points), dtype=bool)
+    on_ink[inside] = truth[row[inside], col[inside]]
+    occupied = _occupancy(points)
+    return float(on_ink.mean()), float((occupied & truth).sum() / truth.sum())
 
 
-MARK_IOU_FLOOR = 0.65
+# Both floors sit far below what a settled cloud measures and far above what
+# noise does -- see the table in `_mark_scores`.
+MARK_PRECISION_FLOOR = 0.85
+MARK_COVERAGE_FLOOR = 0.50
+
+
+def _looks_like_the_mark(points):
+    """True if `points` are on the mark AND spread over it."""
+    precision, coverage = _mark_scores(points)
+    return precision >= MARK_PRECISION_FLOOR and coverage >= MARK_COVERAGE_FLOOR
 
 
 def _settled(seed, count=4000):
@@ -420,7 +454,23 @@ def test_the_recognisability_test_can_actually_fail():
     screen -- must be rejected.
     """
     start = mark.run_parameters(seed=4242, count=4000).positions
-    assert _looks_like_the_mark(start) < MARK_IOU_FLOOR
+    assert not _looks_like_the_mark(start)
+    precision, _coverage = _mark_scores(start)
+    assert precision < 0.25, (
+        f"undescended noise scored {precision:.3f} on the mark; the floor is "
+        f"{MARK_PRECISION_FLOOR}")
+
+
+def test_the_recognisability_test_also_rejects_a_cloud_that_collapsed():
+    """The other way to score well without being the mark: put every point in
+    one cell. Precision alone would call that a perfect mark, which is why
+    `_looks_like_the_mark` needs coverage as well."""
+    heap = np.zeros((2000, 3))
+    heap[:, :2] = _from_mask(15, 25)
+    precision, coverage = _mark_scores(heap)
+    assert precision > MARK_PRECISION_FLOOR, "the probe must be ON the mark"
+    assert coverage < MARK_COVERAGE_FLOOR
+    assert not _looks_like_the_mark(heap)
 
 
 def test_every_run_lands_on_the_same_mark():
@@ -434,8 +484,8 @@ def test_every_run_lands_on_the_same_mark():
     """
     for seed in (11, 22, 33, 44, 55):
         settled = _settled(seed)
-        assert _looks_like_the_mark(settled) >= MARK_IOU_FLOOR, (
-            f"seed {seed} did not land on the mark")
+        assert _looks_like_the_mark(settled), (
+            f"seed {seed} did not land on the mark: {_mark_scores(settled)}")
         distance, _ = mark.slab_sdf_gradient(settled, mark.HALF_THICKNESS)
         assert (distance <= 1e-3).mean() > 0.98, (
             f"seed {seed} left too much of the cloud outside the slab")
@@ -498,16 +548,67 @@ def test_the_swirl_is_spent_early_and_then_exactly_zero():
 
 def test_the_swirl_turns_the_cloud_without_moving_it_in_or_out():
     """What makes a swirl safe to add to a descent: it is a rotation, so it
-    changes the path and not the distance from the axis it turns about."""
+    changes the path and not the distance from the axis it turns about.
+
+    Measured on the REAL step, with the descent switched off (every target
+    depth set far inside, so `relu(distance + depth)` is zero for every point
+    and nothing but the swirl moves). An earlier version of this test
+    re-derived the rotation itself and compared numpy against numpy, which
+    tested nothing: the shipped code writes the rotated x back into the array
+    before reading x for y, and dropping the `.copy()` that prevents that
+    turns the rotation into a SHEAR -- a mutation that version could not
+    catch, and this one does.
+    """
     params = mark.run_parameters(seed=9, count=500)
     run = mark.MarkCondensation(params=params)
+    run._depth = np.full(params.count, -10.0)     # nothing has anywhere to go
+    assert float(run._swirl[0]) != 0.0
     before = np.hypot(run._points[:, 0], run._points[:, 1])
-    angle = float(run._swirl[0])
-    assert angle != 0.0
-    cos, sin = np.cos(angle), np.sin(angle)
-    x, y = run._points[:, 0].copy(), run._points[:, 1].copy()
-    turned = np.stack([cos * x - sin * y, sin * x + cos * y], axis=1)
-    assert np.allclose(np.hypot(turned[:, 0], turned[:, 1]), before)
+    z_before = run._points[:, 2].copy()
+
+    run.step()
+
+    after = np.hypot(run._points[:, 0], run._points[:, 1])
+    assert np.allclose(after, before), "the swirl is not a rotation"
+    assert not np.allclose(run._points[:, 0],
+                           mark.MarkCondensation(params=params)._points[:, 0]), (
+        "the swirl did not turn the cloud at all")
+    assert np.array_equal(run._points[:, 2], z_before), "the swirl is in-plane"
+
+
+def test_the_per_point_gains_actually_stagger_the_descent():
+    """The gains are what make one run's middle look different from
+    another's: some points land early, some are still drifting in.
+
+    Two points at the SAME place with the same target, differing only in
+    gain, must move by different amounts -- which is the whole of what the
+    gain does, and is invisible to any test that only looks at where the
+    cloud ends up (the ramp brings them all home either way).
+
+    Mutation this catches: drawing the gains and then not using them, or
+    drawing them all equal to 1.0.
+    """
+    params = mark.run_parameters(seed=12, count=2)
+    params.gains = np.array([0.8, 1.3])
+    run = mark.MarkCondensation(params=params)
+    run._points = np.array([[1.6, 0.9, 0.0], [1.6, 0.9, 0.0]])
+    run._depth = np.zeros(2)
+    run._swirl[:] = 0.0
+    start = run._points.copy()
+
+    run.step()
+
+    moved = np.linalg.norm(run._points - start, axis=1)
+    assert moved[0] > 0.0
+    assert moved[1] / moved[0] == pytest.approx(1.3 / 0.8, rel=1e-6)
+
+
+def test_the_gains_are_drawn_across_their_whole_range():
+    """A range nothing samples is a range that is not doing anything."""
+    gains = mark.run_parameters(seed=13, count=4000).gains
+    assert gains.min() < 0.9 and gains.max() > 1.2
+    assert mark.STEP_GAIN_RANGE[0] <= gains.min()
+    assert gains.max() <= mark.STEP_GAIN_RANGE[1]
 
 
 def test_the_gain_ramp_brings_every_point_back_to_full_step_by_the_end():

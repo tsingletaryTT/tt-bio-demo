@@ -76,19 +76,21 @@ def test_the_cloud_the_chip_produced_is_the_tenstorrent_mark(both):
     """The independent oracle: the shipped 32x32 artwork, the same one
     `tests/unit/test_mark.py` rasterises the field against.
 
-    Measured: a settled cloud scores 0.73-0.81 and the same cloud before it
-    has descended scores 0.38-0.42, so the floor sits in the gap -- and the
-    second assertion here proves it by requiring the STARTING cloud to fail
-    it. A threshold nothing can fail is not a threshold.
+    Measured: a settled cloud puts 92-96% of its points on ink and the same
+    cloud before it has descended puts 9-17% there, so the floor sits in a
+    very wide gap -- and the second assertion here proves the test can fail by
+    requiring the STARTING cloud to fail it. A threshold nothing can fail is
+    not a threshold. (See `_mark_scores` for why this is not an IoU: that
+    version failed about one hardware run in three.)
     """
     import sys
     sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve()
                            .parents[1] / "unit"))
-    from test_mark import MARK_IOU_FLOOR, _looks_like_the_mark
+    from test_mark import _looks_like_the_mark, _mark_scores
 
     chip, _host, params = both
-    assert _looks_like_the_mark(chip) >= MARK_IOU_FLOOR
-    assert _looks_like_the_mark(params.positions) < MARK_IOU_FLOOR
+    assert _looks_like_the_mark(chip), _mark_scores(chip)
+    assert not _looks_like_the_mark(params.positions)
 
 
 def test_the_chip_settles_the_cloud_inside_the_mark(both):
@@ -126,7 +128,7 @@ def test_two_runs_on_the_chip_take_different_paths_to_the_same_mark(device):
     import sys
     sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve()
                            .parents[1] / "unit"))
-    from test_mark import MARK_IOU_FLOOR, _looks_like_the_mark
+    from test_mark import _looks_like_the_mark, _mark_scores
 
     midpoints, finals, seeds = [], [], []
     for _ in range(2):
@@ -142,7 +144,7 @@ def test_two_runs_on_the_chip_take_different_paths_to_the_same_mark(device):
     assert seeds[0] != seeds[1], "a fresh run must draw a fresh seed"
     assert np.linalg.norm(midpoints[0] - midpoints[1], axis=1).mean() > 0.5
     for final in finals:
-        assert _looks_like_the_mark(final) >= MARK_IOU_FLOOR
+        assert _looks_like_the_mark(final), _mark_scores(final)
 
 
 def test_a_whole_run_streams_frames_a_ui_could_render(device):

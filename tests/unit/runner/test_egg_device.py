@@ -220,3 +220,39 @@ def test_the_frames_are_spaced_so_a_fast_chip_cannot_flood_the_socket(fake_run):
                 clock=lambda: float(next(clock)), sleep=slept.append)
     assert slept, "a chip producing frames faster than the floor must be paced"
     assert max(slept) <= 0.02 + 1e-9
+
+
+def test_nothing_is_emitted_until_the_chip_has_executed_a_step(fake_run):
+    """A worker's FIRST egg compiles ttnn kernels -- 10.2 s against 0.94 s
+    for every run after it. Frame 0 is a readback of what was just uploaded
+    and costs nothing, so emitting it before that first step put a frame on
+    the wire in a millisecond, the UI took it as proof a chip had answered,
+    and then nothing arrived for nine seconds. The booth froze on a cloud of
+    noise captioned "Computed on chip 0" -- observed live.
+
+    Mutation this catches: emitting frame 0 before the first `step()`.
+    """
+    order = []
+
+    class _Watched(_FakeRun):
+        def step(self):
+            order.append("step")
+            super().step()
+
+    egg.DeviceCondensation = _Watched
+    egg.run_egg(object(), lambda e: order.append(f"emit{e['step']}"),
+                egg_id="e1", card=0, seed=1, count=4, steps=3, gap_s=0.0)
+    assert order[0] == "step", "a frame left before the chip did any work"
+    assert order[:3] == ["step", "emit0", "emit1"]
+
+
+def test_the_starting_noise_is_still_the_first_frame_a_ui_sees(fake_run):
+    """Held back, not dropped: frame 0 is the untouched draw, so what a
+    visitor watches collapse is the cloud the chip actually started from."""
+    got = []
+    egg.run_egg(object(), got.append, egg_id="e1", card=0, seed=1,
+                count=4, steps=3, gap_s=0.0)
+    assert [e["step"] for e in got] == [0, 1, 2, 3]
+    from protocol.events import unpack_coords
+    assert np.allclose(unpack_coords(got[0]["coords_b64"]), 0.0), (
+        "frame 0 must be the cloud before any step moved it")

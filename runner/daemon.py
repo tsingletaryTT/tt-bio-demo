@@ -172,12 +172,21 @@ PROTECTED_STRUCTURE_COUNT = 3
 # measured at 4.4-22 s, one finishes every 1-5 s on average. So the egg waits,
 # briefly, for the next card to come free rather than refusing on the spot.
 #
-# 2.5 s is a bound on how long a visitor stares at a card that has not started
+# 4 s is a bound on how long a visitor stares at a card that has not started
 # yet, and it is deliberately SHORTER than the UI's own device-wait timeout
 # (`_EGG_DEVICE_WAIT_MS` in ui/app.py) so that the ordinary busy-booth case
 # ends with the daemon SAYING it is busy rather than with the UI timing out on
 # silence. Those two constants must stay in that order.
-EGG_WAIT_S = 2.5
+#
+# 2.5 s was tried first and measured on the running booth: the four chips do
+# not free up independently, they free up in LOCKSTEP -- `dispatch_once` hands
+# all four the same target within 750 ms of each other, so they finish within
+# 750 ms of each other too, and the gap between a press and the next free chip
+# is roughly uniform over one fold's length. At 4.3 s per trpcage that made
+# 2.5 s a coin flip; the very first live press waited the full 2.5 s and was
+# refused with the next chip 750 ms away. 4 s catches most of that window, and
+# the fallback covers the rest honestly.
+EGG_WAIT_S = 4.0
 
 
 @dataclass
@@ -397,16 +406,17 @@ class Daemon:
         the event, which is the thing the screen actually needs.
         """
         kind = event.get("type")
-        # An egg is over the moment its last frame goes out, its worker
-        # refuses it, or a fold starts on the same chip. Forgetting to clear
-        # this is not cosmetic: `on_worker_lost` reads it, so a stale entry
-        # would report a LATER fold's death as a refused egg and leave the UI
-        # believing a fold that has died is still running.
-        if kind == "egg_refused" or kind == "job_start" or (
-                kind == "egg_frame"
-                and event.get("step") == event.get("total")):
-            self._egg_settled(card)
-
+        # NOTHING HERE CLEARS `_egg_on_card`, and that is deliberate rather
+        # than an omission. An earlier revision cleared it on the last
+        # `egg_frame`, on `egg_refused` and on `job_start`, reasoning that a
+        # stale entry would make a later fold's death read as a refused egg.
+        # Mutation testing showed the clear could be deleted outright with
+        # nothing going red, and the reason is solid: the only reader compares
+        # the entry against the `job_id` that just died, egg ids are uuids,
+        # and no fold can ever carry one. The dict is one entry per card,
+        # overwritten by the next egg on that card, so it cannot grow either.
+        # Untestable defensive code on the path every fold's every frame takes
+        # is worse than no code, so it is gone.
         if kind == "job_start":
             # The worker's own statement of what it is folding. `dispatch_once`
             # already recorded this, and the two agree -- but a `job_done`
@@ -607,11 +617,6 @@ class Daemon:
             self._in_flight[card] = job.target_id
 
     # -- the easter egg's share of the hardware ----------------------------
-
-    def _egg_settled(self, card):
-        """Forget that `card` was running an egg. Idempotent."""
-        with self._egg_lock:
-            self._egg_on_card.pop(card, None)
 
     def _take_egg_request(self, egg_id):
         """Clear the pending request, but only if it is still `egg_id`.

@@ -396,19 +396,32 @@ def run_egg(device, emit, *, egg_id, card, seed=None, count=mark.POINTS,
     t0 = clock()
     # Step 0 is the untouched noise draw, so a visitor sees the cloud the chip
     # actually started from rather than a first frame that has already moved.
-    emit(egg_frame_event(egg_id, 0, params.steps, run.points(),
-                         card=card, seed=params.seed))
-    last = clock()
+    #
+    # It is HELD until the first real step has run, and that is not a detail.
+    # A worker's first egg compiles ttnn kernels: measured on this box, 10.2 s
+    # for the first run and 0.94 s for every one after it. Emitting frame 0
+    # before that -- which costs nothing, it is a readback of what was just
+    # uploaded -- put a frame on the wire in about a millisecond, the UI took
+    # it as proof that a chip had answered, and then nothing else arrived for
+    # nine seconds. The booth sat on a cloud of noise captioned "Computed on
+    # chip 0". Nothing is emitted now until the chip has actually executed a
+    # step, so a cold cache delays the whole run and the UI's own fallback
+    # takes over honestly instead.
+    pending = [(0, run.points())]
+    last = None
     for index in range(1, params.steps + 1):
         run.step()
         if index % EGG_FRAME_EVERY and index != params.steps:
             continue
-        frame = egg_frame_event(egg_id, index, params.steps, run.points(),
-                                card=card, seed=params.seed)
-        wait = gap_s - (clock() - last)
-        if wait > 0:
-            sleep(wait)
-        emit(frame)
-        last = clock()
+        pending.append((index, run.points()))
+        for step, points in pending:
+            frame = egg_frame_event(egg_id, step, params.steps, points,
+                                    card=card, seed=params.seed)
+            wait = gap_s - (clock() - last) if last is not None else 0.0
+            if wait > 0:
+                sleep(wait)
+            emit(frame)
+            last = clock()
+        pending = []
     log.info("egg %s: finished on card %s in %.2fs", egg_id, card, clock() - t0)
     return params.seed

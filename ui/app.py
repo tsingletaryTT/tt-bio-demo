@@ -579,14 +579,12 @@ _EGG_STEP_MS = _FRAME_DRAIN_MS
 # How long the booth waits for a chip's first frame before giving up and
 # running the descent here instead.
 #
-# Longer than the daemon's own `EGG_WAIT_S` (2.5 s) on purpose, and the order
+# Longer than the daemon's own `EGG_WAIT_S` (4.0 s) on purpose, and the order
 # matters: in the ordinary busy-booth case the daemon answers with an
 # `egg_refused` and the fallback starts immediately, so this timer only ever
 # fires when nothing answered at all -- a daemon that has died between the
-# send and now, a v-mismatched socket, a worker wedged mid-egg. Four seconds
-# is long enough to cover a chip freeing up late and short enough that a
-# visitor reads the card rather than wonders whether it is broken.
-_EGG_DEVICE_WAIT_MS = 4000
+# send and now, a v-mismatched socket, a worker wedged mid-egg.
+_EGG_DEVICE_WAIT_MS = 6000
 
 # How many `egg_frame` events may sit in the play buffer. One whole run is
 # `mark.STEPS` + 1 frames and the worker delivers them in about a second, so
@@ -1200,6 +1198,18 @@ class DemoApp(Gtk.Application):
         self.egg_viewer = None
         self._egg_box = None
         self._egg = None
+        # The cloud drawn while the booth is waiting for an answer: a real
+        # `MarkCondensation` that is NEVER stepped. Two things fall out of it
+        # being real rather than a placeholder. A visitor sees noise
+        # immediately instead of an empty box for up to `_EGG_DEVICE_WAIT_MS`;
+        # and if no chip answers, this exact object becomes the fallback, so
+        # the descent begins from the cloud already on screen rather than
+        # cutting to a different one. A chip's own first frame replaces it,
+        # and the swap is invisible because both are unstructured Gaussian
+        # noise -- which is also why showing it claims nothing: the card says
+        # "asking", and nothing about a noise cloud asserts where it came
+        # from.
+        self._egg_preview = None
         self._egg_source_id = None
         # Which press this is, so frames from an egg the visitor has already
         # dismissed cannot be drawn into the next one.
@@ -1215,7 +1225,18 @@ class DemoApp(Gtk.Application):
         # the main loop. Carries the daemon's short reason code ("busy" /
         # "device"), never any text from the wire.
         self._egg_refusal = None
+        # `_egg_deadline` is the wall-clock instant after which the booth
+        # stops waiting -- for a first frame while asking, and for the NEXT
+        # frame once a chip is answering. Both are the same question ("has
+        # this gone quiet?") and both want the same patience.
         self._egg_deadline = None
+        # Whether the chip's LAST frame has been drawn. The egg's timer ends
+        # on this, and emphatically not on "the buffer happens to be empty":
+        # a chip that pauses mid-run (a cold ttnn kernel cache does exactly
+        # this, for nine seconds) would otherwise retire the timer, and the
+        # rest of the descent would arrive with nothing left to draw it. That
+        # is not hypothetical -- it is what the first live run did.
+        self._egg_device_done = False
         self._egg_provenance_label = None
         # Filled by the reader thread, drained by `_tick_egg` on the main
         # loop. A deque rather than `LatestFrame`: a fold's frames are
@@ -2500,8 +2521,10 @@ class DemoApp(Gtk.Application):
             self._egg_box.set_visible(visible)
         self._stop_egg_source()
         self._egg = None
+        self._egg_preview = None
         self._egg_refusal = None
         self._egg_deadline = None
+        self._egg_device_done = False
         with self._egg_frames_lock:
             self._egg_frames.clear()
         if not visible:
@@ -2514,13 +2537,11 @@ class DemoApp(Gtk.Application):
             self.egg_card = None
             self.egg_source = "asking"
             self._sync_egg_provenance()
+            self._egg_preview = MarkCondensation()
             if self.egg_viewer is not None:
-                # Cleared and left EMPTY, deliberately. The first thing drawn
-                # must be the chip's own step-0 noise, so that what a visitor
-                # watches collapse is the cloud the chip actually started
-                # from -- not a locally-drawn one that jumps the instant the
-                # real frames arrive.
                 self.egg_viewer.clear_structure()
+                # Drawn, not stepped. See `_egg_preview`.
+                self.egg_viewer.set_points(self._egg_preview.points())
             asked = self._ask_for_an_egg(self._egg_id)
             self._egg_deadline = time.monotonic() + _EGG_DEVICE_WAIT_MS / 1000.0
             if not asked:
@@ -2573,7 +2594,11 @@ class DemoApp(Gtk.Application):
         self.egg_card = None
         self.egg_source = "cpu"
         self._egg_refusal = reason
-        self._egg = MarkCondensation()
+        # The cloud already on screen, if there is one: the descent picks up
+        # from exactly what the visitor has been looking at rather than
+        # cutting to a different draw of the same distribution.
+        self._egg = self._egg_preview or MarkCondensation()
+        self._egg_preview = None
         log.info("easter egg falling back to the host CPU (%s), seed %d",
                  self._egg_refusal, self._egg.seed)
         self._sync_egg_provenance()
@@ -2661,8 +2686,23 @@ class DemoApp(Gtk.Application):
             if self.egg_viewer is not None:
                 self.egg_viewer.set_points(points)
             return not self._egg.done
+        if self.egg_source == "device":
+            if self._egg_device_done:
+                # Every frame this run was going to send has been drawn. The
+                # mark holds until the visitor dismisses it.
+                return False
+            if self._egg_deadline is not None and time.monotonic() >= self._egg_deadline:
+                # The chip stopped mid-run and said nothing (the daemon sends
+                # `egg_refused` when a worker dies, so this is the case where
+                # the DAEMON went away too). Leave what is on screen and its
+                # caption, both of which are still true of what a chip drew,
+                # and stop the timer rather than spinning all day.
+                log.info("the chip went quiet mid-egg; leaving it where it "
+                         "landed")
+                return False
+            return True                  # buffer momentarily empty; wait
         refusal = self._egg_refusal
-        if refusal is not None and self.egg_source != "cpu":
+        if refusal is not None:
             self._fall_back_to_cpu_egg(refusal)
             return True
         if self._egg_deadline is not None and time.monotonic() >= self._egg_deadline:
@@ -2670,11 +2710,6 @@ class DemoApp(Gtk.Application):
                      _EGG_DEVICE_WAIT_MS / 1000.0)
             self._fall_back_to_cpu_egg("cpu")
             return True
-        if self.egg_source == "device":
-            # Every frame this run is going to send has been drawn. The mark
-            # holds until the visitor dismisses it, so the timer's work here
-            # is done.
-            return False
         return True                      # still waiting for a first frame
 
     def _take_egg_frame(self):
@@ -2683,11 +2718,21 @@ class DemoApp(Gtk.Application):
         Frames for a superseded press are dropped here rather than at the
         socket, because `_egg_id` is main-loop state and the reader thread has
         no business reading it.
+
+        Frames arriving after the booth has ALREADY started the fallback are
+        dropped too, even though they carry the right id. That is the cold
+        ttnn kernel cache again: the chip's first run takes ten seconds and
+        the booth gives up at six, so the frames turn up mid-way through a
+        descent the visitor is already watching. Cutting to them would be a
+        jump, and would change the caption from CPU to chip half way through
+        an animation that started on the CPU. Whichever one is drawing, the
+        card says so, and it says so for the whole run.
         """
         with self._egg_frames_lock:
             while self._egg_frames:
                 frame = self._egg_frames.popleft()
-                if frame.get("egg_id") == self._egg_id:
+                if (frame.get("egg_id") == self._egg_id
+                        and self.egg_source != "cpu"):
                     return frame
         return None
 
@@ -2704,17 +2749,23 @@ class DemoApp(Gtk.Application):
         if self.egg_source != "device":
             self.egg_source = "device"
             self.egg_card = frame.get("card")
-            self._egg_deadline = None
+            # The waiting cloud is gone the moment a chip's own frame lands,
+            # so a later refusal cannot resurrect it half way through what
+            # the chip is drawing.
+            self._egg_preview = None
             log.info("easter egg computed on chip %s (seed %s)",
                      self.egg_card, frame.get("seed"))
             self._sync_egg_provenance()
         if self.egg_viewer is not None:
             self.egg_viewer.set_points(coords)
-        # The last frame is the settled mark; nothing more is coming, but
-        # there may still be buffered frames behind it if the wire ran ahead.
-        with self._egg_frames_lock:
-            more = bool(self._egg_frames)
-        return more or frame.get("step") != frame.get("total")
+        # The run is over when its LAST frame has been drawn -- not when the
+        # buffer happens to be empty. Until then the deadline is pushed out,
+        # so a chip that pauses is waited for and a chip that has stopped
+        # entirely is eventually given up on.
+        self._egg_device_done = frame.get("step") == frame.get("total")
+        self._egg_deadline = (None if self._egg_device_done
+                              else time.monotonic() + _EGG_DEVICE_WAIT_MS / 1000.0)
+        return not self._egg_device_done
 
     def _show_help(self):
         self._set_help_visible(True)

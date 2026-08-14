@@ -114,17 +114,39 @@ def test_opening_the_egg_asks_the_daemon_for_a_chip():
     assert app._egg_id
 
 
-def test_the_booth_draws_nothing_of_its_own_while_it_is_asking():
-    """No local descent is started, and the viewer is left EMPTY -- so the
-    first cloud a visitor sees is the one the chip actually started from,
-    rather than a local one that would jump the instant real frames arrive.
+def test_no_descent_of_its_own_is_started_while_it_is_asking():
+    """A cloud of noise is DRAWN so the card is not an empty box for up to
+    six seconds -- but nothing steps it, so nothing on screen is descending
+    until a chip's frames arrive or the fallback begins.
+
+    Mutation this catches: stepping the preview, which would show a locally
+    computed collapse under a card that says it is still asking, and then
+    jump when the chip's own frames landed.
     """
     app = _app(_FakeClient())
     app._handle_key("g", ctrl=True)
     assert app.egg_source == "asking"
     assert app._egg is None
-    assert app.egg_viewer.point_frames == []
-    assert app.egg_viewer.clears == 1
+    assert app._egg_preview is not None
+    assert app._egg_preview.completed == 0
+    assert len(app.egg_viewer.point_frames) == 1
+    for _ in range(5):
+        app._tick_egg()
+    assert app._egg_preview.completed == 0
+    assert len(app.egg_viewer.point_frames) == 1
+
+
+def test_the_fallback_continues_the_cloud_that_was_already_on_screen():
+    """No cut. The descent that starts when nobody answers begins from the
+    exact cloud the visitor has been looking at, not a fresh draw of the same
+    distribution."""
+    app = _app(_FakeClient())
+    app._handle_key("g", ctrl=True)
+    preview = app._egg_preview
+    app._egg_deadline = 0.0
+    app._tick_egg()
+    assert app._egg is preview
+    assert app._egg_preview is None
 
 
 def test_while_asking_the_card_claims_no_chip():
@@ -151,13 +173,15 @@ def test_the_timer_keeps_running_while_the_booth_waits_for_a_chip():
 def test_a_frame_from_a_chip_is_drawn_and_the_card_says_which_chip():
     app = _app(_FakeClient())
     app._handle_key("g", ctrl=True)
+    drawn = len(app.egg_viewer.point_frames)
     app._on_event(_egg_frame(app, 0, card=3))
     assert app._tick_egg() is True
     assert app.egg_source == "device"
     assert app.egg_card == 3
+    assert app._egg_preview is None, "the waiting cloud must not linger"
     assert app._egg_provenance_label.text == (
         "Computed on chip 3 — like everything else here.")
-    assert len(app.egg_viewer.point_frames) == 1
+    assert len(app.egg_viewer.point_frames) == drawn + 1
 
 
 def test_the_chip_is_claimed_only_once_a_frame_has_actually_been_drawn():
@@ -187,9 +211,10 @@ def test_the_frames_are_played_one_per_tick_not_all_at_once():
     app._handle_key("g", ctrl=True)
     for step in range(6):
         app._on_event(_egg_frame(app, step, total=100, spread=1.0 + step))
+    drawn = len(app.egg_viewer.point_frames)
     for expected in range(1, 7):
         app._tick_egg()
-        assert len(app.egg_viewer.point_frames) == expected
+        assert len(app.egg_viewer.point_frames) == drawn + expected
 
 
 def test_the_egg_stops_its_own_timer_after_the_last_frame_from_the_chip():
@@ -201,6 +226,68 @@ def test_the_egg_stops_its_own_timer_after_the_last_frame_from_the_chip():
     assert app._tick_egg() is True      # the fifth frame; one still buffered
     assert app._tick_egg() is False     # the last frame, and nothing behind it
     assert app._egg_source_id is None
+
+
+def test_a_chip_that_pauses_mid_run_is_waited_for_not_given_up_on():
+    """THE BUG THE FIRST LIVE RUN FOUND, in one test.
+
+    A worker's first egg compiles ttnn kernels -- measured at 10.2 s against
+    0.94 s for every run after it -- so its frames arrive in bursts with long
+    gaps. The timer used to end on "the buffer is empty", which retired it
+    during the first such gap; the remaining 180 frames then arrived with
+    nothing left to draw them, and the booth sat on a cloud of noise captioned
+    "Computed on chip 0" until the visitor pressed a key.
+
+    Mutation this catches: ending the run on an empty buffer rather than on
+    the frame whose `step` equals its `total`.
+    """
+    app = _app(_FakeClient())
+    app._handle_key("g", ctrl=True)
+    app._on_event(_egg_frame(app, 0, total=6))
+    assert app._tick_egg() is True      # draws frame 0
+    for _ in range(10):                 # ... and then a long silence
+        assert app._tick_egg() is True, "the timer must survive the gap"
+    app._on_event(_egg_frame(app, 6, total=6))
+    drawn = len(app.egg_viewer.point_frames)
+    assert app._tick_egg() is False
+    assert len(app.egg_viewer.point_frames) == drawn + 1
+
+
+def test_a_chip_that_goes_silent_for_good_stops_the_timer():
+    """The other half of waiting: a daemon that dies mid-run sends no
+    `egg_refused` either, and a 30 Hz source must not spin against it for the
+    rest of the day. What is on screen -- and its caption -- stay, because
+    both are still true of what a chip drew."""
+    app = _app(_FakeClient())
+    app._handle_key("g", ctrl=True)
+    app._on_event(_egg_frame(app, 3, total=180))
+    assert app._tick_egg() is True
+    assert app._egg_deadline is not None, "each frame renews the patience"
+    app._egg_deadline = 0.0
+    assert app._tick_egg() is False
+    assert app.egg_source == "device", "it really did run on a chip"
+    assert app._egg is None, "and must not restart as a CPU run half way"
+
+
+def test_frames_that_arrive_after_the_fallback_has_started_are_dropped():
+    """The cold-cache case again, from the other end: the booth gives up at
+    six seconds and the chip's frames turn up at ten. Cutting to them would
+    jump mid-animation AND change the caption from CPU to chip half way
+    through a descent that started on the CPU.
+
+    Mutation this catches: letting device frames win unconditionally.
+    """
+    app = _app(_FakeClient())
+    app._handle_key("g", ctrl=True)
+    app._egg_deadline = 0.0
+    app._tick_egg()                     # the fallback takes over
+    assert app.egg_source == "cpu"
+    steps = app._egg.completed
+    app._on_event(_egg_frame(app, 0, total=180))
+    app._tick_egg()
+    assert app.egg_source == "cpu"
+    assert app._egg.completed == steps + 1, "the CPU descent kept going"
+    assert app._egg_provenance_label.text == app_module._EGG_FALLBACK_DEFAULT
 
 
 def test_frames_from_a_dismissed_egg_are_never_drawn_into_the_next_one():
@@ -217,9 +304,10 @@ def test_frames_from_a_dismissed_egg_are_never_drawn_into_the_next_one():
     app._handle_key("g", ctrl=True)     # and asked again
     assert app._egg_id != stale
 
+    drawn = len(app.egg_viewer.point_frames)
     app._on_event(_egg_frame(app, 3, egg_id=stale))
     assert app._tick_egg() is True
-    assert app.egg_viewer.point_frames == []
+    assert len(app.egg_viewer.point_frames) == drawn
     assert app.egg_source == "asking"
 
 
@@ -411,6 +499,7 @@ def test_closing_the_egg_forgets_everything_about_the_run():
     assert app.egg_source is None
     assert app.egg_card is None
     assert app._egg is None
+    assert app._egg_preview is None
     assert not app._egg_frames
     assert app._egg_source_id is None
 
