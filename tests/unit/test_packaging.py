@@ -193,3 +193,136 @@ def test_the_app_package_installs_under_opt(built):
     /usr/lib/python3/dist-packages would collide with the system Python."""
     c = _contents(_app_deb(built))
     assert "./opt/tt-bio-demo/" in c, "app tree is not under /opt/tt-bio-demo"
+
+
+# ── Task 4: helpers.sh, the only place with testable logic ──────────────────
+#
+# Maintainer scripts are the least testable code in a Debian package and the
+# most damaging when wrong, so everything with a branch lives here where a
+# test can call it directly rather than grep for it.
+
+HELPERS = REPO / "debian" / "helpers.sh"
+
+
+def _sh(script, **env):
+    import os
+    return subprocess.run(["sh", "-c", f". {HELPERS}\n{script}"],
+                          capture_output=True, text=True,
+                          env={**os.environ, **env})
+
+
+def test_the_pin_is_read_from_setup_venvs_not_duplicated():
+    """A second copy of the version pin is a pin that will drift."""
+    r = _sh("tt_bio_demo_pinned_version")
+    assert r.returncode == 0, r.stderr
+    version = r.stdout.strip()
+    assert version, "no version returned"
+    assert version in (REPO / "scripts" / "setup-venvs.sh").read_text()
+
+
+def test_the_pin_is_the_one_setup_venvs_actually_declares():
+    """Stronger than "appears somewhere in the file": pin the exact
+    assignment. `0.6.2` also appears in that script's prose, so a helper that
+    returned any substring of it would pass the looser check."""
+    import re
+    declared = re.search(r'^TT_BIO_VERSION="([^"]+)"',
+                         (REPO / "scripts" / "setup-venvs.sh").read_text(),
+                         re.MULTILINE)
+    assert declared, "setup-venvs.sh no longer declares TT_BIO_VERSION"
+    assert _sh("tt_bio_demo_pinned_version").stdout.strip() == declared.group(1)
+
+
+def test_checksum_verification_rejects_a_corrupt_file(tmp_path):
+    import hashlib
+    f = tmp_path / "w.bin"
+    f.write_bytes(b"real")
+    good = hashlib.sha256(b"real").hexdigest()
+    assert _sh(f"tt_bio_demo_verify_sha256 {f} {good}").returncode == 0
+    f.write_bytes(b"tampered")          # same name, same length category
+    assert _sh(f"tt_bio_demo_verify_sha256 {f} {good}").returncode != 0
+
+
+def test_checksum_verification_fails_on_a_missing_file(tmp_path):
+    """A download that silently produced nothing must not verify.
+
+    The one that matters most: a verifier treating absence as success turns
+    a failed download into a booth with no weights and a package marked
+    installed.
+
+    ASSERTS THE REASON, not just the exit code. Deleting the `-f` guard still
+    exits non-zero -- sha256sum fails, `actual` ends up empty, and the hash
+    comparison rejects it by accident -- so a returncode-only test passes
+    against a helper with no missing-file check at all. Verified: that
+    mutation survived until this checked the message.
+    """
+    r = _sh(f"tt_bio_demo_verify_sha256 {tmp_path}/nope deadbeef")
+    assert r.returncode != 0
+    assert "does not exist" in r.stderr, \
+        f"failed, but not for the missing-file reason: {r.stderr!r}"
+
+
+def test_checksum_verification_fails_on_an_empty_expected_hash(tmp_path):
+    """An unset variable expanding to nothing must not verify either --
+    `tt_bio_demo_verify_sha256 "$f" "$EXPECTED"` with EXPECTED unset is the
+    realistic way this gets called wrong.
+
+    Checks the message for the same reason as the test above: without the
+    guard this still exits non-zero, because a real hash never equals the
+    empty string.
+    """
+    f = tmp_path / "w.bin"
+    f.write_bytes(b"real")
+    r = _sh(f"tt_bio_demo_verify_sha256 {f} ''")
+    assert r.returncode != 0
+    assert "without both" in r.stderr, \
+        f"failed, but not for the empty-hash reason: {r.stderr!r}"
+
+
+def test_have_command_distinguishes_present_from_absent():
+    assert _sh("tt_bio_demo_have_command sh").returncode == 0
+    assert _sh("tt_bio_demo_have_command definitely-not-a-real-binary").returncode != 0
+
+
+def test_the_prefix_is_where_the_package_actually_installs(built):
+    """`tt_bio_demo_prefix` and debian/tt-bio-demo.install must agree; if
+    they drift the maintainer scripts operate on an empty directory."""
+    prefix = _sh("tt_bio_demo_prefix").stdout.strip()
+    assert prefix, "no prefix returned"
+    assert f".{prefix}/" in _contents(_app_deb(built)), \
+        f"helpers say {prefix} but the package does not install there"
+
+
+def test_helpers_are_posix_sh_not_bashisms():
+    r = subprocess.run(["sh", "-n", str(HELPERS)], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+
+
+def test_the_pin_FOLLOWS_setup_venvs_rather_than_being_a_copy(tmp_path):
+    """The actual claim of this helper, and the only test that can catch the
+    mutation that matters.
+
+    Every other pin test compares the helper's answer to what
+    setup-venvs.sh declares TODAY -- which a hardcoded `printf '0.6.2'`
+    satisfies perfectly. Verified: that mutation survived all of them. A pin
+    that is copied rather than read is not wrong on the day it is written,
+    it is wrong the first time somebody bumps the other one, and it is wrong
+    silently. So: point the helper at a DIFFERENT setup-venvs.sh and require
+    it to report that one's value.
+    """
+    fake = tmp_path / "setup-venvs.sh"
+    fake.write_text('#!/usr/bin/env bash\nTT_BIO_VERSION="9.9.9-testpin"\n')
+    r = _sh("tt_bio_demo_pinned_version",
+            TT_BIO_DEMO_SETUP_VENVS=str(fake))
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == "9.9.9-testpin", \
+        f"the pin is hardcoded, not read: got {r.stdout.strip()!r}"
+
+
+def test_the_pin_fails_loudly_when_the_declaration_is_gone(tmp_path):
+    """A renamed variable must be an error, not an empty string silently
+    passed to `pip install tt-bio==`."""
+    fake = tmp_path / "setup-venvs.sh"
+    fake.write_text('#!/usr/bin/env bash\nSOMETHING_ELSE="0.6.2"\n')
+    r = _sh("tt_bio_demo_pinned_version", TT_BIO_DEMO_SETUP_VENVS=str(fake))
+    assert r.returncode != 0, "an absent pin reported success"
+    assert r.stdout.strip() == "", "returned a value it could not have read"
