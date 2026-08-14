@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tt-bio — protein structure prediction on Tenstorrent hardware</title>
+<meta name="description" content="tt-bio runs Boltz-2, BoltzGen, ESMFold2, Protenix-v2 and OpenFold3 on Tenstorrent accelerators. What it is, the research it stands on, and how it came to exist.">
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="tt-bio">
+<meta property="og:title" content="tt-bio — protein structure prediction on Tenstorrent hardware">
+<meta property="og:description" content="Watch a protein condense out of noise into its folded structure, computed on Tenstorrent Blackhole. What tt-bio is, the research it stands on, and how it came to exist.">
+<meta property="og:image" content="screenshots/06-quad-four-chips.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="tt-bio — protein structure prediction on Tenstorrent hardware">
+<meta name="twitter:description" content="Four chips, four proteins, one screen. What tt-bio is and the research it stands on.">
+<meta name="twitter:image" content="screenshots/06-quad-four-chips.png">
+
+<style>
+/* ── Design tokens ────────────────────────────────────────────────────────
+   The palette is not invented for this page. `--c-*` IS the booth's
+   per-residue confidence ramp (ui/geometry.py), reused as the site's colour
+   system so that a reader has been reading in that vocabulary for several
+   screens before §2 explains what it means. Orange is doubt; blue is
+   confidence. Nothing else on the page uses those four hues.
+   ------------------------------------------------------------------------ */
+:root {
+  /* Confidence ramp — the one colour idea on this page. */
+  --c-low:     #FF7D45;   /* pLDDT < 50  — the model is guessing        */
+  --c-mid:     #FFDB13;   /* 50–70                                       */
+  --c-high:    #65CBF3;   /* 70–90                                       */
+  --c-certain: #0053D6;   /* > 90        — the model is confident        */
+
+  /* Tenstorrent brand. Dark base is the booth's own ground. */
+  --base:      #092221;
+  --accent:    #1B8EB1;
+  --accent-tx: #1E86A9;
+
+  /* Light palette on bare :root, so the un-stamped "system" state resolves. */
+  --bg:        #F1F8F8;
+  --bg-alt:    #DCF0EE;
+  --surface:   #FFFFFF;
+  --rule:      #C7D9D8;
+  --ink:       #092221;
+  --ink-2:     #3A5452;
+  --ink-3:     #5B7370;
+
+  --measure: 34rem;          /* ~65 characters of running text */
+  --gap: clamp(1rem, 3vw, 2rem);
+
+  /* Declared, not inherited. The brand faces (Neue Haas Unica Pro, Degular,
+     Berkeley Mono) are not installable here and the venue is offline, so a
+     stack is CHOSEN rather than a webfont silently failing to load. */
+  --font-body: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "Berkeley Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg:      #061716;
+    --bg-alt:  #0C2B29;
+    --surface: #092221;
+    --rule:    #1B3B39;
+    --ink:     #E6F2F1;
+    --ink-2:   #A9C4C1;
+    --ink-3:   #7E9B98;
+    --accent:  #4FD1C5;
+    --accent-tx: #74C5DF;
+  }
+}
+:root[data-theme="dark"] {
+  --bg:      #061716;
+  --bg-alt:  #0C2B29;
+  --surface: #092221;
+  --rule:    #1B3B39;
+  --ink:     #E6F2F1;
+  --ink-2:   #A9C4C1;
+  --ink-3:   #7E9B98;
+  --accent:  #4FD1C5;
+  --accent-tx: #74C5DF;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: clamp(1rem, 0.96rem + 0.2vw, 1.125rem);
+  line-height: 1.7;
+  -webkit-font-smoothing: antialiased;
+}
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; }
+}
+
+.wrap { width: min(100% - 2.5rem, 68rem); margin-inline: auto; }
+.col  { max-width: var(--measure); }
+
+h1, h2, h3 { line-height: 1.15; text-wrap: balance; font-weight: 650; letter-spacing: -0.015em; }
+h1 { font-size: clamp(2rem, 1.3rem + 3.2vw, 3.4rem); }
+h2 { font-size: clamp(1.55rem, 1.2rem + 1.5vw, 2.2rem); margin-bottom: .75rem; }
+h3 { font-size: 1.15rem; margin-bottom: .4rem; }
+p  { margin-bottom: 1.15rem; }
+a  { color: var(--accent-tx); text-underline-offset: .18em; }
+a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 2px; }
+strong { font-weight: 650; }
+
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: .74rem; letter-spacing: .16em; text-transform: uppercase;
+  color: var(--ink-3); margin-bottom: .6rem; display: block;
+}
+.lede { font-size: 1.18em; color: var(--ink-2); }
+.num  { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+/* Every section carries its top rule. The hero is a <header>, not a
+   <section>, so there is no first-child exception to make here -- and
+   without the rule the gap below the hero reads as a rendering fault. */
+section { padding-block: clamp(3.5rem, 8vw, 6.5rem); border-top: 1px solid var(--rule); }
+
+/* ── Hero ─────────────────────────────────────────────────────────────── */
+#hero { padding-block: clamp(3rem, 7vw, 5.5rem); border: 0; }
+#hero h1 { margin-bottom: 1rem; }
+#hero .lede { max-width: 40rem; }
+.hero-media { margin-top: 2.5rem; border: 1px solid var(--rule); border-radius: 10px; overflow: hidden; background: var(--base); }
+.hero-media video, .hero-media img { display: block; width: 100%; height: auto; }
+figcaption { color: var(--ink-3); font-size: .88rem; margin-top: .7rem; line-height: 1.55; }
+
+.cta { display: flex; flex-wrap: wrap; gap: .7rem; margin-top: 1.8rem; }
+.btn {
+  display: inline-block; padding: .6rem 1.1rem; border-radius: 7px;
+  border: 1px solid var(--accent); text-decoration: none;
+  font-size: .95rem; font-weight: 600; color: var(--accent-tx);
+}
+.btn-solid { background: var(--accent); color: var(--base); border-color: var(--accent); }
+
+/* ── The condensation canvas — the page's one piece of motion ─────────── */
+.condense {
+  display: grid; grid-template-columns: 1fr; gap: var(--gap);
+  align-items: center; margin-block: 2.5rem;
+}
+@media (min-width: 56rem) { .condense { grid-template-columns: 1fr 1fr; } }
+.condense figure { margin: 0; }
+#fold-canvas {
+  display: block; width: 100%; height: auto; aspect-ratio: 4 / 3;
+  background: var(--base); border: 1px solid var(--rule); border-radius: 10px;
+}
+
+/* ── The confidence ramp, as a legend ─────────────────────────────────── */
+.ramp { margin-block: 1.6rem; }
+.ramp-bar { display: flex; height: 12px; border-radius: 6px; overflow: hidden; }
+.ramp-bar span { flex: 1; }
+.ramp-ends {
+  display: flex; justify-content: space-between;
+  font-family: var(--font-mono); font-size: .74rem;
+  color: var(--ink-3); margin-top: .45rem; letter-spacing: .04em;
+}
+.ramp-note { font-size: .95rem; color: var(--ink-2); margin-top: .9rem; }
+
+/* Inline swatch, so prose can point at a colour without describing it. */
+.sw {
+  display: inline-block; width: .72em; height: .72em; border-radius: 2px;
+  margin-right: .18em; vertical-align: baseline; position: relative; top: .02em;
+}
+
+/* ── Pull-quote ───────────────────────────────────────────────────────── */
+blockquote {
+  border-left: 3px solid var(--c-high);
+  padding: .2rem 0 .2rem 1.15rem;
+  margin-block: 1.6rem; color: var(--ink-2);
+}
+blockquote cite { display: block; margin-top: .5rem; font-size: .88rem; font-style: normal; color: var(--ink-3); }
+
+footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--ink-3); font-size: .9rem; }
+.todo {
+  border: 1px dashed var(--rule); border-radius: 8px;
+  padding: 1rem 1.1rem; color: var(--ink-3); font-size: .92rem;
+  font-family: var(--font-mono);
+}
+</style>
+</head>
+<body>
+
+<!-- ═══ HERO ═══════════════════════════════════════════════════════════ -->
+<header id="hero" class="wrap">
+  <span class="eyebrow">tt-bio</span>
+  <h1>Protein structure prediction, on Tenstorrent hardware</h1>
+  <p class="lede">
+    tt-bio runs Boltz-2 and eight other biomolecular models on Tenstorrent
+    accelerators. This page is about what those models do, the research they
+    come from, and how a demo that folds five known structures makes any of it
+    visible.
+  </p>
+  <div class="cta">
+    <a class="btn btn-solid" href="https://github.com/moritztng/tt-bio">tt-bio on GitHub</a>
+    <a class="btn" href="#shape">Start from the beginning</a>
+  </div>
+
+  <figure class="hero-media">
+    <video src="screenshots/booth-loop-30s.mp4" autoplay loop muted playsinline></video>
+  </figure>
+  <figcaption class="col">
+    Thirty seconds of the demo, recorded from the running application at
+    1920&times;1080 &middot; 60&nbsp;fps. Four chips of a Blackhole p300c, each
+    folding a different molecule at its own point in the pipeline. The dots are
+    the model's actual working-out, streamed a step at a time &mdash; not an
+    animation of a finished result.
+  </figcaption>
+</header>
+
+<!-- ═══ §2 — WHAT A PROTEIN IS ═════════════════════════════════════════ -->
+<section id="shape">
+  <div class="wrap">
+    <span class="eyebrow">Start here</span>
+    <h2>A protein is a chain that folds, and the folded shape is the whole problem</h2>
+
+    <div class="col">
+      <p class="lede">
+        If you have never met this field before, this is the only section you
+        need. Everything else on the page assumes it.
+      </p>
+
+      <p>
+        A protein is a chain of amino acids &mdash; twenty kinds of link, in an
+        order your DNA writes down. The chain does not stay a chain. It folds
+        into one specific three-dimensional shape: the smallest proteins get
+        there in millionths of a second, larger ones take considerably longer,
+        and some need other proteins to help them do it.
+      </p>
+
+      <p>
+        That shape is what the protein <em>is</em>. It decides what the protein
+        grips, what it cuts, what it switches on, and whether a drug molecule
+        can get hold of it. Two proteins with almost the same sequence and
+        different shapes do entirely different things. Get the shape wrong and
+        you have learned nothing about the biology.
+      </p>
+
+      <p>
+        Reading the sequence is easy and has been for decades. Finding the
+        shape is the hard part. For most of fifty years it meant growing a
+        crystal of the protein and firing X-rays at it &mdash; months of
+        laboratory work for a single structure, and some proteins never
+        cooperate at all. Predicting the shape from the sequence alone was one
+        of biology's long-standing open problems. The progress made on it with
+        deep learning was recognised with the 2024 Nobel Prize in Chemistry.
+      </p>
+
+      <p>
+        The models in this page's story are a separate, open lineage from that
+        work &mdash; built at MIT, published, and freely licensed. tt-bio is
+        what runs them on Tenstorrent hardware.
+      </p>
+    </div>
+
+    <!-- The one animation on the page. It is the section's argument. -->
+    <div class="condense">
+      <figure>
+        <canvas id="fold-canvas" width="800" height="600"
+                aria-label="An animation: a cloud of scattered points is pulled step by step into a folded protein backbone, its colour shifting from orange to blue as the structure resolves."></canvas>
+      </figure>
+      <div>
+        <h3>What you are watching it do</h3>
+        <p>
+          The model starts from noise &mdash; atoms scattered at random &mdash;
+          and pulls them, step by step, toward an arrangement it judges
+          plausible. Each step is a small correction, and after a couple of
+          hundred of them the cloud has become a structure.
+        </p>
+        <p>
+          The demo shows those steps as they happen rather than the finished
+          answer, because the working-out is the interesting part and because
+          it is honest: what is on screen was computed a few feet away, in the
+          order you are seeing it.
+        </p>
+      </div>
+    </div>
+
+    <div class="col">
+      <h3>The colours are the model telling you how sure it is</h3>
+
+      <div class="ramp" role="img" aria-label="Confidence ramp from orange, meaning less sure, through yellow and light blue to deep blue, meaning more sure.">
+        <div class="ramp-bar">
+          <span style="background:var(--c-low)"></span>
+          <span style="background:var(--c-mid)"></span>
+          <span style="background:var(--c-high)"></span>
+          <span style="background:var(--c-certain)"></span>
+        </div>
+        <div class="ramp-ends"><span>less sure</span><span>more sure</span></div>
+      </div>
+
+      <p>
+        Every structure in the demo is coloured residue by residue, using a
+        confidence score the model produces alongside the shape. Deep blue
+        (<span class="sw" style="background:var(--c-certain)"></span>) is a part
+        the model is confident about. Orange
+        (<span class="sw" style="background:var(--c-low)"></span>) is a part it
+        is guessing at.
+      </p>
+
+      <p>
+        This matters more than it looks. A prediction that comes with no measure
+        of its own uncertainty is difficult to use for anything serious, and a
+        demo that hid the uncertainty would be showing you something prettier
+        than the truth. So: the DNA duplex this booth folds comes out
+        <em>orange nearly all the way through</em>. Twelve rungs of double helix
+        is exactly the kind of thing this model is least sure about, and the
+        booth shows that rather than picking a subject that would have looked
+        better.
+      </p>
+
+      <p>
+        Once you know the ramp, you can read every screenshot on this page. The
+        rest of the site uses the same four colours for the same reason.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ SECTIONS STILL TO WRITE ════════════════════════════════════════ -->
+<section id="next">
+  <div class="wrap col">
+    <span class="eyebrow">Draft in progress</span>
+    <h2>Still to come</h2>
+    <div class="todo">
+      3. the five molecules this booth folds<br>
+      4. where the science comes from — AlphaFold&nbsp;3 → Boltz-1 → Boltz-2, cited<br>
+      5. how tt-bio came to exist — TUM, the community, the rename<br>
+      6. what tt-bio runs today<br>
+      7. designing new molecules — BoltzGen<br>
+      8. why this is interesting on Tenstorrent<br>
+      9. what the demo does, and what it does not<br>
+      10. the easter eggs<br>
+      11. try it / read it / cite it
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap col">
+    <p>
+      tt-bio is <a href="https://github.com/moritztng/tt-bio">moritztng/tt-bio</a>,
+      MIT licensed. The Boltz models are the work of Jeremy Wohlwend, Gabriele
+      Corso, Saro Passaro and colleagues at MIT; see the repository for the
+      citations their use requires.
+    </p>
+  </div>
+</footer>
+
+<script>
+/* ── The condensation animation ────────────────────────────────────────────
+   The page's single piece of motion, and it is making the section's argument
+   rather than decorating it: noise becomes shape, and the colour resolves
+   from doubt to confidence as it does.
+
+   This is a HAND-DRAWN ILLUSTRATION of the process, not a fold. It draws a
+   fixed synthetic backbone; no model runs in your browser. The real thing --
+   the actual denoising trajectory of a real model on real silicon -- is the
+   video at the top of this page, and saying which is which is the same rule
+   the demo itself follows.
+   -------------------------------------------------------------------------- */
+(function () {
+  var canvas = document.getElementById('fold-canvas');
+  if (!canvas || !canvas.getContext) return;
+  var ctx = canvas.getContext('2d');
+  var W = canvas.width, H = canvas.height;
+
+  var reduced = window.matchMedia &&
+                window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  var css = getComputedStyle(document.documentElement);
+  var RAMP = [
+    css.getPropertyValue('--c-low').trim()     || '#FF7D45',
+    css.getPropertyValue('--c-mid').trim()     || '#FFDB13',
+    css.getPropertyValue('--c-high').trim()    || '#65CBF3',
+    css.getPropertyValue('--c-certain').trim() || '#0053D6'
+  ];
+
+  // A synthetic backbone: two helical runs joined by a turn. Enough to read
+  // as "protein" without pretending to be a specific one.
+  var N = 260, target = [];
+  for (var i = 0; i < N; i++) {
+    var t = i / (N - 1);
+    var x, y;
+    if (t < 0.45) {
+      var a = t / 0.45;
+      x = 0.30 + 0.10 * Math.cos(a * Math.PI * 7);
+      y = 0.16 + a * 0.62;
+    } else if (t < 0.58) {
+      var b = (t - 0.45) / 0.13;
+      x = 0.30 + 0.34 * b;
+      y = 0.78 + 0.10 * Math.sin(b * Math.PI);
+    } else {
+      var c = (t - 0.58) / 0.42;
+      x = 0.64 + 0.10 * Math.cos(c * Math.PI * 7 + Math.PI);
+      y = 0.80 - c * 0.62;
+    }
+    target.push({ x: x * W, y: y * H });
+  }
+
+  var pts = target.map(function (p) {
+    return { x: Math.random() * W, y: Math.random() * H, tx: p.x, ty: p.y };
+  });
+
+  var progress = 0, HOLD = 90, hold = 0;
+
+  function colourAt(p) {
+    // Colour follows convergence: far from home reads as doubt.
+    var d = Math.hypot(p.x - p.tx, p.y - p.ty) / (W * 0.45);
+    var k = Math.max(0, Math.min(1, 1 - d));
+    var idx = Math.min(RAMP.length - 1, Math.floor(k * RAMP.length));
+    return RAMP[idx];
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, W, H);
+    // The chain, once it is coherent enough to be worth drawing.
+    if (progress > 0.45) {
+      ctx.lineWidth = 7;
+      ctx.lineJoin = ctx.lineCap = 'round';
+      ctx.globalAlpha = Math.min(1, (progress - 0.45) / 0.35);
+      for (var i = 1; i < pts.length; i++) {
+        ctx.strokeStyle = colourAt(pts[i]);
+        ctx.beginPath();
+        ctx.moveTo(pts[i - 1].x, pts[i - 1].y);
+        ctx.lineTo(pts[i].x, pts[i].y);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    }
+    for (var j = 0; j < pts.length; j++) {
+      ctx.fillStyle = colourAt(pts[j]);
+      ctx.globalAlpha = progress > 0.45 ? 0.55 : 1;
+      ctx.beginPath();
+      ctx.arc(pts[j].x, pts[j].y, 2.6, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function step() {
+    var moved = 0;
+    for (var i = 0; i < pts.length; i++) {
+      var p = pts[i];
+      p.x += (p.tx - p.x) * 0.035;
+      p.y += (p.ty - p.y) * 0.035;
+      moved += Math.hypot(p.tx - p.x, p.ty - p.y);
+    }
+    progress = Math.max(progress, 1 - (moved / pts.length) / (W * 0.30));
+
+    if (progress > 0.985) {
+      if (++hold > HOLD) {           // rest on the answer, then start over
+        hold = 0; progress = 0;
+        for (var k = 0; k < pts.length; k++) {
+          pts[k].x = Math.random() * W;
+          pts[k].y = Math.random() * H;
+        }
+      }
+    }
+    draw();
+    requestAnimationFrame(step);
+  }
+
+  if (reduced) {
+    // Show the resolved structure and never animate it.
+    for (var i = 0; i < pts.length; i++) { pts[i].x = pts[i].tx; pts[i].y = pts[i].ty; }
+    progress = 1;
+    draw();
+  } else {
+    requestAnimationFrame(step);
+  }
+})();
+</script>
+</body>
+</html>
