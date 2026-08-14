@@ -444,17 +444,23 @@ def test_a_dead_daemon_stops_claiming_the_chips_are_denoising(tmp_path, monkeypa
     mid-fold, the last stage it sent would otherwise animate "denoising" in
     front of a visitor forever, with nothing computing at all.
 
-    Mutation this catches: deleting the staleness check in `_tick`.
+    Kept here, against a REAL panel with real assets and a real WebView,
+    because tests/unit/test_chipviz_multichip.py's per-chip staleness tests
+    build the panel with `available` forced on and never load a page. The
+    per-chip rule is theirs; this is the one that proves it still works on
+    the widget the booth actually runs.
+
+    Mutation this catches: deleting `tick_staleness`'s body.
     """
     clock = FakeClock()
     panel = _panel(monkeypatch, tmp_path, clock=clock)
     if not panel.available:
         pytest.skip("WebKit unavailable in this environment")
-    panel.set_mode("folding", "diffusion")
-    assert panel._mode == "diffusion"
+    panel.set_chip_stages({0: "diffusion"})
+    assert panel._mode_for_chip(0) == "diffusion"
     clock.now += STAGE_STALE_AFTER_S + 1.0
-    panel._tick()
-    assert panel._mode == "idle"
+    panel.tick_staleness()
+    assert panel._mode_for_chip(0) == "idle"
 
 
 def test_a_live_fold_is_not_called_stale(tmp_path, monkeypatch):
@@ -465,10 +471,10 @@ def test_a_live_fold_is_not_called_stale(tmp_path, monkeypatch):
     panel = _panel(monkeypatch, tmp_path, clock=clock)
     if not panel.available:
         pytest.skip("WebKit unavailable in this environment")
-    panel.set_mode("folding", "diffusion")
+    panel.set_chip_stages({0: "diffusion"})
     clock.now += 5.0
-    panel._tick()
-    assert panel._mode == "diffusion"
+    panel.tick_staleness()
+    assert panel._mode_for_chip(0) == "diffusion"
 
 
 def test_the_poll_interval_is_a_second_not_a_frame_rate():
@@ -523,7 +529,7 @@ def test_every_label_on_the_panel_is_legible(tmp_path, monkeypatch):
     implies an explicitly-set foreground, >= 4.5:1. Measured on #092221 --
     the title #C7D9D8 = 11.36:1, the clock readout #F1F8F8 = 15.46:1."""
     panel = _panel(monkeypatch, tmp_path)
-    panel.set_mode("folding", "diffusion")
+    panel.set_chip_stages({0: "diffusion"})
     _legibility.assert_every_label_is_legible(
         panel, context="Tensix activity panel",
         min_contrast=MIN_CONTRAST_RATIO, contrast_ratio_fn=contrast_ratio,
@@ -573,114 +579,19 @@ def test_the_panel_says_chips(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# One chip folds, so one chip animates the fold.
+# Which chips animate the fold, and the header over them.
 #
-# Whole-branch review, Critical 3: the panel fanned the fold's mode out to
-# all four canvases while runner/daemon.py folds on card 0 only, so the booth
-# showed four chips working when one was. `job_start` already carries the
-# card index; these pin that it is used, and that the three idle chips are
-# drawn idle -- including their flow floor, which is the other half of
-# "looks like it is working".
+# Whole-branch review, Critical 3: the panel fanned ONE fold's mode out to all
+# four canvases while runner/daemon.py folded on card 0 only, so the booth
+# showed four chips working when one was. Four now genuinely do (Task 16), and
+# the per-chip attribution that replaced `set_folding_chip` -- which chips
+# animate, what each one animates, what the header counts, and the flow floor
+# that follows the same answer -- is tested in
+# tests/unit/test_chipviz_multichip.py.
+#
+# What stays here is the one thing that file cannot check: that the PAGE the
+# panel loads is capable of aiming a mode at a single canvas at all.
 # ---------------------------------------------------------------------------
-
-def _recording_panel(monkeypatch, tmp_path, chips=4):
-    """A real panel whose JS evaluations are captured instead of run."""
-    panel = _panel(monkeypatch, tmp_path, clocks=(1350,) * chips)
-    if not panel.available:
-        pytest.skip("WebKit unavailable in this environment")
-    calls = []
-    monkeypatch.setattr(panel, "_eval", calls.append)
-    return panel, calls
-
-
-def test_only_the_folding_chip_animates_the_fold(tmp_path, monkeypatch):
-    """Every canvas starts idle (the page's own `activate('idle')`), so the
-    three that stay idle are correctly sent nothing at all -- what must never
-    appear is the fold's mode aimed at them."""
-    panel, calls = _recording_panel(monkeypatch, tmp_path)
-    panel.set_folding_chip(0)
-    panel.set_mode("folding", "diffusion")
-    joined = " ".join(calls)
-    assert 'activateChip(0,"diffusion")' in joined
-    for idle_chip in (1, 2, 3):
-        assert f'activateChip({idle_chip},"diffusion")' not in joined, (
-            "a chip that is not folding must not animate the fold")
-
-
-def test_learning_which_chip_folds_puts_the_others_back_to_idle(tmp_path,
-                                                                monkeypatch):
-    """The transition that actually needs JS: a fold whose card arrives
-    after the mode (or a fold that moves to another chip) must stand the
-    previous chips down, not leave them animating work they are not doing."""
-    panel, calls = _recording_panel(monkeypatch, tmp_path)
-    panel.set_mode("folding", "diffusion")     # unattributed: all four animate
-    calls.clear()
-    panel.set_folding_chip(0)
-    joined = " ".join(calls)
-    for idle_chip in (1, 2, 3):
-        assert f'activateChip({idle_chip},"idle")' in joined
-    assert 'activateChip(0,"idle")' not in joined
-
-
-def test_the_header_names_the_chip_doing_the_work(tmp_path, monkeypatch):
-    panel, _ = _recording_panel(monkeypatch, tmp_path)
-    panel.set_folding_chip(2)
-    panel.set_mode("folding", "trunk")
-    label = panel._title_label.get_label()
-    assert "CHIP 2" in label and "REFINING" in label
-
-
-def test_an_idle_booth_claims_no_chip_at_all(tmp_path, monkeypatch):
-    """The header must not keep pointing at a chip once nothing is folding
-    -- "CHIP 0 · IDLE" reads as a chip that is specially idle."""
-    panel, _ = _recording_panel(monkeypatch, tmp_path)
-    panel.set_folding_chip(0)
-    panel.set_mode("preparing", None)
-    assert "CHIP" not in panel._title_label.get_label()
-
-
-def test_an_unattributed_fold_animates_everything_and_names_nothing(tmp_path,
-                                                                    monkeypatch):
-    """The fallback: told a stage but never told a card (no job_start yet, or
-    a daemon that stops saying), the panel animates the mode everywhere and
-    the header attributes it to no chip in particular. It must not silently
-    assume chip 0."""
-    panel, calls = _recording_panel(monkeypatch, tmp_path)
-    panel.set_mode("folding", "diffusion")
-    joined = " ".join(calls)
-    for chip in range(4):
-        assert f'activateChip({chip},"diffusion")' in joined
-    assert "CHIP" not in panel._title_label.get_label()
-
-
-def test_the_flow_floor_is_only_given_to_the_chip_that_is_working(tmp_path,
-                                                                  monkeypatch):
-    """`flow_params`' active floor exists so a working chip never looks
-    switched off. Applying it to the three chips that are NOT folding would
-    make them look busy by another route, at the same boosted clock."""
-    panel, calls = _recording_panel(monkeypatch, tmp_path)
-    panel.set_folding_chip(0)
-    panel.set_mode("folding", "diffusion")
-    calls.clear()
-    panel._tick()
-    stats = [call for call in calls if "setChipStats" in call]
-    working = [call for call in stats if call.startswith(
-        "window.__viz&&window.__viz.setChipStats(0,")]
-    resting = [call for call in stats if call.startswith(
-        "window.__viz&&window.__viz.setChipStats(1,")]
-    active_dram, idle_dram = flow_params(1.0, True)[0], flow_params(1.0, False)[0]
-    assert working and f"dram_bw:{active_dram:.3f}" in working[-1]
-    assert resting and f"dram_bw:{idle_dram:.3f}" in resting[-1]
-
-
-def test_an_unusable_card_index_costs_the_attribution_not_an_exception(tmp_path,
-                                                                       monkeypatch):
-    """Wire-shaped data: `card` is whatever the daemon put on the socket."""
-    panel, _ = _recording_panel(monkeypatch, tmp_path)
-    panel.set_folding_chip("not-a-chip")
-    panel.set_mode("folding", "diffusion")
-    assert "CHIP" not in panel._title_label.get_label()
-
 
 def test_the_page_exposes_per_chip_activation(tmp_path):
     """The Python above can only aim a mode at one canvas if the page lets

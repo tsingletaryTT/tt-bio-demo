@@ -372,11 +372,17 @@ class _SlotView:
     it finishes is "is my fold still the newest one THIS CELL knows about",
     and a job-keyed counter would answer a different question -- one whose
     answer is always yes, since a job is only ever its own newest.
+
+    `stage` is what this cell's fold is doing RIGHT NOW -- the last `stage`
+    event routed to it, cleared when its fold starts, finishes or fails. It
+    is per cell for the same reason everything else here is: four chips fold
+    at once, and one booth-wide stage would animate whichever fold spoke last
+    on all four of the Tensix panel's canvases (see `_chip_stages`).
     """
 
     __slots__ = ("awaiting_first_frame", "current_job_id", "current_target_id",
                  "shown_target_id", "has_structure", "ribbon_generation",
-                 "pending_ribbon")
+                 "pending_ribbon", "stage")
 
     def __init__(self):
         self.awaiting_first_frame = False
@@ -386,6 +392,7 @@ class _SlotView:
         self.has_structure = False
         self.ribbon_generation = 0
         self.pending_ribbon = None
+        self.stage = None
 
 
 # ── booth timing ────────────────────────────────────────────────────────────
@@ -1143,7 +1150,11 @@ _HELP_INTRO = (
     # Stated as a fact rather than an apology, and paired with what IS on
     # offer -- see ui/gallery.py's own module docstring, which carries the
     # same rule for the copy on that screen.
-    "The booth works through its proteins one after another, all day. You "
+    #
+    # The first sentence changed with Task 16 and not before: "one after
+    # another" was true of a booth folding on card 0, and four chips fold at
+    # once now.
+    "The booth folds four proteins at a time, one on each chip, all day. You "
     "can look through them at any time; asking it to fold a particular one "
     "on demand isn't wired up yet, so what you see next is whatever it "
     "reaches next.",
@@ -1201,15 +1212,22 @@ _HELP_PANELS = (
     # cut rather than left as a nice-sounding thing the screen does not
     # actually do. What IS live and per-chip is the clock number, and the
     # temperatures directly above it.
+    # Rewritten with Task 16, in the same commit as the behaviour. This
+    # paragraph was walked back once (whole-branch review, Critical 3) to say
+    # the fold "runs on one chip" and that the others "sit idle" -- true then,
+    # a lie now that all four fold at once. What it must NOT do is overshoot
+    # in the other direction: the panel counts the chips that are actually
+    # animating work, so a chip between folds really is drawn resting and the
+    # card has to say so or it promises four grids of motion at every moment.
     "Tensix activity (press T) — one animated Tensix core grid per chip, in "
-    "the same left-to-right order as the readouts above it. Only the chip actually "
-    "running this fold animates the work — a spreading ring while the model "
-    "is denoising atom positions, a steady glow while it is reasoning about "
-    "which residues touch — and the others sit idle, because today the fold "
-    "runs on one chip and the header says which. The number beside it is the "
-    "fastest clock any of these chips is running at right now, read from the "
-    "driver every second. It is a picture of the work, not a trace of "
-    "individual cores.",
+    "the same left-to-right order as the readouts above it. Each grid follows "
+    "its own chip's fold: a spreading ring while that chip is denoising atom "
+    "positions, a steady glow while it is reasoning about which residues "
+    "touch, and quiet when it is between folds. Four chips fold at the same "
+    "time, so the header says how many are working right now — or names the "
+    "one, if only one is. The number beside it is the fastest clock any of "
+    "these chips is running at, read from the driver every second. It is a "
+    "picture of the work, not a trace of individual cores.",
 )
 
 _APP_CSS_INSTALLED = False
@@ -3253,6 +3271,12 @@ class DemoApp(Gtk.Application):
                 self.pipeline_panel.tick()
             except Exception:
                 log.exception("pipeline staleness check dropped")
+        # The Tensix panel's own staleness check, on the same tick and for
+        # the same reason: a daemon that dies mid-fold would otherwise leave
+        # four core grids animating "denoising" for the rest of the day. See
+        # ui/chipviz.py's STAGE_STALE_AFTER_S; the panel owns the clock and
+        # the threshold, this only gives it a chance to look.
+        self._tick_chipviz_staleness()
         # The diagnostics panel repaints from here rather than from
         # every appended line: a 30Hz frame stream would otherwise
         # re-label twenty rows thirty times a second to show a list a
@@ -3365,19 +3389,36 @@ class DemoApp(Gtk.Application):
             self._sync_to_state()
             self._note_diagnostics(self.diagnostics.note_event, event)
             # Re-aim the Tensix animation. A `stage` event carries the one
-            # thing that says what the SILICON is doing; every other event
-            # only refreshes the booth state (which is what turns the
-            # animation off while the daemon is `preparing`). See
+            # thing that says what a chip's SILICON is doing; the three
+            # lifecycle events say that a chip's fold has begun or ended, and
+            # every other event only refreshes the booth state (which is what
+            # turns the animation off while the daemon is `preparing`). See
             # ui/chipviz.py's `viz_mode` for why the stage, not the screen,
             # decides.
-            self._sync_chipviz(
-                event.get("stage") if kind == "stage" else None,
-                # Only job_start carries which chip claimed the fold, and
-                # that is what lets the panel animate THAT chip rather than
-                # claiming all four are working. Passing None for every
-                # other event leaves the last attribution in place, which
-                # is correct for the stage events that follow.
-                card=event.get("card") if kind == "job_start" else None)
+            #
+            # PER CELL, and that is the load-bearing word. Four chips fold at
+            # once, so one booth-wide stage would be the same claim the panel
+            # was walked back for (Critical 3): whichever fold sent the last
+            # `stage` event would be animated on all four canvases. Each
+            # cell's own stage is stored on its own `_SlotView` and the panel
+            # is handed the whole picture below.
+            if kind in ("stage", "job_start", "job_done", "job_error"):
+                view = self._slot_view(slot)
+                if view is not None:
+                    # `job_start` clears it as surely as `job_done` does: a
+                    # fold that has begun but has not said what it is doing
+                    # yet is not folding on silicon (it is in `msa`/`prep`,
+                    # both host-side), and inheriting the PREVIOUS fold's
+                    # stage would animate denoising for a fold that has not
+                    # reached it.
+                    view.stage = (event.get("stage") if kind == "stage"
+                                  else None)
+            elif kind == "not_ready":
+                # The daemon has stopped folding entirely -- every cell, not
+                # just one.
+                for view in self._slots:
+                    view.stage = None
+            self._sync_chipviz()
 
             if kind == "job_start":
                 log.info("folding %s (%s residues) on chip %s",
@@ -3608,9 +3649,31 @@ class DemoApp(Gtk.Application):
         except Exception:
             log.exception("quad caption for slot %r dropped", slot)
 
-    def _sync_chipviz(self, stage=None, card=None):
-        """Tell the Tensix activity panel what the booth is doing, and
-        (when a `job_start` just said so) which chip is doing it.
+    def _chip_stages(self):
+        """`{chip index: that chip's own current stage}` for every cell.
+
+        The mapping the Tensix panel wants (ui/chipviz.py's
+        `set_chip_stages`), built from the only place that knows it: each
+        cell's own `_SlotView.stage`, set by that cell's `stage` events and
+        cleared when its fold starts, ends or fails. A cell between folds
+        contributes `None`, which the panel draws as a resting chip.
+
+        Keyed by CHIP, not by slot. `self.cards` is the daemon's own card
+        list in the order the cells were built, and the panel's canvases are
+        in `chip_dirs()` order -- the same left-to-right order the telemetry
+        readouts above it use. Handing it slot indices instead would put chip
+        2's fold under chip 0's thermometer on any booth whose card list does
+        not happen to start at zero.
+        """
+        stages = {}
+        for slot, view in enumerate(self._slots):
+            if slot < len(self.cards):
+                stages[self.cards[slot]] = view.stage
+        return stages
+
+    def _sync_chipviz(self):
+        """Tell the Tensix activity panel what the booth is doing and which
+        chips are doing what.
 
         Its own guard, for the same reason `_note_diagnostics` has one: an
         animation is the least important thing happening in `_handle_event`,
@@ -3623,11 +3686,26 @@ class DemoApp(Gtk.Application):
         if self.chipviz_panel is None:
             return
         try:
-            if card is not None:
-                self.chipviz_panel.set_folding_chip(card)
-            self.chipviz_panel.set_mode(self.states.state, stage)
+            self.chipviz_panel.set_state(self.states.state)
+            self.chipviz_panel.set_chip_stages(self._chip_stages())
         except Exception:
             log.exception("Tensix activity panel update dropped")
+
+    def _tick_chipviz_staleness(self):
+        """Give the Tensix panel a chance to stand down a chip nothing has
+        said anything about for a while (ui/chipviz.py's
+        `STAGE_STALE_AFTER_S`).
+
+        On the state tick rather than on events, because the case it exists
+        for is precisely that no more events are coming. Guarded like every
+        other panel call for the reason `_sync_chipviz` spells out.
+        """
+        if self.chipviz_panel is None:
+            return
+        try:
+            self.chipviz_panel.tick_staleness()
+        except Exception:
+            log.exception("Tensix activity staleness check dropped")
 
     def _note_dropped(self, key, message):
         """Log a failure that can repeat every frame, without flooding.

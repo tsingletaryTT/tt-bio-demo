@@ -58,20 +58,20 @@ class FakeSampler:
 
 
 class _RecordingChipViz:
-    """Stands in for `ui.chipviz.ChipVizPanel`, recording every
-    `(state, stage)` the booth hands it. Deliberately NOT a real panel: these
-    tests are about the WIRING, and constructing a real `WebKit.WebView` in a
-    test process is its own crash class (see test_chipviz.py's note on
-    bwrap/SIGTRAP)."""
+    """Stands in for `ui.chipviz.ChipVizPanel`, recording every booth state
+    and every `{chip: stage}` picture the booth hands it. Deliberately NOT a
+    real panel: these tests are about the WIRING, and constructing a real
+    `WebKit.WebView` in a test process is its own crash class (see
+    test_chipviz.py's note on bwrap/SIGTRAP)."""
 
     def __init__(self):
-        self.modes = []
+        self.states = []
         self.running = None
-        # Which chip the booth said is folding -- `job_start`'s `card`. The
-        # real panel animates the fold on that canvas alone (see
-        # ui/chipviz.py's `set_folding_chip`); this records that the booth
-        # actually tells it.
-        self.folding_chips = []
+        # The per-chip picture: `{card: stage_or_None}`, one entry per call.
+        # This is what replaced the single `(state, stage)` pair once four
+        # chips folded at once -- see ui/chipviz.py's `set_chip_stages`.
+        self.chip_stages = []
+        self.staleness_ticks = 0
         # The panel is CHROME now (off by default, `T` to open), so the two
         # things ui/app.py's `_set_chipviz_visible` reads and writes have to
         # be here too: `available` is the real panel's "can this machine
@@ -82,11 +82,14 @@ class _RecordingChipViz:
     def set_visible(self, visible):
         self.visible = visible
 
-    def set_mode(self, state, stage):
-        self.modes.append((state, stage))
+    def set_state(self, state):
+        self.states.append(state)
 
-    def set_folding_chip(self, index):
-        self.folding_chips.append(index)
+    def set_chip_stages(self, stages):
+        self.chip_stages.append(dict(stages))
+
+    def tick_staleness(self):
+        self.staleness_ticks += 1
 
     def set_running(self, running):
         self.running = running
@@ -696,6 +699,93 @@ def test_the_help_card_explains_both_rail_panels():
     assert "temperature" in panels_copy
 
 
+# ---------------------------------------------------------------------------
+# Task 16: four chips, honestly.
+#
+# The Tensix panel and this card were BOTH walked back to say less when only
+# card 0 folded (whole-branch review, Critical 3 and Critical 2). Four chips
+# fold now, so the copy is allowed to say so -- and shipping the behaviour
+# change without the copy change would ship a new lie pointing the other way,
+# which is why these live in the same commit as ui/chipviz.py's rewrite.
+# ---------------------------------------------------------------------------
+
+def test_the_help_card_no_longer_says_the_fold_runs_on_one_chip():
+    """The copy was true when one chip folded. Shipping the behaviour change
+    without the copy change ships a new lie in the other direction."""
+    from ui.app import _HELP_PANELS
+    text = " ".join(_HELP_PANELS).lower()
+    assert "runs on one chip" not in text
+    assert "the others sit idle" not in text
+
+
+def test_the_help_card_describes_what_the_quad_actually_shows():
+    from ui.app import _HELP_PANELS
+    text = " ".join(_HELP_PANELS).lower()
+    assert "four" in text and ("at once" in text or "at the same time" in text)
+
+
+def test_the_tensix_paragraph_itself_says_four_chips_animate():
+    """Sharper than the test above it, which the quad's own help line
+    (`ui.quad.QUAD_HELP_LINE`, first entry of `_HELP_PANELS`) already
+    satisfies on its own. The paragraph that has to change is the one about
+    the TENSIX PANEL, and this is the one assertion that fails if it is left
+    alone.
+
+    Mutation this catches: reverting only the Tensix paragraph.
+    """
+    from ui.app import _HELP_PANELS
+    tensix = [p for p in _HELP_PANELS if "tensix activity" in p.lower()]
+    assert len(tensix) == 1, "the Tensix paragraph moved; retarget this test"
+    text = tensix[0].lower()
+    assert "four" in text
+    assert "one chip" not in text
+    assert "sit idle" not in text
+
+
+def test_the_tensix_paragraph_still_says_a_resting_chip_is_drawn_resting():
+    """The claim the panel earns back is "as many as are working", not
+    "four". A card that dropped the resting case would be back to promising
+    four grids of motion the moment three chips are between folds."""
+    from ui.app import _HELP_PANELS
+    tensix = [p for p in _HELP_PANELS if "tensix activity" in p.lower()][0]
+    lowered = tensix.lower()
+    assert "rest" in lowered or "idle" in lowered or "quiet" in lowered
+
+
+def test_the_help_intro_no_longer_says_one_after_another():
+    """It reads, verbatim before Task 16: 'The booth works through its
+    proteins one after another, all day.' That was true; it is not any
+    more."""
+    from ui.app import _HELP_INTRO
+    assert "one after another" not in " ".join(_HELP_INTRO).lower()
+
+
+def test_the_help_intro_still_discloses_that_a_pick_starts_nothing():
+    """Deliberately temporary, and deliberately still here. The daemon can be
+    picked from as of Task 9, but ui/app.py does not send a pick until Task
+    17 -- so as of THIS commit a tap still starts nothing and the copy saying
+    so is still true. Task 17 replaces this test with its inverse, in the
+    same commit as the behaviour. Do not delete it early, and do not let Task
+    17 leave both."""
+    from ui.app import _HELP_INTRO
+    text = " ".join(_HELP_INTRO).lower()
+    assert "isn't wired up" in text or "is not wired up" in text
+
+
+def test_the_diagnostics_teaching_copy_matches_the_help_card():
+    """Two places describing the same panel drifted apart once already."""
+    from ui.diagnostics import STAGE_TEACHING
+    joined = " ".join(str(v) for v in STAGE_TEACHING.values()).lower()
+    assert "one chip" not in joined
+    # Four folds run at once, each on its own chip, so `prep`'s line has to
+    # scope its chip to THIS fold rather than to the booth. Verbatim before
+    # Task 16: "for the Tenstorrent chip that will run the fold."
+    #
+    # Mutation this catches: leaving the diagnostics copy alone.
+    assert "chip that will run the fold" not in joined
+    assert "this fold" in joined
+
+
 def test_the_plddt_legend_matches_the_ramp_the_ribbon_is_actually_coloured_by():
     """A legend that has drifted from the thing it describes is worse than
     no legend. The swatches are generated from `ui.geometry.PLDDT_STOPS`
@@ -885,8 +975,12 @@ def test_the_tensix_panel_sits_directly_below_the_telemetry_panel():
 def test_a_stage_event_re_aims_the_animation():
     app = _app()
     app.chipviz_panel = _RecordingChipViz()
-    app._handle_event({"type": "stage", "stage": "diffusion", "frac": 0.5})
-    assert app.chipviz_panel.modes[-1] == ("attract", "diffusion")
+    app._handle_event({"type": "job_start", "job_id": "j1", "target_id": "t",
+                       "n_residues": 20, "card": 0})
+    app._handle_event({"type": "stage", "job_id": "j1", "stage": "diffusion",
+                       "frac": 0.5})
+    assert app.chipviz_panel.states[-1] == "attract"
+    assert app.chipviz_panel.chip_stages[-1] == {0: "diffusion"}
 
 
 def test_a_non_stage_event_refreshes_the_state_without_inventing_a_stage():
@@ -895,7 +989,116 @@ def test_a_non_stage_event_refreshes_the_state_without_inventing_a_stage():
     app = _app()
     app.chipviz_panel = _RecordingChipViz()
     app._handle_event({"type": "not_ready", "missing": ["weights"]})
-    assert app.chipviz_panel.modes[-1] == ("preparing", None)
+    assert app.chipviz_panel.states[-1] == "preparing"
+    assert app.chipviz_panel.chip_stages[-1] == {0: None}
+
+
+def test_not_ready_stands_every_chip_down_not_just_one():
+    """The daemon has stopped folding ENTIRELY. A booth that cleared only
+    the cell the event happened to route to would leave three core grids
+    denoising behind the "getting the booth ready" overlay.
+
+    Mutation this catches: clearing `self._slot_view(slot).stage` on
+    `not_ready` instead of every cell's.
+    """
+    app = _app()
+    app.quad = _FakeQuad(4, cards=[0, 1, 2, 3], viewer_factory=FakeViewer)
+    app.attach_cards([0, 1, 2, 3])
+    app.chipviz_panel = _RecordingChipViz()
+    for card in range(4):
+        app._handle_event({"type": "job_start", "job_id": f"j{card}",
+                           "target_id": "t", "n_residues": 20, "card": card})
+        app._handle_event({"type": "stage", "job_id": f"j{card}",
+                           "stage": "diffusion", "frac": 0.5})
+    assert app.chipviz_panel.chip_stages[-1] == {c: "diffusion"
+                                                 for c in range(4)}
+    app._handle_event({"type": "not_ready", "missing": ["weights"]})
+    assert app.chipviz_panel.chip_stages[-1] == {c: None for c in range(4)}
+
+
+def test_each_cell_carries_its_own_stage_to_the_panel():
+    """The whole of Task 16 in one assertion: four chips fold at once, so the
+    picture handed to the panel names what EACH one is doing. One booth-wide
+    stage would animate whichever fold spoke last on all four canvases --
+    the Critical-3 lie with a different shape.
+
+    Mutation this catches: `{card: event.get("stage")}` built from the event
+    rather than from every cell's own `_SlotView.stage`.
+    """
+    app = _app()
+    app.quad = _FakeQuad(4, cards=[0, 1, 2, 3], viewer_factory=FakeViewer)
+    app.attach_cards([0, 1, 2, 3])
+    app.chipviz_panel = _RecordingChipViz()
+    for card, stage in ((0, "diffusion"), (1, "trunk"), (2, "confidence")):
+        app._handle_event({"type": "job_start", "job_id": f"j{card}",
+                           "target_id": "t", "n_residues": 20, "card": card})
+        app._handle_event({"type": "stage", "job_id": f"j{card}",
+                           "stage": stage, "frac": 0.5})
+    assert app.chipviz_panel.chip_stages[-1] == {
+        0: "diffusion", 1: "trunk", 2: "confidence", 3: None}
+
+
+def test_a_finished_fold_stops_claiming_its_chip_is_working():
+    """`job_done` ends that chip's fold. Leaving the stage behind would
+    animate denoising on a chip that has moved on -- and it would keep doing
+    it, because the panel is only ever told what the app believes."""
+    app = _app()
+    app.chipviz_panel = _RecordingChipViz()
+    app._handle_event({"type": "job_start", "job_id": "j1", "target_id": "t",
+                       "n_residues": 20, "card": 0})
+    app._handle_event({"type": "stage", "job_id": "j1", "stage": "diffusion",
+                       "frac": 0.5})
+    app._handle_event({"type": "job_done", "job_id": "j1", "cif_path": "",
+                       "wall_s": 4.4, "mean_plddt": 90.0})
+    assert app.chipviz_panel.chip_stages[-1] == {0: None}
+
+
+def test_a_new_fold_does_not_inherit_the_last_one_s_stage():
+    """`job_start` clears the cell's stage as surely as `job_done` does: a
+    fold that has begun but has not said what it is doing is in `msa`/`prep`,
+    both host-side, and the chip is not folding yet."""
+    app = _app()
+    app.chipviz_panel = _RecordingChipViz()
+    app._handle_event({"type": "job_start", "job_id": "j1", "target_id": "t",
+                       "n_residues": 20, "card": 0})
+    app._handle_event({"type": "stage", "job_id": "j1", "stage": "diffusion",
+                       "frac": 0.5})
+    app._handle_event({"type": "job_start", "job_id": "j2", "target_id": "t",
+                       "n_residues": 20, "card": 0})
+    assert app.chipviz_panel.chip_stages[-1] == {0: None}
+
+
+def test_the_state_tick_gives_the_tensix_panel_its_staleness_check():
+    """The panel's own poll only runs while it is OPEN, and the case
+    staleness exists for is precisely that no more events are coming -- so
+    the check has to ride a source that runs regardless.
+
+    Mutation this catches: dropping `_tick_chipviz_staleness` from
+    `_tick_state_at`.
+    """
+    app = _app()
+    app.chipviz_panel = _RecordingChipViz()
+    app._tick_state_at(1.0)
+    assert app.chipviz_panel.staleness_ticks == 1
+
+
+def test_a_broken_tensix_staleness_check_cannot_freeze_the_state_tick():
+    """`_tick_state_at` runs off a REPEATING GLib source; an exception
+    escaping it removes the source permanently and the booth freezes
+    mid-showcase with nothing on screen saying so."""
+    app = _app()
+
+    class Exploding:
+        available = True
+
+        def set_visible(self, _visible):
+            pass
+
+        def tick_staleness(self):
+            raise RuntimeError("web process died")
+
+    app.chipviz_panel = Exploding()
+    app._tick_state_at(1.0)                     # must not raise
 
 
 def test_a_broken_tensix_panel_cannot_cost_the_booth_an_event():
@@ -908,7 +1111,10 @@ def test_a_broken_tensix_panel_cannot_cost_the_booth_an_event():
     app = _app()
 
     class Exploding:
-        def set_mode(self, *_args):
+        def set_state(self, *_args):
+            raise RuntimeError("web process died")
+
+        def set_chip_stages(self, *_args):
             raise RuntimeError("web process died")
 
     app.chipviz_panel = Exploding()
@@ -1419,26 +1625,41 @@ def test_every_help_card_class_has_an_explicit_colour_rule():
         assert frozenset({css_class}) in rules, f"{css_class} has no color: rule"
 
 
-def test_the_chip_that_is_folding_is_passed_to_the_tensix_panel():
-    """The panel cannot draw "chip 0 is working and the other three are not"
+def test_the_chip_that_is_folding_is_named_to_the_tensix_panel():
+    """The panel cannot draw "chip 2 is denoising and the others are not"
     unless the booth tells it which chip -- and `job_start` is the only event
-    that carries it (whole-branch review, Critical 3)."""
-    app = _app()
-    app.chipviz_panel = _RecordingChipViz()
-    app._handle_event({"type": "job_start", "job_id": "j1", "target_id": "t",
-                       "n_residues": 20, "card": 0})
-    assert app.chipviz_panel.folding_chips == [0]
+    that carries it (whole-branch review, Critical 3). Keyed by CHIP, not by
+    slot: a booth whose card list does not start at zero would otherwise put
+    chip 2's fold under chip 0's thermometer.
 
-
-def test_a_stage_event_does_not_reattribute_the_fold_to_another_chip():
-    """Stage events carry no `card`; passing their (absent) one through
-    would clear the attribution on the very next event after job_start."""
+    Mutation this catches: `_chip_stages` keying on the slot index.
+    """
     app = _app()
+    app.quad = _FakeQuad(2, cards=[2, 3], viewer_factory=FakeViewer)
+    app.attach_cards([2, 3])
     app.chipviz_panel = _RecordingChipViz()
     app._handle_event({"type": "job_start", "job_id": "j1", "target_id": "t",
                        "n_residues": 20, "card": 2})
-    app._handle_event({"type": "stage", "stage": "diffusion", "frac": 0.5})
-    assert app.chipviz_panel.folding_chips == [2]
+    app._handle_event({"type": "stage", "job_id": "j1", "stage": "diffusion",
+                       "frac": 0.5})
+    assert app.chipviz_panel.chip_stages[-1] == {2: "diffusion", 3: None}
+
+
+def test_a_stage_event_does_not_reattribute_the_fold_to_another_chip():
+    """Stage events carry no `card` -- they are routed by `job_id` (see
+    ui/slots.py). A stage landing on the wrong cell would animate the wrong
+    chip, which at a booth reads as the hardware doing something it is
+    not."""
+    app = _app()
+    app.quad = _FakeQuad(4, cards=[0, 1, 2, 3], viewer_factory=FakeViewer)
+    app.attach_cards([0, 1, 2, 3])
+    app.chipviz_panel = _RecordingChipViz()
+    app._handle_event({"type": "job_start", "job_id": "j1", "target_id": "t",
+                       "n_residues": 20, "card": 2})
+    app._handle_event({"type": "stage", "job_id": "j1", "stage": "diffusion",
+                       "frac": 0.5})
+    assert app.chipviz_panel.chip_stages[-1] == {
+        0: None, 1: None, 2: "diffusion", 3: None}
 
 
 # ---------------------------------------------------------------------------
@@ -1617,8 +1838,24 @@ def test_nothing_the_booth_does_by_itself_changes_the_rail_or_its_panels():
 
     for stage in ("msa", "prep", "trunk", "diffusion", "confidence", "saving"):
         app.pipeline_panel.set_stage(stage, 0.5)
-        app._sync_chipviz(stage=stage, card=0)
         seen.append((f"stage {stage}", sizes()))
+
+    # Every shape the Tensix header can take, including the longest ones the
+    # multi-chip rewrite introduced. The header is a `Gtk.Label` in a fixed
+    # column, and "TENSIX ACTIVITY · 4 CHIPS FOLDING" is materially longer
+    # than the "TENSIX ACTIVITY · idle" it starts at -- if it can widen the
+    # rail, it widens it the first time four chips fold, which is every few
+    # seconds of a conference day.
+    if app.chipviz_panel is not None:
+        for label, stages in (
+                ("one chip", {0: "diffusion"}),
+                ("one chip refining", {0: "trunk"}),
+                ("two chips", {0: "diffusion", 1: "trunk"}),
+                ("three chips", {0: "diffusion", 1: "trunk", 2: "confidence"}),
+                ("four chips", {c: "diffusion" for c in range(4)}),
+                ("idle again", {})):
+            app.chipviz_panel.set_chip_stages(stages)
+            seen.append((f"tensix {label}", sizes()))
 
     app.pipeline_panel.reset()
     seen.append(("pipeline blank", sizes()))
