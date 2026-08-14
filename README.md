@@ -291,19 +291,23 @@ imported, and it is load-bearing for the booth rather than a development conveni
 - **`scripts/run-demo.sh`** — the turnkey launcher, tearing the daemon down on Ctrl-C so a
   leaked device handle cannot block the next run.
 
-## What it deliberately does not do yet
+## What happens when a visitor taps a protein
 
-**A visitor's pick does not reach the screen yet — but the machinery underneath it now
-works.** The socket stopped being one-way at `PROTOCOL_VERSION` 3: the UI can send, the
-daemon reads, and the daemon turns a pick into queued work at the head of its priority
-queue — a path that had been dead code since Phase 3a and had literally never run. A pick
-never pre-empts a running fold; it waits, bounded by the earliest-finishing of the folds in
-flight, because tearing down mid-device-operation is a documented instability source and
-pre-empting would blank a cell someone is watching.
+**It gets folded next.** The socket carries both directions as of `PROTOCOL_VERSION` 3: the
+UI sends a `pick`, the daemon reads it and turns it into queued work at the head of its
+priority queue, and `ui/app.py`'s `_on_pick` is the last hop that connects the tap to both.
 
-What is still missing is the last hop: `ui/app.py`'s `_on_pick` sending it, and the gallery
-copy changing in the same commit. Until then the gallery and the `?` card both say plainly
-that a tap does not queue anything — nothing a visitor reads claims otherwise.
+**A pick never pre-empts a running fold.** It waits at the head of the queue, bounded by
+the earliest-finishing of the four folds in flight — because tearing a fold down
+mid-device-operation is a documented instability source, and pre-empting would blank a cell
+someone is watching. In practice that is seconds, not an instant, and the copy says so:
+"next", never "now". The booth acknowledges the tap immediately, on a one-line notice under
+the quad, so the wait never reads as a booth that ignored you; the notice says more if the
+wait runs past ten seconds, and clears the moment the picked fold starts.
+
+Nothing a visitor reads over-promises this. The gallery, the `?` card and that notice all
+say a tap puts the protein next and that the folds already running are left to finish —
+which is also why the other three cells keep moving while you wait.
 
 ## What is on screen
 
@@ -353,11 +357,12 @@ that a tap does not queue anything — nothing a visitor reads claims otherwise.
 
 ## Not yet built
 
-Debian packaging, pre-cached MSAs (every shipped target is `msa: empty` today — which is
-why three of the four proteins come back yellow and orange), the 2×2 quad view for folding
-on all four chips at once, and the daemon side of a visitor's pick. The wire format for
-that pick exists as of `PROTOCOL_VERSION` 3; what is missing is the daemon turning one into
-work. See [What it deliberately does not do yet](#what-it-deliberately-does-not-do-yet).
+Debian packaging, and pre-cached MSAs (every shipped target is `msa: empty` today — which
+is why three of the four proteins come back yellow and orange).
+
+The 2×2 quad view and the visitor's pick both landed in Phase 5 and are no longer on this
+list: four chips fold at once (press `Q`), and a tap puts a protein next — see
+[What happens when a visitor taps a protein](#what-happens-when-a-visitor-taps-a-protein).
 See [`docs/followups.md`](docs/followups.md) for known gotchas and
 [`docs/superpowers/plans/`](docs/superpowers/plans/) for the phase plans.
 

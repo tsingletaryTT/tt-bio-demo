@@ -760,16 +760,141 @@ def test_the_help_intro_no_longer_says_one_after_another():
     assert "one after another" not in " ".join(_HELP_INTRO).lower()
 
 
-def test_the_help_intro_still_discloses_that_a_pick_starts_nothing():
-    """Deliberately temporary, and deliberately still here. The daemon can be
-    picked from as of Task 9, but ui/app.py does not send a pick until Task
-    17 -- so as of THIS commit a tap still starts nothing and the copy saying
-    so is still true. Task 17 replaces this test with its inverse, in the
-    same commit as the behaviour. Do not delete it early, and do not let Task
-    17 leave both."""
+# ---------------------------------------------------------------------------
+# Task 17: the pick, end to end -- the copy half.
+#
+# The behaviour and every visitor-facing string that contradicts it ship in
+# ONE commit. Shipping the behaviour alone would leave the booth telling
+# visitors it cannot do the thing it just did -- the mirror image of the
+# Critical 2 finding, and no more honest for being generous.
+#
+# `test_the_help_intro_still_discloses_that_a_pick_starts_nothing`, which
+# Task 16 added and this task was told not to leave alongside its inverse,
+# is deleted here, in the same commit that makes it false.
+# ---------------------------------------------------------------------------
+
+def test_the_help_intro_no_longer_says_picking_is_not_wired_up():
+    """It reads, verbatim before this task: 'asking it to fold a particular
+    one on demand isn't wired up yet'. It is now, and a booth that disclaims
+    a capability it has teaches visitors not to try it."""
     from ui.app import _HELP_INTRO
     text = " ".join(_HELP_INTRO).lower()
-    assert "isn't wired up" in text or "is not wired up" in text
+    assert "isn't wired up" not in text
+    assert "is not wired up" not in text
+    assert "one after another" not in text
+
+
+def test_the_help_intro_says_what_a_tap_now_does():
+    from ui.app import _HELP_INTRO
+    text = " ".join(_HELP_INTRO).lower()
+    assert "next" in text
+
+
+def test_the_help_intro_does_not_promise_an_instant_fold():
+    """With four chips busy the pick starts when one frees. 'Instantly' is
+    a claim the booth breaks in front of the one visitor watching for it."""
+    from ui.app import _HELP_INTRO
+    text = " ".join(_HELP_INTRO).lower()
+    assert "instantly" not in text
+    assert "straight away" not in text
+
+
+def test_the_help_intro_says_a_pick_does_not_interrupt_a_running_fold():
+    """The reason the wait exists, stated as the feature it is."""
+    from ui.app import _HELP_INTRO
+    text = " ".join(_HELP_INTRO).lower()
+    assert "interrupt" in text or "finish" in text
+
+
+def test_the_gallery_copy_says_a_tap_folds_it_next():
+    from ui.gallery import _CAPTION_BODY, _CAPTION_TITLE, _CARD_HINT
+    lowered = f"{_CAPTION_TITLE} {_CAPTION_BODY} {_CARD_HINT}".lower()
+    assert isinstance(_CAPTION_BODY, str), "a tuple here would join per-character"
+    assert "next" in lowered
+    assert "isn't wired up" not in lowered
+    assert "is not wired up" not in lowered
+
+
+def test_the_gallery_copy_no_longer_says_one_after_another():
+    """It reads, verbatim before this task: 'It works through these one
+    after another, all day.' Four chips is four at a time."""
+    from ui.gallery import _CAPTION_BODY
+    lowered = _CAPTION_BODY.lower()
+    assert "one after another" not in lowered
+    assert "the fold that is running right now" not in lowered
+
+
+def test_the_card_hint_no_longer_says_a_tap_only_puts_it_in_a_queue_it_owns():
+    """`_CARD_HINT` is the line that sat where "TAP TO FOLD" used to, and it
+    was changed to "IN THE ROTATION" precisely because a tap did nothing. It
+    does something now, and this is the string a visitor reads on the card
+    they are about to touch.
+
+    Mutation this catches: leaving `_CARD_HINT` alone. The test above it
+    passes on `_CAPTION_BODY` alone, so this is what makes the per-card line
+    load-bearing.
+    """
+    from ui.gallery import _CARD_HINT
+    lowered = _CARD_HINT.lower()
+    assert "in the rotation" not in lowered
+    assert "next" in lowered or "fold" in lowered
+
+
+def test_the_gallery_copy_does_not_promise_an_instant_fold_either():
+    """Same rule as the help card and the notice, in the place a visitor is
+    standing when they decide to tap."""
+    from ui.gallery import _CAPTION_BODY, _CARD_HINT
+    lowered = f"{_CAPTION_BODY} {_CARD_HINT}".lower()
+    for forbidden in ("instantly", "straight away", "right now",
+                      "immediately"):
+        assert forbidden not in lowered
+
+
+def test_the_gallery_copy_says_the_folds_already_running_finish():
+    """The wait, stated as the feature it is -- in the one place a visitor
+    reads before tapping rather than after."""
+    from ui.gallery import _CAPTION_BODY
+    lowered = _CAPTION_BODY.lower()
+    assert "finish" in lowered or "interrupt" in lowered
+
+
+def test_the_gallery_module_docstring_no_longer_describes_a_one_way_socket():
+    """That docstring is the instruction sheet for anyone editing this copy,
+    and it currently says, in bold, that a tap does not reach the daemon and
+    that the copy changes back only when the protocol grows a client->server
+    message. It has. A stale instruction sheet is how the copy regresses."""
+    import ui.gallery
+    text = ui.gallery.__doc__.lower()
+    assert "one-way" not in text
+    assert "cannot be reached from here yet" not in text
+
+
+def test_the_readme_no_longer_says_a_tap_queues_nothing():
+    """The third instruction sheet, and the one an operator reads before the
+    conference. It carried a whole "What it deliberately does not do yet"
+    section naming this exact gap; leaving it would have the project's front
+    page contradicting its own booth.
+
+    Mutation this catches: shipping the behaviour and the two module
+    docstrings while leaving README.md alone.
+    """
+    readme = (Path(__file__).resolve().parents[2] / "README.md").read_text()
+    lowered = readme.lower()
+    assert "a visitor's pick does not reach the screen" not in lowered
+    assert "a tap does not queue anything" not in lowered
+    assert "what is still missing is the last hop" not in lowered
+    # ...and it has to say what DOES happen, or an operator learns nothing.
+    assert "never pre-empts a running fold" in lowered
+
+
+def test_the_pick_docstring_in_the_app_no_longer_says_it_reaches_nothing():
+    """The other instruction sheet. `_on_pick`'s own docstring said "It does
+    NOT yet reach the daemon" and named the copy that depended on it; the two
+    pointed at each other, which is exactly why both had to move together."""
+    from ui.app import DemoApp
+    text = (DemoApp._on_pick.__doc__ or "").lower()
+    assert "does not yet reach the daemon" not in text
+    assert "not yet reach" not in text
 
 
 def test_the_diagnostics_teaching_copy_matches_the_help_card():
