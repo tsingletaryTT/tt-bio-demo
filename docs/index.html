@@ -218,6 +218,22 @@ blockquote {
 }
 blockquote cite { display: block; margin-top: .5rem; font-size: .88rem; font-style: normal; color: var(--ink-3); }
 
+/* ── Tables ───────────────────────────────────────────────────────────── */
+.table-scroll { overflow-x: auto; margin-top: 1.8rem; }
+table { border-collapse: collapse; width: 100%; font-size: .94rem; min-width: 34rem; }
+th, td { text-align: left; padding: .6rem .8rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { font-family: var(--font-mono); font-size: .74rem; letter-spacing: .1em;
+     text-transform: uppercase; color: var(--ink-3); font-weight: 500; }
+td:first-child { font-family: var(--font-mono); font-size: .88rem; white-space: nowrap; }
+tbody tr:last-child td { border-bottom: 0; }
+
+/* ── Reference list ───────────────────────────────────────────────────── */
+.refs { list-style: none; margin-top: 1.4rem; }
+.refs li { padding: .8rem 0; border-bottom: 1px solid var(--rule); }
+.refs li:last-child { border-bottom: 0; }
+.refs .t { display: block; font-weight: 600; }
+.refs .m { display: block; font-size: .87rem; color: var(--ink-3); font-family: var(--font-mono); margin-top: .2rem; }
+
 footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--ink-3); font-size: .9rem; }
 .todo {
   border: 1px dashed var(--rule); border-radius: 8px;
@@ -521,13 +537,14 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
           </p>
         </div>
 
+        
+
         <div class="tl-item">
-          <div class="tl-date">2026</div>
-          <h3>Nine model families</h3>
+          <div class="tl-date">January 2026</div>
+          <h3>FOSDEM</h3>
           <p>
-            Since joining Tenstorrent, Moritz has expanded tt-bio well past its
-            starting point: BoltzGen, ESMFold2, Protenix-v2, OpenFold3, OpenDDE,
-            SaProt and RFD3 all land during 2026.
+            <a href="https://fosdem.org/2026/schedule/event/AJLNVH-tt-boltz/">&ldquo;TT-Boltz: Drug Discovery on Tenstorrent Hardware&rdquo;</a>,
+            on the AI Plumbers track.
           </p>
         </div>
 
@@ -545,12 +562,14 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
           </blockquote>
         </div>
 
-        <div class="tl-item">
-          <div class="tl-date">January 2026</div>
-          <h3>FOSDEM</h3>
+        
+  <div class="tl-item">
+          <div class="tl-date">Through 2026</div>
+          <h3>Nine model families</h3>
           <p>
-            <a href="https://fosdem.org/2026/schedule/event/AJLNVH-tt-boltz/">&ldquo;TT-Boltz: Drug Discovery on Tenstorrent Hardware&rdquo;</a>,
-            on the AI Plumbers track.
+            Since joining Tenstorrent, Moritz has expanded tt-bio well past its
+            starting point: BoltzGen, ESMFold2, Protenix-v2, OpenFold3, OpenDDE,
+            SaProt and RFD3 all land during 2026.
           </p>
         </div>
       </div>
@@ -563,22 +582,298 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
   </div>
 </section>
 
-<!-- ═══ SECTIONS STILL TO WRITE ════════════════════════════════════════ -->
-<section id="next">
+<!-- ═══ §4 — WHERE THE SCIENCE COMES FROM ══════════════════════════════ -->
+<section id="science">
   <div class="wrap col">
-    <span class="eyebrow">Draft in progress</span>
-    <h2>Still to come</h2>
-    <div class="todo">
-      4. where the science comes from — AlphaFold&nbsp;3 → Boltz-1 → Boltz-2, cited<br>
-      6. what tt-bio runs today<br>
-      7. designing new molecules — BoltzGen<br>
-      8. why this is interesting on Tenstorrent<br>
-      9. what the demo does, and what it does not<br>
-      10. the easter eggs<br>
-      11. try it / read it / cite it
+    <span class="eyebrow">Where the science comes from</span>
+    <h2>tt-bio did not invent these models. It runs them.</h2>
+
+    <p>
+      This distinction is worth being exact about, because the interesting
+      claim depends on it. The models are published research from a group at
+      MIT. tt-bio is an implementation of that research on different hardware.
+      Both are real work; they are not the same work.
+    </p>
+
+    <p>
+      The lineage starts with AlphaFold&nbsp;3's general architecture, which
+      showed that a single model could predict the joint structure of proteins,
+      nucleic acids and small molecules together rather than proteins alone.
+      What followed in this line was open:
+    </p>
+
+    <ul class="refs">
+      <li>
+        <span class="t">Boltz-1: Democratizing Biomolecular Interaction Modeling</span>
+        <span class="m">Wohlwend, Corso, Passaro et&nbsp;al. &middot; 2024 &middot; doi:10.1101/2024.11.19.624167</span>
+      </li>
+      <li>
+        <span class="t">Boltz-2: Towards Accurate and Efficient Binding Affinity Prediction</span>
+        <span class="m">Passaro, Corso, Wohlwend et&nbsp;al. &middot; 2025 &middot; doi:10.1101/2025.06.14.659707</span>
+      </li>
+      <li>
+        <span class="t">BoltzGen: Toward Universal Binder Design</span>
+        <span class="m">Stark, Faltings, Choi et&nbsp;al. &middot; 2025 &middot; doi:10.1101/2025.11.20.689494</span>
+      </li>
+    </ul>
+
+    <p style="margin-top:1.4rem">
+      The word in Boltz-1's title is the one that matters here. A model you can
+      read, run and check is a different kind of object from one you can only
+      query, and it is the reason a student could port it to unfamiliar
+      hardware at all. tt-bio exists downstream of that decision.
+    </p>
+
+    <p>
+      If you use tt-bio or these models in research, the repository's
+      <a href="https://github.com/moritztng/tt-bio#cite">Cite</a> section lists
+      the papers to credit &mdash; including the ones behind the models this
+      page does not have room to describe.
+    </p>
+  </div>
+</section>
+
+<!-- ═══ §6 — WHAT tt-bio RUNS TODAY ════════════════════════════════════ -->
+<section id="models">
+  <div class="wrap">
+    <div class="col">
+      <span class="eyebrow">What it runs today</span>
+      <h2>Nine model families, one command line</h2>
+      <p>
+        tt-bio started as a Boltz-2 port. As of v0.6.2 it runs considerably
+        more than that, all through one CLI and all on Tenstorrent hardware.
+      </p>
+    </div>
+
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Model</th><th>What it is for</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>boltz2</td><td>Structures and binding affinity &mdash; proteins, nucleic acids, ligands, modified residues</td></tr>
+          <tr><td>protenix-v2</td><td>AlphaFold3-family folder for protein / RNA / DNA / ligand complexes. <strong>This is what the booth folds with.</strong></td></tr>
+          <tr><td>openfold3</td><td>AlphaFold3-family folder for protein / RNA / DNA polymers, with optional templates</td></tr>
+          <tr><td>esmfold2</td><td>Single-sequence folding &mdash; no multiple-sequence alignment needed</td></tr>
+          <tr><td>opendde</td><td>Antibody&ndash;antigen co-folding</td></tr>
+          <tr><td>boltzgen</td><td>Binder design &mdash; proteins, peptides, nanobodies, antibodies against a target</td></tr>
+          <tr><td>rfd3</td><td>All-atom design: binders, motif scaffolding, nucleic-acid binders</td></tr>
+          <tr><td>saprot</td><td>Structure-aware protein language modelling</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="col" style="margin-top:1.8rem">
+      <p>
+        Most of that arrived in 2026, after the project had already been
+        renamed once for outgrowing its own scope.
+      </p>
     </div>
   </div>
 </section>
+
+<!-- ═══ §7 — DESIGNING NEW MOLECULES ═══════════════════════════════════ -->
+<section id="design">
+  <div class="wrap col">
+    <span class="eyebrow">Designing new molecules</span>
+    <h2>Prediction is half of it. The other half is design.</h2>
+
+    <p>
+      Everything above is <em>prediction</em>: here is a sequence, what shape
+      does it take? The harder and more consequential question runs the other
+      way. Here is a target &mdash; a protein implicated in a disease. What new
+      molecule would bind to it?
+    </p>
+
+    <p>
+      That is binder design, and a binder is what a drug usually is. tt-bio runs
+      it: <code>tt-bio design</code> drives BoltzGen for protein, peptide,
+      nanobody and antibody binders, and RFdiffusion3 for all-atom design
+      including motif scaffolding.
+    </p>
+
+    <blockquote>
+      Boltz-2 is a state-of-the-art model that builds on the general
+      architecture of AlphaFold&nbsp;3, predicting biomolecular structures and
+      binding affinities. BoltzGen is a system that builds on Boltz-2 and
+      designs protein binders (potential drugs) to biomolecular targets. We
+      implement both systems on Tenstorrent hardware to make drug discovery
+      more open, more efficient, and cheaper.
+      <cite>&mdash; Moritz Th&uuml;ning, <a href="https://fosdem.org/2026/schedule/event/AJLNVH-tt-boltz/">FOSDEM 2026</a></cite>
+    </blockquote>
+
+    <p>
+      <strong>The booth does not do any of this.</strong> It folds five known
+      structures on a loop. Designing a candidate molecule is not a thing to
+      watch for thirty seconds at a conference stand &mdash; it is a campaign,
+      run against a target someone has a reason to care about, and the result
+      has to be made and tested in a laboratory before it means anything.
+    </p>
+
+    <p>
+      It is in this page because it is the part with consequences, and because
+      a demo that let you believe folding a known protein <em>was</em> drug
+      discovery would have misled you about the whole field.
+    </p>
+  </div>
+</section>
+
+<!-- ═══ §8 — WHY THIS IS INTERESTING ON TENSTORRENT ════════════════════ -->
+<section id="hardware">
+  <div class="wrap col">
+    <span class="eyebrow">On the hardware</span>
+    <h2>A model nobody designed this silicon around</h2>
+
+    <p>
+      Most of what runs on AI accelerators today is a transformer doing
+      language. Structure prediction is a different shape of problem: its
+      expensive operations act on <em>pairs</em> of residues, so cost grows
+      with the square of the sequence, and the heaviest pieces grow with the
+      cube. It was not the workload anyone had in mind.
+    </p>
+
+    <p>
+      That is what makes the port interesting rather than routine. A student
+      took a research codebase written for GPUs and made it produce correct
+      structures on a dataflow architecture &mdash; and correctness is the bar
+      that matters, because a structure prediction that is fast and subtly
+      wrong is worse than no prediction.
+    </p>
+
+    <h3>What this booth measured</h3>
+
+    <p>
+      These are our numbers, from this demo, on a Blackhole p300c &mdash; four
+      chips across two boards.
+    </p>
+
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Measurement</th><th>Result</th></tr></thead>
+        <tbody>
+          <tr><td>Four chips vs one</td><td><strong>3.70&times;</strong>, not 4&times; &mdash; two chips throttle to 906&nbsp;MHz under sustained load</td></tr>
+          <tr><td>Cold start</td><td>All four workers reach &ldquo;model resident, chip open&rdquo; in <span class="num">4.8&nbsp;s</span></td></tr>
+          <tr><td>Two-hour soak</td><td><span class="num">2,143</span> folds, zero errors, peak <span class="num">83.6&nbsp;&deg;C</span></td></tr>
+          <tr><td>Recorded loop</td><td><span class="num">59</span> folds across four chips in <span class="num">150&nbsp;s</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p style="margin-top:1.8rem">
+      The 3.70&times; is the honest figure and we publish it rather than the
+      round one. Four chips do not make a single fold four times faster:
+      <strong>one fold is one chip</strong>, which is tt-bio's own documented
+      limit and not something this demo works around. What four chips buy is
+      four proteins at once, and a shorter wait for whoever is standing there.
+    </p>
+  </div>
+</section>
+
+<!-- ═══ §9 — WHAT THE DEMO DOES, AND DOES NOT ══════════════════════════ -->
+<section id="demo">
+  <div class="wrap">
+    <div class="col">
+      <span class="eyebrow">The demo itself</span>
+      <h2>What it does, and what it deliberately does not</h2>
+      <p>
+        The booth is a GTK4 application with no browser in it. The compute runs
+        in a separate process holding the chips; the two talk over a socket, so
+        a wedged card cannot take the screen down with it.
+      </p>
+    </div>
+
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th scope="col">The booth</th><th scope="col">Behaviour</th></tr></thead>
+        <tbody>
+          <tr><td>It does</td><td>Stream the model's real denoising trajectory, one step at a time, straight from the sampler on the chip</td></tr>
+          <tr><td></td><td>Colour every residue by the model's own confidence, including where that is unflattering</td></tr>
+          <tr><td></td><td>Fold on four chips at once, one molecule per chip, and show all four if you press <kbd>Q</kbd></td></tr>
+          <tr><td></td><td>Run unattended all day, and hold the last real structure rather than showing a blank screen</td></tr>
+          <tr><td>It does not</td><td>Discover anything. Every structure it folds was solved in a laboratory first</td></tr>
+          <tr><td></td><td>Design molecules. That is <a href="#design">a different job</a> and it does not happen here</td></tr>
+          <tr><td></td><td>Fabricate a frame. If nothing has been computed yet, nothing new is drawn</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="col" style="margin-top:1.8rem">
+      <p>
+        That last one is the rule the rest of the design follows from. The
+        booth's only real asset is that what you are watching is true, and
+        every shortcut that would have made it prettier &mdash; a smoothed
+        trajectory, a cached fold, a filled-in gap &mdash; would have spent
+        that asset for nothing.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ §10 — EASTER EGGS ══════════════════════════════════════════════ -->
+<section id="eggs">
+  <div class="wrap col">
+    <span class="eyebrow">If you press the right keys</span>
+    <h2>Two things hidden in it</h2>
+
+    <h3>The Tenstorrent mark, computed on the chips</h3>
+    <p>
+      <kbd>Ctrl</kbd>+<kbd>G</kbd> takes a cloud of random points and pulls it
+      into the Tenstorrent logo by gradient descent on a signed distance field.
+      The arithmetic runs <em>on the accelerators</em>, in the same framework a
+      fold uses, and streams back over the same protocol. It comes out slightly
+      differently every time.
+    </p>
+    <p>
+      The booth labels it <strong>&ldquo;Not a fold&rdquo;</strong>, in those
+      words. It is a decorative use of the hardware and saying so is the whole
+      point: a demo that asks you to believe what it shows you cannot let a
+      pretty thing pass as science because it happens to look like the real
+      output.
+    </p>
+
+    <h3>The molecule that is not a protein</h3>
+    <p>
+      The playlist quietly includes a DNA duplex &mdash; twelve rungs, and both
+      strands spell <span class="num">CGCGAATTCGCG</span>, because each read
+      backwards is the other. The six in the middle, <span class="num">GAATTC</span>,
+      are the mark that EcoRI &mdash; one of the first gene-cutting enzymes ever
+      put to work &mdash; recognises and cuts.
+    </p>
+  </div>
+</section>
+
+<!-- ═══ §11 — LINKS ════════════════════════════════════════════════════ -->
+<section id="more">
+  <div class="wrap col">
+    <span class="eyebrow">Find out more</span>
+    <h2>Read it, run it, cite it</h2>
+
+    <ul class="refs">
+      <li>
+        <a class="t" href="https://github.com/moritztng/tt-bio">moritztng/tt-bio</a>
+        <span class="m">the software &middot; MIT licence &middot; installation and the full model list</span>
+      </li>
+      <li>
+        <a class="t" href="https://fosdem.org/2026/schedule/event/AJLNVH-tt-boltz/">TT-Boltz: Drug Discovery on Tenstorrent Hardware</a>
+        <span class="m">FOSDEM 2026 &middot; AI Plumbers track</span>
+      </li>
+      <li>
+        <a class="t" href="https://www.youtube.com/watch?v=GezK-X4gPsg">TT-Boltz: AlphaFold 3 on Tenstorrent Wormhole</a>
+        <span class="m">AI Plumbers conference, Berlin &middot; AIFoundry.org</span>
+      </li>
+      <li>
+        <a class="t" href="https://blog.aifoundry.org/p/porting-models-to-dataflow-architectures">From Joining the Discord to Drug Discovery</a>
+        <span class="m">AI Foundry &middot; on porting models to dataflow architectures</span>
+      </li>
+      <li>
+        <a class="t" href="https://github.com/tsingletaryTT/tt-bio-demo">tsingletaryTT/tt-bio-demo</a>
+        <span class="m">this booth &middot; the application in the video above</span>
+      </li>
+    </ul>
+  </div>
+</section>
+
+
 
 <footer>
   <div class="wrap col">
