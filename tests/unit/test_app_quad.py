@@ -621,3 +621,55 @@ def test_the_quad_is_not_closed_by_escape():
     app._handle_key("q")
     app._handle_key("escape")
     assert app.quad_visible is True
+
+
+# ── starting in the quad (`--quad`) ─────────────────────────────────────────
+#
+# `Q` toggles the grid, which is right for a visitor and wrong for two other
+# people: an operator running a four-chip booth who wants the grid up all
+# day, and anyone recording the booth, for whom "press a key at the right
+# moment" is a step that fails silently. Both want the START state to be a
+# choice rather than a fixed default -- so it is a flag, and these tests pin
+# that the flag reaches the WIDGET and not merely the bool beside it.
+
+def test_the_booth_can_be_started_in_the_quad():
+    app = DemoApp(socket_path=None, quad=True)
+    assert app.quad_visible is True
+
+
+def test_the_flag_defaults_off_so_the_booth_is_unchanged():
+    """The single large protein stays what a visitor walks up to."""
+    assert DemoApp(socket_path=None).quad_visible is False
+
+
+def test_a_quad_built_after_the_flag_comes_up_showing_all_four():
+    """The one that can actually fail: the widget is built later, on the
+    daemon's `hello`, long after the flag was read. If the flag only sets the
+    bool, `--quad` gives you a booth that says it is in the grid and shows
+    one protein -- and `Q` would then have to be pressed twice to fix it.
+
+    Driven through the REAL `_ensure_quad` with a REAL `QuadView`, because a
+    fake quad is deliberately never replaced by that method, so a fake here
+    would assert nothing.
+    """
+    from gi.repository import Gtk
+    from ui.quad import QuadView
+
+    app = DemoApp(socket_path=None, quad=True)
+    app._viewer_page = Gtk.Overlay()
+    app._ensure_quad([0, 1, 2, 3])
+
+    assert isinstance(app.quad, QuadView)
+    assert app.quad.solo_mode is False, \
+        "--quad built a quad that is still showing one cell"
+
+
+def test_q_still_toggles_from_a_booth_started_in_the_quad():
+    """The flag chooses the START, not a lock: the first press must turn the
+    grid OFF. A flag that set the bool without the widget agreeing would need
+    two presses, which is the same defect as above seen from the keyboard."""
+    app = _app()
+    app.quad_visible = True          # as `--quad` leaves it
+    app._handle_key("q")
+    assert app.quad_visible is False
+    assert app.quad.solo_calls[-1] is True

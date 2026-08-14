@@ -32,3 +32,11 @@ generated/
 
 # Recording masters: large local binaries, kept for recutting.
 recordings/
+
+# Ad-hoc screenshots dropped at the repo root by Spectacle during development.
+# The README's images are the ones under docs/screenshots/, refreshed by
+# scripts/refresh-screenshots.sh -- nothing here is referenced by anything.
+/tt-bio-demo*.png
+
+# Subagent worktrees (superpowers:subagent-driven-development).
+.claude/worktrees/

@@ -102,6 +102,12 @@
 #                                 was retired mid-session, is a fact the daemon
 #                                 has and a command line cannot.
 #
+#   --quad                        Start the UI showing every chip at once
+#                                 instead of one large protein. Q toggles
+#                                 either way at runtime; this only chooses
+#                                 what the booth comes up in. Only means
+#                                 anything with more than one chip.
+#
 #   --weights DIR                 tt-bio's weights cache. (TT_BIO_DEMO_WEIGHTS)
 #                                 Default: ~/.boltz
 #   --log-budget-gb N             Forwarded to the daemon's own
@@ -168,6 +174,7 @@ while [[ $# -gt 0 ]]; do
     --devices)              DEVICES="$2"; shift 2 ;;
     --all-targets)          TARGETS=""; shift ;;
     --windowed)             WINDOWED=1; shift ;;
+    --quad)                 QUAD=1; shift ;;
     --weights)              WEIGHTS="$2"; shift 2 ;;
     --log-budget-gb)        LOG_BUDGET_GB="$2"; shift 2 ;;
     --structures-budget-gb) STRUCTURES_BUDGET_GB="$2"; shift 2 ;;
@@ -340,7 +347,11 @@ UI_ARGS=""
 # kiosk always wants fullscreen. Without it the app seizes the whole
 # screen before anyone can reach Ctrl+F, which is hostile on a shared
 # desktop. Ctrl+F still toggles either way at runtime.
-[ "${WINDOWED:-0}" = "1" ] && UI_ARGS="--windowed"
+[ "${WINDOWED:-0}" = "1" ] && UI_ARGS="${UI_ARGS} --windowed"
+# --quad chooses the START view only; Q still toggles at runtime. Worth it
+# for an operator running a multi-chip booth who wants the grid up all day,
+# and for recording, where "press Q at the right moment" fails silently.
+[ "${QUAD:-0}" = "1" ] && UI_ARGS="${UI_ARGS} --quad"
 
 "${VENV_UI}/bin/python3" -m ui.app \
   --socket "$SOCKET" \

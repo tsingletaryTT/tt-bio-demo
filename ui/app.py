@@ -1303,7 +1303,7 @@ def _ensure_app_css_installed():
 
 class DemoApp(Gtk.Application):
     def __init__(self, socket_path=None, playlist_path=None, target_ids=None,
-                 clock=None, windowed=False):
+                 clock=None, windowed=False, quad=False):
         super().__init__(application_id="com.tenstorrent.ttbiodemo")
         self.socket_path = socket_path
         # Start windowed instead of fullscreen. The booth always wants
@@ -1375,7 +1375,16 @@ class DemoApp(Gtk.Application):
         # the other three on. A plain bool a headless test can drive, exactly
         # like `help_visible` and the two panel flags, and NOT read back off
         # the widgets: the decision must be testable with no display.
-        self.quad_visible = False
+        #
+        # `--quad` seeds it the other way for the two people the toggle does
+        # not serve: an operator running a four-chip booth who wants the grid
+        # up all day, and anyone recording the booth, for whom "press Q at
+        # the right moment" is a step that fails silently. It chooses the
+        # START only -- `Q` still toggles from wherever the flag left it, and
+        # `_ensure_quad` reads this flag when it builds the real widget on
+        # the daemon's `hello`, which is what keeps the bool and the cells on
+        # screen from disagreeing.
+        self.quad_visible = bool(quad)
 
         # ── the easter egg (Ctrl+G; mark.py, `_EGG_KEYS`) ─────────────
         #
@@ -4433,13 +4442,19 @@ def main(argv=None):
     parser.add_argument("--windowed", action="store_true",
                         help="start in a normal window instead of fullscreen "
                              "(Ctrl+F toggles either way at runtime)")
+    parser.add_argument("--quad", action="store_true",
+                        help="start showing all the booth's chips at once "
+                             "instead of one large protein (Q toggles either "
+                             "way at runtime). Only worth it with more than "
+                             "one chip")
     args = parser.parse_args(argv)
     target_ids = [part.strip() for part in (args.targets or "").split(",")
                   if part.strip()]
     return DemoApp(socket_path=args.socket,
                    playlist_path=args.playlist,
                    target_ids=target_ids,
-                   windowed=args.windowed).run([])
+                   windowed=args.windowed,
+                   quad=args.quad).run([])
 
 
 if __name__ == "__main__":

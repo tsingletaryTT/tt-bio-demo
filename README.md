@@ -14,10 +14,12 @@ exception](#the-one-webkit-exception) for a small hardware-activity animation.
 [![The booth folding proteins on Tenstorrent Blackhole](docs/screenshots/booth-loop.gif)](docs/screenshots/booth-loop-30s.mp4)
 
 *Thirty seconds of the booth, captured at 1920×1080 · 60 fps from the running application —
-FKBP12, Trp-cage, trypsin and DHFR in turn on a Blackhole p300c. Those dots are the model's
-actual denoising trajectory, streamed one step at a time and condensing into structure; the
-right-hand rail is the live protocol tap showing the same events arrive. Every image on this
-page is the real thing on real silicon — no mockups, no reconstructions.*
+the 2×2 quad view, four chips of a Blackhole p300c each folding a different protein at its
+own point in the pipeline. Those dots are the model's actual denoising trajectory, streamed
+one step at a time and condensing into structure; the right-hand rail is the live protocol
+tap showing the same events arrive. Cut from a 150-second master in which 59 folds
+completed across all four chips. Every image on this page is the real thing on real silicon
+— no mockups, no reconstructions.*
 
 ---
 
@@ -55,6 +57,26 @@ Trp-cage, coloured by the model's own per-residue confidence.
 
 The live protocol tap, with a plain-language line for each stage. Bounded ring buffer — the
 booth runs unattended all day.
+
+### Four chips at once
+
+![The quad view: four chips, four proteins](docs/screenshots/06-quad-four-chips.png)
+
+<kbd>Q</kbd> turns the single large protein into a 2×2 grid — one cell per chip, each
+labelled with the chip it runs on, the protein, and the stage it has reached. Four
+independent folds at four independent points in their pipelines, on one screen.
+
+The confidence ramp does a lot of work here: chip 2's trypsin is deep blue where the model
+is sure, chip 3's DNA is orange throughout because a twelve-rung duplex is exactly the kind
+of thing it is *not* sure about, and chip 0 is banded yellow-and-orange in between. Chip 1
+is mid-diffusion — the cloud that has not become a shape yet.
+
+Three of those four cells say `TRUNK`, and are drawing the **previous** fold on that chip
+rather than a blank cell (see [Never a blank screen](#never-a-blank-screen)) — the trunk
+stage produces no coordinates to draw.
+
+Start the booth already in the grid with `scripts/run-demo.sh --quad`; <kbd>Q</kbd> still
+toggles either way at runtime.
 
 ### The instrument
 
@@ -162,9 +184,11 @@ the authoritative list. The ones you are most likely to want:
 |---|---|---|
 | `--socket PATH` | `${XDG_RUNTIME_DIR:-/tmp}/tt-bio-demo/runner.sock` | Socket the daemon serves and the UI connects to |
 | `--playlist FILE` | `playlist/manifest.yaml` | The playlist **manifest** both processes are driven from |
-| `--targets a,b` | `trpcage` | Which manifest ids to run, for both processes |
-| `--all-targets` | off | Run every target in the manifest instead |
+| `--targets a,b` | every target in the manifest | Which manifest ids to run, for both processes |
+| `--all-targets` | — | Accepted and harmless: running every target is the default, so this only restates it |
 | `--devices 0,2` | every detected chip | Which physical chips the booth folds on |
+| `--quad` | off | Come up in the 2×2 grid instead of one large protein; <kbd>Q</kbd> still toggles at runtime |
+| `--windowed` | off | Come up in a normal window instead of fullscreen; <kbd>Ctrl</kbd>+<kbd>F</kbd> still toggles |
 | `--log-root PATH` | `<runtime-dir>/logs` | Where tt-metal's own log output is pinned |
 | `--log-budget-gb` | 2 | Sweep budget for tt-metal logs between folds |
 | `--structures-budget-gb` | 0.2 | Sweep budget for emitted `.cif` structures, per device |
