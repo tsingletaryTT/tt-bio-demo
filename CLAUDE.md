@@ -505,6 +505,14 @@ Two defects the quad screenshots exposed:
     The portal must be granted interactively once per login session. Spectacle tops out
     at ~5.9 fps, which is why an early demo video looked choppy; it is no longer how the
     video is made.
+  - **A capture of one widget does not need the screen at all.** `scripts/record-egg.py`
+    records the easter egg by running the real descent on a chip and drawing every frame
+    with the booth's own `StructureViewer`, reading the framebuffer back the way
+    `make-thumbnails.py` does. No portal, no focus, no keystroke, and `--seed` reproduces
+    a run frame for frame — which is why it is the right shape for anything that is *one
+    view* rather than the whole booth. It also refuses to encode a capture whose cloud did
+    not land on the mark (`mark.py`'s own field is the oracle), because this project's
+    capture failures all reported success.
   - **Do not drive the app's keys with `xdotool` in a capture script.** `--window` sends
     XSendEvent, which GTK ignores; the global form uses XTEST, which needs real focus that
     Spectacle steals the moment it runs. Both exit 0 and neither key arrives — this cost a
