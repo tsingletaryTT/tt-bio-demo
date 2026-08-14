@@ -56,8 +56,11 @@ def _refusals(daemon):
 
 
 def test_an_egg_request_is_recorded_and_a_pick_is_not(tmp_path):
-    """The handler is deliberately narrow: `pick` is Task 9 and answering it
-    with half an implementation would be worse than not answering it at all.
+    """The two client messages never cross. A `pick` is now answered too
+    (it becomes a queued Job -- see test_visitor_pick.py), but it must never
+    become an EGG request: a visitor tapping a protein is asking for that
+    protein, and giving them the Tenstorrent mark instead would be the booth
+    ignoring them in the most confusing way available.
 
     Mutation this catches: a handler that treats every client message the
     same, which would silently make a visitor's tap run an easter egg.
@@ -231,7 +234,8 @@ def test_no_egg_means_dispatch_once_behaves_exactly_as_before(tmp_path):
 
 def test_an_egg_never_enters_the_job_queue(tmp_path):
     """It is not a job and must never be scheduled like one -- a queued egg
-    would sit in front of a visitor's pick once Task 9 lands."""
+    would sit in the same list as a visitor's pick, and a toy does not get a
+    place in the queue a protein has to wait behind."""
     daemon = _daemon(tmp_path, _EggPool())
     daemon.on_client_message(_egg())
     daemon._dispatch_egg()
