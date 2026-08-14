@@ -1,4 +1,4 @@
-"""The easter egg's geometry (ui/mark.py): the field, and the descent onto it.
+"""The easter egg's geometry (mark.py): the field, and the descent onto it.
 
 What these tests are FOR, given the shape is symmetric enough to hide almost
 anything:
@@ -25,7 +25,7 @@ defects to (see docs/followups.md, "Write tests that can fail"). So:
 import numpy as np
 import pytest
 
-from ui import mark
+import mark
 
 # The shipped 32x32 artwork's alpha mask, at the threshold `> 128`. `#` is
 # ink. Transcribed once, verified against the PNG by the test below it, and
@@ -261,7 +261,7 @@ def test_the_cloud_starts_as_noise_and_ends_as_the_mark():
 
 def test_the_cloud_fills_the_mark_rather_than_outlining_it():
     """Per-point target depths are what turn a wire outline into a filled
-    mark (ui/mark.py's `MAX_DEPTH`). Dropping them -- aiming every point at
+    mark (mark.py's `MAX_DEPTH`). Dropping them -- aiming every point at
     the zero level set -- leaves the whole cloud within a hair of the
     boundary, which is what this measures.
     """
@@ -312,6 +312,12 @@ def test_a_point_that_has_already_arrived_stops_moving():
     assert mark.mark_sdf(deep[:, :2])[0] < -0.1, "probe is not actually inside"
     condensation._points = deep.copy()
     condensation._depth = np.zeros(1)
+    # The run's swirl is a RIGID ROTATION of the whole cloud, so it moves a
+    # point that has stopped descending -- which is correct, and is what
+    # `test_the_swirl_is_a_rigid_rotation_that_ends_before_the_run_does`
+    # covers. Zeroed here so that what is left to move this point is the
+    # descent alone, which is the thing under test.
+    condensation._swirl[:] = 0.0
 
     condensation.step()
     assert np.array_equal(condensation._points, deep)
@@ -351,3 +357,188 @@ def test_the_mark_is_drawn_in_the_brand_purple():
     assert mark.BRAND_PURPLE_HEX.upper() == "#7C68FA"
     assert mark.BRAND_PURPLE == pytest.approx(
         (0x7C / 255.0, 0x68 / 255.0, 0xFA / 255.0))
+
+
+# ── different every time, and the same mark every time ──────────────────────
+#
+# "It is different every time" is a genuinely hard property to test, because
+# each of the two obvious assertions passes for a broken implementation:
+#
+#   * "two runs differ" passes for one that returns pure noise;
+#   * "the mark is recognisable" passes for one that ignores the seed.
+#
+# So both edges are asserted, and they are asserted with DIFFERENT
+# measurements rather than two readings of the same number: the journeys are
+# compared point by point in mid-descent, and the destination is compared
+# against the shipped artwork's own 32x32 mask -- the same independent oracle
+# the field tests above lean on, not against another run of this code.
+#
+# `test_the_recognisability_test_can_actually_fail` is the control: it feeds
+# the mark test a cloud that is still noise and requires it to REJECT it. A
+# threshold nothing can fail is not a threshold.
+
+
+def _occupancy(points):
+    """Which of the artwork's 32x32 cells the cloud puts at least one point in."""
+    size = len(LOGO_MASK)
+    col = np.round(points[:, 0] * _MASK_SCALE + _MASK_CENTRE[0]).astype(int)
+    row = np.round(-points[:, 1] * _MASK_SCALE + _MASK_CENTRE[1]).astype(int)
+    keep = (col >= 0) & (col < size) & (row >= 0) & (row < size)
+    grid = np.zeros((size, size), dtype=bool)
+    grid[row[keep], col[keep]] = True
+    return grid
+
+
+def _looks_like_the_mark(points):
+    """IoU of the cloud's occupancy against the shipped artwork's mask.
+
+    Measured on this build: a settled cloud scores 0.73-0.81 over eight seeds
+    and the same cloud before it has descended scores 0.38-0.42, so 0.65 sits
+    in the gap with room on both sides.
+    """
+    occupied = _occupancy(points)
+    truth = _mask_array()
+    return float((occupied & truth).sum() / (occupied | truth).sum())
+
+
+MARK_IOU_FLOOR = 0.65
+
+
+def _settled(seed, count=4000):
+    condensation = mark.MarkCondensation(count=count, seed=seed)
+    while not condensation.done:
+        condensation.step()
+    return condensation._points
+
+
+def test_the_recognisability_test_can_actually_fail():
+    """The control for the two tests below it.
+
+    Both of them assert `_looks_like_the_mark(...) >= MARK_IOU_FLOOR`, and
+    that assertion is worth exactly nothing unless something can fail it. The
+    starting cloud -- which is the thing a broken descent would leave on
+    screen -- must be rejected.
+    """
+    start = mark.run_parameters(seed=4242, count=4000).positions
+    assert _looks_like_the_mark(start) < MARK_IOU_FLOOR
+
+
+def test_every_run_lands_on_the_same_mark():
+    """Edge one: whatever was drawn, the DESTINATION is the Tenstorrent mark.
+
+    Mutation this catches: any change that lets the run's parameters move
+    where the cloud ends up rather than how it gets there -- a swirl that
+    never decays to zero, an anisotropy applied to the settled cloud instead
+    of the starting one, a per-point gain so low the cloud has not arrived by
+    the last step.
+    """
+    for seed in (11, 22, 33, 44, 55):
+        settled = _settled(seed)
+        assert _looks_like_the_mark(settled) >= MARK_IOU_FLOOR, (
+            f"seed {seed} did not land on the mark")
+        distance, _ = mark.slab_sdf_gradient(settled, mark.HALF_THICKNESS)
+        assert (distance <= 1e-3).mean() > 0.98, (
+            f"seed {seed} left too much of the cloud outside the slab")
+
+
+def test_two_runs_take_visibly_different_paths():
+    """Edge two: the JOURNEY does not repeat.
+
+    Measured in mid-descent, where a difference is a difference in the
+    animation rather than merely in which point ended up where. The mark is
+    two units across, so a mean per-point separation of half a unit at the
+    halfway mark is a plainly different picture on screen -- and the same
+    measurement taken between two runs of the SAME seed is asserted to be
+    zero, which is what stops this passing for an implementation that has
+    simply become nondeterministic noise.
+
+    Mutations this catches: pinning the seed to a constant; drawing fresh
+    positions but reusing one fixed swirl/gain/anisotropy draw.
+    """
+    def midway(seed):
+        run = mark.MarkCondensation(count=2000, seed=seed)
+        for _ in range(run.steps // 2):
+            run.step()
+        return run._points.copy()
+
+    a, b, again = midway(101), midway(202), midway(101)
+    assert np.array_equal(a, again), "the same seed must give the same run"
+    separation = np.linalg.norm(a - b, axis=1).mean()
+    assert separation > 0.5, (
+        f"two runs are only {separation:.3f} apart halfway down")
+
+
+def test_a_fresh_egg_draws_a_new_seed_every_time():
+    """No seed means a NEW seed, from the OS, not a default written in the
+    module. That default is what the egg had before this change, and it is
+    the reason it landed the same way every time.
+    """
+    seeds = {mark.MarkCondensation(count=8).seed for _ in range(6)}
+    assert len(seeds) == 6
+
+
+def test_the_swirl_is_spent_early_and_then_exactly_zero():
+    """The swirl is a rigid rotation about the mark's centre, and the mark is
+    not rotationally symmetric -- so a swirl still running on the last step
+    is a mark still being dragged off itself when the animation stops.
+
+    Mutation this catches: an exponential (asymptotic) decay in place of the
+    hard cutoff. That version leaves a small but nonzero rotation on every
+    step, which this rejects and an "is the mark recognisable" test would
+    not.
+    """
+    params = mark.run_parameters(seed=8, count=4)
+    schedule = params.swirl_schedule()
+    assert schedule.shape == (params.steps,)
+    assert schedule.sum() == pytest.approx(params.swirl)
+    cut = int(round(params.steps * mark.SWIRL_FRACTION))
+    assert np.all(schedule[cut:] == 0.0)
+    assert np.any(schedule[:cut] != 0.0)
+
+
+def test_the_swirl_turns_the_cloud_without_moving_it_in_or_out():
+    """What makes a swirl safe to add to a descent: it is a rotation, so it
+    changes the path and not the distance from the axis it turns about."""
+    params = mark.run_parameters(seed=9, count=500)
+    run = mark.MarkCondensation(params=params)
+    before = np.hypot(run._points[:, 0], run._points[:, 1])
+    angle = float(run._swirl[0])
+    assert angle != 0.0
+    cos, sin = np.cos(angle), np.sin(angle)
+    x, y = run._points[:, 0].copy(), run._points[:, 1].copy()
+    turned = np.stack([cos * x - sin * y, sin * x + cos * y], axis=1)
+    assert np.allclose(np.hypot(turned[:, 0], turned[:, 1]), before)
+
+
+def test_the_gain_ramp_brings_every_point_back_to_full_step_by_the_end():
+    """The per-point gains are what stagger arrival; the ramp is what stops
+    the slowest of them leaving a halo. Measured without it: stragglers up to
+    0.06 mark units outside, against 0.016 with it."""
+    params = mark.run_parameters(seed=10, count=4)
+    blend = params.gain_schedule()
+    assert blend[0] == 0.0
+    assert blend[-1] == pytest.approx(1.0)
+    start = int(params.steps * (1.0 - mark.GAIN_RAMP_FRACTION))
+    assert blend[start - 1] == 0.0, "the ramp must not start early"
+    assert np.all(np.diff(blend) >= -1e-12), "the ramp must never run backwards"
+
+
+def test_the_starting_cloud_changes_shape_but_not_overall_size():
+    """The anisotropy is normalised to geometric mean 1 on purpose: without
+    it a run can draw three large axis scales at once and start with a cloud
+    too far out to come in within `STEPS`.
+    """
+    for seed in range(20):
+        params = mark.run_parameters(seed=seed, count=4)
+        assert np.exp(np.log(params.axes).mean()) == pytest.approx(1.0)
+        assert params.axes.min() < params.axes.max(), "no anisotropy at all"
+        assert mark.SEED_SIGMA_RANGE[0] <= params.sigma <= mark.SEED_SIGMA_RANGE[1]
+
+
+def test_a_run_can_be_replayed_from_the_seed_it_reports():
+    """The seed goes into the log and onto the wire (`egg_frame`) so a run
+    someone liked can be reproduced -- and so the device implementation can
+    be compared against this one on identical parameters."""
+    once = mark.MarkCondensation(count=64)
+    replay = mark.MarkCondensation(count=64, seed=once.seed)
+    assert np.array_equal(once.step(), replay.step())

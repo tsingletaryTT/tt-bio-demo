@@ -130,11 +130,13 @@ structure under a permanent lie.
 """
 
 import argparse
+import collections
 import logging
 import pathlib
 import sys
 import threading
 import time
+import uuid
 
 import gi
 
@@ -155,7 +157,11 @@ from ui.states import (
     StateMachine, points_are_visible, ribbon_may_be_revealed, showcase_ended,
 )
 from ui.telemetry import TelemetrySampler
-from ui.mark import BRAND_PURPLE, POINTS as MARK_POINTS, MarkCondensation
+# Not `ui.mark` any more: the easter egg's geometry runs on the chips now, so
+# the module the descent is defined in has to be importable from the runner's
+# venv too and moved to the repo root beside `protocol/`. See mark.py's own
+# docstring; nothing about what it computes changed with the move.
+from mark import BRAND_PURPLE, POINTS as MARK_POINTS, MarkCondensation
 from ui.viewer import StructureViewer
 
 log = logging.getLogger(__name__)
@@ -529,9 +535,25 @@ _TENSIX_KEYS = frozenset({"t"})
 
 # ── the easter egg ──────────────────────────────────────────────────────────
 #
-# `Ctrl+G`, for geometry. `ui/mark.py` pulls a cloud of Gaussian noise into
-# the Tenstorrent mark by gradient descent on a signed distance field, and
-# draws it through the same `StructureViewer.set_points` a fold does.
+# `Ctrl+G`, for geometry. A cloud of Gaussian noise is pulled into the
+# Tenstorrent mark by gradient descent on a signed distance field, and drawn
+# through the same `StructureViewer.set_points` a fold does.
+#
+# WHERE THAT ARITHMETIC RUNS is the interesting part, and it is not here. The
+# UI asks the daemon (`EventClient.send_egg`), the daemon gives the request
+# the next chip that is already free, and a worker computes the whole descent
+# in ttnn (`runner/egg.py`) and streams it back as `egg_frame` events over the
+# same socket a fold's frames come down. This process buffers those and plays
+# them on its own clock -- exactly the shape `_drain_frames` already has, and
+# for the same reason: what arrives off a socket must not decide the cadence
+# of what is on screen.
+#
+# `mark.py`'s numpy descent is still here, and is what runs when no chip
+# answers -- every card folding, no daemon, a wedged worker. THE LABEL
+# CHANGES WHEN THAT HAPPENS (`_EGG_PROVENANCE`). That is not a nicety: the
+# booth's entire claim is that a visitor can trust what it says was computed,
+# and an egg that said "computed on the chip" while running on this laptop
+# would be the one lie in the building.
 #
 # Why a CHORD and not a plain letter. Every unbound plain key in this booth is
 # a visitor touch (`_handle_key`'s last line) -- that is the whole interaction
@@ -547,10 +569,33 @@ _TENSIX_KEYS = frozenset({"t"})
 # a decision rather than leaving it as an omission somebody later "fixes".
 _EGG_KEYS = frozenset({"g"})
 
-# One descent step per tick, at the same cadence `_drain_frames` runs a real
-# fold's frames at -- so the egg's collapse is paced like the diffusion
-# trajectory it is imitating rather than being a separate kind of motion.
+# One frame per tick, at the same cadence `_drain_frames` runs a real fold's
+# frames at -- so the egg's collapse is paced like the diffusion trajectory it
+# is imitating rather than being a separate kind of motion. One tick is one
+# buffered device frame, or (on the fallback) one numpy descent step; both
+# produce `mark.STEPS` frames, so the animation is six seconds either way.
 _EGG_STEP_MS = _FRAME_DRAIN_MS
+
+# How long the booth waits for a chip's first frame before giving up and
+# running the descent here instead.
+#
+# Longer than the daemon's own `EGG_WAIT_S` (2.5 s) on purpose, and the order
+# matters: in the ordinary busy-booth case the daemon answers with an
+# `egg_refused` and the fallback starts immediately, so this timer only ever
+# fires when nothing answered at all -- a daemon that has died between the
+# send and now, a v-mismatched socket, a worker wedged mid-egg. Four seconds
+# is long enough to cover a chip freeing up late and short enough that a
+# visitor reads the card rather than wonders whether it is broken.
+_EGG_DEVICE_WAIT_MS = 4000
+
+# How many `egg_frame` events may sit in the play buffer. One whole run is
+# `mark.STEPS` + 1 frames and the worker delivers them in about a second, so
+# the buffer normally holds the entire animation before the third tick has
+# fired -- which is exactly why the collapse looks smooth however the chip
+# happened to be scheduled. The bound is here so a daemon that streamed
+# forever could not grow this without limit; a run that overruns it drops its
+# OLDEST unplayed frames, because the newest are the ones nearest the mark.
+_EGG_FRAME_BUFFER = 512
 
 # The copy. This is the one place in the booth where a visitor could mistake
 # computed decoration for a computed RESULT, so the card says what it is in
@@ -558,17 +603,47 @@ _EGG_STEP_MS = _FRAME_DRAIN_MS
 # that the booth has not stopped doing its actual job.
 _EGG_TITLE = "Not a fold — geometry, for fun"
 _EGG_BODY = (
-    # The count comes from ui/mark.py rather than being typed here: a number
+    # The count comes from mark.py rather than being typed here: a number
     # in visitor-facing copy that can drift from the thing it describes is
     # exactly the kind of small lie this booth has already had to fix once.
     f"{MARK_POINTS:,} points of Gaussian noise, pulled into the Tenstorrent "
     "mark by gradient descent on a signed distance field. The mark is a cube "
-    "seen corner-on: three faces on an isometric lattice, with a notch."
+    "seen corner-on: three faces on an isometric lattice, with a notch. "
+    "It lands differently every time."
 )
 _EGG_DISCLAIMER = (
-    "Real arithmetic — but no chemistry, no molecule, and nothing off the "
-    "chips. This is not a folded structure."
+    # The sentence that stopped saying "and nothing off the chips" when the
+    # arithmetic moved onto them. What it must keep saying -- and what the
+    # `?`-card omission and the chord both exist to protect -- is that this is
+    # not a structure. Where it ran is a separate claim, made separately,
+    # below, and only when it is true.
+    "Real arithmetic — but no chemistry, no molecule, no protein. "
+    "This is not a folded structure."
 )
+# The provenance line, which is the only line on this card that changes, and
+# the only claim in this booth that could be false without anything on screen
+# giving it away -- an egg drawn by a chip and an egg drawn here look
+# identical. `_egg_provenance_text` is a pure function precisely so a test can
+# pin every state without a display.
+_EGG_PROVENANCE = {
+    "asking": "Asking the booth for a chip…",
+    "device": "Computed on chip {card} — like everything else here.",
+}
+
+# What the card says when the descent ran HERE, keyed by the daemon's own
+# refusal reason.
+#
+# A separate table from `_EGG_PROVENANCE`, and it is separate because merging
+# them was tried and was WRONG: the daemon's reason code for "a chip failed"
+# is `device`, and `_EGG_PROVENANCE` uses that same word for "a chip computed
+# this". One table meant a chip that died mid-egg put "Computed on chip
+# {card}" on screen over a descent that had just fallen back to the host --
+# the exact lie this whole line exists to prevent, produced by a key
+# collision. Two tables cannot collide.
+_EGG_FALLBACK_DEFAULT = "No chip answered, so this one ran on the host CPU."
+_EGG_FALLBACK = {
+    "busy": "Every chip is busy folding, so this one ran on the host CPU.",
+}
 _EGG_NOTE = "Any key returns to the booth · the rail on the right is still live"
 
 # How long an overlay a visitor left open survives their walking away.
@@ -832,14 +907,14 @@ window, .booth-root, .booth-side {{
     font-size: 26px;
     font-weight: 700;
 }}
-/* The easter egg (`Ctrl+G`, ui/mark.py). Same wash as the help card, because
+/* The easter egg (`Ctrl+G`, mark.py). Same wash as the help card, because
    it is the same kind of thing: the booth putting something over itself for
    a moment, not another application.
 
    The BRAND PURPLE the mark is drawn in is deliberately absent from this
    block. #7C68FA measures 4.13:1 on #092221 -- under the 4.5:1 floor every
    label in this booth holds to -- so it is a FILL colour only, on a point
-   cloud in a GL uniform (ui/mark.py's `BRAND_PURPLE`), and never on type.
+   cloud in a GL uniform (mark.py's `BRAND_PURPLE`), and never on type.
    `_ACCENT` is excluded from type here for exactly the same reason. */
 .egg-overlay {{
     background-color: rgba(9, 34, 33, 0.96);
@@ -862,6 +937,16 @@ window, .booth-root, .booth-side {{
        the card that must survive being read from across a booth. */
     color: {_BG};
     font-size: 14pt;
+    font-weight: 700;
+}}
+.egg-provenance {{
+    /* WHERE this ran, and the one line on the card whose text changes. It
+       gets `_TEAL` (8.55:1) -- the booth's "this is a fact about the
+       hardware" colour, the same one `.egg-title` and the viewer caption's
+       title use -- and never the brand purple, which is 4.13:1 and therefore
+       fill-only everywhere in this file. */
+    color: {_TEAL};
+    font-size: 12pt;
     font-weight: 700;
 }}
 .egg-note {{
@@ -1098,7 +1183,7 @@ class DemoApp(Gtk.Application):
         self._preparing_message_label = None
         self._window = None
 
-        # ── the easter egg (Ctrl+G; ui/mark.py, `_EGG_KEYS`) ─────────────
+        # ── the easter egg (Ctrl+G; mark.py, `_EGG_KEYS`) ─────────────
         #
         # It gets its OWN viewer rather than borrowing the protein's. That is
         # the whole reason it cannot disturb a fold in flight: `_drain_frames`
@@ -1116,6 +1201,29 @@ class DemoApp(Gtk.Application):
         self._egg_box = None
         self._egg = None
         self._egg_source_id = None
+        # Which press this is, so frames from an egg the visitor has already
+        # dismissed cannot be drawn into the next one.
+        self._egg_id = None
+        # "asking" | "device" | "cpu" -- and it is `egg_source` (public, no
+        # underscore) for the same reason `egg_visible` is: a headless test
+        # asserting that the label matches where the arithmetic ran must be
+        # able to read it without reaching into a private field, which is
+        # this project's recurring test defect (docs/followups.md).
+        self.egg_source = None
+        self.egg_card = None
+        # Set by an `egg_refused` so the tick that follows can act on it on
+        # the main loop. Carries the daemon's short reason code ("busy" /
+        # "device"), never any text from the wire.
+        self._egg_refusal = None
+        self._egg_deadline = None
+        self._egg_provenance_label = None
+        # Filled by the reader thread, drained by `_tick_egg` on the main
+        # loop. A deque rather than `LatestFrame`: a fold's frames are
+        # advisory and latest-wins is right for them, but an egg's frames ARE
+        # the animation and dropping the middle of it would turn a collapse
+        # into a jump cut.
+        self._egg_frames = collections.deque(maxlen=_EGG_FRAME_BUFFER)
+        self._egg_frames_lock = threading.Lock()
 
         # ── the two interactive surfaces this task adds ──────────────────
         #
@@ -1879,10 +1987,17 @@ class DemoApp(Gtk.Application):
 
         for text, css_class in ((_EGG_BODY, "egg-body"),
                                 (_EGG_DISCLAIMER, "egg-disclaimer"),
+                                (_EGG_PROVENANCE["asking"], "egg-provenance"),
                                 (_EGG_NOTE, "egg-note")):
             label = self._help_label(text, css_class, wrap=True)
             label.set_halign(Gtk.Align.CENTER)
             label.set_justify(Gtk.Justification.CENTER)
+            if css_class == "egg-provenance":
+                # The one label on this card that is rewritten while it is up.
+                # Kept so `_sync_egg_provenance` can reach it; the card is
+                # built once and lives for the process, so there is no
+                # lifetime question here beyond "may be None headlessly".
+                self._egg_provenance_label = label
             ground.append(label)
 
         ground.set_visible(False)
@@ -2352,20 +2467,28 @@ class DemoApp(Gtk.Application):
         self._set_egg_visible(not self.egg_visible)
 
     def _set_egg_visible(self, visible):
-        """Open or close the easter egg (ui/mark.py).
+        """Open or close the easter egg (mark.py, runner/egg.py).
 
-        Opening it starts a fresh condensation from noise -- a visitor who
-        asks for it twice sees it collapse twice, rather than being handed a
-        finished logo -- and starts the one repeating source this feature
-        owns. Closing it REMOVES that source rather than leaving it firing
-        30 times a second against a hidden widget, which is the same rule
-        `ChipVizPanel.set_running` follows and for the same reason: this
-        booth runs unattended all day.
+        Opening it asks the DAEMON to run a fresh descent on a chip and starts
+        the one repeating source this feature owns; the numpy descent is not
+        built here at all, and is built later only if no chip answers (see
+        `_fall_back_to_cpu_egg`). A visitor who asks for it twice sees it
+        collapse twice, from a fresh random seed both times, rather than being
+        handed a finished logo.
 
-        Nothing here touches the state machine, the socket, the protein's
-        viewer or the rail. The fold in flight keeps streaming into the
-        viewer underneath, so dismissing this returns the booth to whatever
-        it would have been showing anyway.
+        Closing it REMOVES that source rather than leaving it firing 30 times
+        a second against a hidden widget, which is the same rule
+        `ChipVizPanel.set_running` follows and for the same reason: this booth
+        runs unattended all day. It also forgets the egg's id, so frames for
+        it that are still in flight are dropped rather than drawn into
+        whatever the next press puts up.
+
+        Nothing here touches the state machine, the protein's viewer or the
+        rail. It does touch the socket -- one ~60-byte message, through the
+        same bounded outbox and background sender thread every client message
+        uses, so the main loop never waits on it. The fold in flight keeps
+        streaming into the viewer underneath, so dismissing this returns the
+        booth to whatever it would have been showing anyway.
         """
         visible = bool(visible)
         self.egg_visible = visible
@@ -2376,14 +2499,35 @@ class DemoApp(Gtk.Application):
         if self._egg_box is not None:
             self._egg_box.set_visible(visible)
         self._stop_egg_source()
+        self._egg = None
+        self._egg_refusal = None
+        self._egg_deadline = None
+        with self._egg_frames_lock:
+            self._egg_frames.clear()
         if not visible:
-            self._egg = None
+            self._egg_id = None
+            self.egg_source = None
+            self.egg_card = None
             return
         try:
-            self._egg = MarkCondensation()
+            self._egg_id = uuid.uuid4().hex
+            self.egg_card = None
+            self.egg_source = "asking"
+            self._sync_egg_provenance()
             if self.egg_viewer is not None:
+                # Cleared and left EMPTY, deliberately. The first thing drawn
+                # must be the chip's own step-0 noise, so that what a visitor
+                # watches collapse is the cloud the chip actually started
+                # from -- not a locally-drawn one that jumps the instant the
+                # real frames arrive.
                 self.egg_viewer.clear_structure()
-                self.egg_viewer.set_points(self._egg.points())
+            asked = self._ask_for_an_egg(self._egg_id)
+            self._egg_deadline = time.monotonic() + _EGG_DEVICE_WAIT_MS / 1000.0
+            if not asked:
+                # No daemon, or a protocol this build refuses to speak to.
+                # Nothing is ever coming, so do not make the visitor sit out
+                # a timeout to learn it.
+                self._fall_back_to_cpu_egg("cpu")
             self._egg_source_id = GLib.timeout_add(_EGG_STEP_MS, self._tick_egg)
         except Exception:
             # Fail-soft, like everything else a visitor can reach: an egg
@@ -2392,8 +2536,75 @@ class DemoApp(Gtk.Application):
             log.exception("easter egg could not be started")
             self.egg_visible = False
             self._egg = None
+            self._egg_id = None
             if self._egg_box is not None:
                 self._egg_box.set_visible(False)
+
+    def _ask_for_an_egg(self, egg_id):
+        """Send one `egg` message. Returns whether it was queued.
+
+        Its own method so the "there is no daemon" path is one branch rather
+        than a `getattr` chain inside `_set_egg_visible`, and so a test can
+        drive both answers without a socket.
+        """
+        client = getattr(self, "_client", None)
+        if client is None:
+            return False
+        try:
+            return bool(client.send_egg(egg_id))
+        except Exception:
+            # `send_egg` promises not to raise; this is the belt-and-braces
+            # every GLib callback in this file wears, because an exception
+            # here would freeze the key handler for the life of the process.
+            log.exception("could not ask the daemon for an easter egg")
+            return False
+
+    def _fall_back_to_cpu_egg(self, reason):
+        """Run the descent here instead, and say so on the card.
+
+        `reason` is the daemon's own short code ("busy") or "cpu" for "nobody
+        answered at all"; it selects one of two sentences and never reaches
+        the screen as text. Idempotent -- a refusal arriving just after the
+        timeout has already fired must not restart the descent halfway
+        through it.
+        """
+        if self._egg is not None:
+            return
+        self.egg_card = None
+        self.egg_source = "cpu"
+        self._egg_refusal = reason
+        self._egg = MarkCondensation()
+        log.info("easter egg falling back to the host CPU (%s), seed %d",
+                 self._egg_refusal, self._egg.seed)
+        self._sync_egg_provenance()
+        if self.egg_viewer is not None:
+            self.egg_viewer.set_points(self._egg.points())
+
+    def _egg_provenance_text(self):
+        """The one line on the card that changes. Pure, and total.
+
+        Pure so that "does the label match where the arithmetic ran" is a
+        question a test can ask directly, in one call, rather than by
+        rendering a widget and reading a string off it -- and total so that a
+        state this method has never heard of produces the CAUTIOUS sentence
+        (the CPU one) rather than a stale claim about a chip. The device
+        sentence is reachable from exactly one branch, and that branch needs
+        both a `device` source and a card number that came off the wire.
+        """
+        if self.egg_source == "device" and self.egg_card is not None:
+            return _EGG_PROVENANCE["device"].format(card=self.egg_card)
+        if self.egg_source == "asking":
+            return _EGG_PROVENANCE["asking"]
+        return _EGG_FALLBACK.get(self._egg_refusal, _EGG_FALLBACK_DEFAULT)
+
+    def _sync_egg_provenance(self):
+        """Put `_egg_provenance_text` on the card. Tolerates no widget."""
+        if self._egg_provenance_label is None:
+            return
+        try:
+            self._egg_provenance_label.set_label(self._egg_provenance_text())
+        except Exception:
+            log.exception("easter egg provenance label update dropped")
 
     def _stop_egg_source(self):
         """Remove the egg's timer if it is registered. Idempotent."""
@@ -2402,16 +2613,16 @@ class DemoApp(Gtk.Application):
             self._egg_source_id = None
 
     def _tick_egg(self):
-        """One gradient-descent step of the mark, on the main loop.
+        """One frame of the mark, on the main loop.
 
         This source is meant to STOP -- once the cloud has settled there is
-        nothing left to compute and the mark simply holds until dismissed --
-        so unlike the booth's other repeating sources it can return False.
-        The rule those sources exist to satisfy is still met: `keep` is
-        decided before the try and an escaping exception leaves it False, so
-        a failure stops the timer cleanly rather than freezing it or
-        spraying a traceback 30 times a second. Whatever the cloud had
-        reached stays on screen, still captioned as geometry.
+        nothing left to draw and the mark simply holds until dismissed -- so
+        unlike the booth's other repeating sources it can return False. The
+        rule those sources exist to satisfy is still met: `keep` is decided
+        before the try and an escaping exception leaves it False, so a failure
+        stops the timer cleanly rather than freezing it or spraying a
+        traceback 30 times a second. Whatever the cloud had reached stays on
+        screen, still captioned as geometry.
         """
         keep = False
         try:
@@ -2423,13 +2634,87 @@ class DemoApp(Gtk.Application):
         return keep
 
     def _advance_egg(self):
-        """Advance the condensation one step. True to keep the timer."""
-        if not self.egg_visible or self._egg is None:
+        """Draw one frame of the egg. True to keep the timer.
+
+        Three sources of a frame, checked in this order, and the order is the
+        policy:
+
+        1. **A chip's frame, if one is waiting.** Device frames win outright:
+           if the chip answered at all, that is what a visitor watches.
+        2. **The fallback's next step**, once one has been started.
+        3. **Neither**, in which case this decides whether to keep waiting or
+           to start the fallback -- either because the daemon refused (which
+           is the ordinary busy-booth answer and arrives in well under a
+           second) or because `_EGG_DEVICE_WAIT_MS` has passed with silence.
+
+        Returning True while waiting is what keeps the card alive during (3);
+        the idle timeout above still closes the whole thing if the visitor
+        walks away.
+        """
+        if not self.egg_visible:
             return False
-        points = self._egg.step()
+        frame = self._take_egg_frame()
+        if frame is not None:
+            return self._draw_egg_frame(frame)
+        if self._egg is not None:
+            points = self._egg.step()
+            if self.egg_viewer is not None:
+                self.egg_viewer.set_points(points)
+            return not self._egg.done
+        refusal = self._egg_refusal
+        if refusal is not None and self.egg_source != "cpu":
+            self._fall_back_to_cpu_egg(refusal)
+            return True
+        if self._egg_deadline is not None and time.monotonic() >= self._egg_deadline:
+            log.info("no chip answered the easter egg in %.1fs; running it here",
+                     _EGG_DEVICE_WAIT_MS / 1000.0)
+            self._fall_back_to_cpu_egg("cpu")
+            return True
+        if self.egg_source == "device":
+            # Every frame this run is going to send has been drawn. The mark
+            # holds until the visitor dismisses it, so the timer's work here
+            # is done.
+            return False
+        return True                      # still waiting for a first frame
+
+    def _take_egg_frame(self):
+        """The oldest unplayed `egg_frame` for the CURRENT egg, or None.
+
+        Frames for a superseded press are dropped here rather than at the
+        socket, because `_egg_id` is main-loop state and the reader thread has
+        no business reading it.
+        """
+        with self._egg_frames_lock:
+            while self._egg_frames:
+                frame = self._egg_frames.popleft()
+                if frame.get("egg_id") == self._egg_id:
+                    return frame
+        return None
+
+    def _draw_egg_frame(self, frame):
+        """Draw one device frame. True to keep the timer.
+
+        This is also where "computed on the chip" becomes true on screen: the
+        claim is made when the FIRST frame from that chip is actually drawn,
+        not when the request was sent and not when the event arrived -- so
+        there is no window in which the card claims a chip that has produced
+        nothing.
+        """
+        coords = unpack_coords(frame["coords_b64"])
+        if self.egg_source != "device":
+            self.egg_source = "device"
+            self.egg_card = frame.get("card")
+            self._egg_deadline = None
+            log.info("easter egg computed on chip %s (seed %s)",
+                     self.egg_card, frame.get("seed"))
+            self._sync_egg_provenance()
         if self.egg_viewer is not None:
-            self.egg_viewer.set_points(points)
-        return not self._egg.done
+            self.egg_viewer.set_points(coords)
+        # The last frame is the settled mark; nothing more is coming, but
+        # there may still be buffered frames behind it if the wire ran ahead.
+        with self._egg_frames_lock:
+            more = bool(self._egg_frames)
+        return more or frame.get("step") != frame.get("total")
 
     def _show_help(self):
         self._set_help_visible(True)
@@ -2592,6 +2877,16 @@ class DemoApp(Gtk.Application):
         kind = event["type"]
         if kind == "frame":
             self._frames.put(event)
+        elif kind == "egg_frame":
+            # Buffered, not idle_add'ed one per frame: a whole run is ~180
+            # events delivered in about a second, and 180 idle callbacks
+            # queued behind whatever else the main loop is doing would draw
+            # the entire collapse in a fraction of a second. The egg's own
+            # timer plays them at the cadence the animation was designed for.
+            # This runs on the READER thread, so it touches nothing but the
+            # deque and its lock.
+            with self._egg_frames_lock:
+                self._egg_frames.append(event)
         else:
             GLib.idle_add(self._handle_event, event)
 
@@ -2727,6 +3022,19 @@ class DemoApp(Gtk.Application):
                 # pipeline panel's own staleness check (ui/panels.py) takes
                 # the stage readout down beside it.
                 self._end_fold_in_flight()
+            elif kind == "egg_refused":
+                # The daemon could not give the egg a chip. `message`, if it
+                # is there at all, is runner-side detail and must never reach
+                # a screen (the same rule `job_error` follows) -- only the
+                # short `reason` code is used, and only to choose between two
+                # sentences this file owns.
+                log.info("easter egg refused (%s): %s", event.get("reason"),
+                         event.get("message"))
+                if event.get("egg_id") == self._egg_id:
+                    # Recorded, not acted on: the fallback is started by
+                    # `_advance_egg`, on the egg's own timer, so that every
+                    # transition this feature makes happens in one method.
+                    self._egg_refusal = event.get("reason")
             else:
                 # A future protocol addition should be visible in the logs,
                 # not silently dropped the way job_error was before this fix.

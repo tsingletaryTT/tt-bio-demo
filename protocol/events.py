@@ -17,6 +17,16 @@ log = logging.getLogger(__name__)
 # only ever broadcast and the UI only ever read, so a visitor's pick could
 # not cause a fold; v2 adds the client->server direction below.
 #
+# Bumped 2 -> 3 when the easter egg moved onto the chips. That added one
+# client message (`egg`) and two events (`egg_frame`, `egg_refused`), and a
+# bump is the correct response to BOTH halves of that. A v3 UI against a v2
+# daemon would send `egg` lines that daemon answers with a ProtocolError in
+# its own log and nothing on the wire -- so the booth would sit through the
+# UI's whole device-wait timeout on every press before falling back, which is
+# a capability silently half-promised, exactly what the paragraph below says
+# not to do. And a v2 UI against a v3 daemon would be handed `egg_frame`
+# events it cannot decode.
+#
 # This number is load-bearing, not decorative: `hello` carries it, and
 # ui/client.py refuses to interpret a daemon whose version differs from its
 # own -- it logs, sets state "incompatible", and deliberately never retries
@@ -26,14 +36,23 @@ log = logging.getLogger(__name__)
 # have; a v1 UI against a v2 daemon refuses on its own and cannot be taught
 # otherwise from here. Both halves ship in one Debian package, so a mismatch
 # means a half-finished upgrade -- a thing to notice, not to paper over.
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3
 
 # --- server -> client ------------------------------------------------------
 # Unchanged by multi-chip: scheduling across four cards adds no event. The
 # `card_state` event already carried per-card status from Phase 3a.
+#
+# v3 adds the two the easter egg needs, and `egg_frame` is deliberately NOT a
+# `frame` with an extra field on it. A `frame` carries a `job_id`, and the UI
+# routes one into whichever fold slot owns that job (ui/slots.py); an egg has
+# no job and belongs in no slot, so a `frame` bearing an id nothing dispatched
+# would either be dropped or -- worse -- land a logo in the middle of a
+# visitor's protein. A separate type makes that structurally impossible
+# rather than conditionally avoided: every switch on `type` in ui/app.py sends
+# these somewhere else by construction.
 EVENT_TYPES = frozenset(
     {"hello", "not_ready", "job_start", "stage", "frame",
-     "job_done", "job_error", "card_state"}
+     "job_done", "job_error", "card_state", "egg_frame", "egg_refused"}
 )
 
 # --- client -> server ------------------------------------------------------
@@ -47,14 +66,20 @@ EVENT_TYPES = frozenset(
 # way -- at which point a client could inject a `job_done` and fake a fold
 # result. Two sets turn a direction error into a ProtocolError at the
 # boundary instead of a mystery three modules later.
-CLIENT_MESSAGE_TYPES = frozenset({"pick"})
+CLIENT_MESSAGE_TYPES = frozenset({"pick", "egg"})
 
-# The longest `target_id` a client may send. The daemon reads this off a
-# public socket in a room full of strangers' laptops: a megabyte target_id is
-# a megabyte the daemon should never have allocated, and this limit is the
-# only thing that says so. It bounds LENGTH only -- whether the id names a
-# real playlist entry is a question for the daemon, answered against the
-# playlist rather than against a string.
+# Which single string field each client message carries. Kept as a table
+# rather than as a chain of `if kind == ...` inside decode_client_message so
+# that adding a message cannot accidentally add a message with NO validation:
+# the decoder looks its field up here and refuses a type that is not in it.
+CLIENT_MESSAGE_FIELDS = {"pick": "target_id", "egg": "egg_id"}
+
+# The longest id a client may send, in either message. The daemon reads this
+# off a public socket in a room full of strangers' laptops: a megabyte
+# target_id is a megabyte the daemon should never have allocated, and this
+# limit is the only thing that says so. It bounds LENGTH only -- whether the
+# id names a real playlist entry is a question for the daemon, answered
+# against the playlist rather than against a string.
 MAX_TARGET_ID_LEN = 64
 
 # ---------------------------------------------------------------------------
@@ -232,6 +257,19 @@ def pick_message(target_id):
     return {"type": "pick", "version": PROTOCOL_VERSION, "target_id": target_id}
 
 
+def egg_message(egg_id):
+    """Build the other client->server message: "run the easter egg on a chip".
+
+    `egg_id` is the UI's own handle for this press, echoed back on every
+    `egg_frame` and on an `egg_refused`, so a UI that has already dismissed
+    one egg and opened another cannot draw the first one's frames into the
+    second one's viewer. Same shape and same non-validation as
+    `pick_message`: the boundary is `encode_client_message` /
+    `decode_client_message`, and a rule written twice is a rule that drifts.
+    """
+    return {"type": "egg", "version": PROTOCOL_VERSION, "egg_id": egg_id}
+
+
 def encode_client_message(message):
     """Serialize one client->server message to a newline-terminated JSON line.
 
@@ -271,10 +309,11 @@ def decode_client_message(line):
     not plan for -- a booth daemon that one bad line can kill is worse than
     one that cannot be picked from.
 
-    Validates `type`, `version`, and that `target_id` is a non-empty `str` of
-    at most MAX_TARGET_ID_LEN characters. It validates NOTHING about what the
-    target means: whether that id names a real playlist entry is the daemon's
-    question, answered against the playlist.
+    Validates `type`, `version`, and that this message type's one id field
+    (`CLIENT_MESSAGE_FIELDS`) is a non-empty `str` of at most
+    MAX_TARGET_ID_LEN characters. It validates NOTHING about what the id
+    means: whether it names a real playlist entry is the daemon's question,
+    answered against the playlist.
     """
     try:
         message = json.loads(line)
@@ -303,15 +342,21 @@ def decode_client_message(line):
         raise ProtocolError(
             f"client speaks protocol v{_brief(message['version'])}, "
             f"this build speaks v{PROTOCOL_VERSION}")
-    target_id = message.get("target_id")
-    if not isinstance(target_id, str):
+    field = CLIENT_MESSAGE_FIELDS.get(kind)
+    if field is None:
+        # Only reachable if CLIENT_MESSAGE_TYPES gains a member and this table
+        # does not. Refusing is the safe half of that mistake: the alternative
+        # is a message reaching the daemon with nothing at all checked on it.
+        raise ProtocolError(f"no validation rule for client message {kind!r}")
+    value = message.get(field)
+    if not isinstance(value, str):
         raise ProtocolError(
-            f"'target_id' must be a string, got {type(target_id).__name__}")
-    if not target_id:
-        raise ProtocolError("'target_id' must not be empty")
-    if len(target_id) > MAX_TARGET_ID_LEN:
+            f"{field!r} must be a string, got {type(value).__name__}")
+    if not value:
+        raise ProtocolError(f"{field!r} must not be empty")
+    if len(value) > MAX_TARGET_ID_LEN:
         raise ProtocolError(
-            f"'target_id' is {len(target_id)} characters, "
+            f"{field!r} is {len(value)} characters, "
             f"limit is {MAX_TARGET_ID_LEN}")
     return message
 

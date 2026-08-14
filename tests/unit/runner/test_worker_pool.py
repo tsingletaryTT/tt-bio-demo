@@ -584,3 +584,84 @@ def test_the_pool_lists_every_card_it_manages(pool):
     pool.workers[1].emit({"type": CONTROL_FATAL, "reason": "device lease held"})
     assert _wait(lambda: pool.workers[1].drained)     # GUARD: the line was read
     assert pool.cards == [0, 1, 2, 3]
+
+
+# ---------------------------------------------------------------------------
+# The easter egg's dispatch (runner/egg.py). It borrows a chip for about a
+# second and a half, so it must reserve one exactly as a fold does -- and
+# must not be able to cost a fold anything when it goes wrong.
+# ---------------------------------------------------------------------------
+
+def test_an_egg_is_sent_as_its_own_command_not_as_a_fold(pool):
+    """The worker branches on `cmd`. An egg arriving as a `fold` would send a
+    Folder looking for an input file that does not exist."""
+    pool.start()
+    pool.workers[1].emit({"type": CONTROL_READY})
+    assert _wait(lambda: pool.ready_cards() == [1])
+    pool.dispatch_egg("e1", card=1, seed=99)
+    assert pool.workers[1].commands == [
+        {"cmd": "egg", "egg_id": "e1", "seed": 99}]
+
+
+def test_an_egg_reserves_its_card_exactly_as_a_fold_does(pool):
+    """For the second or so it takes, the chip really is occupied.
+
+    Mutation this catches: dispatching the egg without reserving, which would
+    let the daemon's very next pass hand that same worker a fold -- two
+    commands queued on a process that reads them one at a time, and a fold
+    that does not start until the toy has finished.
+    """
+    pool.start()
+    pool.workers[0].emit({"type": CONTROL_READY})
+    assert _wait(lambda: pool.ready_cards() == [0])
+    pool.dispatch_egg("e1", card=0)
+    assert pool.ready_cards() == []
+    assert pool.busy_job(0) == "e1"
+    with pytest.raises(ValueError):
+        pool.dispatch(_job("j1"), card=0)
+    pool.workers[0].emit({"type": CONTROL_IDLE, "job_id": "e1"})
+    assert _wait(lambda: pool.ready_cards() == [0])
+
+
+def test_an_egg_is_refused_by_a_card_that_is_not_ready(pool):
+    """The same exception `dispatch` raises, so the daemon has one thing to
+    catch for "that chip would not take it"."""
+    pool.start()
+    with pytest.raises(ValueError):
+        pool.dispatch_egg("e1", card=0)
+    pool.workers[0].emit({"type": CONTROL_READY})
+    assert _wait(lambda: pool.ready_cards() == [0])
+    pool.dispatch(_job("j1"), card=0)
+    with pytest.raises(ValueError):
+        pool.dispatch_egg("e1", card=0)
+
+
+def test_an_egg_lost_with_its_worker_names_no_target(tmp_path):
+    """The reservation an egg makes carries `target_id=None` on purpose: the
+    daemon counts a worker death against the TARGET that was folding, and an
+    egg is not a target. Three of these must not quarantine anything.
+
+    Mutation this catches: reserving with a placeholder target_id (say
+    "easter-egg"), which would silently accumulate failures against a name
+    that is not in the playlist -- harmless today, and exactly the kind of
+    thing that becomes a mysterious quarantine later.
+    """
+    made, lost = {}, []
+
+    def spawn(spec, env):
+        made[spec.card] = _FakeWorker(spec, env)
+        return made[spec.card]
+
+    p = WorkerPool([_spec(0)], on_event=lambda c, e: None,
+                   log_root=str(tmp_path), spawn=spawn, restart_delay_s=30.0,
+                   on_worker_lost=lambda *a: lost.append(a))
+    try:
+        p.start()
+        made[0].emit({"type": CONTROL_READY})
+        assert _wait(lambda: p.ready_cards() == [0])
+        p.dispatch_egg("e1", card=0)
+        made[0].die()
+        assert _wait(lambda: bool(lost))
+        assert lost == [(0, "e1", None)]
+    finally:
+        p.stop()

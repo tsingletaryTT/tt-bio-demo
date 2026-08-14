@@ -11,6 +11,14 @@ the four things that must have exactly one owner for the whole booth:
   UI -- the pool deliberately fabricates no protocol events of its own;
 - the **failure/quarantine policy** for *targets*.
 
+It also owns the one thing a UI can ask it for: the **easter egg**
+(`on_client_message` / `_dispatch_egg`). That handler is deliberately narrow
+-- it acts on `egg` and drops `pick`, which is a task of its own -- and the
+egg's claim on the hardware is deliberately the weakest one available: the
+next chip that is already free, never a fold in flight, never a place in the
+queue, and a refusal after `EGG_WAIT_S` if the booth is busy. See
+`dispatch_once`.
+
 Failure policy (spec section 6): a failed fold is logged in full by the worker
 that ran it, reported to the UI as a `job_error`, and the loop advances to the
 next target. A target that fails three times is quarantined for the session
@@ -153,6 +161,24 @@ DEFAULT_STRUCTURES_BUDGET_BYTES = 200 * 1024**2
 # constant exists to provide evaporating exactly when the booth got busy.
 PROTECTED_STRUCTURE_COUNT = 3
 
+# How long an easter-egg request waits for a chip before the daemon gives up
+# and says so (`egg_refused`, reason "busy"). See `_dispatch_egg`.
+#
+# The number is set by what the booth is usually doing, which is folding on
+# every chip it has: the attract loop re-enqueues the playlist whenever the
+# queue drains, so `dispatch_once` hands work to every free card four times a
+# second and "a chip is idle right now" is the rare state, not the normal one.
+# What IS common is a chip freeing up soon -- with four cards and folds
+# measured at 4.4-22 s, one finishes every 1-5 s on average. So the egg waits,
+# briefly, for the next card to come free rather than refusing on the spot.
+#
+# 2.5 s is a bound on how long a visitor stares at a card that has not started
+# yet, and it is deliberately SHORTER than the UI's own device-wait timeout
+# (`_EGG_DEVICE_WAIT_MS` in ui/app.py) so that the ordinary busy-booth case
+# ends with the daemon SAYING it is busy rather than with the UI timing out on
+# silence. Those two constants must stay in that order.
+EGG_WAIT_S = 2.5
+
 
 @dataclass
 class DaemonConfig:
@@ -195,7 +221,8 @@ class Daemon:
     def __init__(self, config):
         self.config = config
         self.queue = JobQueue()
-        self.server = EventServer(config.socket_path, self._hello)
+        self.server = EventServer(config.socket_path, self._hello,
+                                  on_client_message=self.on_client_message)
         # Built by run() from worker_specs(), or injected by a test before
         # run() is called. None until then -- constructing it here would make
         # merely constructing a Daemon enumerate /dev/tenstorrent and import
@@ -219,6 +246,16 @@ class Daemon:
         # no target_id (see protocol/events.py), and the daemon needs one to
         # clear that target's failure count on success.
         self._in_flight = {}
+        # The easter egg (runner/egg.py), and nothing else about the
+        # client->server direction. `_egg_request` is (egg_id, deadline) or
+        # None -- at most one waiting at a time, newest wins -- and
+        # `_egg_on_card` records which card is running one so a worker death
+        # mid-egg is reported as a refused egg rather than as a failed fold.
+        # Both are touched from a reader thread (`on_client_message`) and from
+        # run()'s own thread (`_dispatch_egg`), hence the lock.
+        self._egg_lock = threading.Lock()
+        self._egg_request = None
+        self._egg_on_card = {}
         # run() spawns worker processes; guards against a second call spawning
         # a second set onto chips the first call's teardown has just released.
         self._started = False
@@ -305,6 +342,44 @@ class Daemon:
     def _emit(self, event):
         self.server.broadcast(event)
 
+    # -- what a UI asks for -------------------------------------------------
+
+    def on_client_message(self, message, now=None):
+        """One decoded client->server message. Runs on that client's reader
+        thread (runner/server.py `_reader_loop`).
+
+        **Deliberately narrow.** It handles `egg` and nothing else. `pick` --
+        the message this direction was built for, and the one the queue's
+        priority path is waiting on -- is a task of its own (the multi-chip
+        plan's Task 9, unstarted), and answering it here with a half
+        implementation would be worse than not answering it: a booth that
+        sometimes folds what you tapped is harder to diagnose than one that
+        never does. A `pick` arriving is therefore logged and dropped, which
+        is exactly what happened before this method existed.
+
+        An `egg` never enters the job queue and never becomes a `Job`. It is
+        recorded as a request for the NEXT free chip and expires on its own
+        (`EGG_WAIT_S`); see `_dispatch_egg` for what happens either way.
+        """
+        kind = message.get("type")
+        if kind != "egg":
+            log.info("ignoring client message %r; this daemon acts on 'egg' "
+                     "only", kind)
+            return
+        egg_id = message.get("egg_id")
+        deadline = (time.monotonic() if now is None else now) + EGG_WAIT_S
+        with self._egg_lock:
+            # Newest wins, and the one it replaces is simply forgotten. A
+            # visitor pressing the chord twice means "do it again", and the UI
+            # keys its frames on `egg_id`, so an older request that later got
+            # a chip would draw into a viewer that is no longer showing it.
+            if self._egg_request is not None:
+                log.info("egg %s replaces %s, which never got a chip",
+                         egg_id, self._egg_request[0])
+            self._egg_request = (egg_id, deadline)
+        log.info("egg %s requested; waiting up to %.1fs for a free chip",
+                 egg_id, EGG_WAIT_S)
+
     # -- what the pool reports ---------------------------------------------
 
     def on_event(self, card, event):
@@ -322,6 +397,16 @@ class Daemon:
         the event, which is the thing the screen actually needs.
         """
         kind = event.get("type")
+        # An egg is over the moment its last frame goes out, its worker
+        # refuses it, or a fold starts on the same chip. Forgetting to clear
+        # this is not cosmetic: `on_worker_lost` reads it, so a stale entry
+        # would report a LATER fold's death as a refused egg and leave the UI
+        # believing a fold that has died is still running.
+        if kind == "egg_refused" or kind == "job_start" or (
+                kind == "egg_frame"
+                and event.get("step") == event.get("total")):
+            self._egg_settled(card)
+
         if kind == "job_start":
             # The worker's own statement of what it is folding. `dispatch_once`
             # already recorded this, and the two agree -- but a `job_done`
@@ -410,6 +495,25 @@ class Daemon:
         crash loop gets built out of a policy that was meant to survive one.
         """
         try:
+            with self._egg_lock:
+                was_egg = self._egg_on_card.get(card) == job_id
+                if was_egg:
+                    self._egg_on_card.pop(card, None)
+            if was_egg:
+                # A `job_error` here would be a lie in the one direction that
+                # matters: the UI's `job_error` branch takes down the "now
+                # folding X" caption, and no fold was running. The egg says it
+                # was refused, the UI falls back to its own CPU descent, and
+                # the label it puts up says CPU -- which is then true.
+                log.warning("card %s: worker died running egg %s", card, job_id)
+                self._emit({"type": "egg_refused", "egg_id": job_id,
+                            "reason": "device"})
+                # No `mark_idle`: an egg never marked the card busy in
+                # CardPool in the first place (only `job_start` does that, and
+                # an egg emits none), so there is nothing here to undo. The
+                # pool's own reservation is cleared by `_worker_exited`, which
+                # is what actually decides whether this chip gets more work.
+                return
             log.warning("card %s: worker died with job %s (%s) in flight",
                         card, job_id, target_id)
             self._emit({"type": "job_error", "job_id": job_id,
@@ -461,7 +565,21 @@ class Daemon:
         stops a second job going to the same chip in this same pass), and the
         card is reported busy on the wire only once its worker announces the
         fold has actually started -- see `on_event`. Two facts, two owners.
+
+        **The easter egg goes first, and `ready_cards()` is read afterwards.**
+        That order is the whole of the egg's scheduling policy and it is
+        deliberately the weakest possible claim on the hardware: the egg is
+        offered the next card that is ALREADY free, it never pre-empts a fold
+        in flight, it never jumps the job queue (the queue is untouched -- the
+        job that would have gone to this card simply goes to the next one, or
+        on the next pass), and if no card is free it waits `EGG_WAIT_S` and
+        then gets nothing. The playlist is an infinite attract loop, so the
+        cost of an egg is at most one chip busy for ~1.5 s -- not a visitor's
+        protein, which is the line this must not cross.
         """
+        self._dispatch_egg()
+        # AFTER the egg, never before: `dispatch_egg` reserves a card in the
+        # pool, and a `ready` set snapshotted first would still list it.
         ready = set(self.pool.ready_cards())
         # A snapshot, taken once: schedulable() is recomputed from mutable
         # state and iterating it live while dispatching into it is how a pass
@@ -487,6 +605,87 @@ class Daemon:
                 self.queue.submit(job)
                 continue
             self._in_flight[card] = job.target_id
+
+    # -- the easter egg's share of the hardware ----------------------------
+
+    def _egg_settled(self, card):
+        """Forget that `card` was running an egg. Idempotent."""
+        with self._egg_lock:
+            self._egg_on_card.pop(card, None)
+
+    def _take_egg_request(self, egg_id):
+        """Clear the pending request, but only if it is still `egg_id`.
+
+        Guarded on identity because a second press can arrive between this
+        pass reading the request and acting on it, and clearing blindly would
+        drop the NEWER request -- which is the one the visitor is waiting for.
+        """
+        with self._egg_lock:
+            if self._egg_request is not None and self._egg_request[0] == egg_id:
+                self._egg_request = None
+
+    def _free_card_for_egg(self):
+        """The first chip that could take an egg right now, or None.
+
+        The same two independent gates `dispatch_once` uses for a fold, in the
+        same order and for the same reasons: `CardPool.schedulable()` knows
+        about heat, `WorkerPool.ready_cards()` knows whether a live worker is
+        idle on that chip. An egg is not special enough to skip either -- in
+        particular it must not be handed a chip that is out of rotation at
+        91 C, which is exactly the sort of exception a "it's only a toy"
+        argument would make and which would put load on the one chip the
+        thermal guard is trying to protect.
+        """
+        if self.pool is None:
+            return None
+        ready = set(self.pool.ready_cards())
+        for card in self.cards.schedulable():
+            if card in ready:
+                return card
+        return None
+
+    def _dispatch_egg(self, now=None):
+        """Give a waiting easter egg the next free chip, or refuse it.
+
+        Returns the card it went to, or None. Never raises into `run()`'s
+        loop: an egg is a toy, and a bug in it must not be able to stop the
+        booth folding.
+        """
+        with self._egg_lock:
+            request = self._egg_request
+        if request is None:
+            return None
+        egg_id, deadline = request
+        now = time.monotonic() if now is None else now
+        card = self._free_card_for_egg()
+        if card is None:
+            if now < deadline:
+                return None                 # still waiting for a chip
+            self._take_egg_request(egg_id)
+            log.info("egg %s: every chip is folding; refusing it", egg_id)
+            # "busy", not "device": the UI puts a different sentence on screen
+            # for each, and the difference between "the booth is working" and
+            # "something went wrong" is the whole reason there are two.
+            self._emit({"type": "egg_refused", "egg_id": egg_id,
+                        "reason": "busy"})
+            return None
+        self._take_egg_request(egg_id)
+        try:
+            self.pool.dispatch_egg(egg_id, card)
+        except Exception:
+            # Same window `dispatch_once` guards for a fold: the card stopped
+            # being dispatchable between `ready_cards()` and the write. There
+            # is nothing to requeue -- an egg is not a job -- so the visitor
+            # is told, and the UI falls back to the CPU with the CPU label.
+            log.warning("card %s refused egg %s; telling the UI", card, egg_id,
+                        exc_info=True)
+            self._emit({"type": "egg_refused", "egg_id": egg_id,
+                        "reason": "busy"})
+            return None
+        with self._egg_lock:
+            self._egg_on_card[card] = egg_id
+        log.info("egg %s running on card %s", egg_id, card)
+        return card
 
     # -- the loop ----------------------------------------------------------
 

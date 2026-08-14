@@ -583,3 +583,118 @@ def test_constructing_a_worker_session_does_not_touch_sigterm_disposition():
     session, _e, _c = _session(folder)
     session.run([json.dumps({"cmd": "stop"})])
     assert signal.getsignal(signal.SIGTERM) is before
+
+
+# ---------------------------------------------------------------------------
+# The easter egg command (runner/egg.py). Not a fold, and the point of most
+# of these tests is that it cannot be mistaken for one.
+# ---------------------------------------------------------------------------
+
+class _FakeEgg:
+    """Stands in for `runner.egg.run_egg`, which needs a real chip."""
+
+    def __init__(self, outcome=None):
+        self.outcome = outcome
+        self.calls = []
+
+    def __call__(self, device, emit, *, egg_id, card, seed=None):
+        self.calls.append((device, egg_id, card, seed))
+        if isinstance(self.outcome, BaseException):
+            raise self.outcome
+        emit({"type": "egg_frame", "egg_id": egg_id, "card": card,
+              "step": 1, "total": 1, "seed": 7, "coords_b64": "AAA="})
+        return 7
+
+
+class _FolderWithDevice(_FakeFolder):
+    def __init__(self, device="the-chip", **kw):
+        super().__init__(**kw)
+        self.device = device
+
+
+def _install_egg(monkeypatch, fake):
+    """Replace `run_egg` where the worker imports it from.
+
+    `WorkerSession._egg` does `from runner.egg import run_egg` INSIDE the
+    method (ttnn is not something the parent's tests may import), so the name
+    has to be patched on the module the import resolves against.
+    """
+    import runner.egg as egg_module
+    monkeypatch.setattr(egg_module, "run_egg", fake)
+
+
+def test_an_egg_command_runs_on_this_workers_own_chip(monkeypatch):
+    """`card` and the device handle both come from this worker, not from the
+    command. A worker that took either from the wire could be told to report
+    a chip it is not holding -- the exact class of lie the whole
+    one-process-per-chip design exists to make impossible."""
+    fake = _FakeEgg()
+    _install_egg(monkeypatch, fake)
+    folder = _FolderWithDevice()
+    session, events, controls = _session(folder, card=3)
+
+    session.run([json.dumps({"cmd": "egg", "egg_id": "e1", "seed": None})])
+
+    assert fake.calls == [("the-chip", "e1", 3, None)]
+    assert [e["type"] for e in events] == ["egg_frame"]
+    assert events[0]["card"] == 3
+
+
+def test_an_egg_emits_no_job_start_and_no_job_done(monkeypatch):
+    """It is not a fold. A `job_start` would light a chip cell in the UI and
+    put "now folding" under the protein; a `job_done` would start a showcase
+    dwell over a structure that does not exist.
+
+    Mutation this catches: implementing the egg by reusing `Folder.fold`'s
+    event bracket.
+    """
+    _install_egg(monkeypatch, _FakeEgg())
+    session, events, _controls = _session(_FolderWithDevice(), card=0)
+    session.run([json.dumps({"cmd": "egg", "egg_id": "e1"})])
+    assert not [e for e in events
+                if e["type"] in ("job_start", "job_done", "stage")]
+
+
+def test_an_egg_frees_the_worker_afterwards(monkeypatch):
+    """`worker.idle` is the authoritative dispatch signal. Without it the
+    chip is marked busy in the pool for the rest of the day.
+
+    Mutation this catches: skipping CONTROL_IDLE on the egg path.
+    """
+    _install_egg(monkeypatch, _FakeEgg())
+    session, _events, controls = _session(_FolderWithDevice(), card=1)
+    session.run([json.dumps({"cmd": "egg", "egg_id": "e1"})])
+    assert controls[-1] == {"type": CONTROL_IDLE, "card": 1, "job_id": "e1"}
+
+
+def test_an_egg_that_fails_is_refused_out_loud_and_the_worker_survives(
+        monkeypatch):
+    """A visitor is standing in front of the screen waiting. Silence would
+    cost them the UI's whole device-wait timeout before the fallback started
+    -- and, far worse, an unhandled exception here would take the chip out of
+    the booth for a toy.
+    """
+    _install_egg(monkeypatch, _FakeEgg(RuntimeError("ttnn said no")))
+    folder = _FolderWithDevice()
+    session, events, controls = _session(folder, card=2)
+
+    session.run([json.dumps({"cmd": "egg", "egg_id": "e1"}),
+                 json.dumps({"cmd": "fold", "job_id": "j1",
+                             "target_id": "trpcage", "input_path": "/x.yaml"})])
+
+    refusals = [e for e in events if e["type"] == "egg_refused"]
+    assert refusals == [{"type": "egg_refused", "egg_id": "e1",
+                         "reason": "device", "message": "ttnn said no"}]
+    assert controls[-1]["job_id"] == "j1", "the worker must still serve folds"
+    assert folder.folds == [("j1", "trpcage", 2)]
+
+
+def test_an_egg_before_load_is_refused_rather_than_crashing(monkeypatch):
+    """`Folder.device` is None until `load()` succeeds. Reaching ttnn with it
+    would be a `NoneType` traceback out of a worker that was serving fine."""
+    _install_egg(monkeypatch, _FakeEgg())
+    folder = _FolderWithDevice(device=None)
+    session, events, _controls = _session(folder, card=0)
+    session.run([json.dumps({"cmd": "egg", "egg_id": "e1"})])
+    assert [e["type"] for e in events] == ["egg_refused"]
+    assert events[0]["reason"] == "device"

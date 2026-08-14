@@ -27,7 +27,7 @@ import socket
 import threading
 
 from protocol.events import (PROTOCOL_VERSION, ProtocolError, decode,
-                             encode_client_message, pick_message)
+                             egg_message, encode_client_message, pick_message)
 
 log = logging.getLogger(__name__)
 
@@ -183,6 +183,17 @@ class EventClient:
     def send_pick(self, target_id):
         """Ask the daemon to fold `target_id` now. Returns whether it queued."""
         return self.send(pick_message(target_id))
+
+    def send_egg(self, egg_id):
+        """Ask the daemon to run the easter egg on a chip.
+
+        Returns False -- promptly, and without raising -- when there is no
+        daemon, when this build has refused the daemon's protocol version, or
+        when the message cannot be encoded. The caller (ui/app.py) treats
+        every one of those as "no chip is going to answer" and starts the CPU
+        descent with the CPU label, which is the honest half of this feature.
+        """
+        return self.send(egg_message(egg_id))
 
     def start(self):
         self._thread = threading.Thread(

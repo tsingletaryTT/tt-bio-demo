@@ -20,15 +20,15 @@ import pytest
 from protocol.events import (
     CLIENT_MESSAGE_TYPES, EVENT_TYPES, MAX_TARGET_ID_LEN, PROTOCOL_VERSION,
     ProtocolError, decode, decode_client_message, encode,
-    encode_client_message, pick_message,
+    egg_message, encode_client_message, pick_message,
 )
 
 
-def test_the_version_is_two_because_the_contract_changed():
+def test_the_version_is_three_because_the_contract_changed_twice():
     """Not decoration: ui/client.py refuses to interpret a daemon whose
     version differs from its own, so this number is the only thing standing
-    between a v2 UI and a v1 daemon that will never answer its picks."""
-    assert PROTOCOL_VERSION == 2
+    between a v3 UI and a v2 daemon that will never answer its eggs."""
+    assert PROTOCOL_VERSION == 3
 
 
 def test_a_pick_is_not_an_event():
@@ -39,7 +39,7 @@ def test_a_pick_is_not_an_event():
     with pytest.raises(ProtocolError):
         encode(pick_message("trpcage"))
     with pytest.raises(ProtocolError):
-        decode(b'{"type":"pick","version":2,"target_id":"trpcage"}\n')
+        decode(b'{"type":"pick","version":3,"target_id":"trpcage"}\n')
 
 
 def test_an_event_is_not_a_client_message():
@@ -53,9 +53,44 @@ def test_an_event_is_not_a_client_message():
             b'{"type":"job_done","job_id":"j1","cif_path":"/a.cif"}\n')
 
 
-def test_the_client_vocabulary_is_exactly_one_message():
+def test_the_client_vocabulary_is_exactly_two_messages():
     """A general RPC channel is not what this phase is for."""
-    assert CLIENT_MESSAGE_TYPES == frozenset({"pick"})
+    assert CLIENT_MESSAGE_TYPES == frozenset({"pick", "egg"})
+
+
+def test_an_egg_is_not_an_event_either():
+    """The same separation the pick has, checked separately rather than
+    assumed by symmetry: a client that could put an `egg_frame` on the wire
+    could draw whatever it liked into the booth's own viewer."""
+    assert "egg" not in EVENT_TYPES
+    with pytest.raises(ProtocolError):
+        encode(egg_message("abc123"))
+    with pytest.raises(ProtocolError):
+        encode_client_message({"type": "egg_frame", "egg_id": "abc123"})
+
+
+def test_an_egg_carries_the_version_and_round_trips():
+    message = egg_message("abc123")
+    assert message["type"] == "egg"
+    assert message["version"] == PROTOCOL_VERSION
+    assert message["egg_id"] == "abc123"
+    assert decode_client_message(encode_client_message(message)) == message
+
+
+@pytest.mark.parametrize("bad", [
+    b'{"type":"egg","version":%d}\n' % PROTOCOL_VERSION,
+    b'{"type":"egg","version":%d,"egg_id":""}\n' % PROTOCOL_VERSION,
+    b'{"type":"egg","version":%d,"egg_id":17}\n' % PROTOCOL_VERSION,
+    b'{"type":"egg","version":%d,"egg_id":"%s"}\n'
+    % (PROTOCOL_VERSION, b"x" * (MAX_TARGET_ID_LEN + 1)),
+])
+def test_an_egg_id_is_validated_exactly_as_a_target_id_is(bad):
+    """The daemon reads this off a socket a booth exposes to a room full of
+    strangers' laptops. The `egg` message got its own field name and must not
+    have got its own (absent) validation with it -- which is precisely what
+    happens if `CLIENT_MESSAGE_FIELDS` and `CLIENT_MESSAGE_TYPES` drift."""
+    with pytest.raises(ProtocolError):
+        decode_client_message(bad)
 
 
 def test_a_pick_carries_the_version_it_was_written_against():

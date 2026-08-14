@@ -214,7 +214,7 @@ class StructureViewer(Gtk.GLArea):
         self._spin = 0.0
         # Per-instance, not the class constants, so a SECOND viewer can be
         # given a different look without changing the protein's. Both are
-        # here for ui/mark.py's easter egg, which needs the brand purple and
+        # here for mark.py's easter egg, which needs the brand purple and
         # a mark that holds still: the mark is a plane figure, and a plane
         # figure on a 0.35 rad/s turntable is edge-on within five seconds.
         # The fold's viewer never calls either setter, so it keeps the

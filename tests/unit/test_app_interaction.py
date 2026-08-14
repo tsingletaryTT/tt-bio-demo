@@ -1351,7 +1351,8 @@ def test_every_help_card_class_has_an_explicit_colour_rule():
                       "help-desc", "help-note", "booth-hint", "booth-hint-key",
                       "viewer-caption-title", "viewer-caption-sub",
                       "target-info-name", "target-info-tagline",
-                      "egg-title", "egg-body", "egg-disclaimer", "egg-note"):
+                      "egg-title", "egg-body", "egg-disclaimer",
+                      "egg-provenance", "egg-note"):
         assert frozenset({css_class}) in rules, f"{css_class} has no color: rule"
 
 
@@ -1589,7 +1590,7 @@ def test_the_rail_stays_put_with_its_panels_open_too():
 
 
 # ---------------------------------------------------------------------------
-# The easter egg (Ctrl+G; ui/mark.py). Chrome, like the help card -- with one
+# The easter egg (Ctrl+G; mark.py). Chrome, like the help card -- with one
 # extra obligation the help card does not have: it must be impossible to
 # mistake for a fold, and impossible to reach by accident.
 # ---------------------------------------------------------------------------
@@ -1738,9 +1739,9 @@ def test_the_egg_says_on_screen_that_it_is_not_a_fold():
 def test_the_egg_card_reports_the_number_of_points_it_actually_uses():
     """A number in visitor-facing copy that can drift from the thing it
     describes is a small lie waiting to happen, and this booth has already
-    had to fix one. The count is interpolated from ui/mark.py.
+    had to fix one. The count is interpolated from mark.py.
     """
-    from ui import mark as mark_module
+    import mark as mark_module
     assert f"{mark_module.POINTS:,}" in app_module._EGG_BODY
 
 
@@ -1748,7 +1749,7 @@ def test_the_egg_is_drawn_in_the_brand_purple_and_does_not_spin():
     """Purple because it is the mark; still because the mark is a plane
     figure, and the protein's 0.35 rad/s turntable would put it edge-on
     within five seconds."""
-    from ui.mark import BRAND_PURPLE
+    from mark import BRAND_PURPLE
     app = _app()
     app._build_egg_overlay()
     assert app.egg_viewer._point_color == BRAND_PURPLE
@@ -1767,8 +1768,9 @@ def test_the_protein_keeps_the_colour_and_the_spin_it_always_had():
 
 
 def test_every_label_on_the_easter_egg_is_legible():
-    """`.egg-title` #74C5DF = 8.55:1, `.egg-body`/`.egg-note` #C7D9D8 =
-    11.36:1 and `.egg-disclaimer` #F1F8F8 = 15.46:1, all on #092221. The
+    """`.egg-title` and `.egg-provenance` #74C5DF = 8.55:1,
+    `.egg-body`/`.egg-note` #C7D9D8 = 11.36:1 and `.egg-disclaimer` #F1F8F8 =
+    15.46:1, all on #092221. The
     brand purple itself measures 4.13:1 and is therefore a FILL only -- it
     is on the point cloud, never on type.
     """

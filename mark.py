@@ -8,12 +8,27 @@ the same `StructureViewer.set_points` the diffusion trajectory uses, which is
 the whole point: it is the same noise-becomes-structure motion, on the same
 widget, driven by real arithmetic rather than by a picture of one.
 
-**It is an easter egg, and it is not a fold.** Nothing here is chemistry,
-nothing here came off the socket, and nothing here ran on a Tenstorrent chip.
-The booth says exactly that on screen (see `_EGG_*` in ui/app.py), because this
-project's credibility rests on a visitor being able to trust that the protein
-they are looking at is the protein the chips folded. An easter egg that could
-be mistaken for a structure would spend that trust for a joke.
+**It is an easter egg, and it is not a fold.** Nothing here is chemistry and
+nothing here is a molecule. The booth says exactly that on screen (see
+`_EGG_*` in ui/app.py), because this project's credibility rests on a visitor
+being able to trust that the protein they are looking at is the protein the
+chips folded. An easter egg that could be mistaken for a structure would spend
+that trust for a joke.
+
+Where the arithmetic runs, and why this module is at the repo root
+------------------------------------------------------------------
+It runs **on a Tenstorrent chip**, in a worker process, whenever a chip is
+free -- `runner/egg.py` reimplements the descent below in ttnn, and the points
+reach the screen as `egg_frame` events over the same socket a fold's frames
+use. This module is the CPU fallback for when every chip is folding, and it is
+also the *specification* the device implementation is tested against.
+
+That is why this file sits beside `protocol/` at the repo root rather than
+inside `ui/`, which is where it started: it is now imported by BOTH venvs (the
+UI's, which has no torch and no ttnn, and the runner's, which has no gi), so
+it is subject to `protocol/`'s import rule -- **stdlib and numpy only**. The
+runner may not import `ui.*` and the UI may not import `runner.*`; a shared
+module at the root is the only place code both halves need can live.
 
 No GTK, no torch, no tt-bio, no image files: this module is arithmetic on numpy
 arrays, and it can be tested, rasterised and looked at with no display.
@@ -244,6 +259,10 @@ def slab_sdf_gradient(points_xyz, half_thickness):
 # How wide the starting noise is, in mark units (the mark itself is ~1 from
 # centre to edge). Wide enough that the first frame reads as noise rather than
 # as a slightly blurred logo.
+#
+# Kept as the single number the geometry above was tuned against, and used as
+# the midpoint of `SEED_SIGMA_RANGE` below -- the run-to-run variation is a
+# spread AROUND this, not a replacement for it.
 SEED_SIGMA = 1.4
 
 # Half the slab's thickness. The mark is a plane figure, so the cloud settles
@@ -301,28 +320,228 @@ STEPS = 180
 POINTS = 6000
 
 
+# ── what varies from one run to the next ────────────────────────────────────
+#
+# The brief: "I'd love to see it transform from the dots into some kind of
+# form, even if it isn't the same every time." So the DESTINATION is fixed and
+# the JOURNEY is not.
+#
+# Fixed, deliberately, and asserted by tests rather than left to good
+# intentions: the polygons, `_ROW_RISE`, `MAX_DEPTH`, `HALF_THICKNESS`,
+# `SCALE`, `POINTS`, `STEPS` and the duration they imply. A visitor who sees
+# this twice must see the same mark at the same size for the same six seconds
+# -- the thing that varies is how the cloud gets there. That split is what
+# lets "it is different every time" be tested from BOTH edges: an
+# implementation that ignored the seed fails the first edge, and one that
+# returned noise fails the second, and neither test alone can catch both.
+#
+# Three knobs, in the order a visitor notices them:
+#
+# 1. the SHAPE of the starting cloud (`SEED_SIGMA_RANGE`, `SEED_ANISOTROPY`)
+#    -- a wide flat haze one time, a tall narrow column the next;
+# 2. the CURVE of the paths (`SWIRL_RADIANS`) -- the cloud turns as it falls
+#    in, by up to ~80 degrees, one way or the other;
+# 3. the ORDER of arrival (`STEP_GAIN_RANGE`) -- which points land early and
+#    which are still drifting in at the end.
+#
+# Everything below is derived from ONE integer seed, so a run that looked
+# interesting can be replayed exactly by passing that seed back (the worker
+# logs it and puts it in the first `egg_frame`).
+
+# The spread of the starting cloud, in mark units, drawn per run. Centred on
+# SEED_SIGMA -- the value the geometry above was tuned against -- and narrow
+# enough at the bottom end that the first frame is still unmistakably noise.
+SEED_SIGMA_RANGE = (1.20, 1.65)
+
+# How anisotropic the starting cloud may be, as the half-width of a uniform
+# draw in LOG scale per axis: e^0.35 = 1.42, so one axis may be up to ~2x
+# another. The three axis scales are then divided by their own geometric mean,
+# so this changes the cloud's SHAPE and never its overall size -- without that
+# normalisation a run could draw three large scales at once and start with a
+# cloud that needs more than STEPS steps to come in.
+SEED_ANISOTROPY = 0.35
+
+# Total in-plane rotation applied to the cloud while it descends, in radians,
+# drawn uniformly in +/- this. 1.4 rad is ~80 degrees: enough that two runs
+# side by side are obviously not the same descent, small enough that the cloud
+# never reads as "spinning" rather than "settling".
+#
+# Spent over the FIRST `SWIRL_FRACTION` of the steps and then exactly zero --
+# see `swirl_schedule`. That hard zero is the whole reason the mark still
+# lands: a swirl is a rigid rotation about the mark's centre, and the mark is
+# not rotationally symmetric, so a swirl that merely decayed asymptotically
+# would still be dragging points off the shape on the last step.
+SWIRL_RADIANS = 1.4
+SWIRL_FRACTION = 0.45
+
+# Per-point multiplier on STEP, drawn per point. Points with a low gain lag
+# behind and arrive last, which is what makes the middle of the descent look
+# different from run to run rather than merely differently seeded.
+#
+# The bottom of the range is the number that decides whether the mark lands
+# CLEANLY: a point moving at 0.8 * STEP has (1 - 0.028)^180 = 0.6% of its
+# starting distance left at the end, against 0.17% at full step. That is why
+# the ramp below exists.
+STEP_GAIN_RANGE = (0.80, 1.30)
+
+# Over the last quarter of the descent every point's gain is blended back to
+# 1.0, so the run ends on the same schedule it always did no matter what was
+# drawn. Without it the slowest points leave a faint halo that IS visible --
+# measured at up to 0.06 mark units (3% of the mark's radius) against 0.005
+# for the unvaried descent.
+GAIN_RAMP_FRACTION = 0.25
+
+
+def _random_rotation(rng):
+    """A uniformly-random proper rotation matrix, via QR of a Gaussian matrix.
+
+    The sign fix is not optional: raw QR gives an ORTHOGONAL matrix, which is
+    a rotation half the time and a rotation-plus-reflection the other half.
+    A reflection would mirror the starting cloud -- invisible here, since the
+    cloud is symmetric noise, but it would also mirror any future use of this
+    helper, so it is corrected at the source rather than relied upon not to
+    matter.
+    """
+    q, r = np.linalg.qr(rng.normal(size=(3, 3)))
+    q = q * np.sign(np.diag(r))
+    if np.linalg.det(q) < 0:
+        q[:, 0] = -q[:, 0]
+    return q
+
+
+def fresh_seed():
+    """A new 32-bit seed from the OS entropy pool.
+
+    A plain `default_rng()` would also be fresh, but it could not be written
+    down. This booth logs the seed and puts it on the wire in every
+    `egg_frame`, so a run someone liked can be replayed exactly -- which is
+    also how the device implementation is compared against this one.
+    """
+    return int(np.random.SeedSequence().generate_state(1, dtype=np.uint32)[0])
+
+
+class RunParameters:
+    """Everything one run of the descent draws before it starts.
+
+    Held as plain numpy arrays and floats, computed on the host, and shared
+    verbatim by both implementations: `MarkCondensation` below (numpy, the
+    fallback) and `runner/egg.py` (ttnn, on the chip). That sharing is the
+    point -- it is what makes "the chip computed the same descent the CPU
+    would have" a claim a test can check rather than an assertion.
+    """
+
+    __slots__ = ("seed", "positions", "depths", "gains", "swirl", "sigma",
+                 "axes", "steps", "scale")
+
+    def __init__(self, seed, positions, depths, gains, swirl, sigma, axes,
+                 steps, scale):
+        self.seed = int(seed)
+        self.positions = positions
+        self.depths = depths
+        self.gains = gains
+        self.swirl = float(swirl)
+        self.sigma = float(sigma)
+        self.axes = axes
+        self.steps = int(steps)
+        self.scale = float(scale)
+
+    @property
+    def count(self):
+        return int(self.positions.shape[0])
+
+    def swirl_schedule(self):
+        """The in-plane rotation applied at each step, in radians. Length `steps`.
+
+        Weighted as (1 - i/swirl_steps)^2 over the first `SWIRL_FRACTION` of
+        the run and EXACTLY zero after it, normalised so the whole schedule
+        sums to `self.swirl`. Two properties matter and both are tested:
+
+        * it sums to the drawn total, so `swirl` means what it says;
+        * every entry after `swirl_steps` is exactly 0.0, so the descent has
+          the rest of the run to settle onto a mark nothing is still turning.
+        """
+        steps = self.steps
+        cut = max(1, int(round(steps * SWIRL_FRACTION)))
+        i = np.arange(steps, dtype=np.float64)
+        weights = np.where(i < cut, np.square(1.0 - np.minimum(i, cut) / cut), 0.0)
+        total = weights.sum()
+        if total <= 0.0:
+            return np.zeros(steps)
+        return self.swirl * weights / total
+
+    def gain_schedule(self):
+        """Per-step blend of the per-point gains back towards 1.0. Length `steps`.
+
+        0.0 for most of the run (each point moves at its own drawn gain), then
+        a linear ramp to 1.0 across the last `GAIN_RAMP_FRACTION`, so however
+        the gains fell out the run finishes on the schedule `STEPS` was chosen
+        against. See `STEP_GAIN_RANGE` for the measurement that made this
+        necessary.
+        """
+        steps = self.steps
+        start = 1.0 - GAIN_RAMP_FRACTION
+        t = np.arange(steps, dtype=np.float64) / max(1, steps - 1)
+        return np.clip((t - start) / max(1e-9, GAIN_RAMP_FRACTION), 0.0, 1.0)
+
+
+def run_parameters(seed=None, count=POINTS, steps=STEPS, scale=SCALE):
+    """Draw one run's parameters from one seed. Pure, and cheap.
+
+    `seed=None` means a fresh one from the OS (`fresh_seed`), which is what
+    makes the egg different every time it is asked for; the seed actually used
+    is recorded on the result either way.
+    """
+    if seed is None:
+        seed = fresh_seed()
+    count = int(count)
+    rng = np.random.default_rng(int(seed))
+
+    sigma = float(rng.uniform(*SEED_SIGMA_RANGE))
+    # Normalised to geometric mean 1 so this changes shape, never size.
+    axes = np.exp(rng.uniform(-SEED_ANISOTROPY, SEED_ANISOTROPY, size=3))
+    axes = axes / np.exp(np.log(axes).mean())
+    rotation = _random_rotation(rng)
+    positions = (rng.normal(0.0, 1.0, size=(count, 3)) * (sigma * axes)) @ rotation.T
+
+    # Per-point target depth. Uniform in [0, MAX_DEPTH]: a point whose target
+    # is deeper than the mark is thick where it lands simply stops at the
+    # deepest place it can reach, which falls out of the descent and needs no
+    # special case.
+    depths = rng.uniform(0.0, MAX_DEPTH, size=count)
+    gains = rng.uniform(*STEP_GAIN_RANGE, size=count)
+    swirl = float(rng.uniform(-SWIRL_RADIANS, SWIRL_RADIANS))
+    return RunParameters(seed=seed, positions=positions, depths=depths,
+                         gains=gains, swirl=swirl, sigma=sigma, axes=axes,
+                         steps=steps, scale=scale)
+
+
 class MarkCondensation:
     """Gaussian noise descending onto the mark, one step per `step()` call.
 
-    Deterministic given `seed`, so a test can assert on where the cloud
-    actually ends up rather than merely on the fact that it moved.
+    The CPU implementation, and the specification `runner/egg.py` reimplements
+    in ttnn. Deterministic given `seed`, so a test can assert on where the
+    cloud actually ends up rather than merely on the fact that it moved --
+    and NON-deterministic without one, which is the feature.
 
     Holds no GTK and starts no timers: the caller owns the clock. That is what
     lets ui/app.py drive it from a plain `GLib.timeout` on the main loop, and
     lets the tests run it to completion instantly.
     """
 
-    def __init__(self, count=POINTS, seed=20260813, steps=STEPS, scale=SCALE):
-        self.steps = int(steps)
-        self.scale = float(scale)
+    def __init__(self, count=POINTS, seed=None, steps=STEPS, scale=SCALE,
+                 params=None):
+        self.params = (params if params is not None
+                       else run_parameters(seed, count, steps, scale))
+        self.seed = self.params.seed
+        self.steps = self.params.steps
+        self.scale = self.params.scale
         self.completed = 0
-        rng = np.random.default_rng(seed)
-        self._points = rng.normal(0.0, SEED_SIGMA, size=(int(count), 3))
-        # Per-point target depth. Uniform in [0, MAX_DEPTH]: a point whose
-        # target is deeper than the mark is thick where it lands simply stops
-        # at the deepest place it can reach, which falls out of the descent
-        # and needs no special case.
-        self._depth = rng.uniform(0.0, MAX_DEPTH, size=int(count))
+        self._points = np.array(self.params.positions, dtype=np.float64,
+                                copy=True)
+        self._depth = self.params.depths
+        self._gain = self.params.gains
+        self._swirl = self.params.swirl_schedule()
+        self._blend = self.params.gain_schedule()
 
     @property
     def done(self):
@@ -339,11 +558,28 @@ class MarkCondensation:
         Each point descends on `relu(sdf + depth)` -- how far it still is from
         its own target level set -- so a point that has arrived stops moving
         and the cloud settles instead of oscillating around the surface.
+
+        Then the whole cloud is turned, in plane, by this step's share of the
+        run's swirl -- a rigid rotation, so it changes the PATH a point takes
+        and not where the path ends. The rotation is exactly zero for the last
+        55% of the run (`swirl_schedule`), which is what lets the descent
+        finish on a mark nothing is still moving.
         """
         if not self.done:
+            i = self.completed
             distance, gradient = slab_sdf_gradient(self._points,
                                                    HALF_THICKNESS)
             excess = np.maximum(distance + self._depth, 0.0)
-            self._points = self._points - STEP * excess[:, None] * gradient
+            blend = self._blend[i]
+            gain = self._gain * (1.0 - blend) + blend
+            self._points = (self._points
+                            - (STEP * gain * excess)[:, None] * gradient)
+            angle = self._swirl[i]
+            if angle:
+                cos, sin = np.cos(angle), np.sin(angle)
+                x = self._points[:, 0].copy()
+                y = self._points[:, 1]
+                self._points[:, 0] = cos * x - sin * y
+                self._points[:, 1] = sin * x + cos * y
             self.completed += 1
         return self.points()

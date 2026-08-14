@@ -125,6 +125,18 @@ class Folder:
         self._mol_dir = None
 
     @property
+    def device(self):
+        """The open ttnn device this Folder holds, or None before `load()`.
+
+        Exposed for `runner/egg.py`, which computes the easter egg's geometry
+        on the same chip between folds. Read-only and deliberately narrow: it
+        hands out the handle and nothing else -- opening, closing and the
+        device lease stay this class's alone, because a second owner of any of
+        those is how a chip ends up held by a process nobody can find.
+        """
+        return self._device
+
+    @property
     def structures_dir(self):
         """Where this instance's folds write .cif output. See the comment
         above _structures_dir_for for why this is namespaced by device_id

@@ -38,6 +38,7 @@ Wire shape. Commands arrive on stdin, one JSON object per line::
 
     {"cmd": "fold", "job_id": ..., "target_id": ..., "input_path": ...,
      "n_residues": ...}
+    {"cmd": "egg", "egg_id": ..., "seed": ... | null}
     {"cmd": "stop"}
 
 Events leave on ``EVENT_FD`` (never stdout), one JSON object per line,
@@ -237,6 +238,9 @@ class WorkerSession:
         if cmd == "fold":
             self._fold(command)
             return True
+        if cmd == "egg":
+            self._egg(command)
+            return True
         log.warning("ignoring unknown command %r", cmd)
         return True
 
@@ -286,6 +290,51 @@ class WorkerSession:
         # sending one from a dying process hands it a job that will never be
         # folded. Every fold that ENDS, succeeded or failed, frees the worker.
         self.control_emit(control(CONTROL_IDLE, card=self.card, job_id=job_id))
+
+    def _egg(self, command):
+        """Run the easter egg's geometry on this chip and stream it out.
+
+        **This is not a fold and does not pretend to be one.** It emits no
+        `job_start`, no `stage`, no `job_done` -- only `egg_frame` events,
+        whose own type keeps them out of every path a fold's frames take (see
+        protocol/events.py). The chip is genuinely busy for the ~1.5 s this
+        takes, so the pool's `worker.idle` below is what frees it, exactly as
+        for a fold; what the daemon deliberately does NOT do is mark the card
+        busy on the wire, because the UI's chip cells mean "folding" and this
+        chip is not folding.
+
+        `runner.egg` is imported HERE and not at module scope: it pulls in
+        ttnn and torch, and this module is imported by the parent's tests. The
+        import cost is paid once per worker, on the first egg, on a process
+        that has already loaded a model -- so ttnn is long since resident.
+
+        Failure is announced, never silent. A visitor is standing in front of
+        a screen waiting for something to happen, and the UI's own fallback
+        timer is the only other thing that would ever end that wait -- so an
+        `egg_refused` gets them the CPU version seconds sooner, and (this is
+        the part that matters) gets them the CPU LABEL, which is the truth.
+        """
+        egg_id = command.get("egg_id")
+        try:
+            from runner.egg import run_egg
+            device = self.folder.device
+            if device is None:
+                raise RuntimeError("this worker holds no open device")
+            run_egg(device, self.emit, egg_id=egg_id, card=self.card,
+                    seed=command.get("seed"))
+        except Exception as exc:
+            # Same shape as `_fold`'s backstop, and the same reason: an egg
+            # is a toy and must never be able to cost the booth a chip. The
+            # message is for the log; `reason` is a short code the UI maps to
+            # its own copy, never text from here (ui/diagnostics.py's rule).
+            log.exception("the easter egg failed on card %s", self.card)
+            self.emit({"type": "egg_refused", "egg_id": egg_id,
+                       "reason": "device", "message": str(exc)})
+
+        # Same placement rule, and the same reason, as `_fold` above: after
+        # the try/except, never in a `finally`, so a worker unwinding through
+        # SystemExit does not announce itself ready for more work.
+        self.control_emit(control(CONTROL_IDLE, card=self.card, job_id=egg_id))
 
 
 def main(argv=None):

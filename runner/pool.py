@@ -98,6 +98,11 @@ import time
 from pathlib import Path
 
 from protocol.events import EVENT_TYPES
+# `Job` is used here only as the shape of a card RESERVATION -- `dispatch_egg`
+# needs somewhere to record "this card is occupied and here is the id" and a
+# second dataclass meaning the same thing would be a second thing
+# `_worker_exited` has to know about.
+from runner.queue import Job
 # The control vocabulary is imported by name rather than re-spelled here, so
 # `worker.ready`/`worker.idle`/`worker.fatal` exist in exactly one module.
 from runner.workers import (CONTROL_FATAL, CONTROL_IDLE, CONTROL_READY,
@@ -430,6 +435,35 @@ class WorkerPool:
         command = {"cmd": "fold", "job_id": job.job_id,
                    "target_id": job.target_id, "input_path": job.input_path,
                    "n_residues": job.n_residues}
+        self._send(command, job, card)
+
+    def dispatch_egg(self, egg_id, card, *, seed=None):
+        """Send one easter-egg command to `card`'s worker (`runner/egg.py`).
+
+        Reserves the card exactly as `dispatch` does -- same readiness gates,
+        same `_busy` slot, freed by the same `worker.idle` -- because for the
+        second or so this takes, the chip really is occupied and must not also
+        be handed a fold. What it does NOT do is invent a Job or a target: the
+        reservation carries `target_id=None`, so if this worker dies mid-egg
+        the daemon's `on_worker_lost` counts no failure against any playlist
+        entry. A toy must never be able to quarantine a protein.
+
+        Raises ValueError on exactly the conditions `dispatch` does, so the
+        caller has one exception to catch for "that chip would not take it".
+        """
+        reservation = Job(job_id=egg_id, target_id=None, input_path=None)
+        command = {"cmd": "egg", "egg_id": egg_id, "seed": seed}
+        self._send(command, reservation, card)
+
+    def _send(self, command, job, card):
+        """Reserve `card` for `job` and write `command` to its worker.
+
+        Shared by `dispatch` and `dispatch_egg` so that the readiness gates,
+        the reservation and the undo-on-failure exist once. What differs
+        between the two callers is only the command dict and what goes in the
+        reservation; every rule about when a card may be written to is the
+        same, and a second copy of those rules is a second copy to get wrong.
+        """
         with self._lock:
             if self._retired.get(card):
                 # Its own message, ahead of the readiness check that would
@@ -460,8 +494,8 @@ class WorkerPool:
                 log.warning("card %s: sending job %s failed (%s); the worker "
                             "is gone", card, job.job_id, exc)
                 raise ValueError(f"card {card}'s worker is gone") from exc
-        log.info("card %s: dispatched job %s (%s)", card, job.job_id,
-                 job.target_id)
+        log.info("card %s: dispatched %s %s (%s)", card, command.get("cmd"),
+                 job.job_id, job.target_id)
 
     # -- the reader side ---------------------------------------------------
 
