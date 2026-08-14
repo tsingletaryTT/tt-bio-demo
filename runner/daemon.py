@@ -11,13 +11,33 @@ the four things that must have exactly one owner for the whole booth:
   UI -- the pool deliberately fabricates no protocol events of its own;
 - the **failure/quarantine policy** for *targets*.
 
-It also owns the one thing a UI can ask it for: the **easter egg**
-(`on_client_message` / `_dispatch_egg`). That handler is deliberately narrow
--- it acts on `egg` and drops `pick`, which is a task of its own -- and the
-egg's claim on the hardware is deliberately the weakest one available: the
-next chip that is already free, never a fold in flight, never a place in the
-queue, and a refusal after `EGG_WAIT_S` if the booth is busy. See
-`dispatch_once`.
+It also owns **everything a UI can ask it for** (`on_client_message`), which
+is two requests with deliberately different claims on the hardware:
+
+- a **visitor's pick** (`_accept_pick`) becomes a real `Job` at
+  `VISITOR_PRIORITY`, so the next chip to come free takes it ahead of the
+  whole attract backlog. It goes to the head of the **queue**; it never
+  pre-empts a fold in flight -- see `runner/queue.py`'s module docstring for
+  why that is a ruling and not an omission. At most `MAX_PENDING_PICKS` picks
+  wait at a time and a new one **replaces** the last, which mirrors the single
+  `selected_target` the UI tracks and is what bounds a child tapping forty
+  targets in ten seconds;
+- the **easter egg** (`_dispatch_egg`), whose claim is the weakest one
+  available: the next chip that is *already* free, never a fold in flight,
+  never a place in the queue at all, and a refusal after `EGG_WAIT_S` if the
+  booth is busy. See `dispatch_once`.
+
+Both arrive on a client's reader thread, so `on_client_message` records and
+returns, and never raises: an exception there kills that client's reader and
+the visitor's UI goes deaf with nothing on screen saying so. Neither request
+is special-cased downstream -- once a pick is a `Job`, `dispatch_once` cannot
+tell it from an attract job, which is the entire point of the priority queue.
+
+A pick also **wakes the dispatch loop** (`_wake`) rather than waiting out
+`run()`'s idle backoff. The failure that guards against is concrete: a pick
+landing one millisecond into the empty-playlist backoff is a pick the visitor
+waits `EMPTY_PLAYLIST_IDLE_S` for, on top of the fold it must already wait
+out.
 
 Failure policy (spec section 6): a failed fold is logged in full by the worker
 that ran it, reported to the UI as a `job_error`, and the loop advances to the
@@ -75,7 +95,7 @@ from runner.env import log_root_size, prune_log_root, runner_environ
 from runner.folder import _structures_dir_for
 from runner.pool import WorkerPool
 from runner.preflight import not_ready_event, run_preflight
-from runner.queue import Job, JobQueue
+from runner.queue import VISITOR_PRIORITY, Job, JobQueue
 from runner.server import EventServer
 from runner.workers import worker_specs
 
@@ -83,6 +103,23 @@ log = logging.getLogger("tt-bio-demod")
 
 QUARANTINE_AFTER = 3          # consecutive failures before a target is dropped
 TELEMETRY_PERIOD_S = 2.0
+
+# How many of a visitor's picks may be waiting in the queue at once. A new
+# pick removes the pending one and takes its place.
+#
+# One, because the UI is one: `ui/gallery.py` tracks a single `selected_target`
+# and the booth has a single screen in front of a single person at the rail.
+# Queueing every tap instead would let a child tapping forty targets in ten
+# seconds put forty folds in front of the attract playlist, and the booth would
+# stop being a playlist for the next ten minutes -- for a visitor who has long
+# since walked away and whose fortieth tap is the only one they were waiting
+# for anyway. Replacing means the newest tap is the one that folds, which is
+# what "a visitor's pick starts folding" actually means to the person tapping.
+#
+# A constant rather than a literal `1` so the replacement rule below reads as
+# a policy with a name, and so raising it to 2 (a rail with two people at it)
+# is a one-line change rather than a re-reading of `_accept_pick`.
+MAX_PENDING_PICKS = 1
 
 # How long run()'s loop waits between dispatch passes. The loop body no longer
 # blocks for the length of a fold (that happens in a worker now), so it needs
@@ -240,6 +277,24 @@ class Daemon:
         self.pool = None
         self._cards = None
         self._stop = threading.Event()
+        # Set whenever something has happened that `run()`'s next pass should
+        # act on immediately -- today, a visitor's pick -- and by `stop()`, so
+        # shutdown stays as prompt as it was when the loop waited on `_stop`.
+        #
+        # This exists because of arithmetic rather than tidiness. `run()`'s
+        # idle paths wait DISPATCH_POLL_S (0.25s) or EMPTY_PLAYLIST_IDLE_S
+        # (5s); a pick landing one millisecond into the latter is five seconds
+        # the visitor spends watching a booth do nothing, on top of the fold
+        # it must already wait out, and "tapped it and nothing happened for
+        # twenty seconds" is a booth that reads as broken however correct the
+        # queue is. Waiting on this instead makes both backoffs interruptible
+        # without shortening either -- an idle booth still polls at the same
+        # cadence, it simply stops sleeping through the one event that matters.
+        #
+        # Cleared at the TOP of each pass, before the work: a pick that arrives
+        # mid-pass then leaves this set, the wait at the bottom returns at
+        # once, and the wakeup is not lost.
+        self._wake = threading.Event()
         self._failures = {}
         self._quarantined = set()
         self._telemetry_thread = None
@@ -357,24 +412,108 @@ class Daemon:
         """One decoded client->server message. Runs on that client's reader
         thread (runner/server.py `_reader_loop`).
 
-        **Deliberately narrow.** It handles `egg` and nothing else. `pick` --
-        the message this direction was built for, and the one the queue's
-        priority path is waiting on -- is a task of its own (the multi-chip
-        plan's Task 9, unstarted), and answering it here with a half
-        implementation would be worse than not answering it: a booth that
-        sometimes folds what you tapped is harder to diagnose than one that
-        never does. A `pick` arriving is therefore logged and dropped, which
-        is exactly what happened before this method existed.
+        **Enqueue and return.** Nothing here folds, dispatches or blocks: a
+        `pick` becomes a queued `Job` and an `egg` becomes a recorded request,
+        and `run()`'s own thread acts on both. This thread's job is to keep
+        reading that client's socket.
 
-        An `egg` never enters the job queue and never becomes a `Job`. It is
-        recorded as a request for the NEXT free chip and expires on its own
-        (`EGG_WAIT_S`); see `_dispatch_egg` for what happens either way.
+        **It never raises**, whatever arrives. The guard wraps the whole body,
+        including the `.get` that reads the message type, because the argument
+        is not guaranteed to be a dict by anything this method can see -- and
+        an exception escaping here kills that client's reader thread, at which
+        point the visitor's UI goes deaf with nothing on screen saying so. Same
+        shape, and the same reason, as the UI's own GLib callbacks.
+
+        Anything that is not a `pick` or an `egg` is logged and dropped.
+        `decode_client_message` has already refused everything malformed and
+        everything of an unknown type; this is the second line of that, not the
+        first.
         """
-        kind = message.get("type")
-        if kind != "egg":
-            log.info("ignoring client message %r; this daemon acts on 'egg' "
-                     "only", kind)
+        try:
+            kind = message.get("type")
+            if kind == "pick":
+                self._accept_pick(message)
+            elif kind == "egg":
+                self._accept_egg(message, now)
+            else:
+                log.info("ignoring client message %r; this daemon acts on "
+                         "'pick' and 'egg' only", kind)
+        except Exception:
+            # Deliberately broad, and deliberately terminal: there is nothing
+            # to report back (the client->server direction has no replies) and
+            # nothing to retry. What matters is that the reader thread above
+            # this frame lives to read the next message.
+            log.exception("dropping client message %r; this client's reader "
+                          "survives it", message)
+
+    def _accept_pick(self, message):
+        """A visitor tapped a target: queue it at `VISITOR_PRIORITY`.
+
+        Three ways a pick is refused, then the one way it is accepted. All of
+        the refusals are silent as far as the wire is concerned: the UI
+        acknowledged the tap at tap time and does not wait on an answer from
+        here.
+
+        1. **It does not name a playlist entry.** Resolution goes through the
+           same `sorted(glob("*.yaml"))` enumeration `_enqueue_playlist` walks,
+           matching `target_id` against a file *stem* -- never a path join.
+           That is a security boundary, not a style preference: `target_id`
+           arrives from another process over a socket, and
+           `Path(playlist_dir) / f"{target_id}.yaml"` with `../../../etc/passwd`
+           in it is a file read somewhere else on the box and, worse, a path
+           handed to a folder subprocess. A stem cannot contain a separator, so
+           nothing outside the playlist directory can ever match.
+        2. **It is quarantined.** `QUARANTINE_AFTER` means this target has
+           already failed three times, and a tap does not overrule the guard
+           that stopped the booth failing the same fold all afternoon.
+        3. **It is already folding.** Queueing nothing is the right answer, not
+           a lost request: the UI focuses the cell that is already folding it,
+           which is what the visitor asked to see and is faster than a second
+           fold of the same thing occupying a second chip to show it twice.
+        4. Otherwise it is queued -- and then the *previous* pending pick is
+           the thing that goes, not this one. See `MAX_PENDING_PICKS`.
+        """
+        target_id = message.get("target_id")
+        target = self._playlist_target(target_id)
+        if target is None:
+            log.info("ignoring pick %r: no such target in the playlist",
+                     target_id)
             return
+        if target_id in self._quarantined:
+            log.info("ignoring pick %r: that target is quarantined for this "
+                     "session", target_id)
+            return
+        if target_id in set(self._in_flight.values()):
+            log.info("pick %r is already folding; queueing nothing", target_id)
+            return
+        job = Job(job_id=uuid.uuid4().hex[:8], target_id=target_id,
+                  input_path=str(target), priority=VISITOR_PRIORITY,
+                  n_residues=self._residue_count(target))
+        # Take a snapshot, then remove by id. `pending` is a copy, so the
+        # dispatch loop may take one of these between the two -- which is why
+        # `JobQueue.remove` answers False instead of raising. Nothing is lost
+        # either way: a pick that has already been dispatched is a pick that
+        # is folding.
+        waiting = [j for j in self.queue.pending if j.priority == VISITOR_PRIORITY]
+        for stale in waiting[:max(0, len(waiting) - MAX_PENDING_PICKS + 1)]:
+            if self.queue.remove(stale.job_id):
+                log.info("pick %s replaces %s, which never got a chip",
+                         target_id, stale.target_id)
+        self.queue.submit(job)
+        # AFTER the submit, never before: a loop woken by a pick that is not
+        # in the queue yet does a pass' worth of nothing and goes back to
+        # sleep for the length of the backoff this exists to interrupt.
+        self._wake.set()
+        log.info("pick %s queued as job %s at priority %d",
+                 target_id, job.job_id, VISITOR_PRIORITY)
+
+    def _accept_egg(self, message, now=None):
+        """A visitor pressed the chord: record a request for the next free chip.
+
+        An egg never enters the job queue and never becomes a `Job`. It is a
+        request that expires on its own (`EGG_WAIT_S`); see `_dispatch_egg` for
+        what happens either way.
+        """
         egg_id = message.get("egg_id")
         deadline = (time.monotonic() if now is None else now) + EGG_WAIT_S
         with self._egg_lock:
@@ -388,6 +527,22 @@ class Daemon:
             self._egg_request = (egg_id, deadline)
         log.info("egg %s requested; waiting up to %.1fs for a free chip",
                  egg_id, EGG_WAIT_S)
+
+    def _playlist_target(self, target_id):
+        """The playlist file whose stem is exactly `target_id`, or None.
+
+        The ONLY way a client-supplied id becomes a path in this daemon. See
+        `_accept_pick` for why a path join is not an acceptable alternative
+        here. Deliberately the same enumeration `_enqueue_playlist` uses, so a
+        target a visitor can pick and a target the attract loop folds are the
+        same set by construction rather than by two lists agreeing.
+        """
+        if not isinstance(target_id, str) or not target_id:
+            return None
+        for path in sorted(Path(self.config.playlist_dir).glob("*.yaml")):
+            if path.stem == target_id:
+                return path
+        return None
 
     # -- what the pool reports ---------------------------------------------
 
@@ -717,35 +872,41 @@ class Daemon:
                 # temperature for the rest of the day.
                 log.exception("telemetry sample failed; continuing")
 
+    def _residue_count(self, target):
+        """Best-effort residue count for a playlist file. 0 if unknowable.
+
+        n_residues is cosmetic -- job_start carries it purely for the UI's
+        display label -- so a target this daemon cannot even parse must not
+        crash the caller over it. It will still fail loudly and safely later,
+        in the worker, the same way a bad target always has; this is
+        best-effort only, and 0 is the same "unknown" default the field
+        already had.
+
+        The import lives inside the try, not at module or method scope: tt_bio
+        pulls in torch/ttnn, which this module's own unit tests must not need
+        -- but the try/except is what makes a *renamed* private helper degrade
+        to 0 instead of an ImportError killing run()'s whole loop
+        (`_enqueue_playlist` is called unguarded from there) or a client's
+        reader thread (`_accept_pick` runs on one).
+        """
+        try:
+            from tt_bio.main import _read_bio_chains
+            chains = _read_bio_chains(target)
+            return sum(len(seq) for _cid, seq, _msa, mol_type in chains
+                       if mol_type != "ligand")
+        except Exception:
+            log.warning("could not determine residue count for %s; "
+                        "defaulting n_residues to 0", target, exc_info=True)
+            return 0
+
     def _enqueue_playlist(self):
         for target in sorted(Path(self.config.playlist_dir).glob("*.yaml")):
             if target.stem in self._quarantined:
                 continue
-            # n_residues is cosmetic -- job_start carries it purely for the
-            # UI's display label -- so a target this daemon cannot even
-            # parse must not crash the enqueue loop over it. It will still
-            # fail loudly and safely later, in the worker, the same way a bad
-            # target always has; this is best-effort only, and 0 is the same
-            # "unknown" default the field already had before this fix.
-            #
-            # The import lives inside this try, not at module or method
-            # scope: tt_bio pulls in torch/ttnn, which this module's own
-            # unit tests must not need -- but the try/except is what makes a
-            # *renamed* private helper degrade to n_residues=0 instead of an
-            # ImportError killing run()'s whole loop (this method is called
-            # unguarded from there).
-            n_residues = 0
-            try:
-                from tt_bio.main import _read_bio_chains
-                chains = _read_bio_chains(target)
-                n_residues = sum(len(seq) for _cid, seq, _msa, mol_type in chains
-                                 if mol_type != "ligand")
-            except Exception:
-                log.warning("could not determine residue count for %s; "
-                            "defaulting n_residues to 0", target, exc_info=True)
-            self.queue.submit(Job(job_id=uuid.uuid4().hex[:8],
-                                  target_id=target.stem,
-                                  input_path=str(target), n_residues=n_residues))
+            self.queue.submit(
+                Job(job_id=uuid.uuid4().hex[:8], target_id=target.stem,
+                    input_path=str(target),
+                    n_residues=self._residue_count(target)))
 
     def _build_pool(self):
         """Work out which chips exist and build the pool that holds them.
@@ -824,6 +985,11 @@ class Daemon:
 
             next_prune = time.monotonic() + JANITOR_PERIOD_S
             while not self._stop.is_set():
+                # Before the work, not after it: anything that arrives while
+                # this pass runs re-sets `_wake`, the wait at the bottom
+                # returns immediately, and the next pass sees it. Clearing
+                # after the work would swallow exactly those wakeups.
+                self._wake.clear()
                 idle = False
                 if len(self.queue) == 0:
                     self._enqueue_playlist()
@@ -837,7 +1003,13 @@ class Daemon:
                     next_prune = time.monotonic() + JANITOR_PERIOD_S
                     self._prune_logs()
                     self._prune_structures()
-                self._stop.wait(EMPTY_PLAYLIST_IDLE_S if idle
+                # `_wake`, not `_stop`: same two numbers, both now
+                # interruptible. `stop()` sets `_wake` as well, so shutdown is
+                # exactly as prompt as it was when this waited on `_stop`, and
+                # a pick no longer has to sit out a backoff it landed one
+                # millisecond into. The loop condition above is still what
+                # decides whether to go round again.
+                self._wake.wait(EMPTY_PLAYLIST_IDLE_S if idle
                                 else DISPATCH_POLL_S)
         finally:
             # Set unconditionally (not just when stop() was already called
@@ -857,6 +1029,12 @@ class Daemon:
 
     def stop(self):
         self._stop.set()
+        # BOTH, and in this order. run()'s idle waits are on `_wake` now, so a
+        # stop that set only `_stop` would be noticed no sooner than the end
+        # of the current backoff -- up to EMPTY_PLAYLIST_IDLE_S of a systemd
+        # stop/restart spent doing nothing, with four worker processes still
+        # holding four chips.
+        self._wake.set()
 
     # -- the janitors ------------------------------------------------------
 
