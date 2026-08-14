@@ -2309,21 +2309,26 @@ def test_the_gallery_goes_away_again_on_its_own():
     """An unattended booth must end up back on the protein, or it spends the
     rest of the day showing a menu nobody is reading.
 
-    UNVERIFIED, AND KNOWN TO BE. Replacing the put-the-gallery-away guard in
-    `ui/app.py` with `if False:` does NOT make this fail, and it should: a
-    direct trace of the same fixture shows the state going attract -> gallery
-    at t+66 and gallery -> attract at t+74, so removing the second transition
-    ought to leave the booth on the menu at the end of the loop below.
+    THE PUT-AWAY GUARD IS REDUNDANT, which took three attempts to establish
+    and is worth writing down so nobody repeats them.
 
-    The mutation was confirmed to reach the file (pattern asserted present,
-    `__pycache__` cleared, `python -B`), so this is not the
-    patch-did-not-apply false survival that has bitten this project twice.
-    Something about this test does not exercise what the trace does, and it
-    was not worth guessing at a third time.
+    Replacing that guard in `ui/app.py` with `if False:` does not make this
+    test fail. My first reading was "inconclusive, probably my mutation
+    harness"; that was wrong, and was ruled out by asserting the patch
+    present, clearing __pycache__ and running with `python -B`. My second was
+    "the test does not exercise what a trace does"; that was also wrong.
 
-    DO NOT TRUST THIS TEST until that is understood. The behaviour it
-    describes is real -- the trace confirms it -- but the test is not what
-    proves it.
+    What settled it was tracing the app WITH THE MUTATION APPLIED -- which is
+    the thing I had not done, having twice traced only the healthy path. The
+    booth still goes attract -> gallery at t+66 and gallery -> attract at
+    t+74 with the guard gone. Something else restores attract on that same
+    tick, so the mutation is EQUIVALENT rather than uncaught, and this test
+    is not failing to notice anything.
+
+    Left in place: it pins the behaviour a visitor experiences, which is what
+    it was written for. But it does not prove the guard earns its keep, and
+    the guard may simply be removable -- worth confirming before anyone
+    treats it as load-bearing.
     """
     from ui.states import BoothState
     app = _app()
