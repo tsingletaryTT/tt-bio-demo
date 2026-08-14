@@ -177,6 +177,37 @@ the UI the same manifest and the same selection. That is deliberate and it is lo
 before this, the daemon got one target and the UI defaulted to the full four-target
 manifest, so the gallery advertised proteins the daemon had no input file for.
 
+### Is this machine ready? — `scripts/doctor.sh`
+
+```bash
+./scripts/doctor.sh          # check everything, change nothing
+./scripts/doctor.sh --fix    # also perform the safe repairs
+./scripts/doctor.sh --quiet  # only the summary and anything wrong
+```
+
+One command that answers "can this box run the booth, and if not, what is the
+exact command that fixes it?" — the application tree, both venvs and whether
+they can actually *import* their stacks, the tt-bio pin versus what is
+installed, the 3.7 GB of weights (**by size, not existence** — a truncated
+download is the realistic failure and looks healthy to an existence check),
+every playlist input, visible chips, free disk, the systemd unit, and a
+display.
+
+**It works the same from a git checkout or from `/opt/tt-bio-demo`** installed
+by the `.deb`s — it finds the tree itself and only the *advice* changes
+(`setup-venvs.sh` for a source tree, `dpkg-reconfigure` for a packaged one).
+Every check is independent and every repair idempotent, so it can be re-run as
+things get fixed and will pick up from wherever the machine actually is.
+
+Exit codes are the useful part: **0** ready · **1** broken, cannot fold ·
+**2** usable with warnings (no hardware attached is a warning, not a failure —
+you can still develop the UI).
+
+It will never reset a card, never run `tt-bio install-deps`, never `apt
+install` or touch kernel modules, and **never opens a device** — hardware is
+read from `tt-smi -s`, a read-only snapshot — so it is safe to run while
+somebody else is using the chips.
+
 Every option has an environment-variable equivalent; `./scripts/run-demo.sh --help` prints
 the authoritative list. The ones you are most likely to want:
 
