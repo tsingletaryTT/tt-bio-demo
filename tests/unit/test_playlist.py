@@ -35,6 +35,8 @@ but non-numeric value is still a loud PlaylistError -- the leniency is for
 "nothing was said," not for "something wrong was said."
 """
 
+from pathlib import Path
+
 import pytest
 
 from ui.playlist import PlaylistError, Target, load_playlist, select_targets
@@ -399,3 +401,35 @@ def test_every_shipped_target_has_a_measured_time():
             f"{t.id} ships with no measured fold time; fold it on the card "
             f"and record the warm number (see the manifest's own comments)")
         assert 0.0 < t.expected_s < 120.0, f"{t.id}: {t.expected_s}s"
+
+
+def test_the_sites_thumbnails_are_the_ones_the_booth_ships():
+    """The gallery card and the docs site must show the same picture.
+
+    Two copies exist because the GitHub Pages site is rooted at `docs/` and
+    cannot reference a file outside it, so `playlist/thumbnails/` (shipped in
+    the .deb, loaded by ui/gallery.py) and `docs/thumbnails/` (served by the
+    site) are necessarily separate files. Keeping them identical was manual
+    until the tRNA target landed and had to be copied across by hand;
+    scripts/make-thumbnails.py now writes both, and this is what notices if
+    that ever stops being true.
+
+    Byte-for-byte, not just "both exist": a stale site copy is a picture of a
+    molecule the booth no longer draws that way, which is precisely the
+    failure the cartoon change caused once already (make-thumbnails.py was
+    building its pictures with a renderer the booth had stopped using).
+
+    Mutation: reverting either copy of any thumbnail to an older render. Red.
+    """
+    shipped = Path("playlist/thumbnails")
+    site = Path("docs/thumbnails")
+    named = [t for t in load_playlist("playlist/manifest.yaml") if t.thumbnail]
+    assert named, "no shipped target names a thumbnail at all"
+    for t in named:
+        booth_png = shipped / f"{t.id}.png"
+        site_png = site / f"{t.id}.png"
+        assert site_png.is_file(), (
+            f"{t.id}: the docs site has no copy of this thumbnail; run "
+            f"scripts/make-thumbnails.py, which writes both")
+        assert booth_png.read_bytes() == site_png.read_bytes(), (
+            f"{t.id}: {site_png} has drifted from the one the booth ships")

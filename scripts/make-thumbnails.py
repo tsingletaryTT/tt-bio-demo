@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Render `playlist/thumbnails/<id>.png` for every target in the manifest.
 
+(And `docs/thumbnails/<id>.png`, which is the same picture -- see "TWO
+COPIES, ONE COMMAND" below.)
+
 Run it from the repo root with no arguments:
 
     ./scripts/make-thumbnails.py
@@ -13,11 +16,23 @@ ribbon and `ui.viewer.StructureViewer` for the paint, the same two modules
 that draw the hero view a visitor watches. A gallery card therefore shows
 the same molecule, in the same pLDDT colours, that pressing it produces.
 
-That also means the thumbnails inherit the folds' honesty. Three of the
-four targets are `msa: empty` and land at mean pLDDT 40-56, so their ribbons
-come out mostly orange and yellow rather than confident blue. That is what
-this model predicts for these inputs, and a prettier thumbnail would be a
+That also means the thumbnails inherit the folds' honesty. Three of the six
+targets are `msa: empty` proteins that land at mean pLDDT 40-56, so their
+ribbons come out mostly orange and yellow rather than confident blue -- while
+the two nucleic acids and Trp-cage come back deep blue. That is what this
+model predicts for these inputs, and a prettier thumbnail would be a
 different (and false) claim.
+
+TWO COPIES, ONE COMMAND
+-----------------------
+Every thumbnail is written TWICE: to `playlist/thumbnails/` (what the booth
+loads and what the .deb ships) and to `docs/thumbnails/` (what the GitHub
+Pages site serves). The duplication is forced -- the site is rooted at
+`docs/`, so it cannot reference a file outside it -- but keeping the two in
+step is not something a human should have to remember. It was manual until
+the tRNA target landed and had to be copied across by hand;
+`test_the_sites_thumbnails_are_the_ones_the_booth_ships` now fails if they
+ever drift.
 
 WHY TWO PROCESSES
 -----------------
@@ -36,7 +51,7 @@ that both venvs exist.
 REPEATABILITY
 -------------
 Written to be re-run as the playlist grows -- it reads the manifest rather
-than a hardcoded list, so a fifth target needs no edit here. `--only ID`
+than a hardcoded list, so a seventh target needs no edit here. `--only ID`
 re-does a single target (useful after changing the camera or the ramp);
 `--from-cif ID=PATH` skips folding for a target whose structure you already
 have, which is also how the render stage can be exercised with no hardware
@@ -46,13 +61,15 @@ HARDWARE
 --------
 The fold stage opens card 0 and loads protenix-v2 once, then folds every
 target warm. Budget roughly a minute for the model load plus the manifest's
-own `expected_s` per target (4.4 / 11.7 / 19.7 / 22.3s today). It always
-closes the device, including on failure, so it never leaves a card held.
+own `expected_s` per target (4.4 / 11.7 / 19.7 / 22.3 / 4.6 / 8.6s today,
+so about 71s of folding for the whole playlist). It always closes the
+device, including on failure, so it never leaves a card held.
 """
 
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -60,6 +77,10 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = REPO_ROOT / "playlist" / "manifest.yaml"
 THUMBNAIL_DIR = REPO_ROOT / "playlist" / "thumbnails"
+# The docs site's copy of the same pictures. See "TWO COPIES, ONE COMMAND"
+# in the module docstring for why this cannot just be a relative link into
+# the directory above.
+SITE_THUMBNAIL_DIR = REPO_ROOT / "docs" / "thumbnails"
 
 # Where the two venvs live. `TT_BIO_DEMO_PREFIX` is scripts/test.sh's own
 # override, reused here rather than inventing a second spelling -- and it is
@@ -237,15 +258,25 @@ def stage_render(args):
                 f"{target.id}: {out.name} is {size} bytes, over the "
                 f"{MAX_THUMBNAIL_BYTES}-byte ship limit")
             continue
+        # The site's copy, written here rather than left to whoever
+        # remembers: this was a manual `cp` until the tRNA target landed,
+        # and a docs site showing last month's render of a molecule is
+        # exactly the "confident lie on the landing page" the README's
+        # screenshot rule is about.
+        SITE_THUMBNAIL_DIR.mkdir(parents=True, exist_ok=True)
+        site_copy = SITE_THUMBNAIL_DIR / out.name
+        shutil.copyfile(out, site_copy)
         written.append((target.id, out, size))
-        log(f"{target.id}: wrote {out.relative_to(REPO_ROOT)} ({size} bytes)")
+        log(f"{target.id}: wrote {out.relative_to(REPO_ROOT)} and "
+            f"{site_copy.relative_to(REPO_ROOT)} ({size} bytes)")
 
     for line in failures:
         log(f"FAILED {line}")
     if failures:
         return 1
     log(f"{len(written)} thumbnail(s) written to "
-        f"{THUMBNAIL_DIR.relative_to(REPO_ROOT)}")
+        f"{THUMBNAIL_DIR.relative_to(REPO_ROOT)} and "
+        f"{SITE_THUMBNAIL_DIR.relative_to(REPO_ROOT)}")
     return 0
 
 

@@ -199,6 +199,26 @@ def test_every_playlist_input_ships(built):
         assert name in c, f"{entry['id']} names an input not shipped: {name}"
 
 
+def test_every_playlist_thumbnail_ships(built):
+    """A gallery card whose picture is missing renders the placeholder --
+    silently, by design, because a target added before anyone has folded it
+    must still work. That tolerance is exactly why this needs a test: an
+    installed booth showing six grey placeholders would look deliberate.
+
+    The pictures ride along inside `playlist/`, which the install list ships
+    as a directory. Mutation: moving thumbnails/ out of playlist/ (to docs/
+    alone, where the site's copy lives). Red.
+    """
+    import yaml
+    c = _contents(_app_deb(built))
+    manifest = yaml.safe_load((REPO / "playlist/manifest.yaml").read_text())
+    named = [e for e in manifest if e.get("thumbnail")]
+    assert named, "no manifest entry names a thumbnail -- this would assert nothing"
+    for entry in named:
+        name = pathlib.Path(entry["thumbnail"]).name
+        assert name in c, f"{entry['id']} names a thumbnail not shipped: {name}"
+
+
 def test_tests_and_scratch_do_not_ship(built):
     """The install list names directories one by one rather than globbing the
     repo root, so this is what notices if it ever becomes a glob.
