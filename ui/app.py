@@ -188,6 +188,8 @@ from ui.gallery import Gallery
 from ui.geometry import PLDDT_STOPS, ribbon_from_cif
 from ui.panels import PipelinePanel, TelemetryPanel
 from ui.playlist import PlaylistError, load_playlist, select_targets
+from ui.attract import (CLOSE_DIAGNOSTICS, CLOSE_TENSIX,
+                        OPEN_DIAGNOSTICS, OPEN_TENSIX, Choreography)
 from ui.quad import QUAD_HELP_LINE, QUAD_KEYS, QuadView
 from ui.slots import MAX_SLOTS, SlotRouter
 from ui.states import StateMachine
@@ -1506,6 +1508,11 @@ class DemoApp(Gtk.Application):
         # (see `_HELP_IDLE_S`). None means "nobody has touched this booth
         # yet", which is exactly when there is nothing to time out.
         self._last_input_at = None
+        # The booth demonstrating its own panels to an empty room. Pure and
+        # clock-driven (ui/attract.py); it decides, this file applies. Nothing
+        # starts until the booth has been idle longer than its own visitor
+        # timeout, so it can never begin while somebody is still there.
+        self.attract = Choreography()
 
         # The clock reading the last state tick was given (`_tick_state_at`),
         # and when the visitor's current pick was made, on that same reading.
@@ -2778,8 +2785,17 @@ class DemoApp(Gtk.Application):
            nothing for `Esc` to get out of the way of.
         5. Everything else is a visitor touch, exactly as before.
         """
-        self._note_input()
         lowered = (name or "").lower()
+        # ORDER MATTERS. A visitor pressing the key for a panel the
+        # choreography opened means "close that" -- so the panel becomes
+        # theirs BEFORE `_note_input` interrupts, otherwise the interrupt
+        # closes it and the toggle immediately reopens it, and the key a
+        # visitor pressed to dismiss something appears to do nothing.
+        if lowered in _DIAGNOSTICS_KEYS:
+            self.attract.disown("diagnostics")
+        elif lowered in _TENSIX_KEYS:
+            self.attract.disown("tensix")
+        self._note_input()
 
         if ctrl and lowered == "q":
             log.info("operator quit (ctrl+q)")
@@ -2851,6 +2867,17 @@ class DemoApp(Gtk.Application):
         except Exception:
             # A clock that raises must not cost the booth a keypress.
             log.exception("clock failed while stamping visitor input")
+        # Someone is here: stop demonstrating, and put back whatever the
+        # demonstration had opened. Anything the VISITOR opened is not ours
+        # to close and `Choreography` will not name it.
+        try:
+            for cue in self.attract.interrupted():
+                if cue == CLOSE_DIAGNOSTICS and self.diagnostics_visible:
+                    self._set_diagnostics_visible(False)
+                elif cue == CLOSE_TENSIX and self.chipviz_visible:
+                    self._set_chipviz_visible(False)
+        except Exception:
+            log.exception("attract choreography could not be interrupted")
 
     def _toggle_diagnostics(self):
         self._set_diagnostics_visible(not self.diagnostics_visible)
@@ -3269,6 +3296,52 @@ class DemoApp(Gtk.Application):
         if self.chipviz_visible and idle_s >= _RAIL_PANEL_IDLE_S:
             log.info("Tensix activity panel closed after %.0fs idle", idle_s)
             self._set_chipviz_visible(False)
+
+        self._tick_attract(now, idle_s)
+
+    def _tick_attract(self, now, idle_s):
+        """Let the booth show off its own instruments to an empty room.
+
+        `D` and `T` are the two most interesting things in the rail and almost
+        nobody presses either, so after a long idle the booth opens them
+        itself, holds them long enough to read, and closes them again.
+
+        The decision is `ui.attract`'s and is pure; this only applies it. Two
+        guards live here rather than there because they need the widgets:
+        a cue is skipped if the panel is already in the state it asks for
+        (so we never fight `_tick_overlays` above), and every apply is
+        wrapped -- a choreography that raised would take down the tick that
+        also closes chrome and drives the state machine.
+        """
+        try:
+            cues = self.attract.tick(now, idle_s)
+        except Exception:
+            log.exception("attract choreography tick failed; skipping")
+            return
+        for cue in cues:
+            try:
+                # A SKIPPED OPEN MUST DISOWN. `Choreography` takes ownership
+                # when it EMITS an open, but the panel may already be up --
+                # because a visitor opened it. Applying nothing while still
+                # claiming it would mean the matching close later shuts a
+                # panel somebody is reading, which is the one failure mode
+                # this feature must not have.
+                if cue == OPEN_DIAGNOSTICS:
+                    if self.diagnostics_visible:
+                        self.attract.disown("diagnostics")
+                    else:
+                        self._set_diagnostics_visible(True)
+                elif cue == CLOSE_DIAGNOSTICS and self.diagnostics_visible:
+                    self._set_diagnostics_visible(False)
+                elif cue == OPEN_TENSIX:
+                    if self.chipviz_visible:
+                        self.attract.disown("tensix")
+                    else:
+                        self._set_chipviz_visible(True)
+                elif cue == CLOSE_TENSIX and self.chipviz_visible:
+                    self._set_chipviz_visible(False)
+            except Exception:
+                log.exception("attract cue %r could not be applied", cue)
 
     def _on_pick(self, target_id):
         """A visitor picked a target off the gallery, and the booth asks the

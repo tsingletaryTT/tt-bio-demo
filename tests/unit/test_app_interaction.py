@@ -2210,3 +2210,51 @@ def test_every_label_on_the_easter_egg_is_legible():
     """
     app = _app()
     _assert_legible(app._build_egg_overlay(), context="easter egg")
+
+
+# ── the attract choreography, where it meets a visitor ──────────────────────
+
+def test_pressing_D_closes_a_panel_the_choreography_opened(monkeypatch):
+    """The ordering bug this pins: `_note_input` interrupts the choreography
+    on every keypress, and the interrupt closes what the choreography opened.
+    If that ran BEFORE the key was dispatched, pressing `D` on an
+    already-open tap would close it and then the toggle would reopen it --
+    the key would appear to do nothing.
+    """
+    app = _app()
+    app.attract.tick(1000.0, idle_s=1000.0)          # choreography opens it
+    app._set_diagnostics_visible(True)
+    assert app.attract.owns("diagnostics")
+
+    app._handle_key("d")
+
+    assert app.diagnostics_visible is False, \
+        "D did not close a panel the choreography had opened"
+    assert not app.attract.owns("diagnostics")
+
+
+def test_any_other_key_puts_back_what_the_choreography_opened():
+    """Rule 2: the booth a visitor walks up to looks like the booth that was
+    left. A touch stops the demonstration and closes its panels."""
+    app = _app()
+    app.attract.tick(1000.0, idle_s=1000.0)
+    app._set_diagnostics_visible(True)
+
+    app._handle_key("x")                              # an ordinary touch
+
+    assert app.diagnostics_visible is False
+    assert not app.attract.running
+
+
+def test_a_visitor_opened_panel_survives_the_choreography(monkeypatch):
+    """Rule 3, end to end: the choreography must never close a panel a
+    visitor opened themselves."""
+    app = _app()
+    app._handle_key("d")                              # visitor opens it
+    assert app.diagnostics_visible is True
+    assert not app.attract.owns("diagnostics")
+
+    for t in (1000.0, 1020.0, 1040.0):                # choreography runs on
+        app._tick_attract(t, idle_s=t)
+    assert app.diagnostics_visible is True, \
+        "the choreography closed a panel the visitor had opened"
