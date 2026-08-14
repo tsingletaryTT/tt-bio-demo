@@ -413,6 +413,51 @@ is the same noise-becomes-structure motion.
 Seven mutations for the flicker fix, seven red. Twenty-four for the egg,
 twenty-four red, with a deliberate no-op control that correctly survived.
 
+### Recording the quad, and `--quad` (2026-08-14)
+
+Phase 5's headline feature is the 2×2 quad view, and the demo video did not
+show it. Three takes to fix, each failing in a way that reported success:
+
+- **Take 0** (169 s, four chips, 55 folds): `xdotool key q` never reached the
+  app, so it recorded the solo view. `--window` sends XSendEvent, which GTK
+  ignores; the global form uses XTEST, which needs real focus that Spectacle
+  steals. A quadrant colour-count then "verified" it *was* the quad — one large
+  protein fills all four sampled regions. Only extracting frames and looking at
+  them caught it.
+- **Take 1** (149 s): genuinely the quad, and unusable — an OBS "Plugin Load
+  Error" dialog and the desktop taskbar sat over every frame. OBS's dialog
+  steals focus at launch, which un-raises the fullscreen booth.
+- **Take 2**: tried to close that dialog with `wmctrl`/`xdotool` and could not.
+  OBS is a **Wayland-native Qt app** here, so its windows are invisible to
+  XWayland tooling entirely. The new precheck caught the still-dirty screen and
+  refused, which is why this take cost three minutes instead of another 149
+  seconds of footage.
+- **Take 3**: stop fighting the dialog — start **OBS first**, let it throw the
+  dialog at an empty desktop, then bring the booth up fullscreen over it and
+  trim the dirty head by offset. 150 s, 59 folds across all four chips.
+
+Two things came out of this that outlive the video. `--quad` (and the existing
+`--windowed`) make the **start state** a flag rather than a synthetic keypress,
+which is both an operator feature — a four-chip booth can run the grid all day —
+and the only reliable way to record it. And `scripts/record-demo-video.sh`
+photographs the screen after the booth is up and **refuses** unless it is clean,
+because every failure above exited 0.
+
+The 30 s loop is cut by measurement rather than by eye: *solidity* — lit pixels
+whose neighbours are also lit — separates a diffusion cloud (hundreds of small
+discs) from a finished ribbon (a few fat tubes), so ranking 10 s windows by how
+much it **rises** finds the moments where dots actually become shapes. It picked
+t=43, 72, 104.
+
+Two defects the quad screenshots exposed, both open:
+
+- A cell in `trunk` shows the **previous** fold's structure (correct, and the
+  point of "never a blank screen") but is **labelled with the incoming target**.
+  In solo view the notice row says "Previous fold: X / Now folding Y"; a quad
+  cell has one line and it names Y beside X's geometry.
+- On a chip's **first** fold there is no previous structure, so that cell is
+  genuinely blank through `trunk`.
+
 ## Conventions
 
 - **Keep the README's screenshots current.** The README claims every image on it is the
@@ -420,13 +465,29 @@ twenty-four red, with a deliberate no-op control that correctly survived.
   true. Run it whenever the UI changes visibly, look at the output, and commit the images
   with the change that caused them. A screenshot that no longer matches the app is worse
   than no screenshot — it is a confident lie on the landing page.
-  - Capture on this box is **Spectacle only**. `ffmpeg x11grab` records pure black on
+  - **Stills** on this box are **Spectacle only**. `ffmpeg x11grab` records pure black on
     KWin/Wayland (verified: one unique colour in the output frame) and `wf-recorder`
     refuses outright ("compositor doesn't support wlr-screencopy-unstable-v1"). `grim`
-    does not work either. Keys are driven with `xdotool`, which needs the window
-    activated first or they land in whatever terminal has focus.
-  - Spectacle sustains ~5.9 fps, which is also why the demo video is assembled from
-    stills rather than recorded.
+    does not work either.
+  - **Video** is **OBS + PipeWire** at 1920×1080 @ 60 fps — `scripts/record-demo-video.sh`.
+    The portal must be granted interactively once per login session. Spectacle tops out
+    at ~5.9 fps, which is why an early demo video looked choppy; it is no longer how the
+    video is made.
+  - **Do not drive the app's keys with `xdotool` in a capture script.** `--window` sends
+    XSendEvent, which GTK ignores; the global form uses XTEST, which needs real focus that
+    Spectacle steals the moment it runs. Both exit 0 and neither key arrives — this cost a
+    169-second recording of the wrong view. Prefer a **flag that sets the start state**
+    (`run-demo.sh --quad`, `--windowed`) over a synthetic keypress. `refresh-screenshots.sh`
+    still uses xdotool for `T`/`D`, and gets away with it only because it activates the
+    window immediately before each press with nothing in between.
+
+- **A capture you have not looked at is not verified.** Every capture failure in this
+  project reported success: black x11grab frames (exit 0), a solo recording that a
+  quadrant colour-count "confirmed" was the quad (one large protein fills all four sampled
+  regions), a 149-second master shot underneath an OBS dialog and the taskbar, a good
+  136-second recording declared blank by a verifier that sampled one frame at t=1s. Extract
+  frames and look at them. Where a script must decide unattended, make it photograph the
+  screen and **refuse** — see `scripts/record-demo-video.sh`.
 
 - Spec-first: brainstormed design → committed spec → implementation plan → code.
 - tt-bio is pinned to a **release tag**, never `main` (upstream nightly moves fast) —
