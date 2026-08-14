@@ -279,7 +279,7 @@ def test_a_deferred_fold_never_touches_another_cell():
 
 def test_a_ribbon_lands_in_its_own_cell(monkeypatch):
     import ui.app as mod
-    monkeypatch.setattr(mod, "ribbon_from_cif",
+    monkeypatch.setattr(mod, "structure_mesh",
                         lambda path, **kw: ("v", "n", "c", "i"))
     app = _app()
     app._handle_event(_start("j2", card=2))
@@ -295,7 +295,7 @@ def test_a_fold_on_one_chip_does_not_invalidate_another_chips_ribbon(monkeypatch
     job_done on chip 3 bumps the generation and chip 0's in-flight ribbon is
     dropped as 'stale' -- silently, every cycle, forever."""
     import ui.app as mod
-    monkeypatch.setattr(mod, "ribbon_from_cif",
+    monkeypatch.setattr(mod, "structure_mesh",
                         lambda path, **kw: ("v", "n", "c", "i"))
     app = _app()
     app._handle_event(_start("j0", card=0))
@@ -330,7 +330,7 @@ def test_a_cells_newer_fold_still_supersedes_its_own_older_one(monkeypatch):
         time.sleep(delays[path])
         return (path, "n", "c", "i")
 
-    monkeypatch.setattr(mod, "ribbon_from_cif", build)
+    monkeypatch.setattr(mod, "structure_mesh", build)
     app = _app()
     app._handle_event(_start("j0", card=0))
     app._handle_event(_done("j0"))
@@ -368,7 +368,7 @@ def test_a_pending_ribbon_is_dropped_when_its_cell_moves_on_first(monkeypatch):
             gate.wait(5.0)
         return (path, "n", "c", "i")
 
-    monkeypatch.setattr(mod, "ribbon_from_cif", build)
+    monkeypatch.setattr(mod, "structure_mesh", build)
     app = _app()
     app._handle_event(_start("j0", card=0))
     app._handle_event(_done("j0"))
@@ -391,7 +391,7 @@ def test_a_ribbon_that_outlasts_its_own_cells_dwell_is_dropped(monkeypatch):
     """Unchanged rule, per cell: cross-fading a finished structure over the
     next fold's live diffusion is the headline defect arriving late."""
     import ui.app as mod
-    monkeypatch.setattr(mod, "ribbon_from_cif",
+    monkeypatch.setattr(mod, "structure_mesh",
                         lambda path, **kw: ("v", "n", "c", "i"))
     app = _app()
     app._handle_event(_start("j0", card=0))
@@ -412,7 +412,7 @@ def test_a_geometry_failure_in_one_cell_leaves_the_other_three_alone(monkeypatch
             raise GeometryError("bad cif")
         return ("v", "n", "c", "i")
 
-    monkeypatch.setattr(mod, "ribbon_from_cif", explode)
+    monkeypatch.setattr(mod, "structure_mesh", explode)
     app = _app()
     for card in range(4):
         app._handle_event(_start(f"j{card}", card=card))
@@ -439,7 +439,7 @@ def test_a_landing_ribbon_is_not_labelled_with_the_next_folds_name(monkeypatch):
     which is when a frame is drawn.
     """
     import ui.app as mod
-    monkeypatch.setattr(mod, "ribbon_from_cif",
+    monkeypatch.setattr(mod, "structure_mesh",
                         lambda path, **kw: ("v", "n", "c", "i"))
     app = _app()
     app._handle_event(_start("j0", card=0, target_id="trpcage"))

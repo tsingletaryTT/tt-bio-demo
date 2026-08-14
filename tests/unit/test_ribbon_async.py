@@ -117,7 +117,7 @@ def test_ribbon_construction_does_not_run_on_the_calling_thread(monkeypatch):
     """The main loop must not be the thread that pays the 1.2s cost."""
     from ui import app as mod
     slow = _SlowGeometry()
-    monkeypatch.setattr(mod, "ribbon_from_cif", slow)
+    monkeypatch.setattr(mod, "structure_mesh", slow)
 
     app = _fold_app()
     caller = threading.current_thread().name
@@ -130,7 +130,7 @@ def test_ribbon_construction_does_not_run_on_the_calling_thread(monkeypatch):
 
 def test_the_viewer_is_updated_after_the_work_completes(monkeypatch):
     from ui import app as mod
-    monkeypatch.setattr(mod, "ribbon_from_cif", _SlowGeometry(delay=0.05))
+    monkeypatch.setattr(mod, "structure_mesh", _SlowGeometry(delay=0.05))
     app = _fold_app()
     app._handle_event({"type": "job_done", "job_id": "j1", "cif_path": "/tmp/x.cif",
                        "wall_s": 5.0, "mean_plddt": 95.0})
@@ -146,7 +146,7 @@ def test_a_geometry_failure_leaves_the_previous_view_intact(monkeypatch):
     def explode(cif_path, **kw):
         raise GeometryError("bad cif")
 
-    monkeypatch.setattr(mod, "ribbon_from_cif", explode)
+    monkeypatch.setattr(mod, "structure_mesh", explode)
     app = _fold_app()
     app._handle_event({"type": "job_done", "job_id": "j1", "cif_path": "/tmp/x.cif",
                        "wall_s": 5.0, "mean_plddt": 95.0})
@@ -179,7 +179,7 @@ def test_a_non_geometry_error_also_leaves_the_previous_view_intact(monkeypatch, 
     def explode(cif_path, **kw):
         raise ValueError("truncated atom record")
 
-    monkeypatch.setattr(mod, "ribbon_from_cif", explode)
+    monkeypatch.setattr(mod, "structure_mesh", explode)
     app = _fold_app()
     with caplog.at_level(logging.ERROR, logger="ui.app"):
         app._handle_event({"type": "job_done", "job_id": "j1", "cif_path": "/tmp/x.cif",
@@ -198,7 +198,7 @@ def test_a_non_geometry_error_also_leaves_the_previous_view_intact(monkeypatch, 
 def test_a_second_fold_supersedes_a_slow_first_one(monkeypatch):
     """Two folds in flight must not race to update the viewer out of order."""
     from ui import app as mod
-    monkeypatch.setattr(mod, "ribbon_from_cif", _SlowGeometry(delay=0.2))
+    monkeypatch.setattr(mod, "structure_mesh", _SlowGeometry(delay=0.2))
     app = _fold_app(jobs=("j1", "j2"))
     app._handle_event({"type": "job_done", "job_id": "j1", "cif_path": "/tmp/a.cif",
                        "wall_s": 5.0, "mean_plddt": 95.0})
@@ -259,7 +259,7 @@ def test_a_stale_first_fold_cannot_clobber_a_faster_newer_one(monkeypatch):
     from `_spawn_ribbon_worker`.
     """
     from ui import app as mod
-    monkeypatch.setattr(mod, "ribbon_from_cif", _VariableGeometry(
+    monkeypatch.setattr(mod, "structure_mesh", _VariableGeometry(
         {"/tmp/slow-first.cif": 0.60, "/tmp/fast-second.cif": 0.02}))
 
     app = _fold_app(jobs=("j1", "j2"))

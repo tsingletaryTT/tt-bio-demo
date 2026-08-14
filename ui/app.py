@@ -186,6 +186,7 @@ from ui.client import EventClient, LatestFrameByJob
 from ui.diagnostics import KIND_MARK, DiagnosticsLog, DiagnosticsPanel
 from ui.gallery import Gallery
 from ui.geometry import PLDDT_STOPS, ribbon_from_cif
+from ui.structure_view import structure_mesh
 from ui.panels import PipelinePanel, TelemetryPanel
 from ui.playlist import PlaylistError, load_playlist, select_targets
 from ui.attract import (CLOSE_DIAGNOSTICS, CLOSE_TENSIX,
@@ -4185,7 +4186,10 @@ class DemoApp(Gtk.Application):
         leave the screen alone" outcome, not a silent thread death.
         """
         try:
-            result = ribbon_from_cif(cif_path)
+            # The cartoon, with any bound ligand drawn beside it. Falls
+            # back to the plain backbone tube if either raises -- see
+            # ui/structure_view.py. Same four arrays either way.
+            result = structure_mesh(cif_path)
         except Exception as exc:
             outcome = ("error", exc)
         else:

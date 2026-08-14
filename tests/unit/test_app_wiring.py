@@ -293,7 +293,7 @@ def fake_ribbon(monkeypatch):
     def _build(cif_path):
         return ("verts", "norms", "colors", "indices")
 
-    monkeypatch.setattr(ui.app, "ribbon_from_cif", _build)
+    monkeypatch.setattr(ui.app, "structure_mesh", _build)
     return _build
 
 
