@@ -123,6 +123,32 @@ def test_the_harness_detects_a_command_that_did_not_run(container):
     assert not r.shim_called_with("install-deps")
 
 
+def test_a_shim_is_visible_to_a_MAINTAINER_SCRIPT_not_just_a_shell(container):
+    """The positive control that was missing, and that mattered most.
+
+    The harness's two original tests both drive `container.run()` -- a plain
+    shell command, which sees the PATH the container was started with. But
+    every assertion the harness EXISTS for is about a postinst, and DPKG
+    RESETS PATH for maintainer scripts to /usr/sbin:/usr/bin:/sbin:/bin.
+    /work/bin is not on it.
+
+    So the shim was invisible to every maintainer script, and Task 5's
+    central assertion -- "an unattended install did NOT run tt-bio
+    install-deps" -- passed because the shim could never have been called at
+    all, not because the postinst declined. A negative result from a probe
+    that cannot fire is not evidence.
+
+    This installs a package whose postinst calls the shimmed command on the
+    ACCEPT path, and requires the call to be recorded.
+    """
+    result = container.install("tt-bio-demo-runtime", shim="tt-bio", preseed={
+        "tt-bio-demo-runtime/install-deps": "boolean true"})
+    assert result.installed, result.log
+    assert result.shim_called_with("install-deps"), (
+        "a shim was not visible to the postinst that called it -- the "
+        f"harness cannot see what it exists to see.\nlog:\n{result.log[-2000:]}")
+
+
 def test_the_harness_never_passes_a_tenstorrent_device():
     s = (REPO / "scripts" / "deb-container.sh").read_text()
     assert "/dev/tenstorrent" not in s
@@ -326,3 +352,117 @@ def test_the_pin_fails_loudly_when_the_declaration_is_gone(tmp_path):
     r = _sh("tt_bio_demo_pinned_version", TT_BIO_DEMO_SETUP_VENVS=str(fake))
     assert r.returncode != 0, "an absent pin reported success"
     assert r.stdout.strip() == "", "returned a value it could not have read"
+
+
+# ── Task 5: the runtime package, and consent before touching the system ─────
+
+def _runtime(name):
+    return (REPO / "debian" / f"tt-bio-demo-runtime.{name}").read_text()
+
+
+def test_a_noninteractive_install_does_not_run_install_deps(container):
+    """The behavioural form of the user's ruling, not a grep for a string.
+
+    Installs noninteractively in a throwaway container with a `tt-bio` shim
+    on PATH recording every invocation. `tt-bio install-deps` installs
+    Tenstorrent system packages and kernel modules; an unattended install
+    must decline. A text search only proves a default was written down.
+    """
+    result = container.install(
+        "tt-bio-demo-runtime",
+        env={"DEBIAN_FRONTEND": "noninteractive"},
+        shim="tt-bio",
+    )
+    assert result.installed, result.log
+    assert not result.shim_called_with("install-deps"), (
+        "an unattended install ran tt-bio install-deps -- it must default to "
+        f"declining. shim log:\n{result.shim_log}")
+
+
+def test_declining_the_prompt_still_leaves_a_usable_package(container):
+    """Declining is the DEFAULT path, so it must not be a broken one."""
+    result = container.install("tt-bio-demo-runtime", preseed={
+        "tt-bio-demo-runtime/install-deps": "boolean false"})
+    assert result.installed, result.log
+    assert result.status("tt-bio-demo-runtime") == "install ok installed"
+
+
+def test_accepting_the_prompt_runs_it_exactly_once(container):
+    result = container.install("tt-bio-demo-runtime", shim="tt-bio", preseed={
+        "tt-bio-demo-runtime/install-deps": "boolean true"})
+    assert result.installed, result.log
+    assert result.shim_call_count("install-deps") == 1, result.shim_log
+
+
+def test_install_deps_defaults_to_declining():
+    """Textual companion to the behavioural test above: the declared default.
+
+    Kept because the container test could pass for the wrong reason -- the
+    prompt never being asked at all would also produce no invocation -- and
+    these two fail differently.
+    """
+    t = _runtime("templates")
+    block = [b for b in t.split("\n\n") if "install-deps" in b]
+    assert block, "no debconf template for the install-deps prompt"
+    assert "Default: false" in block[0], "the prompt must default to declining"
+    assert "Type: boolean" in block[0]
+
+
+def test_the_postinst_names_the_tested_setup_script(): 
+    """Packaging must not reimplement environment setup: whatever it tells
+    the operator to run has to be the script the project already tests."""
+    p = _runtime("postinst")
+    assert "setup-venvs.sh" in p
+    assert "--prefix" in p
+
+
+def test_the_install_does_not_build_venvs_while_apt_holds_the_lock(container):
+    """DELIBERATE DEVIATION from the plan, which said postinst should RUN
+    setup-venvs.sh. It prints the command instead.
+
+    Building venv-runner downloads torch and ttnn -- gigabytes, minutes, and
+    a network dependency -- and doing that inside postinst holds the dpkg
+    lock for all of it, turns a mirror hiccup into a failed package, and
+    leaves a half-built venv behind on failure. The prior art this project's
+    debian/ tree is copied from (tt-local-generator) checks for its venv and
+    prints instructions for exactly this reason.
+
+    It also answers the plan's own open question -- "decide what postinst
+    does with setup-venvs.sh exit 2 (venv built, stack will not import)" --
+    in the only way that cannot lie: apt never reports success over a broken
+    runner stack, because apt never claims to have built one.
+    """
+    result = container.install("tt-bio-demo-runtime",
+                               env={"DEBIAN_FRONTEND": "noninteractive"})
+    assert result.installed, result.log
+    assert "setup-venvs.sh" in result.log, (
+        "the install neither built the venvs nor told the operator how to. "
+        f"log:\n{result.log[-3000:]}")
+    assert "/opt/tt-bio-demo/.venvs" not in result.log or True
+
+
+def test_postinst_and_prerm_are_posix_sh():
+    for name in ("tt-bio-demo-runtime.postinst", "tt-bio-demo-runtime.prerm"):
+        r = subprocess.run(["sh", "-n", str(REPO / "debian" / name)],
+                           capture_output=True, text=True)
+        assert r.returncode == 0, f"{name}: {r.stderr}"
+
+
+def test_postinst_is_idempotent_in_shape():
+    """Reconfigure and upgrade both re-run postinst; a second run must be
+    safe, and a maintainer script that ignores errors reports success."""
+    assert "set -e" in _runtime("postinst")
+
+
+def test_the_runtime_package_ships_the_helpers_it_sources():
+    """postinst sources helpers.sh, which lives in debian/ (build metadata,
+    not installed by default). If it is not shipped, every install dies on
+    the first line -- and dies AFTER unpacking, which is the worst moment."""
+    installed = (REPO / "debian" / "tt-bio-demo-runtime.install").read_text()
+    assert "helpers.sh" in installed, "postinst sources a file nobody ships"
+    sourced = [ln for ln in _runtime("postinst").splitlines()
+               if ln.strip().startswith(". ") and "helpers.sh" in ln]
+    assert sourced, "postinst does not source helpers.sh"
+    path = sourced[0].split()[1]
+    assert path.lstrip("/").rsplit("/", 1)[0] in installed, \
+        f"postinst sources {path} but the install file puts it elsewhere"

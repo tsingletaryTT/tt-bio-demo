@@ -1,0 +1,74 @@
+#!/bin/sh
+# tt-bio-demo-runtime postinst.
+#
+# WHAT THIS DELIBERATELY DOES NOT DO: build the two virtual environments.
+#
+# The plan for this task said postinst should run scripts/setup-venvs.sh.
+# It prints the command instead, and that is a considered deviation:
+#
+#   * venv-runner pulls torch and ttnn -- gigabytes, minutes, and a hard
+#     network dependency. Doing that here holds the dpkg lock for the whole
+#     of it, turns a mirror hiccup into a FAILED package installation, and
+#     leaves a half-built venv behind when it dies.
+#   * The prior art this project's debian/ tree is copied from
+#     (tt-local-generator) checks for its venv and prints instructions, for
+#     exactly these reasons.
+#   * It is the only honest answer to "what should postinst do when
+#     setup-venvs.sh exits 2 (venv built, stack will not import)?" -- apt
+#     cannot report success over a broken runner stack if apt never claimed
+#     to have built one.
+#
+# The booth is still turnkey in the sense that matters: the operator runs
+# ONE printed command, and it is the same script this project already tests
+# and already documents.
+set -e
+
+. /usr/share/debconf/confmodule
+. /usr/share/tt-bio-demo/helpers.sh
+
+PREFIX="$(tt_bio_demo_prefix)"
+SETUP="${PREFIX}/scripts/setup-venvs.sh"
+
+case "$1" in
+    configure)
+        # ---- the Tenstorrent system packages, only if asked for ----------
+        #
+        # The standing project rule, and a user ruling of 2026-08-13: this
+        # never runs silently. db_get returns the default (false) under a
+        # noninteractive frontend, which is the whole point.
+        db_get tt-bio-demo-runtime/install-deps || true
+        if [ "$RET" = "true" ]; then
+            if tt_bio_demo_have_command tt-bio; then
+                tt_bio_demo_log "running 'tt-bio install-deps' as requested"
+                tt-bio install-deps
+            else
+                tt_bio_demo_log "asked to run 'tt-bio install-deps', but tt-bio is not on PATH yet."
+                tt_bio_demo_log "It arrives with venv-runner; run it after the step below."
+            fi
+        else
+            tt_bio_demo_log "not running 'tt-bio install-deps' (declined, or unattended)."
+            tt_bio_demo_log "When you want it:  sudo tt-bio install-deps"
+        fi
+
+        # ---- the venvs: reported, never built here ------------------------
+        if [ -d "${PREFIX}/.venvs/venv-ui" ] && [ -d "${PREFIX}/.venvs/venv-runner" ]; then
+            tt_bio_demo_log "virtual environments already present under ${PREFIX}/.venvs"
+        else
+            version="$(tt_bio_demo_pinned_version 2>/dev/null || echo '(see setup-venvs.sh)')"
+            tt_bio_demo_log ""
+            tt_bio_demo_log "ONE STEP LEFT. The Python environments are not built yet:"
+            tt_bio_demo_log ""
+            tt_bio_demo_log "    sudo ${SETUP} --prefix ${PREFIX}"
+            tt_bio_demo_log ""
+            tt_bio_demo_log "That builds venv-ui (GTK4) and venv-runner (torch/ttnn +"
+            tt_bio_demo_log "tt-bio ${version}). It downloads gigabytes and takes minutes,"
+            tt_bio_demo_log "which is why it is not run while apt holds the dpkg lock."
+        fi
+        ;;
+
+    abort-upgrade|abort-remove|abort-deconfigure)
+        ;;
+esac
+
+#DEBHELPER#
+exit 0

@@ -89,7 +89,25 @@ mkdir -p "${WORKDIR}/bin" "${WORKDIR}/debs"
 # Result.status(pkg) has something to read either way, and finally re-exit
 # with the real status so the caller's success/failure judgement is about
 # the caller's own command, not about whether the status dump worked.
+# DPKG RESETS PATH. Maintainer scripts run with a fixed
+# PATH=/usr/sbin:/usr/bin:/sbin:/bin -- not the one set below, and NOT
+# containing /work/bin. A shim staged only in /work/bin is therefore
+# invisible to exactly the code it exists to observe: a postinst. That made
+# the harness's whole purpose ("prove `tt-bio install-deps` did or did not
+# run during an install") unfalsifiable -- the negative assertion passed
+# because the shim could never have been called, not because the postinst
+# declined.
+#
+# So shims are ALSO linked into /usr/bin, which is on dpkg's PATH and is
+# where a real tt-bio would live anyway. Safe because this container is
+# disposable (--rm) and is never the host.
 FULL_COMMAND="cd /work
+if [ -d /work/bin ]; then
+  for _shim in /work/bin/*; do
+    [ -e \"\$_shim\" ] || continue
+    cp \"\$_shim\" \"/usr/bin/\$(basename \"\$_shim\")\"
+  done
+fi
 ${SHELL_COMMAND}
 _rc=\$?
 dpkg-query -W -f='\${Package} \${Status}\n' 'tt-bio-demo*' >/work/status 2>/dev/null || true

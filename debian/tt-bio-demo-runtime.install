@@ -1,0 +1,6 @@
+# helpers.sh is build metadata (it lives in debian/), so it is not installed
+# by default -- but this package's own postinst sources it. Ship it, or every
+# install dies on its first line, AFTER unpacking, which is the worst moment
+# for a maintainer script to fail. `test_the_runtime_package_ships_the_
+# helpers_it_sources` pins the two together.
+debian/helpers.sh   usr/share/tt-bio-demo/

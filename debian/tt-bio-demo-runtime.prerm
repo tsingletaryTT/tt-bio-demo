@@ -1,0 +1,28 @@
+#!/bin/sh
+# tt-bio-demo-runtime prerm.
+#
+# The venvs under /opt/tt-bio-demo/.venvs are NOT dpkg-managed -- they are
+# built after installation by setup-venvs.sh, so dpkg has no record of them
+# and will not remove them. Removing them here on `remove` would be wrong in
+# the common case (an upgrade removes and reinstalls, and rebuilding several
+# gigabytes because someone upgraded a metadata-only package is hostile).
+#
+# So: this says what it is leaving behind, and where. Cleaning up on PURGE
+# belongs in postrm, which is Task 7's file, not this one.
+set -e
+
+. /usr/share/tt-bio-demo/helpers.sh
+
+case "$1" in
+    remove|upgrade|deconfigure)
+        if [ -d "$(tt_bio_demo_prefix)/.venvs" ]; then
+            tt_bio_demo_log "leaving $(tt_bio_demo_prefix)/.venvs in place (not dpkg-managed)."
+            tt_bio_demo_log "Remove it by hand if you want the disk back."
+        fi
+        ;;
+    failed-upgrade)
+        ;;
+esac
+
+#DEBHELPER#
+exit 0

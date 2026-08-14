@@ -1,0 +1,13 @@
+Template: tt-bio-demo-runtime/install-deps
+Type: boolean
+Default: false
+Description: Run "tt-bio install-deps" now?
+ tt-bio needs Tenstorrent system packages and kernel modules that are not
+ installable from this package's dependencies. Its own installer,
+ "tt-bio install-deps", fetches and installs them.
+ .
+ This touches the host well beyond this package -- it installs kernel
+ modules -- so it is never run without being asked for. Declining is the
+ default and is safe: the exact command to run later is printed at the end
+ of this installation, and nothing else about the booth depends on
+ answering yes here.
