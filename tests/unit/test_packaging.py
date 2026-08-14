@@ -131,3 +131,65 @@ def test_the_harness_never_passes_a_tenstorrent_device():
 def test_the_harness_always_removes_its_container():
     s = (REPO / "scripts" / "deb-container.sh").read_text()
     assert "--rm" in s
+
+
+# ── Task 3: the application package ships the right files, and only those ───
+
+def _contents(deb):
+    return subprocess.run(["dpkg-deb", "--contents", str(deb)],
+                          capture_output=True, text=True).stdout
+
+
+def _app_deb(built):
+    return next(built.glob("tt-bio-demo_*.deb"))
+
+
+def test_the_app_package_ships_every_module_the_ui_imports(built):
+    c = _contents(_app_deb(built))
+    for required in ("ui/app.py", "ui/panels.py", "ui/gallery.py",
+                     "ui/states.py", "ui/telemetry.py", "ui/diagnostics.py",
+                     "ui/chipviz.py", "ui/viewer.py", "ui/geometry.py",
+                     "ui/playlist.py", "ui/quad.py", "ui/slots.py",
+                     "protocol/events.py", "runner/daemon.py",
+                     "playlist/manifest.yaml"):
+        assert required in c, f"{required} missing from the app package"
+
+
+def test_the_vendored_tensix_viz_asset_ships(built):
+    """The venue is offline; a CDN reference would render an empty panel."""
+    c = _contents(_app_deb(built))
+    assert "tensix-viz.js" in c and "tensix-viz.css" in c
+
+
+def test_every_playlist_input_ships(built):
+    """A manifest entry whose input is missing is a booth that fails mid-loop."""
+    import yaml
+    c = _contents(_app_deb(built))
+    manifest = yaml.safe_load((REPO / "playlist/manifest.yaml").read_text())
+    assert manifest, "manifest parsed empty -- this test would assert nothing"
+    for entry in manifest:
+        name = pathlib.Path(entry["input"]).name
+        assert name in c, f"{entry['id']} names an input not shipped: {name}"
+
+
+def test_tests_and_scratch_do_not_ship(built):
+    """The install list names directories one by one rather than globbing the
+    repo root, so this is what notices if it ever becomes a glob.
+
+    `__pycache__`/`.pyc` are in the list because shipping bytecode built by
+    the DEV box's interpreter would be actively wrong on the target. That
+    exclusion was confirmed by building with caches deliberately present
+    (`ui/__pycache__` and `protocol/__pycache__` populated first) -- without
+    that check this line would pass simply because no cache existed.
+    """
+    c = _contents(_app_deb(built))
+    for unwanted in ("tests/", ".superpowers/", ".venvs/", "generated/",
+                     "recordings/", "booth-demo", "__pycache__", ".pyc"):
+        assert unwanted not in c, f"{unwanted} should not be in the package"
+
+
+def test_the_app_package_installs_under_opt(built):
+    """Spec: /opt/tt-bio-demo. A package that scattered these into
+    /usr/lib/python3/dist-packages would collide with the system Python."""
+    c = _contents(_app_deb(built))
+    assert "./opt/tt-bio-demo/" in c, "app tree is not under /opt/tt-bio-demo"

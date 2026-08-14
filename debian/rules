@@ -8,10 +8,13 @@
 # debian/helpers.sh (Task 3), not inline here -- a `dh` override is glue,
 # not logic.
 #
-# Task 1 deliberately installs nothing: no debian/*.install file exists
-# yet (Task 2 adds tt-bio-demo.install), so `dh_install` is a no-op for
-# every package and each .deb ships only its control metadata, changelog
-# and copyright. That is the point of this task -- a skeleton that builds.
+# What gets installed is decided in debian/tt-bio-demo.install, which
+# names the shipped directories ONE BY ONE rather than globbing the repo
+# root -- see that file's header for why, and
+# `test_tests_and_scratch_do_not_ship` for what holds the line. The other
+# three packages still install nothing of their own: the runtime package
+# builds venvs in postinst, the weights package downloads, and the
+# metapackage is pure dependencies.
 
 export DH_VERBOSE = 1
 
@@ -24,8 +27,12 @@ export DEB_BUILD_OPTIONS = nocheck nostrip
 %:
 	dh $@
 
-# No compiled extensions and no installed .py files yet (Task 1 ships
-# none) -- skip dh_python3's bytecode compilation pass so it has nothing
-# to complain about running against an empty tree.
+# The .py files ship as application DATA under /opt/tt-bio-demo, not as
+# importable system packages, and they are run by the project's own venvs
+# (venv-ui and venv-runner) rather than by the system interpreter. So
+# there is nothing here for dh_python3 to do: no dist-packages layout to
+# generate, and bytecode compiled by the BUILD box's interpreter would be
+# wrong on the target anyway. Verified empirically -- building with
+# ui/__pycache__ and protocol/__pycache__ populated ships neither.
 override_dh_python3:
 	# intentionally empty

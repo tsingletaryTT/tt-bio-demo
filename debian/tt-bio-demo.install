@@ -1,0 +1,23 @@
+# What the application package ships, and where.
+#
+# EVERYTHING GOES UNDER /opt/tt-bio-demo, not into dist-packages. These are
+# not libraries anyone should import: `ui` and `runner` are two halves of one
+# application that run under two DIFFERENT interpreters (venv-ui has GTK and
+# no torch; venv-runner has torch/ttnn and no GTK -- see the project's
+# CLAUDE.md), and `protocol` is deliberately importable by both. Installing
+# `ui/` or `protocol/` into the system Python would put three top-level names
+# that generic on every Python path on the machine.
+#
+# Listed directory by directory rather than as a glob of the repo root. A
+# glob would ship tests/, .venvs/, generated/, recordings/ and the docs tree
+# the first time someone added one -- and a package that quietly grows is one
+# nobody notices growing. `test_tests_and_scratch_do_not_ship` is what holds
+# this line.
+
+ui                  opt/tt-bio-demo/
+runner              opt/tt-bio-demo/
+protocol            opt/tt-bio-demo/
+playlist            opt/tt-bio-demo/
+examples            opt/tt-bio-demo/
+scripts             opt/tt-bio-demo/
+VERSION             opt/tt-bio-demo/
