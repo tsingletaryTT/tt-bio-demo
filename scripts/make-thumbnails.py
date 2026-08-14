@@ -8,7 +8,7 @@ Run it from the repo root with no arguments:
 Every thumbnail is a picture of a protein this booth ACTUALLY FOLDED. There
 is no stock art here and no hand-drawn approximation: the script folds each
 manifest target on the Tenstorrent card, then draws the resulting structure
-with the booth's own renderer -- `ui.geometry.ribbon_from_cif` for the
+with the booth's own renderer -- `ui.structure_view.structure_mesh` for the
 ribbon and `ui.viewer.StructureViewer` for the paint, the same two modules
 that draw the hero view a visitor watches. A gallery card therefore shows
 the same molecule, in the same pLDDT colours, that pressing it produces.
@@ -201,7 +201,11 @@ def stage_render(args):
     from OpenGL import GL
     from PIL import Image
 
-    from ui.geometry import ribbon_from_cif
+    # The booth's own renderer, which since the cartoon landed means
+    # ui.structure_view -- cartoon plus any bound ligand. A thumbnail
+    # built from a different renderer than the booth uses is a picture
+    # of a booth that does not exist.
+    from ui.structure_view import structure_mesh as ribbon_from_cif
     from ui.viewer import StructureViewer
 
     cif_by_id = json.loads(sys.stdin.read())
