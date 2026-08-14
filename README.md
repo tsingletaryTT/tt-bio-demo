@@ -66,10 +66,17 @@ booth runs unattended all day.
 labelled with the chip it runs on, the protein, and the stage it has reached. Four
 independent folds at four independent points in their pipelines, on one screen.
 
-The confidence ramp does a lot of work here: chip 2's trypsin is deep blue where the model
-is sure, chip 3's DNA is orange throughout because a twelve-rung duplex is exactly the kind
-of thing it is *not* sure about, and chip 0 is banded yellow-and-orange in between. Chip 1
-is mid-diffusion — the cloud that has not become a shape yet.
+**Read the labels before the colours here.** Three of these four cells say `TRUNK`, and a
+cell in `trunk` is drawing the **previous** fold on that chip — so the ribbon in the cell
+labelled "DNA double helix" is not DNA, and its colour says nothing about DNA. This
+screenshot predates the caption fix that now names both molecules (`Trypsin — now folding
+Dihydrofolate Reductase · TRUNK`), and it is kept as an illustration of why that fix was
+needed. Chip 1 is mid-diffusion — the cloud that has not become a shape yet.
+
+Measured from the gallery thumbnails, which are single finished folds: Trp-cage and the DNA
+duplex resolve almost entirely deep blue; trypsin is ~94% orange, and FKBP12 and DHFR are
+mostly orange and yellow. The model is *more* confident about a regular repeating duplex
+than about a large irregular enzyme with mobile loops.
 
 Three of those four cells say `TRUNK`, and are drawing the **previous** fold on that chip
 rather than a blank cell (see [Never a blank screen](#never-a-blank-screen)) — the trunk

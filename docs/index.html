@@ -96,7 +96,12 @@ body {
 }
 
 .wrap { width: min(100% - 2.5rem, 68rem); margin-inline: auto; }
-.col  { max-width: var(--measure); }
+/* Prose is CENTRED in the wrap, not left-aligned against it. Left-aligning a
+   34rem measure inside a 68rem container leaves half the screen empty on a
+   wide display and reads as an unfinished layout -- there is no marginalia
+   here to justify the gutter. Media (video, cards, the canvas) uses the full
+   wrap, so the rhythm is narrow-text / wide-figure. */
+.col  { max-width: var(--measure); margin-inline: auto; }
 
 h1, h2, h3 { line-height: 1.15; text-wrap: balance; font-weight: 650; letter-spacing: -0.015em; }
 h1 { font-size: clamp(2rem, 1.3rem + 3.2vw, 3.4rem); }
@@ -123,7 +128,10 @@ section { padding-block: clamp(3.5rem, 8vw, 6.5rem); border-top: 1px solid var(-
 /* ── Hero ─────────────────────────────────────────────────────────────── */
 #hero { padding-block: clamp(3rem, 7vw, 5.5rem); border: 0; }
 #hero h1 { margin-bottom: 1rem; }
-#hero .lede { max-width: 40rem; }
+/* Wider than the prose measure -- a display-size h1 in 34rem wraps to a
+   ragged stack -- but centred on the same axis, so the hero text, the caption
+   and every section below it share one vertical spine. */
+.hero-col { max-width: 44rem; margin-inline: auto; }
 .hero-media { margin-top: 2.5rem; border: 1px solid var(--rule); border-radius: 10px; overflow: hidden; background: var(--base); }
 .hero-media video, .hero-media img { display: block; width: 100%; height: auto; }
 figcaption { color: var(--ink-3); font-size: .88rem; margin-top: .7rem; line-height: 1.55; }
@@ -165,6 +173,43 @@ figcaption { color: var(--ink-3); font-size: .88rem; margin-top: .7rem; line-hei
   margin-right: .18em; vertical-align: baseline; position: relative; top: .02em;
 }
 
+/* ── §3 molecule cards ────────────────────────────────────────────────── */
+.cards {
+  display: grid; gap: var(--gap); margin-top: 2.5rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 17rem), 1fr));
+}
+.card {
+  border: 1px solid var(--rule); border-radius: 10px; overflow: hidden;
+  background: var(--surface); display: flex; flex-direction: column;
+}
+/* The stripe is the card's confidence colour -- set per card, from the ramp,
+   matching roughly how sure the model is about that molecule. It is the same
+   vocabulary §2 taught, used to carry real information. */
+.card-stripe { height: 4px; }
+.card img { display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: cover; background: var(--base); }
+.card-body { padding: 1.1rem 1.15rem 1.3rem; display: flex; flex-direction: column; gap: .5rem; flex: 1; }
+.card h3 { margin: 0; }
+.card p { margin: 0; font-size: .95rem; color: var(--ink-2); }
+.card .meta {
+  margin-top: auto; padding-top: .6rem; font-family: var(--font-mono);
+  font-size: .78rem; color: var(--ink-3); font-variant-numeric: tabular-nums;
+  border-top: 1px solid var(--rule);
+}
+
+/* ── §5 timeline ──────────────────────────────────────────────────────── */
+.timeline { margin-top: 2.5rem; border-left: 2px solid var(--rule); padding-left: 1.5rem; }
+.tl-item { position: relative; padding-bottom: 2rem; }
+.tl-item::before {
+  content: ""; position: absolute; left: calc(-1.5rem - 6px); top: .55rem;
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--c-high); border: 2px solid var(--bg);
+}
+.tl-item.is-key::before { background: var(--c-certain); }
+.tl-date { font-family: var(--font-mono); font-size: .78rem; color: var(--ink-3); letter-spacing: .04em; }
+.tl-item h3 { margin: .1rem 0 .35rem; }
+.tl-item p { margin: 0; color: var(--ink-2); font-size: .97rem; }
+.tl-item code { font-family: var(--font-mono); font-size: .9em; }
+
 /* ── Pull-quote ───────────────────────────────────────────────────────── */
 blockquote {
   border-left: 3px solid var(--c-high);
@@ -185,6 +230,7 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
 
 <!-- ═══ HERO ═══════════════════════════════════════════════════════════ -->
 <header id="hero" class="wrap">
+  <div class="hero-col">
   <span class="eyebrow">tt-bio</span>
   <h1>Protein structure prediction, on Tenstorrent hardware</h1>
   <p class="lede">
@@ -197,11 +243,12 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
     <a class="btn btn-solid" href="https://github.com/moritztng/tt-bio">tt-bio on GitHub</a>
     <a class="btn" href="#shape">Start from the beginning</a>
   </div>
+  </div>
 
   <figure class="hero-media">
     <video src="screenshots/booth-loop-30s.mp4" autoplay loop muted playsinline></video>
   </figure>
-  <figcaption class="col">
+  <figcaption class="hero-col">
     Thirty seconds of the demo, recorded from the running application at
     1920&times;1080 &middot; 60&nbsp;fps. Four chips of a Blackhole p300c, each
     folding a different molecule at its own point in the pipeline. The dots are
@@ -213,10 +260,9 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
 <!-- ═══ §2 — WHAT A PROTEIN IS ═════════════════════════════════════════ -->
 <section id="shape">
   <div class="wrap">
-    <span class="eyebrow">Start here</span>
-    <h2>A protein is a chain that folds, and the folded shape is the whole problem</h2>
-
     <div class="col">
+      <span class="eyebrow">Start here</span>
+      <h2>A protein is a chain that folds, and the folded shape is the whole problem</h2>
       <p class="lede">
         If you have never met this field before, this is the only section you
         need. Everything else on the page assumes it.
@@ -303,17 +349,215 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
       <p>
         This matters more than it looks. A prediction that comes with no measure
         of its own uncertainty is difficult to use for anything serious, and a
-        demo that hid the uncertainty would be showing you something prettier
-        than the truth. So: the DNA duplex this booth folds comes out
-        <em>orange nearly all the way through</em>. Twelve rungs of double helix
-        is exactly the kind of thing this model is least sure about, and the
-        booth shows that rather than picking a subject that would have looked
-        better.
+        demo that hid the uncertainty would be showing something prettier than
+        the truth. So the booth does not hide it, and the result is not the one
+        you would guess: the molecule it is <em>most</em> sure about is the DNA
+        double helix, which comes out deep blue almost end to end. The ones it
+        is least sure about are the proteins &mdash; trypsin is orange across
+        almost all of its length.
+      </p>
+
+      <p>
+        That ordering makes sense once you see it. A DNA duplex is a regular,
+        repeating structure that does the same thing every rung. A working
+        enzyme is a large, irregular object with floppy loops that genuinely
+        move, and the model is right to be less certain about where they sit.
+        The colours are not decoration; they are the model declining to
+        overstate what it knows.
       </p>
 
       <p>
         Once you know the ramp, you can read every screenshot on this page. The
         rest of the site uses the same four colours for the same reason.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ §3 — THE FIVE MOLECULES ════════════════════════════════════════ -->
+<section id="molecules">
+  <div class="wrap">
+    <div class="col">
+      <span class="eyebrow">What the booth folds</span>
+      <h2>Five molecules, and why each one is there</h2>
+      <p>
+        The demo folds the same five structures on a loop. None of them is a
+        discovery &mdash; every one has been solved in a laboratory, and that is
+        the point: the known answer is what makes the prediction checkable.
+      </p>
+      <p>
+        They were chosen to need no database lookup over the network, because
+        a conference hall has no reliable internet, and to be things a person
+        can be told the point of in one sentence.
+      </p>
+    </div>
+
+    <div class="cards">
+      <!-- Stripe colours are this molecule's typical confidence, from §2's
+           ramp: the proteins resolve confidently, the DNA duplex does not. -->
+      <article class="card">
+        <div class="card-stripe" style="background:var(--c-certain)"></div>
+        <img src="thumbnails/trpcage.png" alt="Trp-cage, folded, coloured by confidence — almost entirely deep blue.">
+        <div class="card-body">
+          <h3>Trp-cage</h3>
+          <p>Twenty amino acids &mdash; one of the smallest proteins that folds itself, and it does it in microseconds.</p>
+          <p class="meta">20 residues &middot; 4.4 s</p>
+        </div>
+      </article>
+
+      <article class="card">
+        <div class="card-stripe" style="background:var(--c-low)"></div>
+        <img src="thumbnails/fkbp12.png" alt="FKBP12, folded, coloured by confidence.">
+        <div class="card-body">
+          <h3>FKBP12</h3>
+          <p>The molecular lock that anti-rejection drugs are shaped to pick, so a transplanted organ survives.</p>
+          <p class="meta">11.7 s</p>
+        </div>
+      </article>
+
+      <article class="card">
+        <div class="card-stripe" style="background:var(--c-low)"></div>
+        <img src="thumbnails/dhfr.png" alt="Dihydrofolate reductase, folded, coloured by confidence.">
+        <div class="card-body">
+          <h3>Dihydrofolate Reductase</h3>
+          <p>Every dividing cell needs it to build new DNA &mdash; which is why a classic cancer drug jams it shut.</p>
+          <p class="meta">19.7 s</p>
+        </div>
+      </article>
+
+      <article class="card">
+        <div class="card-stripe" style="background:var(--c-low)"></div>
+        <img src="thumbnails/trypsin.png" alt="Trypsin, folded, coloured by confidence.">
+        <div class="card-body">
+          <h3>Trypsin</h3>
+          <p>Built switched off by the pancreas, armed in the gut, where it cuts up the protein in your meal.</p>
+          <p class="meta">223 residues &middot; 22.3 s</p>
+        </div>
+      </article>
+
+      <article class="card">
+        <div class="card-stripe" style="background:var(--c-certain)"></div>
+        <img src="thumbnails/dna.png" alt="A twelve-base-pair DNA duplex, coloured by confidence — deep blue almost throughout.">
+        <div class="card-body">
+          <h3>DNA double helix</h3>
+          <p>The double helix, twelve rungs of it &mdash; and the only thing this booth folds that is not a protein.</p>
+          <p class="meta">12 base pairs &middot; 4.6 s</p>
+        </div>
+      </article>
+    </div>
+
+    <div class="col" style="margin-top:2.2rem">
+      <p>
+        Times are measured on one Blackhole p300c chip with the model already
+        loaded. A cold start costs more; the booth keeps the model resident so
+        that a visitor's pick almost always lands warm.
+      </p>
+      <p>
+        The stripe on each card is that molecule's measured confidence, taken
+        from the picture below it rather than asserted: Trp-cage and the DNA
+        duplex resolve deep blue, and the three enzymes are substantially
+        orange.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ §5 — HOW tt-bio CAME TO EXIST ══════════════════════════════════ -->
+<section id="history">
+  <div class="wrap">
+    <div class="col">
+      <span class="eyebrow">How it came to exist</span>
+      <h2>A fork, a thesis, and a name that stopped fitting</h2>
+      <p>
+        tt-bio is not a product that was planned. Its git history is public and
+        it reads like what it is: one person, starting from someone else's
+        research code, on New Year's Day.
+      </p>
+    </div>
+
+    <div class="col">
+      <div class="timeline">
+        <div class="tl-item is-key">
+          <div class="tl-date">17 November 2024</div>
+          <h3>The repository begins &mdash; as Boltz-1</h3>
+          <p>
+            The first commit is Jeremy Wohlwend's, and it says <code>boltz-1</code>.
+            Everything that follows descends from the Boltz models built and
+            published by his group at MIT.
+          </p>
+        </div>
+
+        <div class="tl-item is-key">
+          <div class="tl-date">1 January 2025</div>
+          <h3><code>add tenstorrent accelerator</code></h3>
+          <p>
+            Moritz Th&uuml;ning, then a computer science student at the Technical
+            University of Munich, starts porting it. The first two commits are
+            <code>add tenstorrent accelerator</code> and
+            <code>add tenstorrent pairformer</code>. He had found the project
+            through the Tenstorrent community &mdash; AI Foundry later titled
+            their write-up of the arc
+            <a href="https://blog.aifoundry.org/p/porting-models-to-dataflow-architectures">&ldquo;From Joining the Discord to Drug Discovery&rdquo;</a>.
+          </p>
+        </div>
+
+        <div class="tl-item">
+          <div class="tl-date">Mid 2025</div>
+          <h3>Berlin</h3>
+          <p>
+            He presents
+            <a href="https://www.youtube.com/watch?v=GezK-X4gPsg">&ldquo;TT-Boltz: AlphaFold 3 on Tenstorrent Wormhole&rdquo;</a>
+            at the AI Plumbers conference &mdash; to the community that got him
+            started.
+          </p>
+        </div>
+
+        <div class="tl-item">
+          <div class="tl-date">October 2025</div>
+          <h3>The thesis</h3>
+          <p>
+            <em>Porting Boltz-2 to Tenstorrent Accelerators</em>, submitted at
+            TUM's Chair of Computer Architecture and Parallel Systems.
+          </p>
+        </div>
+
+        <div class="tl-item">
+          <div class="tl-date">2026</div>
+          <h3>Nine model families</h3>
+          <p>
+            Since joining Tenstorrent, Moritz has expanded tt-bio well past its
+            starting point: BoltzGen, ESMFold2, Protenix-v2, OpenFold3, OpenDDE,
+            SaProt and RFD3 all land during 2026.
+          </p>
+        </div>
+
+        <div class="tl-item is-key">
+          <div class="tl-date">6 June 2026</div>
+          <h3>tt-boltz becomes tt-bio</h3>
+          <p>
+            Four days after ESMFold2 lands, the project is renamed. The commit
+            message gives the reason, and it is not a rebrand:
+          </p>
+          <blockquote style="margin-block:.9rem 0">
+            The project now runs ESMFold2 alongside Boltz-2 and BoltzGen, so the
+            boltz-specific name no longer fits.
+            <cite>&mdash; commit <code>Rename project tt-boltz -&gt; tt-bio</code></cite>
+          </blockquote>
+        </div>
+
+        <div class="tl-item">
+          <div class="tl-date">January 2026</div>
+          <h3>FOSDEM</h3>
+          <p>
+            <a href="https://fosdem.org/2026/schedule/event/AJLNVH-tt-boltz/">&ldquo;TT-Boltz: Drug Discovery on Tenstorrent Hardware&rdquo;</a>,
+            on the AI Plumbers track.
+          </p>
+        </div>
+      </div>
+
+      <p style="margin-top:2rem">
+        As of v0.6.2 the repository holds <span class="num">2,181</span> commits.
+        <span class="num">1,744</span> of them are his.
       </p>
     </div>
   </div>
@@ -325,9 +569,7 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
     <span class="eyebrow">Draft in progress</span>
     <h2>Still to come</h2>
     <div class="todo">
-      3. the five molecules this booth folds<br>
       4. where the science comes from — AlphaFold&nbsp;3 → Boltz-1 → Boltz-2, cited<br>
-      5. how tt-bio came to exist — TUM, the community, the rename<br>
       6. what tt-bio runs today<br>
       7. designing new molecules — BoltzGen<br>
       8. why this is interesting on Tenstorrent<br>
