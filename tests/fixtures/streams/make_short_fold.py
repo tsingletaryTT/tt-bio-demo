@@ -4,6 +4,7 @@ Coordinates start as noise and converge to a straight line, which is enough
 to exercise the point-cloud renderer and the frame pipeline deterministically.
 """
 
+import argparse
 import json
 import pathlib
 import sys
@@ -14,7 +15,14 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3]))
 
 from protocol.events import PROTOCOL_VERSION, pack_coords
 
+# `--out` mirrors make_quad_fold.py's, so both generators can be re-run into a
+# temp file and byte-compared against their committed output. Default
+# unchanged: a bare run still rewrites the committed fixture in place.
 OUT = pathlib.Path(__file__).with_name("short_fold.jsonl")
+_parser = argparse.ArgumentParser(description=__doc__)
+_parser.add_argument("--out", type=pathlib.Path, default=OUT,
+                     help="where to write the JSONL (default: %(default)s)")
+OUT = _parser.parse_args().out
 N_ATOMS = 12
 N_FRAMES = 6
 
