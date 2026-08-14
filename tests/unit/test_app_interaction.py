@@ -2307,7 +2307,24 @@ def test_a_gallery_it_could_not_show_is_disowned():
 
 def test_the_gallery_goes_away_again_on_its_own():
     """An unattended booth must end up back on the protein, or it spends the
-    rest of the day showing a menu nobody is reading."""
+    rest of the day showing a menu nobody is reading.
+
+    UNVERIFIED, AND KNOWN TO BE. Replacing the put-the-gallery-away guard in
+    `ui/app.py` with `if False:` does NOT make this fail, and it should: a
+    direct trace of the same fixture shows the state going attract -> gallery
+    at t+66 and gallery -> attract at t+74, so removing the second transition
+    ought to leave the booth on the menu at the end of the loop below.
+
+    The mutation was confirmed to reach the file (pattern asserted present,
+    `__pycache__` cleared, `python -B`), so this is not the
+    patch-did-not-apply false survival that has bitten this project twice.
+    Something about this test does not exercise what the trace does, and it
+    was not worth guessing at a third time.
+
+    DO NOT TRUST THIS TEST until that is understood. The behaviour it
+    describes is real -- the trace confirms it -- but the test is not what
+    proves it.
+    """
     from ui.states import BoothState
     app = _app()
     app.states.state = BoothState.ATTRACT
