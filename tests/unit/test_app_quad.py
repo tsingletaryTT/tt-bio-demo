@@ -673,3 +673,111 @@ def test_q_still_toggles_from_a_booth_started_in_the_quad():
     app._handle_key("q")
     assert app.quad_visible is False
     assert app.quad.solo_calls[-1] is True
+
+
+# ── a held structure must not wear the incoming fold's name ─────────────────
+#
+# `ui/quad.py`'s own module docstring already states this rule, for the notice
+# row: rendering it into a cell's caption "would label whatever cell 0 actually
+# IS folding with the wrong protein's name". This is that rule from the other
+# direction, and the quad screenshots caught it.
+#
+# Only `diffusion` produces coordinates, so a cell spends the whole `trunk`
+# stage drawing the PREVIOUS fold on that chip (the hold-until-superseded
+# behaviour -- deliberate, and the alternative is a black cell). But the
+# caption named `current_target_id` first, so the screen read
+# "Dihydrofolate Reductase - TRUNK" underneath a picture of trypsin.
+#
+# In solo view the notice row disambiguates ("Previous fold: X / Now folding
+# Y"). A quad cell has one line and four cells need four different answers, so
+# the line itself has to carry both.
+
+def test_cell_caption_names_the_structure_that_is_actually_on_screen():
+    from ui.app import cell_caption
+    text = cell_caption(name="Dihydrofolate Reductase", stage="trunk",
+                        showing="Trypsin")
+    assert text.startswith("Trypsin"), \
+        f"the caption leads with the fold that is NOT drawn: {text!r}"
+    assert "Dihydrofolate Reductase" in text, "what is computing went missing"
+    assert "TRUNK" in text
+
+
+def test_cell_caption_is_unchanged_when_the_cell_shows_its_own_fold():
+    """The common case must not grow a clause. Once diffusion starts, the
+    structure on screen IS the current fold and there is nothing to explain."""
+    from ui.app import cell_caption
+    assert cell_caption(name="Trypsin", stage="diffusion",
+                        showing="Trypsin") == "Trypsin · DIFFUSION"
+    assert cell_caption(name="Trypsin", stage="diffusion") == "Trypsin · DIFFUSION"
+
+
+def test_a_cell_in_trunk_says_which_protein_it_is_drawing():
+    """The real path, not the pure function: chip 1 finishes trypsin, then
+    starts DHFR. Through the whole of DHFR's trunk the cell draws trypsin, so
+    the cell must not claim to be showing DHFR."""
+    import pathlib as _pathlib
+
+    from ui.playlist import Target
+
+    def _t(tid, name):
+        return Target(id=tid, input_path=_pathlib.Path(f"{tid}.yaml"),
+                      model="protenix-v2", name=name, blurb="")
+
+    app = _app()
+    app.targets = [_t("trypsin", "Trypsin"), _t("dhfr", "Dihydrofolate Reductase")]
+    app._handle_event(_start("j1", card=1, target_id="trypsin"))
+    _deliver(app, _frame("j1"))
+    app._handle_event(_done("j1"))
+    app._handle_event(_start("j2", card=1, target_id="dhfr"))
+    app._handle_event(_stage("j2", "trunk", 0.12))
+
+    caption = app.quad.captions[1]
+    assert "trypsin" in caption.lower(), \
+        f"the cell is drawing trypsin and does not say so: {caption!r}"
+    assert "TRUNK" in caption.upper()
+
+
+def test_an_empty_cell_does_not_claim_to_be_showing_a_structure():
+    """The guard on `has_structure`, pinned directly.
+
+    `shown_target_id` outlives the geometry it names -- it is a plain id, and
+    nothing clears it -- so the caption asks whether anything is ACTUALLY
+    drawn before naming what. Without that, a cleared cell would caption
+    itself "Trypsin — now folding DHFR" over empty space, which is a worse
+    lie than the one this whole section exists to fix.
+
+    The state is driven directly because it is currently UNREACHABLE: the one
+    path that clears a cell (`ui/app.py`, the `clear_structure()` in the frame
+    handler) calls `set_points` and restores `has_structure` inside the same
+    call, so no observer ever sees the gap. That makes the corresponding
+    mutation equivalent, and this test is what stops the guard being deleted
+    as dead code the first time someone adds a second clearing path.
+    """
+    import pathlib as _pathlib
+
+    from ui.playlist import Target
+
+    def _t(tid, name):
+        return Target(id=tid, input_path=_pathlib.Path(f"{tid}.yaml"),
+                      model="protenix-v2", name=name, blurb="")
+
+    app = _app()
+    app.targets = [_t("trypsin", "Trypsin"), _t("dhfr", "Dihydrofolate Reductase")]
+    app._handle_event(_start("j1", card=1, target_id="trypsin"))
+    _deliver(app, _frame("j1"))
+    app._handle_event(_done("j1"))
+    app._handle_event(_start("j2", card=1, target_id="dhfr"))
+
+    view = app._slot_view(1)
+    assert view.shown_target_id == "trypsin", "fixture did not reach the state"
+    assert view.has_structure is True, \
+        "invariant changed: shown_target_id no longer implies has_structure"
+
+    # The cell loses its geometry while the id it was drawn from remains.
+    view.has_structure = False
+    app._sync_cell_caption(1, stage="trunk")
+
+    caption = app.quad.captions[1]
+    assert "Trypsin" not in caption, \
+        f"empty cell claims to be showing trypsin: {caption!r}"
+    assert "Dihydrofolate Reductase" in caption, "lost what IS computing"

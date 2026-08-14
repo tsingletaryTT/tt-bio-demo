@@ -372,8 +372,13 @@ def target_info_subject(*, shown_target_id, folding_target_id):
 # `job_error`'s `message` least of all.
 
 
-def cell_caption(*, name, stage):
+def cell_caption(*, name, stage, showing=None):
     """What one quad cell says about its fold, as a single line.
+
+    `showing` is the protein whose geometry is ACTUALLY on screen in this
+    cell, when the caller knows it and it is not `name`. Omitted (or equal to
+    `name`) it changes nothing, which is the common case: once diffusion
+    starts, the structure being drawn is the current fold's own.
 
     Pure, for the reason this file keeps making the same split: what the
     booth claims is a decision and must be testable with no display. `""`
@@ -381,7 +386,25 @@ def cell_caption(*, name, stage):
     empty caption rather than as a blank claim.
     """
     parts = []
-    if name:
+    if showing and name and str(showing) != str(name):
+        # THE CELL IS DRAWING SOMETHING ELSE, and must say which.
+        #
+        # Only `diffusion` produces coordinates, so a cell spends the whole of
+        # `trunk` showing the PREVIOUS fold on that chip rather than going
+        # black (the hold-until-superseded behaviour -- see this module's
+        # second docstring section). Captioning that with the INCOMING fold's
+        # name put "Dihydrofolate Reductase · TRUNK" under a picture of
+        # trypsin, which is the exact mistake `ui/quad.py`'s module docstring
+        # refuses for the notice row: a line that "would label whatever cell 0
+        # actually IS folding with the wrong protein's name".
+        #
+        # Solo view has the notice row to disambiguate ("Previous fold: X /
+        # Now folding Y"). A quad cell has ONE line and four cells need four
+        # different answers, so the line carries both: what is drawn first,
+        # because that is what a visitor is looking at, then what the chip has
+        # moved on to.
+        parts.append(f"{showing} — now folding {name}")
+    elif name:
         parts.append(str(name))
     if stage in STAGE_ORDER:
         parts.append(stage.upper())
@@ -3877,10 +3900,15 @@ class DemoApp(Gtk.Application):
         view = self._slot_view(slot)
         if view is None:
             return
-        name = (self._target_name(view.current_target_id)
-                or self._target_name(view.shown_target_id))
+        shown = self._target_name(view.shown_target_id)
+        name = self._target_name(view.current_target_id) or shown
+        # `has_structure` and not `shown_target_id` alone: the id survives the
+        # cell being cleared, and a caption claiming to show trypsin over an
+        # empty cell would be a worse lie than the one this fixes.
+        showing = shown if view.has_structure else None
         try:
-            self.quad.set_caption(slot, cell_caption(name=name, stage=stage))
+            self.quad.set_caption(
+                slot, cell_caption(name=name, stage=stage, showing=showing))
         except Exception:
             log.exception("quad caption for slot %r dropped", slot)
 

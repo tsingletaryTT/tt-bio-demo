@@ -467,14 +467,28 @@ than 720p at crf 20 while being 40% smaller. **Spend bytes on pixels, not on
 bitrate for pixels already thrown away**; when a GIF must shrink, take it out of
 the duration, never the frame rate. Full table in `recordings/README.md`.
 
-Two defects the quad screenshots exposed, both open:
+Two defects the quad screenshots exposed:
 
-- A cell in `trunk` shows the **previous** fold's structure (correct, and the
-  point of "never a blank screen") but is **labelled with the incoming target**.
-  In solo view the notice row says "Previous fold: X / Now folding Y"; a quad
-  cell has one line and it names Y beside X's geometry.
-- On a chip's **first** fold there is no previous structure, so that cell is
-  genuinely blank through `trunk`.
+- **FIXED.** A cell in `trunk` shows the **previous** fold's structure (correct,
+  and the point of "never a blank screen") but was **labelled with the incoming
+  target** — "Dihydrofolate Reductase · TRUNK" under a picture of trypsin. This
+  is the mistake `ui/quad.py`'s own module docstring already refuses for the
+  notice row, from the other direction: a line that "would label whatever cell 0
+  actually IS folding with the wrong protein's name". Solo view has the notice
+  row to disambiguate; a quad cell has one line and four cells need four
+  different answers, so the line carries both — `Trypsin — now folding
+  Dihydrofolate Reductase · TRUNK`, what is DRAWN first because that is what a
+  visitor is looking at. Six mutations, six red — but only after the fifth
+  (removing the `has_structure` guard) initially **survived**: nothing tested
+  that an emptied cell must not claim to be showing something. It is an
+  equivalent mutant today (the one clearing path restores `has_structure` in the
+  same call, so no observer sees the gap) and is now pinned by a test anyway, so
+  the guard cannot be deleted as dead code when a second clearing path appears.
+- **OPEN.** On a chip's **first** fold there is no previous structure, so that
+  cell is genuinely blank through `trunk`. The quad's notice row carries copy for
+  this ("Atoms appear here when the diffusion stage begins") but the notice is
+  booth-wide — one line for four independent folds — so it can only ever speak
+  for one cell.
 
 ## Conventions
 
