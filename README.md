@@ -66,20 +66,21 @@ booth runs unattended all day.
 labelled with the chip it runs on, the protein, and the stage it has reached. Four
 independent folds at four independent points in their pipelines, on one screen.
 
-**Read the labels before the colours.** Three of these cells say `TRUNK`, and only the
-diffusion stage produces coordinates — so a cell in `trunk` is holding the **previous**
-fold on that chip rather than going black (see [Never a blank screen](#never-a-blank-screen)).
-Each cell names both molecules when that happens: `Trypsin — now folding Dihydrofolate
-Reductase · TRUNK`. Chip 1 is mid-diffusion, the cloud that has not become a shape yet.
+Each cell names its chip, what it is drawing, and what that chip has moved on to.
+Three of these say `TRUNK`: only the diffusion stage produces coordinates, so a cell in
+`trunk` keeps showing the **previous** fold rather than going black (see
+[Never a blank screen](#never-a-blank-screen)) — and says so, naming both molecules.
+Chip 3 is mid-diffusion, the cloud that has not become a shape yet.
 
-Measured from the gallery thumbnails, which are single finished folds: Trp-cage and the DNA
-duplex resolve almost entirely deep blue; trypsin is ~94% orange, and FKBP12 and DHFR are
-mostly orange and yellow. The model is *more* confident about a regular repeating duplex
-than about a large irregular enzyme with mobile loops.
+Structures are drawn as a **cartoon**: helices as flat ribbons, sheets as arrows, loops as
+thin tube — the representation used in every paper and textbook. The model's mmCIF carries
+no secondary-structure records, so which residues are helix and which are sheet is worked
+out from the C-alpha geometry (`ui/secstruct.py`).
 
-Three of those four cells say `TRUNK`, and are drawing the **previous** fold on that chip
-rather than a blank cell (see [Never a blank screen](#never-a-blank-screen)) — the trunk
-stage produces no coordinates to draw.
+Look at chips 0 and 1 and you can see a small molecule in the protein's pocket, drawn
+ball-and-stick in the usual element colours. Three of the five targets fold a **bound
+ligand** alongside the protein — FKBP12 with a binder, trypsin with benzamidine, and DHFR
+with methotrexate, the cancer drug its gallery card names.
 
 Start the booth already in the grid with `scripts/run-demo.sh --quad`; <kbd>Q</kbd> still
 toggles either way at runtime.
