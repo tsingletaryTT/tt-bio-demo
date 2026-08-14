@@ -2878,32 +2878,31 @@ class DemoApp(Gtk.Application):
                     self._set_diagnostics_visible(False)
                 elif cue == CLOSE_TENSIX and self.chipviz_visible:
                     self._set_chipviz_visible(False)
-                # HIDE_GALLERY is deliberately NOT applied here. If someone
-                # arrives while the menu is up, that menu is the screen they
-                # are looking at and the thing they are most likely about to
-                # use -- snatching it back the instant they touch anything
-                # would be the worst possible moment. Ownership is released
-                # above, so the choreography will not close it later either;
-                # the state machine's own 45s idle timeout returns the booth
-                # to the protein if they walk away.
-                elif cue == SHOW_GALLERY:
-                    # ONLY FROM ATTRACT. The gallery is a state, not chrome,
-                    # and this must never interrupt a fold somebody is
-                    # watching or cut a finished structure's dwell short.
-                    # From anywhere else the cue is dropped and its ownership
-                    # released, so the matching hide cannot fire either.
-                    if self.states.state == BoothState.ATTRACT:
-                        self.states.on_touch()
-                        self._sync_to_state()
-                    else:
-                        self.attract.disown("gallery")
-                elif cue == HIDE_GALLERY:
-                    # Back to the protein. Guarded on the state actually
-                    # being the gallery: if a visitor has since picked a
-                    # target, the booth is folding and must be left alone.
-                    if self.states.state == BoothState.GALLERY:
-                        self.states.state = BoothState.ATTRACT
-                        self._sync_to_state()
+                # HIDE_GALLERY IS DELIBERATELY NOT APPLIED HERE, and there is
+                # deliberately no branch for it below. If someone arrives
+                # while the menu is up, that menu is the screen they are
+                # looking at and the thing they are most likely about to use
+                # -- snatching it back the instant they touch anything would
+                # be the worst possible moment. `interrupted()` releases
+                # ownership either way, so the choreography will not close it
+                # later; the state machine's own 45s idle timeout returns the
+                # booth to the protein if they walk away.
+                #
+                # This comment used to sit directly above an `elif cue ==
+                # HIDE_GALLERY` branch that applied the hide, and the promise
+                # it makes was broken for every key that returns before
+                # `_on_touch` -- `D`, `T`, `Q`, `?`. It survived because the
+                # test for it pressed an UNBOUND key, which falls through to
+                # `_on_touch()`, and that touch re-opened the gallery in the
+                # same call: the bug put itself back before anything could
+                # observe it. See
+                # `test_a_visitor_reaching_for_a_panel_keeps_the_menu_too`,
+                # which presses `D` and could not pass with that branch here.
+                #
+                # SHOW_GALLERY has no branch either, for a duller reason:
+                # `interrupted()` returns closes only, so a show cue can
+                # never arrive on this path. It is `_tick_attract` that
+                # applies both.
         except Exception:
             log.exception("attract choreography could not be interrupted")
 

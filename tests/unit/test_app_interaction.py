@@ -2309,26 +2309,22 @@ def test_the_gallery_goes_away_again_on_its_own():
     """An unattended booth must end up back on the protein, or it spends the
     rest of the day showing a menu nobody is reading.
 
-    THE PUT-AWAY GUARD IS REDUNDANT, which took three attempts to establish
-    and is worth writing down so nobody repeats them.
+    THIS TEST CANNOT SEE THE PUT-AWAY GUARD, and that is now understood
+    rather than suspected. Replacing the guard with `if False:` leaves it
+    green, because from `attract` the state machine's own idle timeout
+    restores attract on the same tick -- so the mutation is EQUIVALENT HERE.
+    Three passes were spent on that, two of them blaming the harness and the
+    test; what settled it was tracing the app WITH THE MUTATION APPLIED
+    rather than only the healthy path.
 
-    Replacing that guard in `ui/app.py` with `if False:` does not make this
-    test fail. My first reading was "inconclusive, probably my mutation
-    harness"; that was wrong, and was ruled out by asserting the patch
-    present, clearing __pycache__ and running with `python -B`. My second was
-    "the test does not exercise what a trace does"; that was also wrong.
+    The guard is NOT redundant, and the reason this test could never show it
+    is that it never leaves `attract`: the guard only does anything when the
+    booth has moved somewhere it must not be dragged out of.
+    `test_the_put_away_does_not_wipe_a_degrade_message` below is the case
+    that does, and it is red without the guard.
 
-    What settled it was tracing the app WITH THE MUTATION APPLIED -- which is
-    the thing I had not done, having twice traced only the healthy path. The
-    booth still goes attract -> gallery at t+66 and gallery -> attract at
-    t+74 with the guard gone. Something else restores attract on that same
-    tick, so the mutation is EQUIVALENT rather than uncaught, and this test
-    is not failing to notice anything.
-
-    Left in place: it pins the behaviour a visitor experiences, which is what
-    it was written for. But it does not prove the guard earns its keep, and
-    the guard may simply be removable -- worth confirming before anyone
-    treats it as load-bearing.
+    Left as it is: it pins the behaviour a visitor experiences, which is what
+    it was written for.
     """
     from ui.states import BoothState
     app = _app()
@@ -2338,6 +2334,47 @@ def test_the_gallery_goes_away_again_on_its_own():
         app._tick_attract(base + k, idle_s=61.0 + k)
     assert app.states.state == BoothState.ATTRACT, \
         "the booth was left sitting on the gallery"
+
+
+def test_the_put_away_does_not_wipe_a_degrade_message():
+    """WHAT THE PUT-AWAY GUARD IS FOR, and the case the test above cannot
+    reach.
+
+    The choreography opens the gallery and owns it. The DAEMON then degrades
+    -- `not_ready`, which moves the booth to `preparing` from any state, with
+    no visitor input anywhere in it. Nothing calls `Choreography.interrupted`,
+    so the choreography still owns a gallery that is no longer on screen, and
+    its matching hide is still coming.
+
+    Without the guard that hide sets `attract` and re-syncs, wiping the
+    "getting the booth ready" overlay off a booth that has just said it
+    cannot fold -- and leaving a visitor looking at an attract screen backed
+    by a daemon that will never answer.
+
+    Traced on the real app: gallery at t+67, `not_ready`, HIDE_GALLERY at
+    t+74. Mutation: dropping the `== GALLERY` guard in `_tick_attract`'s
+    HIDE_GALLERY branch, or replacing it with `if True:`. Red both ways.
+    """
+    from ui.states import BoothState
+    app = _app()
+    app.states.state = BoothState.ATTRACT
+    t = _idle_until_gallery(app)
+    assert t, "the gallery cue never fired"
+    assert app.attract.owns("gallery")
+
+    # The daemon degrades. No visitor input: this is the whole point.
+    app.states.on_event({"type": "not_ready", "missing": ["weights"]})
+    app._sync_to_state()
+    assert app.states.state == BoothState.PREPARING
+
+    # Run on until the choreography's matching hide has fired.
+    while app.attract.owns("gallery") and t < 1000.0 + 120.0:
+        app._tick_attract(t, idle_s=t - 1000.0 + 61.0)
+        t += 1.0
+    assert not app.attract.owns("gallery"), "the hide never fired"
+
+    assert app.states.state == BoothState.PREPARING, \
+        "the attract choreography wiped the daemon's degrade message"
 
 
 def test_a_visitor_arriving_keeps_the_menu_they_can_see():
@@ -2354,3 +2391,33 @@ def test_a_visitor_arriving_keeps_the_menu_they_can_see():
 
     assert app.states.state == BoothState.GALLERY, \
         "the menu was taken away the moment a visitor touched the booth"
+
+
+def test_a_visitor_reaching_for_a_panel_keeps_the_menu_too():
+    """The same promise, through the key that actually breaks it.
+
+    The test above presses an UNBOUND key, which falls through to
+    `_on_touch()` -- and that touch re-opens the gallery from attract, so it
+    passes whether or not anything took the menu away in between. It cannot
+    fail against the bug it is written for.
+
+    `D` can. It returns before `_on_touch`, so nothing puts back a gallery
+    `_note_input` closed on the way in: a visitor who walks up to a menu the
+    booth is showing off and presses the diagnostics key gets the menu
+    yanked out from under them. `_note_input`'s own comment says HIDE_GALLERY
+    is "deliberately NOT applied here" -- it was, three lines further down.
+
+    Mutation: restore that `elif cue == HIDE_GALLERY` branch in
+    `_note_input`. Red.
+    """
+    from ui.states import BoothState
+    app = _app()
+    app.states.state = BoothState.ATTRACT
+    assert _idle_until_gallery(app)
+    assert app.states.state == BoothState.GALLERY
+
+    app._handle_key("d")                      # a visitor reaches for a panel
+
+    assert app.states.state == BoothState.GALLERY, \
+        "the menu was taken away the moment a visitor pressed a panel key"
+    assert app.diagnostics_visible, "and the key they pressed must still work"
