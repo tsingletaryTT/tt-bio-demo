@@ -23,6 +23,53 @@ were closed by the Phase 3b branch:
   longer gets a spurious leg joining one chain's C-terminus to the next chain's
   N-terminus. Task 2; see `ui/geometry.py`.
 
+## Closed on 2026-08-14 — kept so a reader knows they are closed
+
+Eleven entries below were fixed in one pass. Each is struck from the list it
+used to sit in; what follows is what closed it, so a reader who remembers the
+open version can check the reasoning still holds.
+
+- **The UI logged one line per `stage` event** (was under Task 19). One line
+  per stage TRANSITION now, per slot, reset on `job_start`. 8.0 MB/h → bounded
+  by folds × stages. `ui/app.py`'s `stage` branch.
+- **A permanent device-scan failure wrote a traceback per retry** (was under
+  Phase 3a). First failure logs in full; repeats are one line with a counter;
+  a *different* failure prints in full again. `runner/daemon.py:_build_pool`.
+- **`prune_log_root` gave no signal when the protected floor exceeded the
+  budget** (was under Phase 3a). It warns now — and the guard first written on
+  that warning turned out to restate a condition that is always true where it
+  sits, which `elif True:` proved by leaving the suite green. It is an
+  unconditional `else` with the reasoning written down.
+- **Stopping by process group logged one ERROR and a traceback** (was under
+  Task 19). A negative return code is "killed by signal", not a failure
+  `tt-smi` reported; one INFO line. A sample that fails while the booth is
+  RUNNING still gets its traceback. `runner/cards.py:sample_tt_smi`.
+- **tt-metal's two watcher files were not in `_prune_logs`'s protect set**
+  (was under Task 19, recorded as unreachable rather than fixed). The sweep
+  knows about them now — a better guarantee than "we measured 0.00 MB/h once".
+  `runner/env.py:_is_held_open_by_tt_metal`.
+- **The version guard stopped the send but not the promise** (was under Task
+  18). `_on_pick` returns before touching the router when the connection is
+  `incompatible`, so a refused booth no longer raises "NEXT UP: …" over its
+  own "getting the booth ready" overlay.
+- **`kill -INT` on `run-demo.sh`'s pid alone does nothing** (was under Task
+  18). Now a README troubleshooting entry, with the `-$(ps -o pgid=)` form.
+- **No guard against GApplication double-activation** (was under "Worth
+  doing"). Re-activation presents the existing window and returns.
+- **The join/socket timeout relationship was prose** (was under "Worth
+  doing"). `SOCKET_TIMEOUT_S` is the one number; both joins are derived from
+  it, and a test pins the relationship *and* the absence of a fresh literal.
+- **`MockRunner.stop()` joined only the accept-loop thread** (was under "Worth
+  doing"). It joins the per-connection `_serve` threads too. The test for it
+  could not fail at first — a 200 ms replay gap let the thread finish on its
+  own — and says so.
+- **`LatestFrame.dropped` was never surfaced** (was under "Worth doing"), and
+  the reason it never was is that it counted two opposite things: ordinary
+  latest-wins supersession (thousands per run, meaning nothing) and whole-job
+  eviction (meaning the renderer fell behind). Split into `dropped` and
+  `evicted`, reported at shutdown, eviction at WARNING. **Still open:** a
+  LIVE indicator, which needs a rate and a threshold nobody has measured.
+
 ## Closed in Phase 5 (multi-chip folding) — kept so a reader knows they are closed
 
 - **`--device` was removed rather than plumbed** (was under "From Phase 3a",
@@ -78,12 +125,17 @@ resource measured.
   `generated/watcher/kernel_names.txt` and `kernel_elf_paths.txt` once at
   device bring-up (563,859 and 1,265,941 bytes here) and never appends again
   for a fixed playlist. **Those two files are held open for write for the
-  life of every worker and are NOT in `_prune_logs`'s `protect` set**, so if
+  life of every worker and were NOT in `_prune_logs`'s `protect` set**, so if
   something ever did make the log root exceed its budget, an oldest-first
   sweep would unlink them and free nothing — the Phase 3a failure exactly. At
-  a measured 0.00 MB/h that is unreachable, which is why it is recorded here
+  a measured 0.00 MB/h that is unreachable, which is why it was recorded here
   rather than fixed. Anything that makes tt-metal chattier (a growing
   playlist, `TT_METAL_WATCHER`, Inspector back on) puts it back in range.
+  **CLOSED 2026-08-14:** the sweep skips them by name *and* parent directory
+  (`runner/env.py`'s `_is_held_open_by_tt_metal`), because "the sweep knows
+  not to bother" is a stronger guarantee than "we measured 0.00 MB/h once" —
+  and the measurement above is exactly the kind that stops being true when
+  the playlist grows, which it did the same day, twice.
 
 - **The per-card tt-metal log tree had never once existed in the shipped
   daemon.** `worker_environ` set `TT_METAL_LOGS_PATH` with `setdefault`, and
@@ -204,8 +256,8 @@ resource measured.
   remaining target already in flight and waits for `DISPATCH_POLL_S`. The
   practical effect is nil — it is sub-second — but "never" was too strong.
 
-- **The UI logs one line per `stage` event, at INFO, into whatever captures its
-  stdout.** `ui/app.py:3709`. Measured over this run: **17.0 MB / 488,048 lines
+- **CLOSED 2026-08-14** (see the closed section above). *The UI logs one line per
+  `stage` event, at INFO, into whatever captures its stdout.* `ui/app.py:3709`. Measured over this run: **17.0 MB / 488,048 lines
   in 2h07m = 8.0 MB/h**, or ~64 MB across an eight-hour day, growing with the
   number of chips. `run-demo.sh` leaves the UI's stdout on the terminal so an
   operator never sees this, but a booth run under systemd or `nohup` puts it in
@@ -215,8 +267,8 @@ resource measured.
   at ~90 KB/h (2278 lines in 2h07m). One line at DEBUG, or one per stage
   *transition* instead of per stage event, would remove it.
 
-- **Stopping the booth by process group logs one ERROR and a traceback, every
-  time.** `kill -INT -<pgid>` — the method this file recommends, and what a
+- **CLOSED 2026-08-14** (see above). *Stopping the booth by process group logs one
+  ERROR and a traceback, every time.* `kill -INT -<pgid>` — the method this file recommends, and what a
   terminal Ctrl-C does — also signals the `tt-smi` child the daemon's telemetry
   thread has in flight, so `runner/cards.py`'s `sample_tt_smi` catches
   `CalledProcessError: ... died with <Signals.SIGINT: 2>` and writes
@@ -319,7 +371,8 @@ raw numbers live in `.superpowers/sdd/2026-08-13-multi-chip-folding/task-18-repo
   free chip") would then be describing a much longer wait. Worth re-measuring
   before shipping a playlist without a short target in it.
 
-- **The version guard stops the send but not the promise.** Verified by running
+- **CLOSED 2026-08-14** (see above). *The version guard stops the send but not the
+  promise.* Verified by running
   the real UI against a daemon whose `PROTOCOL_VERSION` was 999: the UI logs the
   mismatch exactly once, goes `incompatible`, never reconnects, shows the neutral
   "Preparing / Getting the booth ready" overlay, and sends **zero** picks (the
@@ -341,7 +394,8 @@ raw numbers live in `.superpowers/sdd/2026-08-13-multi-chip-folding/task-18-repo
   fail against this bug, since the router is behaving exactly as asked).
   Screenshot: the mismatch capture in the Task 18 report.
 
-- **`kill -INT` on `run-demo.sh`'s pid alone does nothing.** The launcher's `INT`
+- **CLOSED 2026-08-14** (now a README troubleshooting entry). *`kill -INT` on
+  `run-demo.sh`'s pid alone does nothing.* The launcher's `INT`
   trap cannot run until its foreground command (the UI) returns, and signalling
   only bash leaves the UI untouched — the booth just keeps folding. A terminal
   Ctrl-C works because the tty signals the whole foreground process *group*. This
@@ -353,7 +407,8 @@ raw numbers live in `.superpowers/sdd/2026-08-13-multi-chip-folding/task-18-repo
 
 ## From Phase 3a — worth doing, not urgent
 
-- **A permanent device-scan failure writes a full traceback per retry.** At
+- **CLOSED 2026-08-14** (see above). *A permanent device-scan failure writes a full
+  traceback per retry.* At
   `DEVICE_SCAN_RETRY_S` (5 s) that is roughly 25 MB/day into `daemon.log`,
   which `--log-budget-gb` does **not** cover (that governs the tt-metal log
   root only). Bounded by nothing today. Was written against `Folder.load()`,
@@ -367,8 +422,8 @@ raw numbers live in `.superpowers/sdd/2026-08-13-multi-chip-folding/task-18-repo
   underscore-private in `tt_bio/main.py`. An upgrade has five places to check
   rather than one. There is no public entry point that fits a resident
   device-and-model, so this is inherent rather than an oversight.
-- **`prune_log_root` gives no signal when the protected floor exceeds the
-  budget.** It returns `removed=[]`, and the daemon's `if removed:` gate means
+- **CLOSED 2026-08-14** (see above). *`prune_log_root` gives no signal when the
+  protected floor exceeds the budget.* It returns `removed=[]`, and the daemon's `if removed:` gate means
   an operator who sets `--structures-budget-gb` below three files' worth sees
   the same log output as a healthy run. Growth is bounded, but the metric cannot
   distinguish healthy from misconfigured — the same shape as the Inspector
@@ -390,11 +445,12 @@ against — the UI can be more than a second behind the socket in reading a
 
 ## Worth doing, not urgent
 
-- **No guard against GApplication double-activation.** Relaunching while running
+- **CLOSED 2026-08-14** (see above). *No guard against GApplication double-activation.* Relaunching while running
   re-activates via D-Bus: a second window, a second socket client, a second 33 ms
   frame timer, `self.viewer` rebound and the first window orphaned. Plausible at a
   booth if staff relaunch without realizing it is already running. ~3 lines.
-- **`LatestFrame.dropped` is never surfaced.** For an all-day unattended run this
+- **CLOSED 2026-08-14, in part** (see above; a live indicator is still open).
+  *`LatestFrame.dropped` is never surfaced.* For an all-day unattended run this
   is the cheapest available signal that the renderer is falling behind.
 - **Connection-state vocabulary is duplicated across a module boundary.**
   `ui/viewer.py` hardcodes `_CONNECTION_STATES`, which `ui/client.py` actually
@@ -404,7 +460,8 @@ against — the UI can be more than a second behind the socket in reading a
 - **`connection_state` is write-only.** Nothing renders it yet; Phase 3 owns the
   UI that consumes it. It also arguably belongs on the app rather than on a
   rendering widget.
-- **`MockRunner.stop()` joins only the accept-loop thread**, not the
+- **CLOSED 2026-08-14** (see above). *`MockRunner.stop()` joins only the accept-loop
+  thread*, not the
   per-connection `_serve` threads, so it promises more teardown than it delivers.
   Harmless in tests (which replay at `speed=100`), potentially a lingering daemon
   thread at `speed=1.0`.
@@ -417,7 +474,8 @@ against — the UI can be more than a second behind the socket in reading a
   the 1.6 default on real backbones with 3.8 Å C-alpha spacing — but backface
   culling is now on globally, so if it ever is reached it shows as holes rather
   than as shading artifacts.
-- **The join/socket timeout relationship is prose, not code.** `ui/client.py`
+- **CLOSED 2026-08-14** (see above). *The join/socket timeout relationship is prose,
+  not code.* `ui/client.py`
   needs its 6.0 s join to exceed the 5.0 s socket read timeout; an isolated edit
   to either silently reintroduces the bug that pairing was written to fix.
 - **Point size is an absolute pixel value**, so sprites look proportionally

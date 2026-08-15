@@ -475,6 +475,21 @@ that half.
 **The suite passes but you expected hardware coverage** — check the verdict line. Hardware
 tests are opt-in; pass `--hw`.
 
+**The booth will not stop when you signal it by pid** — `kill -INT <pid>` on
+`run-demo.sh` does nothing visible: the launcher's `INT` trap cannot run until its
+foreground command (the UI) returns, and signalling only bash leaves the UI folding away.
+A terminal Ctrl-C works because the tty signals the whole foreground process *group*, so
+that is what to send without a terminal:
+
+```bash
+kill -INT -$(ps -o pgid= -p <pid> | tr -d ' ')     # note the '-' before the pgid
+```
+
+This is ordinary job control rather than a bug in the script, but it costs an operator
+(or a supervisor that stops things by pid) several confused minutes. Since the daemon's
+telemetry thread may have a `tt-smi` child in flight when the signal lands, you will see
+one INFO line saying the sample was killed by a signal; that is expected on a clean stop.
+
 **A chip is missing from telemetry** — `tt-smi -s` prints the snapshot the sampler parses.
 A chip the daemon has quarantined for temperature is deliberately withheld from scheduling.
 Never run `tt-smi -r` on a shared machine.
