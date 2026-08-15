@@ -2608,3 +2608,135 @@ def test_a_healthy_run_does_not_cry_wolf_about_superseded_frames():
     assert records, "shutdown said nothing about the frame buffer"
     assert all(r.levelno < logging.WARNING for r in records), \
         "a healthy run warned about ordinary supersession"
+
+
+# ── the quad's first fold, which had nothing to show and did not say so ─────
+
+def test_a_cell_with_nothing_in_it_yet_says_why():
+    """THE LAST OPEN DEFECT FROM THE QUAD (CLAUDE.md). On a chip's FIRST
+    fold there is no previous structure to hold, so that cell is genuinely
+    black through msa/prep/trunk -- up to fifteen seconds for a large
+    protein -- captioned with only a name and a stage. A visitor looking at
+    a black rectangle labelled "Trypsin · TRUNK" has every reason to think
+    that cell is broken.
+
+    The booth-wide notice row carries copy for exactly this ("Atoms appear
+    here when the diffusion stage begins") and cannot cover it: it is ONE
+    line for FOUR independent folds, so it can only ever speak for one of
+    them. The cell has to say it itself.
+
+    Mutation: dropping the `empty` clause from `cell_caption`. Red.
+    """
+    from ui.app import cell_caption
+
+    line = cell_caption(name="Trypsin", stage="trunk", showing=None,
+                        empty=True)
+    assert "Trypsin" in line and "TRUNK" in line
+    assert "atoms appear" in line.lower(), \
+        "a black cell mid-fold explained nothing"
+
+
+def test_a_cell_stops_promising_atoms_once_they_arrive():
+    """Only before diffusion. A cell that is drawing points must not still
+    be telling a visitor to wait for them.
+
+    Mutation: applying the clause at every stage. Red.
+    """
+    from ui.app import cell_caption
+
+    line = cell_caption(name="Trypsin", stage="diffusion", showing=None,
+                        empty=True)
+    assert "atoms appear" not in line.lower()
+
+
+def test_an_idle_cell_promises_nothing():
+    """No fold on this chip at all: the cell says nothing rather than
+    promising atoms that are not coming.
+
+    Mutation: keying the clause on `empty` alone, without a `name`. Red.
+    """
+    from ui.app import cell_caption
+
+    assert cell_caption(name=None, stage=None, showing=None, empty=True) == ""
+
+
+def test_a_held_structure_still_names_both_folds():
+    """The empty clause must not disturb the case beside it: a cell holding
+    the PREVIOUS fold is not empty, and its caption is the one Task 13's fix
+    established (what is drawn first, then what the chip moved on to)."""
+    from ui.app import cell_caption
+
+    line = cell_caption(name="Dihydrofolate Reductase", stage="trunk",
+                        showing="Trypsin", empty=False)
+    assert line == "Trypsin — now folding Dihydrofolate Reductase · TRUNK"
+
+
+def test_the_stages_before_coordinates_are_derived_not_listed():
+    """A stage inserted before diffusion must start explaining itself
+    automatically. Derived from STAGE_BANDS, so this cannot drift.
+
+    Mutation: hardcoding ("msa", "prep", "trunk"). Green here by
+    construction -- so this asserts the DERIVATION, against the bands.
+    """
+    from protocol.events import STAGE_BANDS
+    from ui.app import _STAGES_BEFORE_COORDINATES
+
+    assert _STAGES_BEFORE_COORDINATES == ("msa", "prep", "trunk")
+    for stage in _STAGES_BEFORE_COORDINATES:
+        assert STAGE_BANDS[stage][1] <= STAGE_BANDS["diffusion"][0]
+    assert "diffusion" not in _STAGES_BEFORE_COORDINATES
+
+
+def test_the_booth_actually_tells_a_cell_it_is_empty():
+    """The tests above drive `cell_caption` directly, and all of them stayed
+    GREEN against a `_sync_cell_caption` that passed `empty=False` -- a pure
+    function tested in isolation cannot notice its caller lying to it. This
+    is the same "asserted on something ADJACENT to the behaviour" defect
+    docs/followups.md keeps recording, caught here by mutating the call site
+    rather than the function.
+
+    So this one goes through the app: a real `job_start` on a chip with
+    nothing drawn on it yet, then a `stage`, and it reads what the QUAD was
+    actually handed.
+
+    Mutation: `empty=False` at the `_sync_cell_caption` call site. Red.
+    """
+    app = _app()
+    app._handle_event(_a_fold_starting(card=0, target_id="trypsin"))
+    app._handle_event({"type": "stage", "job_id": "j1", "stage": "trunk",
+                       "frac": 0.12})
+
+    caption = app.quad.captions.get(0, "")
+    assert "atoms appear" in caption.lower(), (
+        f"the cell drew nothing and said nothing about it: {caption!r}")
+
+
+def test_a_cell_that_is_showing_something_never_says_it_is_empty():
+    """The other side of the same wiring, and it needed its own test: a call
+    site passing `empty=True` unconditionally survived every check above,
+    because none of them drove a cell that HAS a picture in it through the
+    app.
+
+    The concrete wrong screen that mutation produces: a cell holding the
+    previous fold reads "Trypsin — now folding DHFR · TRUNK — atoms appear
+    when diffusion begins", directly underneath a picture of trypsin. The
+    booth telling a visitor to wait for atoms it is already drawing is the
+    same class of contradiction as the one Task 13 fixed for the name.
+
+    Mutation: `empty=True` at the `_sync_cell_caption` call site. Red.
+    """
+    app = _app()
+    app._handle_event(_a_fold_starting(job_id="j1", card=0,
+                                       target_id="trypsin"))
+    # A frame is what puts a picture in the cell -- the same path the booth
+    # uses (`_draw_frame` sets has_structure).
+    view = app._slot_view(0)
+    assert view is not None
+    view.has_structure = True
+
+    app._handle_event({"type": "stage", "job_id": "j1", "stage": "trunk",
+                       "frac": 0.12})
+
+    caption = app.quad.captions.get(0, "")
+    assert "atoms appear" not in caption.lower(), (
+        f"a cell with a picture in it told the visitor to wait: {caption!r}")

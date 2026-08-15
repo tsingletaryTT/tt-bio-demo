@@ -180,7 +180,7 @@ gi.require_version("Gdk", "4.0")
 
 from gi.repository import Gdk, GLib, Gtk
 
-from protocol.events import STAGE_ORDER, unpack_coords
+from protocol.events import STAGE_BANDS, STAGE_ORDER, unpack_coords
 from ui.chipviz import ChipVizPanel
 from ui.client import EventClient, LatestFrameByJob
 from ui.diagnostics import KIND_MARK, DiagnosticsLog, DiagnosticsPanel
@@ -280,6 +280,27 @@ _PICK_WAITING_NOTICE = ("NEXT UP: {name} — letting the folds already running "
 # claims something false.
 _CAPTION_EMPTY_SUB = "Atoms appear here when the diffusion stage begins"
 
+# The same promise, for one quad cell, and shorter because it has to share a
+# single small line with a protein name and a stage rather than owning a
+# two-line notice under a full-width render.
+#
+# WHY A CELL NEEDS ITS OWN. On a chip's FIRST fold there is no previous
+# structure to hold, so that cell is genuinely black through `msa`, `prep`
+# and `trunk` -- up to fifteen seconds for a large protein -- with only a
+# name and a stage on it. The booth-wide notice row cannot cover this: it is
+# ONE line for FOUR independent folds, so it can only ever speak for one of
+# them, which is why this was left open when the quad shipped (CLAUDE.md).
+# A visitor looking at a black rectangle captioned "Trypsin · TRUNK" has
+# every reason to think that cell is broken.
+_CELL_EMPTY_SUB = "atoms appear when diffusion begins"
+
+# The stages that produce no coordinates, so a cell with nothing in it stays
+# black through them. Derived from STAGE_BANDS rather than listed, so a new
+# stage inserted before diffusion cannot silently stop explaining itself.
+_STAGES_BEFORE_COORDINATES = tuple(
+    name for name in STAGE_ORDER
+    if STAGE_BANDS[name][1] <= STAGE_BANDS["diffusion"][0])
+
 
 def viewer_hold_caption(*, awaiting_first_frame, has_structure, showcasing,
                         folding_name, held_name):
@@ -376,7 +397,7 @@ def target_info_subject(*, shown_target_id, folding_target_id):
 # `job_error`'s `message` least of all.
 
 
-def cell_caption(*, name, stage, showing=None):
+def cell_caption(*, name, stage, showing=None, empty=False):
     """What one quad cell says about its fold, as a single line.
 
     `showing` is the protein whose geometry is ACTUALLY on screen in this
@@ -412,7 +433,19 @@ def cell_caption(*, name, stage, showing=None):
         parts.append(str(name))
     if stage in STAGE_ORDER:
         parts.append(stage.upper())
-    return " · ".join(parts)
+    line = " · ".join(parts)
+    # NOTHING DRAWN YET, AND A REASON FOR IT. Gated on the STAGE alone, not
+    # on having a name: a stage only arrives for a fold that is running, so
+    # an idle cell (stage None) still says nothing and cannot promise atoms
+    # that are not coming -- while a fold whose `target_id` is not in this
+    # booth's playlist, and therefore has no name to show, still explains its
+    # own blackness. Requiring a name suppressed the explanation exactly
+    # where the booth knows least, which is backwards.
+    #
+    # Before diffusion only: once points arrive the cell explains itself.
+    if empty and stage in _STAGES_BEFORE_COORDINATES:
+        return f"{line} — {_CELL_EMPTY_SUB}" if line else _CELL_EMPTY_SUB
+    return line
 
 
 class _SlotView:
@@ -4137,7 +4170,8 @@ class DemoApp(Gtk.Application):
         showing = shown if view.has_structure else None
         try:
             self.quad.set_caption(
-                slot, cell_caption(name=name, stage=stage, showing=showing))
+                slot, cell_caption(name=name, stage=stage, showing=showing,
+                                   empty=not view.has_structure))
         except Exception:
             log.exception("quad caption for slot %r dropped", slot)
 
