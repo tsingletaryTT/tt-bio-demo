@@ -433,3 +433,63 @@ def test_the_sites_thumbnails_are_the_ones_the_booth_ships():
             f"scripts/make-thumbnails.py, which writes both")
         assert booth_png.read_bytes() == site_png.read_bytes(), (
             f"{t.id}: {site_png} has drifted from the one the booth ships")
+
+
+def _site_cards():
+    """The molecule cards on the docs site, as {name: (tagline, meta)}.
+
+    Parsed rather than hand-listed: a hand-listed copy of the site's copy
+    would be a third place for the same sentence to go stale, which is the
+    exact failure this is written against.
+    """
+    import html as html_mod
+    import re
+
+    page = Path("docs/index.html").read_text()
+    cards = {}
+    for block in re.findall(r'<article class="card">(.*?)</article>', page,
+                            re.S):
+        name = re.search(r"<h3>(.*?)</h3>", block, re.S)
+        tagline = re.search(r"<div class=\"card-body\">\s*<h3>.*?</h3>\s*"
+                            r"<p>(.*?)</p>", block, re.S)
+        meta = re.search(r'<p class="meta">(.*?)</p>', block, re.S)
+        if not (name and tagline and meta):
+            continue
+        clean = lambda m: re.sub(r"\s+", " ", html_mod.unescape(m.group(1))).strip()
+        cards[clean(name)] = (clean(tagline), clean(meta))
+    return cards
+
+
+def test_the_docs_site_cards_say_what_the_manifest_says():
+    """The site repeats every target's name, tagline and fold time. Nothing
+    kept the two in step, and the DNA duplex's "the only thing this booth
+    folds that is not a protein" went stale in BOTH places at once when the
+    tRNA target shipped -- plus a third time in a section heading.
+
+    So: the site's cards are checked against the manifest they describe.
+    Not the prose around them, which is written for a reader rather than
+    generated -- just the per-molecule facts, which is where drift is silent
+    and where a visitor is most likely to compare the page against the
+    booth in front of them.
+
+    Mutations, each red: changing a card's tagline; changing a card's
+    seconds; deleting a card for a shipped target.
+    """
+    targets = load_playlist("playlist/manifest.yaml")
+    cards = _site_cards()
+    assert cards, "no molecule cards found on the docs site -- parser drifted"
+
+    for t in targets:
+        assert t.name in cards, (
+            f"{t.id} ({t.name}) ships in the playlist but has no card on the "
+            f"docs site; cards found: {sorted(cards)}")
+        tagline, meta = cards[t.name]
+        assert tagline == t.tagline, (
+            f"{t.id}: the site's tagline has drifted from the manifest's\n"
+            f"  site:     {tagline}\n  manifest: {t.tagline}")
+        assert f"{t.expected_s:g} s" in meta, (
+            f"{t.id}: the site says {meta!r}, the manifest measured "
+            f"{t.expected_s}s")
+
+    extra = set(cards) - {t.name for t in targets}
+    assert not extra, f"the site has cards for targets the booth does not fold: {extra}"

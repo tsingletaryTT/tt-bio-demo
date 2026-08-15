@@ -270,8 +270,9 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
   </figure>
   <figcaption class="hero-col">
     Thirty seconds of the demo, recorded from the running application at
-    1920&times;1080 &middot; 60&nbsp;fps. Four chips of a Blackhole p300c, each
-    folding a different molecule at its own point in the pipeline. The dots are
+    1920&times;1080 &middot; 60&nbsp;fps. Four Blackhole chips &mdash; two p300c
+    boards, two chips each &mdash; each folding a different molecule at its own
+    point in the pipeline. The dots are
     the model's actual working-out, streamed a step at a time &mdash; not an
     animation of a finished result.
   </figcaption>
@@ -290,7 +291,9 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
 
       <p>
         A protein is a chain of amino acids &mdash; twenty kinds of link, in an
-        order your DNA writes down. The chain does not stay a chain. It folds
+        order your DNA writes down. (One link in the chain is a
+        <em>residue</em>, which is the word the rest of this page and the demo
+        itself use for it.) The chain does not stay a chain. It folds
         into one specific three-dimensional shape: the smallest proteins get
         there in millionths of a second, larger ones take considerably longer,
         and some need other proteins to help them do it.
@@ -373,8 +376,10 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
         the truth. So the booth does not hide it, and the result is not the one
         you would guess: the molecule it is <em>most</em> sure about is the DNA
         double helix, which comes out deep blue almost end to end. The ones it
-        is least sure about are the proteins &mdash; trypsin is orange across
-        almost all of its length.
+        is least sure about are the three big enzymes &mdash; trypsin is orange
+        across almost all of its length. (The smallest protein here, Trp-cage,
+        comes out blue too; size and irregularity are what cost confidence, not
+        being a protein.)
       </p>
 
       <p>
@@ -406,9 +411,11 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
         the point: the known answer is what makes the prediction checkable.
       </p>
       <p>
-        They were chosen to need no database lookup over the network, because
-        a conference hall has no reliable internet, and to be things a person
-        can be told the point of in one sentence.
+        They were chosen to need no database lookup over the network &mdash;
+        these models normally begin by searching public databases for sequences
+        related to the one you gave them, and a conference hall has no reliable
+        internet &mdash; and to be things a person can be told the point of in
+        one sentence.
       </p>
     </div>
 
@@ -431,7 +438,7 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
         <div class="card-body">
           <h3>FKBP12</h3>
           <p>The molecular lock that anti-rejection drugs are shaped to pick, so a transplanted organ survives.</p>
-          <p class="meta">11.7 s</p>
+          <p class="meta">107 residues &middot; 11.7 s</p>
         </div>
       </article>
 
@@ -441,7 +448,7 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
         <div class="card-body">
           <h3>Dihydrofolate Reductase</h3>
           <p>Every dividing cell needs it to build new DNA &mdash; which is why a classic cancer drug jams it shut.</p>
-          <p class="meta">19.7 s</p>
+          <p class="meta">187 residues &middot; 19.7 s</p>
         </div>
       </article>
 
@@ -478,7 +485,7 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
 
     <div class="col" style="margin-top:2.2rem">
       <p>
-        Times are measured on one Blackhole p300c chip with the model already
+        Times are measured on one Blackhole chip with the model already
         loaded. A cold start costs more; the booth keeps the model resident so
         that a visitor's pick almost always lands warm.
       </p>
@@ -683,6 +690,7 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
           <tr><td>boltzgen</td><td>Binder design &mdash; proteins, peptides, nanobodies, antibodies against a target</td></tr>
           <tr><td>rfd3</td><td>All-atom design: binders, motif scaffolding, nucleic-acid binders</td></tr>
           <tr><td>saprot</td><td>Structure-aware protein language modelling</td></tr>
+          <tr><td>esmc</td><td>Protein language-model embeddings &mdash; 300M, 600M and 6B</td></tr>
         </tbody>
       </table>
     </div>
@@ -767,8 +775,8 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
     <h3>What this booth measured</h3>
 
     <p>
-      These are our numbers, from this demo, on a Blackhole p300c &mdash; four
-      chips across two boards.
+      These are our numbers, from this demo, on two Blackhole p300c boards
+      &mdash; four chips in total, since each board carries two.
     </p>
 
     <div class="table-scroll">

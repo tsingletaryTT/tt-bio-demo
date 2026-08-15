@@ -14,7 +14,7 @@ exception](#the-one-webkit-exception) for a small hardware-activity animation.
 [![The booth folding proteins on Tenstorrent Blackhole](docs/screenshots/booth-loop.gif)](docs/screenshots/booth-loop-30s.mp4)
 
 *Thirty seconds of the booth, captured at 1920&times;1080 · 60 fps from the running
-application — the 2×2 quad view, four chips of a Blackhole p300c each folding a different
+application — the 2×2 quad view, four Blackhole chips (two p300c boards) each folding a different
 molecule at its own point in the pipeline. Structures are drawn as a cartoon: helices as
 ribbons, sheets as arrows. Those dots are the model's actual denoising trajectory, streamed
 one step at a time and condensing into structure. The panels opening and closing are the
