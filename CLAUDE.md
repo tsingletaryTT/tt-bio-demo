@@ -484,11 +484,16 @@ Two defects the quad screenshots exposed:
   equivalent mutant today (the one clearing path restores `has_structure` in the
   same call, so no observer sees the gap) and is now pinned by a test anyway, so
   the guard cannot be deleted as dead code when a second clearing path appears.
-- **OPEN.** On a chip's **first** fold there is no previous structure, so that
-  cell is genuinely blank through `trunk`. The quad's notice row carries copy for
-  this ("Atoms appear here when the diffusion stage begins") but the notice is
-  booth-wide — one line for four independent folds — so it can only ever speak
-  for one cell.
+- **FIXED (2026-08-14).** On a chip's **first** fold there is no previous
+  structure, so that cell is genuinely blank through `trunk`. The quad's notice
+  row carries copy for this ("Atoms appear here when the diffusion stage
+  begins") but the notice is booth-wide — one line for four independent folds —
+  so it can only ever speak for one cell. The CELL says it now, gated on
+  `awaiting_first_frame`. Worth knowing how the gate got there: the first
+  version keyed on the stage being a pre-diffusion one, which left the window
+  between `job_start` and the first `stage` event uncovered — and every unit
+  test was green, because all of them supplied a stage. A photograph of the
+  real quad against a replayed four-chip stream is what found it.
 
 ### A guard that was not dead, an RNA, and a video of the logo (2026-08-14)
 
