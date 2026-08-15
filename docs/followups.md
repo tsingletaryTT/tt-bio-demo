@@ -43,7 +43,17 @@ open version can check the reasoning still holds.
 - **Stopping by process group logged one ERROR and a traceback** (was under
   Task 19). A negative return code is "killed by signal", not a failure
   `tt-smi` reported; one INFO line. A sample that fails while the booth is
-  RUNNING still gets its traceback. `runner/cards.py:sample_tt_smi`.
+  RUNNING still gets its traceback. `runner/cards.py:sample_tt_smi` **and
+  `ui/telemetry.py:_sample_once`** — THERE ARE TWO SAMPLERS. The entry named
+  only the daemon's, so the first fix left the UI's alone and a clean stop
+  still produced a warning and a traceback; the UI polls tt-smi itself, on
+  purpose, so that the silicon keeps visibly breathing even if the daemon
+  wedges. Found by stopping the real booth and reading the log. Two more
+  things fell out of the same run: the per-transition stage log said "chip
+  None" on every line (only `job_start` carries a `card`), and a clean
+  Ctrl-C still ended in a KeyboardInterrupt stack through
+  `Gio.Application.run`. A shutdown reads clean now, verified over three
+  consecutive live runs.
 - **tt-metal's two watcher files were not in `_prune_logs`'s protect set**
   (was under Task 19, recorded as unreachable rather than fixed). The sweep
   knows about them now — a better guarantee than "we measured 0.00 MB/h once".
