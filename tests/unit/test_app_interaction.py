@@ -2507,6 +2507,13 @@ def test_the_log_carries_one_line_per_stage_transition_not_per_event():
     assert len(lines) == 3, (
         f"thirty stage events produced {len(lines)} log lines: {lines}")
     assert "msa" in lines[0] and "prep" in lines[1] and "trunk" in lines[2]
+    # And each names the chip it happened on. Only `job_start` carries a
+    # `card` on the wire, so reading one off the `stage` event gave "chip
+    # None" on every line -- which is what the first real log after this
+    # shipped actually said.
+    assert all("chip None" not in line for line in lines), (
+        f"the stage lines do not name their chip: {lines}")
+    assert all("chip 0" in line for line in lines), lines
 
 
 def test_a_new_fold_logs_its_first_stage_even_if_it_repeats_the_last_one():

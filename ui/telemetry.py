@@ -333,6 +333,28 @@ class TelemetrySampler:
             # a genuinely informative message from tt-smi (e.g. "no such
             # device") would leave nothing useful in the log. Logged only --
             # never surfaced on screen, per the UI's no-raw-errors rule.
+            if exc.returncode is not None and exc.returncode < 0:
+                # KILLED BY A SIGNAL, WHICH MEANS THE BOOTH IS SHUTTING DOWN.
+                # A negative return code is POSIX for "died on signal -N"; it
+                # is not something tt-smi reported. Stopping the booth by
+                # process group -- `kill -INT -<pgid>`, which is what the
+                # README recommends and what a terminal Ctrl-C does -- also
+                # signals whatever tt-smi child this sampler has in flight,
+                # so every clean shutdown ended with a warning and a full
+                # traceback at the bottom of a run that went perfectly.
+                #
+                # `runner/cards.py` has the identical guard for the identical
+                # reason. The follow-up that prompted it named only that file
+                # and this second sampler was missed -- the UI polls tt-smi
+                # itself, deliberately, so the silicon keeps visibly breathing
+                # even if the daemon wedges (see this module's docstring), so
+                # there are two of these and a fix to one is half a fix.
+                # Found by stopping the real booth and reading the log, which
+                # is the only thing that could have found it.
+                log.info("tt-smi sample was killed by signal %d (shutting "
+                         "down); treating as no telemetry this round",
+                         -exc.returncode)
+                return
             stderr = (exc.stderr or "").strip() if exc.stderr else ""
             log.warning(
                 "tt-smi exited non-zero; treating as no telemetry this round%s",

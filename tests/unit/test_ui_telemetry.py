@@ -297,3 +297,62 @@ def test_a_well_formed_empty_snapshot_is_a_truthful_zero_card_reading(monkeypatc
         s.stop()
     assert s.latest() == [], "an empty device_info is a real reading, not a failure"
     assert s.age_s() is not None and s.age_s() < 2.0
+
+
+def test_a_tt_smi_killed_by_a_signal_is_not_a_warning(monkeypatch, caplog):
+    """The UI polls tt-smi itself, so there are TWO samplers with this
+    problem and `runner/cards.py`'s fix was half of it.
+
+    Stopping the booth by process group signals whatever tt-smi child this
+    sampler has in flight, so every clean shutdown ended with a warning and a
+    traceback. Found by stopping the real booth and reading the log -- the
+    unit test for the daemon-side fix could not have, and the follow-up
+    naming it mentioned only that file.
+
+    Mutation: removing the `returncode < 0` branch. Red -- a WARNING with
+    exc_info attached.
+    """
+    import logging
+    import subprocess
+
+    from ui import telemetry as telemetry_module
+
+    def killed_by_sigint(*a, **kw):
+        raise subprocess.CalledProcessError(-2, "tt-smi")
+
+    monkeypatch.setattr(telemetry_module, "_run_tt_smi", killed_by_sigint)
+    sampler = telemetry_module.TelemetrySampler()
+
+    with caplog.at_level(logging.INFO, logger="ui.telemetry"):
+        sampler._sample_once()
+
+    assert caplog.records, "the sample failed and said nothing at all"
+    for record in caplog.records:
+        assert record.levelno < logging.WARNING, (
+            f"a signalled tt-smi logged at {record.levelname}")
+        assert record.exc_info is None, "a clean shutdown printed a traceback"
+
+
+def test_a_tt_smi_that_really_failed_still_warns_with_its_traceback(
+        monkeypatch, caplog):
+    """The other half: a sampler that fails while the booth is RUNNING is
+    losing the panel its telemetry, and that must stay loud."""
+    import logging
+    import subprocess
+
+    from ui import telemetry as telemetry_module
+
+    def exited_nonzero(*a, **kw):
+        raise subprocess.CalledProcessError(1, "tt-smi", stderr="no such device")
+
+    monkeypatch.setattr(telemetry_module, "_run_tt_smi", exited_nonzero)
+    sampler = telemetry_module.TelemetrySampler()
+
+    with caplog.at_level(logging.INFO, logger="ui.telemetry"):
+        sampler._sample_once()
+
+    assert any(r.levelno >= logging.WARNING and r.exc_info
+               for r in caplog.records), \
+        "a real tt-smi failure lost its warning or its traceback"
+    assert any("no such device" in r.getMessage() for r in caplog.records), \
+        "tt-smi's own explanation was dropped"

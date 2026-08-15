@@ -3999,6 +3999,17 @@ class DemoApp(Gtk.Application):
                 # "last stage" would log every time the chips disagreed --
                 # which is always.
                 stage = event.get("stage")
+                # THE CHIP COMES FROM THE SLOT, NOT THE EVENT. Only
+                # `job_start` carries a `card` on the wire (see
+                # tests/unit/test_app_interaction.py's `_a_fold_starting`),
+                # so `event.get("card")` here was always None and every one
+                # of these lines read "chip None" -- which is how it looked
+                # in the first real log after this change shipped. `cards` is
+                # the daemon's own chip list, indexed by slot, and is what
+                # every other chip-labelled surface in this file uses.
+                card = (self.cards[slot]
+                        if slot is not None and slot < len(self.cards)
+                        else None)
                 # `frac` IS WIRE DATA AND IS COERCED HERE, deliberately
                 # before the slot check below, so a malformed one is caught
                 # for every event and not only for the focused cell's.
@@ -4016,7 +4027,7 @@ class DemoApp(Gtk.Application):
                 frac = float(event.get("frac", 0.0))
                 if self._last_logged_stage.get(slot) != stage:
                     self._last_logged_stage[slot] = stage
-                    log.info("chip %s: stage %s", event.get("card"), stage)
+                    log.info("chip %s: stage %s", card, stage)
                 # Every cell says its own stage, under its own chip label.
                 self._sync_cell_caption(slot, stage=event.get("stage"))
                 if slot is not None and slot == self.router.focus_slot:
@@ -4759,11 +4770,25 @@ def main(argv=None):
     args = parser.parse_args(argv)
     target_ids = [part.strip() for part in (args.targets or "").split(",")
                   if part.strip()]
-    return DemoApp(socket_path=args.socket,
-                   playlist_path=args.playlist,
-                   target_ids=target_ids,
-                   windowed=args.windowed,
-                   quad=args.quad).run([])
+    try:
+        return DemoApp(socket_path=args.socket,
+                       playlist_path=args.playlist,
+                       target_ids=target_ids,
+                       windowed=args.windowed,
+                       quad=args.quad).run([])
+    except KeyboardInterrupt:
+        # A CLEAN STOP MUST NOT END IN A TRACEBACK. Ctrl-C (and the
+        # `kill -INT -<pgid>` the README recommends, which is the same thing
+        # to the whole process group) reaches the UI as KeyboardInterrupt via
+        # PyGObject's `register_sigint_fallback`, and the default handling
+        # prints a stack through Gio.Application.run. `do_shutdown` has
+        # already run by then -- the threads are stopped and the summary is
+        # logged -- so the trace adds nothing an operator can act on and
+        # makes a run that went perfectly look like one that crashed.
+        #
+        # 130 is the shell's convention for "terminated by SIGINT".
+        log.info("interrupted; booth stopped")
+        return 130
 
 
 if __name__ == "__main__":
