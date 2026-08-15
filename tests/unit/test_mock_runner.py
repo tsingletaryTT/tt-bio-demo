@@ -142,3 +142,48 @@ def test_runner_removes_stale_socket_file(tmp_path):
         client.close()
     finally:
         runner.stop()
+
+
+def test_stop_waits_for_the_connections_it_is_still_serving(tmp_path):
+    """`stop()` joined only the accept loop, so it promised more teardown
+    than it delivered: it returned while per-connection replay threads were
+    still writing. Harmless in tests, which replay at speed=100; a lingering
+    thread at speed=1.0 (docs/followups.md).
+
+    THE TIMING HERE IS THE TEST. A `_serve` thread only checks `_stop`
+    between events, so with a 500 ms gap it stays inside `time.sleep` for up
+    to half a second after stop() sets the flag. Without the join, stop()
+    returns during that window and the thread is demonstrably still alive;
+    with it, stop() waits out the sleep. A short delay makes both behaviours
+    look identical -- the first version of this test used 200 ms and passed
+    against a stop() that joined nothing at all, which is exactly the
+    "test that cannot fail" pattern this project keeps catching in itself.
+    """
+    import time
+
+    events = [{"type": "stage", "stage": "trunk", "frac": f / 10.0,
+               "_delay_ms": 500} for f in range(10)]
+    runner = MockRunner(str(tmp_path / "sock"), events, speed=1.0)
+    runner.start()
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        client.connect(str(tmp_path / "sock"))
+        # Wait for the thread to be RUNNING, not merely registered: it is
+        # tracked before it is started, and a not-yet-started thread reports
+        # is_alive() False, which would make the assertion below vacuous.
+        deadline = time.monotonic() + 2.0
+        serving = None
+        while time.monotonic() < deadline:
+            with runner._connections_lock:
+                if runner._connections and runner._connections[0].is_alive():
+                    serving = runner._connections[0]
+                    break
+            time.sleep(0.01)
+        assert serving is not None, "the runner never started serving"
+
+        runner.stop()
+
+        assert not serving.is_alive(), \
+            "stop() returned while a connection was still being served"
+    finally:
+        client.close()

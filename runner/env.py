@@ -174,6 +174,37 @@ def log_root_size(log_root):
     return total
 
 
+# tt-metal writes these two once at device bring-up and then HOLDS THEM OPEN
+# FOR WRITE for the life of every worker (measured on the live booth with
+# `lsof`: all four workers holding them, in Task 19). Unlinking a file a
+# process still has open removes the NAME and frees nothing, which is the
+# exact trap this project has now hit three times -- Inspector's log during
+# Phase 3a, the per-card `worker.log` during Task 11, and this.
+#
+# The first two are fixed elsewhere (Inspector off by default; the worker
+# logs bounded with `os.truncate` and passed in via `protect`). This one was
+# recorded in docs/followups.md as unreachable rather than fixed, because a
+# fixed playlist writes them once and the log root then measured
+# byte-for-byte identical across 121 sweeps of a two-hour soak. "Unreachable
+# at the growth rate we measured" is a weaker guarantee than "the sweep knows
+# not to bother", and anything that makes tt-metal chattier -- a growing
+# playlist, TT_METAL_WATCHER, Inspector back on -- puts it back in range.
+#
+# Named here rather than passed in by the daemon because it is a fact about
+# the tree this function prunes, not about its caller: this module's own
+# docstring above already documents these two files by name.
+_HELD_OPEN_BY_TT_METAL = frozenset({"kernel_names.txt", "kernel_elf_paths.txt"})
+
+
+def _is_held_open_by_tt_metal(path):
+    """Is this one of the files tt-metal keeps open for the worker's life?
+
+    Matched on the parent directory as well as the name, so an unrelated
+    `kernel_names.txt` somewhere else in the tree is still prunable.
+    """
+    return path.name in _HELD_OPEN_BY_TT_METAL and path.parent.name == "watcher"
+
+
 def prune_log_root(log_root, max_bytes, *, dry_run=False, protect=None):
     """Delete oldest log files until the root fits in `max_bytes`.
 
@@ -225,7 +256,7 @@ def prune_log_root(log_root, max_bytes, *, dry_run=False, protect=None):
     for _, size, path in entries:
         if total - freed <= max_bytes:
             break
-        if str(path) in protect:
+        if str(path) in protect or _is_held_open_by_tt_metal(path):
             continue
         if not dry_run:
             try:

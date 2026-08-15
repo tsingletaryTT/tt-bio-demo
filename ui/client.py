@@ -108,7 +108,22 @@ class LatestFrameByJob:
         # job_id -> newest event for that job, least-recently-written first.
         self._frames = collections.OrderedDict()
         self.max_jobs = max(1, int(max_jobs))
+        # TWO COUNTERS, BECAUSE THEY MEAN OPPOSITE THINGS.
+        #
+        # `dropped` counts a frame superseded by a newer one for the SAME
+        # job before the renderer drew it. At 30 Hz against a 33 ms drain
+        # that is the ordinary case -- it is what a latest-wins buffer is
+        # for -- so a large number here is normal and says nothing is wrong.
+        #
+        # `evicted` counts a whole JOB pushed out because more jobs had
+        # frames waiting than this buffer has slots. That is not normal: it
+        # means a cell's frames were thrown away wholesale, and it is the
+        # signal worth reading (docs/followups.md asks for the cheapest
+        # available "the renderer is falling behind" indicator; conflating
+        # the two, as this did, is why the number could not be surfaced --
+        # it was always huge and always meaningless).
         self.dropped = 0
+        self.evicted = 0
 
     def __len__(self):
         """How many jobs currently have a frame waiting.
@@ -139,7 +154,7 @@ class LatestFrameByJob:
             self._frames[job_id] = event
             while len(self._frames) > self.max_jobs:
                 self._frames.popitem(last=False)
-                self.dropped += 1
+                self.evicted += 1
 
     def take_all(self):
         """Every job's newest frame, as `{job_id: event}`, emptying the buffer.
@@ -155,6 +170,32 @@ class LatestFrameByJob:
         with self._lock:
             frames, self._frames = dict(self._frames), collections.OrderedDict()
             return frames
+
+
+# THE ONE NUMBER THE TWO JOIN TIMEOUTS BELOW ARE DERIVED FROM.
+#
+# A worker thread blocked in a socket call cannot notice `_stop` until that
+# call returns, and it returns when this timeout fires. So every join in
+# `stop()` has to outlast it, or `stop()` returns while a thread is still
+# inside a read or a write -- a real teardown guarantee turning into a
+# hopeful one.
+#
+# That relationship used to be PROSE. Both joins carried a comment saying
+# "longer than the socket timeout set in _session (5.0s)", with the 5.0 and
+# the 6.0 written out separately at three call sites, so an isolated edit to
+# any one of them silently reintroduced the bug the pairing was written to
+# fix (docs/followups.md). Derived here instead, so the relationship cannot
+# be edited apart.
+SOCKET_TIMEOUT_S = 5.0
+
+# The reader: blocked in `for line in stream`, released one socket timeout
+# after `_stop` at the latest.
+READER_JOIN_TIMEOUT_S = SOCKET_TIMEOUT_S + 1.0
+
+# The sender: blocked in `sendall` to a daemon that has stopped reading. It
+# gets more headroom because it is joined FIRST and a partial write can take
+# a second timeout to unwind.
+SENDER_JOIN_TIMEOUT_S = SOCKET_TIMEOUT_S + 3.0
 
 
 class EventClient:
@@ -290,12 +331,12 @@ class EventClient:
         with self._outbox_cond:
             self._outbox_cond.notify_all()
         if self._sender_thread is not None:
-            # Longer than the socket timeout set in _session (5.0s) for the
-            # same reason the reader's join is: a sender blocked in `sendall`
-            # to a daemon that has stopped reading cannot notice `_stop` until
-            # that write returns, and it returns when the socket timeout
-            # fires. A shorter join here would let stop() return while the
-            # thread was still inside a write -- which is precisely what
+            # SENDER_JOIN_TIMEOUT_S is derived from SOCKET_TIMEOUT_S, for
+            # the same reason the reader's join is: a sender blocked in
+            # `sendall` to a daemon that has stopped reading cannot notice
+            # `_stop` until that write returns, and it returns when the socket
+            # timeout fires. A shorter join here would let stop() return while
+            # the thread was still inside a write -- which is precisely what
             # test_stop_returns_only_after_a_parked_sender_thread_has_exited
             # arranges and checks.
             #
@@ -303,10 +344,10 @@ class EventClient:
             # sender shuts the connection down as it exits (_wake_the_reader),
             # which is what lets the reader's join below return at once
             # instead of sitting out the socket's read timeout.
-            self._sender_thread.join(timeout=8.0)
+            self._sender_thread.join(timeout=SENDER_JOIN_TIMEOUT_S)
         if self._thread is not None:
-            # The join timeout must exceed the socket read timeout in
-            # _session (5.0s): when the thread is blocked in `for line in
+            # READER_JOIN_TIMEOUT_S exceeds the socket read timeout by
+            # construction: when the thread is blocked in `for line in
             # stream` with no data pending, it cannot notice `_stop` until
             # that read call returns -- either because data arrives or
             # because the socket timeout fires. A shorter join timeout here
@@ -314,7 +355,7 @@ class EventClient:
             # exited, which is a benign no-op in tests (where the mock
             # runner's own .stop() closes the connection and unblocks the
             # read immediately) but not a real guarantee.
-            self._thread.join(timeout=6.0)
+            self._thread.join(timeout=READER_JOIN_TIMEOUT_S)
 
     def _set_state(self, state):
         if state != self.state:
@@ -340,7 +381,7 @@ class EventClient:
 
     def _session(self):
         conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        conn.settimeout(5.0)
+        conn.settimeout(SOCKET_TIMEOUT_S)
         conn.connect(self.socket_path)
         with conn:
             self._open_outbox(conn)

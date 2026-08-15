@@ -33,6 +33,11 @@ class MockRunner:
         self.events = events
         self.speed = speed
         self._server = None
+        # The per-connection replay threads, so stop() can join them. A list
+        # plus a lock rather than a set: they are appended from the accept
+        # loop and read from whichever thread calls stop().
+        self._connections = []
+        self._connections_lock = threading.Lock()
         self._thread = None
         self._stop = threading.Event()
 
@@ -50,9 +55,27 @@ class MockRunner:
         self._thread.start()
 
     def stop(self):
+        """Stop accepting, and wait for the connections already being served.
+
+        The per-connection `_serve` threads are joined as well as the accept
+        loop. Joining only the accept loop promised more teardown than it
+        delivered: `stop()` returned while replay threads were still writing,
+        which is harmless in tests (they replay at `speed=100`) but leaves a
+        lingering thread at `speed=1.0` -- and the promise, not the leak, is
+        the problem. See docs/followups.md.
+
+        Each join is bounded: a `_serve` thread checks `_stop` between
+        events, so it exits within one event's sleep, and a stuck one must
+        not wedge a test suite's teardown.
+        """
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=2.0)
+        with self._connections_lock:
+            serving = list(self._connections)
+            self._connections.clear()
+        for thread in serving:
+            thread.join(timeout=2.0)
         if self._server is not None:
             self._server.close()
         try:
@@ -68,7 +91,13 @@ class MockRunner:
                 continue
             except OSError:
                 return
-            threading.Thread(target=self._serve, args=(conn,), daemon=True).start()
+            thread = threading.Thread(target=self._serve, args=(conn,),
+                                      daemon=True)
+            # Tracked so `stop()` can join it. Registered BEFORE the thread
+            # starts, so a stop() racing this line still finds it.
+            with self._connections_lock:
+                self._connections.append(thread)
+            thread.start()
 
     def _serve(self, conn):
         with conn:

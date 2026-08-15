@@ -1792,6 +1792,22 @@ class DemoApp(Gtk.Application):
         return self.states.state
 
     def do_activate(self):
+        # RE-ACTIVATION PRESENTS THE WINDOW; IT DOES NOT BUILD A SECOND ONE.
+        # GApplication is single-instance over D-Bus, so launching the booth
+        # while it is already running does not start a new process -- it
+        # activates this one. Without this guard that meant a second window,
+        # a second socket client, a second 33 ms frame timer, `self.viewer`
+        # rebound to the new window's and the first window orphaned on screen
+        # with nothing driving it. Entirely plausible at a venue: staff double
+        # -click the desktop entry, or run the launcher again because the
+        # booth is on another workspace and looks absent.
+        #
+        # Presenting is what they actually wanted -- it raises the booth they
+        # could not find.
+        if self._window is not None:
+            log.info("already running; presenting the existing window")
+            self._window.present()
+            return
         window = Gtk.ApplicationWindow(application=self)
         window.set_title("tt-bio")
         window.set_default_size(1280, 800)
@@ -1933,9 +1949,44 @@ class DemoApp(Gtk.Application):
                 self._client.stop()
             # The easter egg's timer, if a visitor left it running.
             self._stop_egg_source()
+            self._log_frame_buffer_summary()
         except Exception:
             log.exception("error during shutdown")
         Gtk.Application.do_shutdown(self)
+
+    def _log_frame_buffer_summary(self):
+        """One line, at shutdown, saying whether the renderer kept up.
+
+        `LatestFrameByJob` counted its drops from the beginning and nothing
+        ever read them (docs/followups.md: "the cheapest available signal
+        that the renderer is falling behind", never surfaced). Reported here
+        rather than live because the two numbers mean opposite things and
+        only one is news:
+
+        - `dropped` is a frame superseded by a newer one for the same job.
+          At 30 Hz against a 33 ms drain that is the buffer working, and a
+          large number is expected.
+        - `evicted` is a whole job's frames thrown away because more jobs had
+          frames waiting than the buffer has slots. That one is worth
+          reading, and on a healthy four-chip booth it stays at zero.
+
+        A live indicator is a separate decision -- it needs a rate and a
+        threshold, and neither has been measured yet -- so this is the honest
+        cheap half: an operator reading the log after an all-day run gets an
+        answer, and nothing costs anything per frame.
+        """
+        frames = getattr(self, "_frames", None)
+        if frames is None:
+            return
+        dropped = getattr(frames, "dropped", 0)
+        evicted = getattr(frames, "evicted", 0)
+        if evicted:
+            log.warning("frame buffer: %d job(s) evicted for want of a slot, "
+                        "%d frame(s) superseded -- the renderer fell behind",
+                        evicted, dropped)
+        else:
+            log.info("frame buffer: no jobs evicted, %d frame(s) superseded "
+                     "(normal; latest-wins)", dropped)
 
     # ── layout ───────────────────────────────────────────────────────────
 

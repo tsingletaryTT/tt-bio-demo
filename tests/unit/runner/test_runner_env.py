@@ -307,3 +307,57 @@ def test_a_sweep_that_actually_pruned_does_not_warn(tmp_path, caplog):
     assert removed == [str(old)] and freed == 1000
     assert not caplog.records, \
         "a sweep that did its job warned as though it could not"
+
+
+def test_the_files_tt_metal_holds_open_are_never_unlinked(tmp_path):
+    """Unlinking a file a process still has open for write removes the NAME
+    and frees nothing. tt-metal writes `generated/watcher/kernel_names.txt`
+    and `kernel_elf_paths.txt` at device bring-up and holds both open for the
+    life of every worker (measured with `lsof` on the live booth, Task 19),
+    so an oldest-first sweep would eat them for no gain -- the same trap this
+    project has hit three times.
+
+    They are also the OLDEST files in the tree, written once at bring-up,
+    which is exactly what an oldest-first sweep reaches for first. This
+    fixture reproduces that.
+
+    Mutation: dropping `_is_held_open_by_tt_metal` from the skip. Red.
+    """
+    watcher = tmp_path / "generated" / "watcher"
+    watcher.mkdir(parents=True)
+    held = []
+    for name in ("kernel_names.txt", "kernel_elf_paths.txt"):
+        path = watcher / name
+        path.write_bytes(b"x" * 1000)
+        os.utime(path, (1, 1))                  # oldest: swept first
+        held.append(path)
+    prunable = tmp_path / "recent.log"
+    prunable.write_bytes(b"x" * 1000)
+    os.utime(prunable, (10_000, 10_000))
+
+    freed, removed = prune_log_root(tmp_path, max_bytes=1500)
+
+    for path in held:
+        assert path.exists(), f"{path.name} was unlinked; that frees nothing"
+    assert removed == [str(prunable)], \
+        "the sweep should have taken the one file it could actually free"
+    assert freed == 1000
+
+
+def test_an_unrelated_file_of_the_same_name_is_still_prunable(tmp_path):
+    """Matched on the `watcher/` parent too, so the exemption is as narrow as
+    the fact behind it. Without this, any file called kernel_names.txt
+    anywhere in the tree would become undeletable.
+
+    Mutation: matching on the name alone. Red.
+    """
+    other = tmp_path / "somewhere" / "kernel_names.txt"
+    other.parent.mkdir(parents=True)
+    other.write_bytes(b"x" * 1000)
+    os.utime(other, (1, 1))
+    (tmp_path / "b.log").write_bytes(b"x" * 10)
+
+    _freed, removed = prune_log_root(tmp_path, max_bytes=100)
+
+    assert removed == [str(other)], \
+        "a file tt-metal is not holding open was treated as though it were"

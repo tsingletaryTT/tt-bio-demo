@@ -2529,3 +2529,82 @@ def test_a_new_fold_logs_its_first_stage_even_if_it_repeats_the_last_one():
     assert [r.getMessage() for r in first], "the first fold logged no stage"
     assert [r.getMessage() for r in second], \
         "the second fold's first stage was swallowed as a duplicate"
+
+
+def test_relaunching_the_booth_presents_the_window_it_already_has():
+    """GApplication is single-instance over D-Bus, so launching the booth
+    while it is running activates THIS process rather than starting a new
+    one. Without a guard that meant a second window, a second socket client,
+    a second 33 ms frame timer, `self.viewer` rebound to the new window's and
+    the first window orphaned on screen with nothing driving it.
+
+    Plausible at a venue: staff double-click the desktop entry, or run the
+    launcher again because the booth is on another workspace and looks
+    absent (docs/followups.md).
+
+    Mutation: removing the early return from `do_activate`. Red -- a second
+    window is built and `_window` is rebound.
+    """
+    app = _app()
+
+    class _Window:
+        def __init__(self):
+            self.presented = 0
+
+        def present(self):
+            self.presented += 1
+
+    existing = _Window()
+    app._window = existing
+    quad_before = app.quad
+
+    app.do_activate()
+
+    assert app._window is existing, "re-activation built a second window"
+    assert existing.presented == 1, \
+        "re-activation should raise the booth the operator could not find"
+    assert app.quad is quad_before, "the cells were rebound underneath"
+
+
+def test_a_run_that_evicted_frames_says_so_at_shutdown():
+    """`LatestFrameByJob` counted its drops from the beginning and nothing
+    ever read them (docs/followups.md). Eviction -- a whole job's frames
+    thrown away for want of a slot -- is the half that means the renderer
+    fell behind, and it must not be reported as routine.
+
+    Mutation: logging both counters at the same level, or reporting
+    `dropped` as the falling-behind signal (it is the ordinary case at 30 Hz
+    and is huge on every healthy run). Red.
+    """
+    import logging
+
+    app = _app()
+    app._frames.dropped = 4000
+    app._frames.evicted = 3
+
+    with _app_log() as records:
+        app._log_frame_buffer_summary()
+
+    assert records, "shutdown said nothing about the frame buffer"
+    worst = max(r.levelno for r in records)
+    assert worst >= logging.WARNING, \
+        "evicted jobs were reported as routine"
+    assert any("evicted" in r.getMessage() for r in records)
+
+
+def test_a_healthy_run_does_not_cry_wolf_about_superseded_frames():
+    """The other half. Superseding is what a latest-wins buffer DOES: a
+    booth that warned about 4000 of them every shutdown would teach an
+    operator to ignore the line that matters."""
+    import logging
+
+    app = _app()
+    app._frames.dropped = 4000
+    app._frames.evicted = 0
+
+    with _app_log() as records:
+        app._log_frame_buffer_summary()
+
+    assert records, "shutdown said nothing about the frame buffer"
+    assert all(r.levelno < logging.WARNING for r in records), \
+        "a healthy run warned about ordinary supersession"

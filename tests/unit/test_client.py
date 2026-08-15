@@ -297,3 +297,41 @@ def test_stop_joins_thread_blocked_on_a_silent_connection(tmp_path):
             os.unlink(sock_path)
         except FileNotFoundError:
             pass
+
+
+# ── the timeout relationship that used to be prose ──────────────────────────
+
+def test_every_join_outlasts_the_socket_timeout():
+    """A worker thread blocked in a socket call cannot notice `_stop` until
+    that call returns, and it returns when the socket timeout fires. So every
+    join in `stop()` must outlast it, or `stop()` returns while a thread is
+    still inside a read or a write.
+
+    That relationship used to be PROSE -- 5.0 and 6.0 written out separately
+    at three call sites, with comments explaining that one had to exceed the
+    other -- so an isolated edit to either silently reintroduced the bug the
+    pairing was written to fix (docs/followups.md). It is derived now, and
+    this is what says so.
+
+    Mutation: setting either join constant below SOCKET_TIMEOUT_S. Red.
+    """
+    from ui.client import (READER_JOIN_TIMEOUT_S, SENDER_JOIN_TIMEOUT_S,
+                           SOCKET_TIMEOUT_S)
+
+    assert READER_JOIN_TIMEOUT_S > SOCKET_TIMEOUT_S
+    assert SENDER_JOIN_TIMEOUT_S > SOCKET_TIMEOUT_S
+
+
+def test_the_client_uses_those_constants_rather_than_its_own_numbers():
+    """The constants are only worth having if the code reads them. Catches a
+    literal creeping back in beside them -- which is how this started.
+    """
+    import inspect
+
+    from ui import client as client_module
+
+    source = inspect.getsource(client_module.EventClient)
+    assert "timeout=6.0" not in source and "timeout=8.0" not in source, \
+        "a join timeout is hardcoded again instead of derived"
+    assert "settimeout(5.0)" not in source, \
+        "the socket timeout is hardcoded again instead of named"
