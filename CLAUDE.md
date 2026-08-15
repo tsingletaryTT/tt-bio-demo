@@ -490,6 +490,69 @@ Two defects the quad screenshots exposed:
   booth-wide — one line for four independent folds — so it can only ever speak
   for one cell.
 
+### A guard that was not dead, an RNA, and a video of the logo (2026-08-14)
+
+Four carried-over items plus one interruption, and three of them turned into
+the same lesson: **the thing that goes stale is never the code, it is what the
+code claims about itself.**
+
+**"Is the gallery put-away guard dead code?" No — and three previous passes
+had been asking the question in a place where it could not be answered.**
+Each mutated the guard, watched the suite stay green, and concluded something
+about the *test*. The guard only does anything when the booth has left
+`attract`, and the test that covers it never leaves `attract` — so from there
+the state machine's own idle timeout restores attract on the same tick and the
+mutation is genuinely equivalent. The reachable path has no visitor in it at
+all: the **daemon degrades**, `not_ready` moves the booth to `preparing`
+without touching the choreography, and the still-owned gallery's hide arrives
+seven seconds later and wipes the "getting the booth ready" overlay. Traced
+live (gallery t+67, degrade, hide t+74), now pinned by a test that is red
+without the guard.
+
+The same trace found a defect next to it. `_note_input`'s comment said
+HIDE_GALLERY "is deliberately NOT applied here" — and four lines below, a
+branch applied it. Pressing `D`, `T`, `Q` or `?` at a menu the booth was
+showing off dropped it to attract, which is the exact snatch the comment
+forbids. **It survived because its test pressed an unbound key**, which falls
+through to `_on_touch()` and re-opens the gallery in the same call: the bug put
+itself back before anything could observe it. A test can be true for a reason
+that has nothing to do with the code it points at.
+
+**A sixth target: yeast tRNA-Phe.** The playlist is now a walk from a gene to
+a protein. Measured before any copy was written, which is the point: all four
+stems come back correctly Watson-Crick paired (C1'-C1' 10.6–10.7 Å) and it is
+as compact as the real molecule (radius of gyration 23.3 Å vs 23–24), **but
+the corner sits at ~124° where the crystal is ~90°** — a wide open elbow, not
+the famous L. So the blurb says "a compact hinged shape" and never promises the
+L. Warm 8.6 s, mean pLDDT 88.6 — *identical on all six folds*, which no protein
+here is.
+
+**Adding it falsified copy in five places at once**, all of them some version
+of "the only thing this booth folds that is not a protein" — the manifest
+tagline, the site's molecule card, a section heading, and the five-targets
+counts in the site and the README. Two new tests now catch this class: one
+keyed on "the only" rather than the exact sentence, and one that parses the
+site's molecule cards and compares name, tagline and time against the manifest
+they describe.
+
+**`scripts/record-egg.py` — capture without the screen.** Asked for video of
+the logo condensing; there was none, only stills. Screen recording needs the
+PipeWire portal granted interactively and `Ctrl+G` cannot be driven by
+`xdotool` during a capture (both exit 0 — the trap that cost a 169-second
+recording). So: run the real descent on a chip via `runner.egg`, draw every
+frame with the booth's own `StructureViewer` configured exactly as `ui/app.py`
+configures the egg's, read the framebuffer back. No portal, no focus, no
+keystroke, deterministic under `--seed`. It **refuses** to encode a capture
+whose cloud did not land on the mark, using `mark.py`'s own field as the
+oracle (0.4% of points inside at step 0, 98.8% at step 180 — the 90% floor
+sits in a wide gap), then writes a contact sheet and says to look at it.
+
+**And the thumbnails had two homes and one writer.** `playlist/thumbnails/`
+ships in the .deb; `docs/thumbnails/` is what the site serves, and the site
+cannot reference a file outside `docs/`. Keeping them in step was a manual
+`cp` nobody had written down — discovered by having to do it. The script
+writes both now, and a test compares them byte for byte.
+
 ## Conventions
 
 - **Keep the README's screenshots current.** The README claims every image on it is the
