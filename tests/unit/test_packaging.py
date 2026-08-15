@@ -769,3 +769,48 @@ def test_the_build_report_names_the_maintainer_scripts(built):
     s = (REPO / "scripts" / "build-deb.sh").read_text()
     assert "--ctrl-tarfile" in s, \
         "build report parses maintainer scripts from human-readable output"
+
+
+def test_every_package_setup_venvs_requires_is_declared_as_a_dependency():
+    """THE ONE AN END-TO-END INSTALL FOUND, and nothing else could have.
+
+    `apt install tt-bio-demo-all` succeeded on a clean QB2 image, and then the
+    very command the runtime package's postinst tells the operator to run --
+    `setup-venvs.sh --prefix /opt/tt-bio-demo` -- died immediately with
+    "missing apt packages: python3-opengl python3-numpy". The packaging was
+    green, the install was green, and the booth could not be built. That is
+    the plan's stated goal ("a working booth") failing at the last step.
+
+    So the two lists are tied together here rather than maintained in
+    parallel: `REQUIRED_APT_PKGS` is parsed out of the script itself, and
+    every entry must be declared by SOME package in debian/control. Which
+    package is a judgement call (the UI's own imports belong to the app,
+    venv-build tooling to the runtime package); that all of them are declared
+    is not.
+
+    Mutation: removing python3-opengl, python3-numpy or xz-utils from
+    debian/control. Red, naming the missing one.
+    """
+    import re
+
+    script = (REPO / "scripts" / "setup-venvs.sh").read_text()
+    block = re.search(r"REQUIRED_APT_PKGS=\((.*?)\)", script, re.S)
+    assert block, "REQUIRED_APT_PKGS not found -- the script's shape changed"
+    required = [line.strip() for line in block.group(1).splitlines()
+                if line.strip() and not line.strip().startswith("#")]
+    assert len(required) >= 10, f"only parsed {required} -- parser drifted"
+
+    control = (REPO / "debian" / "control").read_text()
+    # Every Depends: field of every binary package, flattened.
+    declared = set()
+    for field in re.findall(r"^Depends:\n((?: .*\n)+)", control, re.M):
+        for line in field.splitlines():
+            name = line.strip().rstrip(",").split()[0].split("|")[0].strip()
+            if name and not name.startswith("${"):
+                declared.add(name)
+
+    missing = [pkg for pkg in required if pkg not in declared]
+    assert not missing, (
+        f"setup-venvs.sh requires {missing}, which no package declares. An "
+        f"operator who runs `apt install tt-bio-demo-all` on a clean machine "
+        f"gets a successful install and then a booth that cannot be built.")
