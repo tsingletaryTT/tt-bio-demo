@@ -2630,7 +2630,7 @@ def test_a_cell_with_nothing_in_it_yet_says_why():
     from ui.app import cell_caption
 
     line = cell_caption(name="Trypsin", stage="trunk", showing=None,
-                        empty=True)
+                        empty=True, awaiting=True)
     assert "Trypsin" in line and "TRUNK" in line
     assert "atoms appear" in line.lower(), \
         "a black cell mid-fold explained nothing"
@@ -2645,7 +2645,7 @@ def test_a_cell_stops_promising_atoms_once_they_arrive():
     from ui.app import cell_caption
 
     line = cell_caption(name="Trypsin", stage="diffusion", showing=None,
-                        empty=True)
+                        empty=True, awaiting=True)
     assert "atoms appear" not in line.lower()
 
 
@@ -2657,7 +2657,8 @@ def test_an_idle_cell_promises_nothing():
     """
     from ui.app import cell_caption
 
-    assert cell_caption(name=None, stage=None, showing=None, empty=True) == ""
+    assert cell_caption(name=None, stage=None, showing=None, empty=True,
+                        awaiting=False) == ""
 
 
 def test_a_held_structure_still_names_both_folds():
@@ -2667,7 +2668,7 @@ def test_a_held_structure_still_names_both_folds():
     from ui.app import cell_caption
 
     line = cell_caption(name="Dihydrofolate Reductase", stage="trunk",
-                        showing="Trypsin", empty=False)
+                        showing="Trypsin", empty=False, awaiting=True)
     assert line == "Trypsin — now folding Dihydrofolate Reductase · TRUNK"
 
 
@@ -2679,12 +2680,12 @@ def test_the_stages_before_coordinates_are_derived_not_listed():
     construction -- so this asserts the DERIVATION, against the bands.
     """
     from protocol.events import STAGE_BANDS
-    from ui.app import _STAGES_BEFORE_COORDINATES
+    from ui.app import _STAGES_WITH_COORDINATES
 
-    assert _STAGES_BEFORE_COORDINATES == ("msa", "prep", "trunk")
-    for stage in _STAGES_BEFORE_COORDINATES:
-        assert STAGE_BANDS[stage][1] <= STAGE_BANDS["diffusion"][0]
-    assert "diffusion" not in _STAGES_BEFORE_COORDINATES
+    assert _STAGES_WITH_COORDINATES == ("diffusion", "confidence", "saving")
+    for stage in _STAGES_WITH_COORDINATES:
+        assert STAGE_BANDS[stage][1] > STAGE_BANDS["diffusion"][0]
+    assert "trunk" not in _STAGES_WITH_COORDINATES
 
 
 def test_the_booth_actually_tells_a_cell_it_is_empty():
@@ -2740,3 +2741,26 @@ def test_a_cell_that_is_showing_something_never_says_it_is_empty():
     caption = app.quad.captions.get(0, "")
     assert "atoms appear" not in caption.lower(), (
         f"a cell with a picture in it told the visitor to wait: {caption!r}")
+
+
+def test_a_cell_between_job_start_and_its_first_stage_still_says_why():
+    """THE CASE THE UNIT TESTS COULD NOT HAVE FOUND, and a photograph did.
+
+    Between a chip's `job_start` and its first `stage` event a cell has no
+    stage at all. The first version of this feature keyed on the stage being
+    a pre-diffusion one, so those cells sat black and silent, captioned with
+    nothing but a protein name -- which is what four of them looked like
+    against a replayed four-chip stream.
+
+    Every unit test written for the feature supplied a stage, so every one of
+    them was green. `awaiting_first_frame` is the condition that was actually
+    meant: a fold is running and has produced no coordinates yet.
+
+    Mutation: keying on the stage instead of `awaiting`. Red.
+    """
+    from ui.app import cell_caption
+
+    line = cell_caption(name="Trp-cage", stage=None, showing=None,
+                        empty=True, awaiting=True)
+    assert "atoms appear" in line.lower(), (
+        f"a cell that had just started folding said nothing: {line!r}")

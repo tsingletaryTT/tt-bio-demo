@@ -294,12 +294,17 @@ _CAPTION_EMPTY_SUB = "Atoms appear here when the diffusion stage begins"
 # every reason to think that cell is broken.
 _CELL_EMPTY_SUB = "atoms appear when diffusion begins"
 
-# The stages that produce no coordinates, so a cell with nothing in it stays
-# black through them. Derived from STAGE_BANDS rather than listed, so a new
-# stage inserted before diffusion cannot silently stop explaining itself.
-_STAGES_BEFORE_COORDINATES = tuple(
+# The stages from which coordinates can arrive. Derived from STAGE_BANDS
+# rather than listed, so a stage inserted before diffusion cannot silently
+# stop a black cell explaining itself.
+#
+# Used as the STOP condition rather than the start one: an empty cell says
+# why it is empty until diffusion begins, at which point "atoms appear when
+# diffusion begins" has stopped being true even though the first frame may
+# still be a moment away.
+_STAGES_WITH_COORDINATES = tuple(
     name for name in STAGE_ORDER
-    if STAGE_BANDS[name][1] <= STAGE_BANDS["diffusion"][0])
+    if STAGE_BANDS[name][1] > STAGE_BANDS["diffusion"][0])
 
 
 def viewer_hold_caption(*, awaiting_first_frame, has_structure, showcasing,
@@ -397,7 +402,7 @@ def target_info_subject(*, shown_target_id, folding_target_id):
 # `job_error`'s `message` least of all.
 
 
-def cell_caption(*, name, stage, showing=None, empty=False):
+def cell_caption(*, name, stage, showing=None, empty=False, awaiting=False):
     """What one quad cell says about its fold, as a single line.
 
     `showing` is the protein whose geometry is ACTUALLY on screen in this
@@ -434,16 +439,25 @@ def cell_caption(*, name, stage, showing=None, empty=False):
     if stage in STAGE_ORDER:
         parts.append(stage.upper())
     line = " · ".join(parts)
-    # NOTHING DRAWN YET, AND A REASON FOR IT. Gated on the STAGE alone, not
-    # on having a name: a stage only arrives for a fold that is running, so
-    # an idle cell (stage None) still says nothing and cannot promise atoms
-    # that are not coming -- while a fold whose `target_id` is not in this
-    # booth's playlist, and therefore has no name to show, still explains its
-    # own blackness. Requiring a name suppressed the explanation exactly
-    # where the booth knows least, which is backwards.
+    # NOTHING DRAWN YET, AND A REASON FOR IT.
     #
-    # Before diffusion only: once points arrive the cell explains itself.
-    if empty and stage in _STAGES_BEFORE_COORDINATES:
+    # `awaiting` is `_SlotView.awaiting_first_frame`, which means exactly "a
+    # fold is running on this cell and has produced no coordinates yet" --
+    # set at `job_start`, cleared by the first frame, by `job_error` and by
+    # `not_ready`. That is the condition, so it is what this asks.
+    #
+    # An earlier version keyed on the STAGE being one of the pre-diffusion
+    # ones, which looked equivalent and was not: a cell that has had its
+    # `job_start` but not yet its first `stage` event has no stage at all,
+    # and sat there black and silent. Photographing the real quad against a
+    # replayed four-chip stream is what showed it -- four empty cells, each
+    # captioned with nothing but a protein name. The unit tests could not
+    # have: they all supplied a stage.
+    #
+    # Stops at diffusion rather than at the first frame, because from there
+    # "atoms appear when diffusion begins" has stopped being true even
+    # though the cell may be black for another moment.
+    if empty and awaiting and stage not in _STAGES_WITH_COORDINATES:
         return f"{line} — {_CELL_EMPTY_SUB}" if line else _CELL_EMPTY_SUB
     return line
 
@@ -4171,7 +4185,8 @@ class DemoApp(Gtk.Application):
         try:
             self.quad.set_caption(
                 slot, cell_caption(name=name, stage=stage, showing=showing,
-                                   empty=not view.has_structure))
+                                   empty=not view.has_structure,
+                                   awaiting=view.awaiting_first_frame))
         except Exception:
             log.exception("quad caption for slot %r dropped", slot)
 
