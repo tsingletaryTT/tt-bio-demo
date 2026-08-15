@@ -115,6 +115,15 @@
     tacrolimus specifically because it clicks onto FKBP12 and, together,
     the two jam shut a signal that would otherwise tell the immune system
     to attack the new organ.
+  # THE SLOW END, and why this entry carries a range. Two of this box's four
+  # chips (1 and 3) drop to as low as 906 MHz about fifteen minutes into a
+  # session and stay there -- they also run 3-4 C hotter at idle, so it is
+  # chassis position and not workload (Task 19's two-hour soak,
+  # docs/followups.md). A visitor's pick lands on whichever chip frees up
+  # first and they cannot choose, so the card promises the band rather than
+  # the fast half of it. Measured p50s across 2143 folds:
+  #   chips 0/2: 11.71 / 11.69s     chips 1/3: 12.25 / 12.18s
+  #
   # Measured on this booth's own hardware, in the WARM state a visitor
   # actually meets: mean of 5 folds (11.7s) from a live run of the real
   # daemon+UI over the socket, with the model resident across folds.
@@ -126,6 +135,7 @@
   # spelled out on the Trp-cage entry above, and the reason the warm
   # number is the honest one to print on a gallery card.
   expected_s: 11.7
+  expected_slow_s: 12.3
 
 - id: dhfr
   name: Dihydrofolate Reductase
@@ -139,6 +149,15 @@
     material for new DNA -- which is exactly why one of the oldest cancer
     drugs, methotrexate, is shaped to jam it shut instead, starving
     fast-dividing cancer cells of what they need to keep copying themselves.
+  # THE SLOW END, and why this entry carries a range. Two of this box's four
+  # chips (1 and 3) drop to as low as 906 MHz about fifteen minutes into a
+  # session and stay there -- they also run 3-4 C hotter at idle, so it is
+  # chassis position and not workload (Task 19's two-hour soak,
+  # docs/followups.md). A visitor's pick lands on whichever chip frees up
+  # first and they cannot choose, so the card promises the band rather than
+  # the fast half of it. Measured p50s across 2143 folds:
+  #   chips 0/2: 19.76 / 19.66s     chips 1/3: 24.98 / 24.28s
+  #
   # Measured on this booth's own hardware, in the WARM state a visitor
   # actually meets: mean of 6 folds (19.7s) from a live run of the real
   # daemon+UI over the socket, with the model resident across folds.
@@ -150,6 +169,7 @@
   # spelled out on the Trp-cage entry above, and the reason the warm
   # number is the honest one to print on a gallery card.
   expected_s: 19.7
+  expected_slow_s: 25.0
 
 - id: trypsin
   input: ../examples/affinity_tryp.yaml
@@ -175,6 +195,15 @@
     This is the cow's version, one of the most-studied protein shapes in
     science and often the very first real structure a biochemistry student
     ever examines up close.
+  # THE SLOW END, and why this entry carries a range. Two of this box's four
+  # chips (1 and 3) drop to as low as 906 MHz about fifteen minutes into a
+  # session and stay there -- they also run 3-4 C hotter at idle, so it is
+  # chassis position and not workload (Task 19's two-hour soak,
+  # docs/followups.md). A visitor's pick lands on whichever chip frees up
+  # first and they cannot choose, so the card promises the band rather than
+  # the fast half of it. Measured p50s across 2143 folds:
+  #   chips 0/2: 22.57 / 22.46s     chips 1/3: 27.14 / 27.10s
+  #
   # Measured on this booth's own hardware, in the WARM state a visitor
   # actually meets: mean of 5 folds (22.3s) from a live run of the real
   # daemon+UI over the socket, with the model resident across folds.
@@ -186,6 +215,7 @@
   # spelled out on the Trp-cage entry above, and the reason the warm
   # number is the honest one to print on a gallery card.
   expected_s: 22.3
+  expected_slow_s: 27.1
 
 - id: dna
   input: ../examples/dna_dickerson.yaml

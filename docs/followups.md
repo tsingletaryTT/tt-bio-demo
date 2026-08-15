@@ -77,8 +77,13 @@ open version can check the reasoning still holds.
   the reason it never was is that it counted two opposite things: ordinary
   latest-wins supersession (thousands per run, meaning nothing) and whole-job
   eviction (meaning the renderer fell behind). Split into `dropped` and
-  `evicted`, reported at shutdown, eviction at WARNING. **Still open:** a
-  LIVE indicator, which needs a rate and a threshold nobody has measured.
+  `evicted`, reported at shutdown, eviction at WARNING. **DECIDED 2026-08-15:
+  the shutdown line is where this stops.** A live indicator needs a rate and
+  a threshold, and inventing one would put a number on screen that no
+  measurement supports — the same mistake as an `expected_s` nobody folded.
+  On a healthy four-chip booth `evicted` stays at zero, so the shutdown line
+  answers the question it was asked. Revisit if a soak ever reports a
+  non-zero eviction count, which is the measurement this would need.
 
 ## Closed in Phase 5 (multi-chip folding) — kept so a reader knows they are closed
 
@@ -206,9 +211,13 @@ resource measured.
     host at the same instant. The clock drop is device-side.
   - **`playlist/manifest.yaml`'s `expected_s` are cold-chip numbers.** They
     match chips 0 and 2 to within 0.1 s and are 4–26 % optimistic for the
-    other two after twenty minutes of booth time. Not changed here: they are
-    honest for half the box, and a gallery card promising a range is a copy
-    decision, not a plumbing one. Worth deciding before a venue.
+    other two after twenty minutes of booth time. **DECIDED 2026-08-15: the
+    three long targets carry a range** (`expected_slow_s`, rendered by
+    `ui/gallery.py` as "20-25s to fold"), because a visitor's pick lands on
+    whichever chip frees up first and they cannot choose. The short targets
+    are unchanged — they finish before a chip has time to warm. The manifest
+    records the per-chip p50s behind each end, and the docs site says why the
+    range is there rather than leaving it looking like imprecision.
 
 - **The 85 °C quarantine did not fire, and on this box it probably cannot.**
   Peak across 484 chip-samples: **83.6 °C** (chip 1), then 82.8, 79.8, 78.1 —

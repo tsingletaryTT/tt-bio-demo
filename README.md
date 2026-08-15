@@ -96,7 +96,11 @@ silicon keeps visibly breathing even if the daemon wedges.
 **Four chips on two boards.** A p300c carries two chips, so `tt-smi`'s four entries are four
 chips — not four boards. The panel says so, because a visitor reading "4 cards" would
 picture the wrong machine. Folds are timed on this hardware, warm: Trp-cage **4.4 s**,
-FKBP12 **11.7 s**, DHFR **19.7 s**, trypsin **22.3 s**.
+FKBP12 **11.7–12.3 s**, DHFR **20–25 s**, trypsin **22–27 s**. The three long targets
+carry a range because chips 1 and 3 settle to a lower clock about fifteen minutes into a
+session — they idle 3–4 °C hotter than 0 and 2, so it is chassis position rather than
+workload — and a visitor's pick takes whichever chip is free. See `playlist/manifest.yaml`
+for the measured p50s behind each end.
 
 **Four chips, four proteins — one protein per chip.** The booth runs one worker process per
 chip, each pinned to its own physical device, each holding its own resident copy of the
@@ -233,8 +237,9 @@ the authoritative list. The ones you are most likely to want:
 | `--structures-budget-gb` | 0.2 | Sweep budget for emitted `.cif` structures, per device |
 
 **The default is every target in the manifest** — the booth shows what it can do rather
-than the one safe thing. A full cycle is ~71 s: Trp-cage 4.4 s, FKBP12 11.7 s, DHFR 19.7 s,
-trypsin 22.3 s, DNA 4.6 s, tRNA 8.6 s, all measured warm on this hardware. Use `--targets trpcage` to
+than the one safe thing. A full cycle is ~71 s on the fast pair of chips and ~79 s on the
+throttled pair: Trp-cage 4.4 s, FKBP12 11.7–12.3 s, DHFR 20–25 s, trypsin 22–27 s,
+DNA 4.6 s, tRNA 8.6 s, all measured warm on this hardware. Use `--targets trpcage` to
 fold a single target while iterating, which is much faster.
 
 The four proteins ship because they need no MSA server; most curated tt-bio playlist

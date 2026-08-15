@@ -139,7 +139,7 @@ _HAIRLINE = "rgba(199, 217, 216, 0.18)"  # _BG_ALT at 18% opacity, matches ui/pa
 # Pure decision: how to show a target's fold time (or the lack of one).
 # ---------------------------------------------------------------------------
 
-def _format_fold_time(expected_s):
+def _format_fold_time(expected_s, expected_slow_s=None):
     """The short fold-time hint shown on a gallery card.
 
     `expected_s` is `None` for a target nobody has folded on this booth's
@@ -153,10 +153,30 @@ def _format_fold_time(expected_s):
     precision on a multi-second fold reads as more precise than this
     project's own measurement methodology (docs/followups.md's 30-fold
     soak) actually supports.
+
+    A RANGE when `expected_slow_s` is set, because on this box a fold's
+    duration depends on which chip it lands on and a visitor cannot choose.
+    Two of the four chips throttle to 906 MHz about fifteen minutes into a
+    session (chassis position, not workload -- Task 19's soak), which costs
+    the long targets 4-26%. A single number was measured honestly and was
+    still optimistic by up to a quarter for half the box; a range is true
+    whichever chip takes the pick, and is a promise a visitor can check
+    against the clock rather than one they watch the booth miss.
+
+    The range drops the decimal where whole seconds still tell the two ends
+    apart: "20-25s" is what the measurement supports, and "19.8-25.0s"
+    claims a precision that survives neither chip-to-chip variation nor the
+    throttle ramp. Where they do NOT -- FKBP12's 11.7 and 12.3 both round to
+    12 -- the decimal stays, because "12-12s" is not a range at all. That
+    was the first version of this rule, and it read as a rendering fault.
     """
     if expected_s is None:
         return "fold time: not yet timed"
-    return f"~{expected_s:.1f}s to fold"
+    if expected_slow_s is None or expected_slow_s <= expected_s:
+        return f"~{expected_s:.1f}s to fold"
+    if expected_s >= 10.0 and round(expected_slow_s) != round(expected_s):
+        return f"{expected_s:.0f}-{expected_slow_s:.0f}s to fold"
+    return f"{expected_s:.1f}-{expected_slow_s:.1f}s to fold"
 
 
 # ---------------------------------------------------------------------------
@@ -592,7 +612,9 @@ class Gallery(Gtk.ScrolledWindow):
         # Pacing info, not a promise: see _format_fold_time's own docstring
         # for why an unmeasured target gets its own explicit sentence here
         # rather than silence or a fabricated number.
-        time_label = Gtk.Label(label=_format_fold_time(target.expected_s), xalign=0.0)
+        time_label = Gtk.Label(label=_format_fold_time(target.expected_s,
+                                               target.expected_slow_s),
+                               xalign=0.0)
         time_label.add_css_class("gallery-card-time")
         content.append(time_label)
 

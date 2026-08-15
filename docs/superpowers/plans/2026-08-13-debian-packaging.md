@@ -4,6 +4,26 @@
 
 **Goal:** `sudo apt install tt-bio-demo-all` on a freshly imaged QB2 produces a working booth.
 
+> **STATUS: all nine tasks shipped. Audited 2026-08-15.**
+>
+> The checkboxes below were never maintained while the plan was being
+> executed — every one of them was still unticked long after the packages
+> were building — so they said nothing, and a reader could reasonably have
+> taken that as "none of this happened". They were ticked in one pass on
+> 2026-08-15, against evidence rather than memory:
+>
+> - every task's named deliverable exists in the tree (`debian/control`,
+>   `rules`, `tt-bio-demo.install`, `helpers.sh`, the runtime and weights
+>   `config`/`postinst`/`templates` triples, the user unit, the desktop
+>   entry, `scripts/deb-container.sh`, `scripts/make-thumbnails.py`,
+>   `scripts/build-deb.sh`);
+> - `tests/unit/test_packaging.py` has **55 tests covering all nine**, and
+>   they pass — including the ones that build all four real `.deb` files
+>   with `dpkg-buildpackage` and inspect them with `dpkg-deb`.
+>
+> Git history is still the authority on what landed and when. This plan is a
+> record of what was intended; where the two disagree, believe git.
+
 **Architecture:** Four Debian packages per the design spec §7, built with debhelper 13 from this repo. The application package ships source and configuration; a runtime package builds the two venvs in `/opt/tt-bio-demo` by invoking the *existing* `scripts/setup-venvs.sh --prefix`; a weights package downloads model checkpoints under a debconf prompt and pre-warms the tt-metal kernel cache; a metapackage ties them together. No packaging logic is duplicated from the scripts the project already tests.
 
 **Tech Stack:** debhelper 13, dpkg-buildpackage, debconf, systemd user units, plain POSIX shell for maintainer scripts.
@@ -60,7 +80,7 @@
 
 **Why first:** every later task needs something to install into. A skeleton that builds is the scaffold; it ships almost nothing.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 import subprocess, pathlib, pytest
@@ -115,7 +135,7 @@ Declared dependencies for `tt-bio-demo`, from spec §7: `python3-gi`, `python3-g
 
 `debian/changelog` must carry a real version. Derive it from the project rather than inventing one, and say in the plan file where it came from.
 
-- [ ] **Step 2: Implement, verify mutations, run `./scripts/test.sh`, commit**
+- [x] **Step 2: Implement, verify mutations, run `./scripts/test.sh`, commit**
 
 ---
 
@@ -135,7 +155,7 @@ Declared dependencies for `tt-bio-demo`, from spec §7: `python3-gi`, `python3-g
 - `preseed` writes debconf selections before installing, so both branches of a prompt can be exercised.
 - **If Docker is unavailable, these tests must fail loudly, not skip.** A silently skipped install test is indistinguishable from a passing one, and this project already fails a whole test half that matches zero tests for exactly that reason.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 def test_the_harness_detects_a_command_that_ran(container):
@@ -164,7 +184,7 @@ def test_the_harness_always_removes_its_container():
 
 Tests 1 and 2 are a matched pair on purpose: a harness that always reports "it ran" and one that always reports "it didn't" both pass a single-sided test. The negative assertion in Task 5 is only trustworthy because test 1 proves the mechanism can see a positive.
 
-- [ ] **Step 2: Implement, verify mutations, run `./scripts/test.sh`, commit**
+- [x] **Step 2: Implement, verify mutations, run `./scripts/test.sh`, commit**
 
 ---
 
@@ -174,7 +194,7 @@ Tests 1 and 2 are a matched pair on purpose: a harness that always reports "it r
 
 **Produces:** `/opt/tt-bio-demo/{ui,runner,protocol,playlist,examples,scripts}` and nothing else.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 def _contents(deb):
@@ -219,7 +239,7 @@ def test_tests_and_scratch_do_not_ship(built):
 
 Note test 3 is the packaging counterpart of `test_every_shipped_target_points_at_a_file_that_exists`, and it exists for the same reason: Phase 4 grows the playlist, and a content mistake should fail the build rather than the booth.
 
-- [ ] **Step 2: Implement, verify mutations, run `./scripts/test.sh`, commit**
+- [x] **Step 2: Implement, verify mutations, run `./scripts/test.sh`, commit**
 
 ---
 
@@ -231,7 +251,7 @@ Note test 3 is the packaging counterpart of `test_every_shipped_target_points_at
 
 **Why:** maintainer scripts are the least testable code in any Debian package and the most damaging when wrong. Everything with a branch goes here, where a test can call it directly.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 HELPERS = REPO / "debian" / "helpers.sh"
@@ -277,7 +297,7 @@ def test_helpers_are_posix_sh_not_bashisms():
 
 Test 3 is the one that matters most: the failure mode is a download that produced nothing, and a verifier that treats absence as success turns that into a booth with no weights and a package marked installed.
 
-- [ ] **Step 2: Implement, verify mutations, run `./scripts/test.sh`, commit**
+- [x] **Step 2: Implement, verify mutations, run `./scripts/test.sh`, commit**
 
 ---
 
@@ -289,7 +309,7 @@ Test 3 is the one that matters most: the failure mode is a download that produce
 
 **The ruling this implements (user, 2026-08-13):** `tt-bio install-deps` runs **only** after an explicit debconf prompt whose default is to decline. It installs Tenstorrent system packages and kernel modules; the project's standing rule is that this never happens silently. A noninteractive install must decline and print the exact command an operator should run.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 def test_a_noninteractive_install_does_not_run_install_deps(container):
@@ -363,7 +383,7 @@ def test_postinst_is_idempotent_in_shape():
 
 `setup-venvs.sh` already exits `0` when no hardware is present and `2` when the runner venv builds but its stack will not import. Decide what postinst does with exit 2 — a booth machine with a broken runner stack is a real state, and `apt` will report success unless you make it not. Say what you chose and why.
 
-- [ ] **Step 2: Implement, verify mutations, run `./scripts/test.sh`, commit**
+- [x] **Step 2: Implement, verify mutations, run `./scripts/test.sh`, commit**
 
 ---
 
@@ -373,7 +393,7 @@ def test_postinst_is_idempotent_in_shape():
 
 **Produces:** postinst downloads model weights under a debconf prompt, verifies checksums, and pre-warms the tt-metal kernel cache.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 def test_the_weights_package_ships_no_weights(built):
@@ -413,7 +433,7 @@ You will not have real checksums or a real download URL for the OpenFold3 checkp
 
 Measured for context: the weights download was previously estimated in tens of minutes on a good connection. State the real figure if you can find it in the repo's own docs; otherwise say it is unknown rather than guessing.
 
-- [ ] **Step 2: Implement, verify mutations, run `./scripts/test.sh`, commit**
+- [x] **Step 2: Implement, verify mutations, run `./scripts/test.sh`, commit**
 
 ---
 
@@ -423,7 +443,7 @@ Measured for context: the weights download was previously estimated in tens of m
 
 **Produces:** the daemon runs as a supervised `systemd --user` service; the UI has a desktop entry.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 def test_the_unit_is_a_user_service_not_a_system_one(built):
@@ -458,7 +478,7 @@ def test_the_desktop_entry_is_valid_and_names_the_ui():
 
 Test 3 is not hypothetical: this project measured tt-metal writing 13–14 MB/s into a file it had already unlinked, invisible to a directory walk, which would have exhausted a tmpfs in about 31 minutes. The unit is the one place that setting cannot be forgotten.
 
-- [ ] **Step 2: Implement, verify mutations, run `./scripts/test.sh`, commit**
+- [x] **Step 2: Implement, verify mutations, run `./scripts/test.sh`, commit**
 
 ---
 
@@ -472,7 +492,7 @@ Test 3 is not hypothetical: this project measured tt-metal writing 13–14 MB/s 
 
 This task is **hardware-gated**: it needs one fold per target. Everything else in this plan is build-time only.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 def test_every_target_with_a_thumbnail_points_at_a_file_that_exists():
@@ -490,7 +510,7 @@ def test_thumbnails_are_small_enough_to_ship():
 
 Keep the existing "missing thumbnail is tolerated" behaviour exactly as it is — a target added before anyone has folded it must still work.
 
-- [ ] **Step 2: Implement, verify, run `./scripts/test.sh`, commit**
+- [x] **Step 2: Implement, verify, run `./scripts/test.sh`, commit**
 
 ---
 
@@ -500,7 +520,7 @@ Keep the existing "missing thumbnail is tolerated" behaviour exactly as it is �
 
 **Produces:** one command that builds all four packages and prints what they contain.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 def test_the_build_script_refuses_to_install_anything():
@@ -520,7 +540,7 @@ def test_the_build_script_is_posix_sh_or_bash_and_parses():
 
 Print, for each package: name, version, installed size, dependency list, and the file count. That output is what a reviewer reads instead of installing.
 
-- [ ] **Step 2: Implement, verify, run `./scripts/test.sh`, commit**
+- [x] **Step 2: Implement, verify, run `./scripts/test.sh`, commit**
 
 ---
 

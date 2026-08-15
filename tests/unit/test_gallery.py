@@ -484,3 +484,67 @@ def test_the_screen_says_the_running_folds_are_left_to_finish():
     gallery = Gallery([_target(id="a", name="Trp-cage")], width_px=1280)
     joined = " ".join(_all_text(gallery)).lower()
     assert "finish" in joined or "interrupt" in joined
+
+
+# ── the fold-time range, for a box whose chips do not all fold alike ────────
+
+def test_a_ranged_target_shows_both_ends():
+    """Two of this box's four chips throttle about fifteen minutes into a
+    session and the long targets lose 4-26% on them (Task 19's soak). A
+    visitor's pick lands on whichever chip frees up first and they cannot
+    choose, so a card showing only the fast number is a promise the booth
+    misses half the time.
+
+    Mutation: ignoring `expected_slow_s`. Red.
+    """
+    from ui.gallery import _format_fold_time
+
+    assert _format_fold_time(19.7, 25.0) == "20-25s to fold"
+    assert _format_fold_time(22.3, 27.1) == "22-27s to fold"
+
+
+def test_a_range_too_narrow_for_whole_seconds_keeps_its_decimal():
+    """FKBP12's 11.7 and 12.3 both round to 12, and "12-12s" is not a range
+    -- it reads as a rendering fault. This was the first version of the rule.
+
+    Mutation: dropping the `round(...) != round(...)` test. Red.
+    """
+    from ui.gallery import _format_fold_time
+
+    assert _format_fold_time(11.7, 12.3) == "11.7-12.3s to fold"
+
+
+def test_a_target_without_a_slow_end_is_unchanged():
+    """Most targets need no range: the short ones finish before a chip has
+    time to warm up. Their cards must read exactly as they did."""
+    from ui.gallery import _format_fold_time
+
+    assert _format_fold_time(4.4) == "~4.4s to fold"
+    assert _format_fold_time(8.6, None) == "~8.6s to fold"
+    assert _format_fold_time(None) == "fold time: not yet timed"
+
+
+def test_a_degenerate_range_does_not_render_as_one():
+    """A slow end equal to (or below) the fast end is not a range. Rendering
+    "4.4-4.4s" would be a worse claim than the single number it replaced."""
+    from ui.gallery import _format_fold_time
+
+    assert _format_fold_time(4.4, 4.4) == "~4.4s to fold"
+
+
+def test_the_shipped_playlist_ranges_are_ordered_and_measured():
+    """Every ranged entry in the real manifest, checked against the loader's
+    own validation: a slow end below the fast end is rejected at load, so
+    this is what notices if one is ever edited into the manifest backwards
+    AND the validation is weakened.
+    """
+    from ui.playlist import load_playlist
+
+    ranged = [t for t in load_playlist("playlist/manifest.yaml")
+              if t.expected_slow_s is not None]
+    assert ranged, "no shipped target carries a range at all"
+    for t in ranged:
+        assert t.expected_s is not None, f"{t.id}: a range needs both ends"
+        assert t.expected_slow_s > t.expected_s, (
+            f"{t.id}: slow end {t.expected_slow_s} is not slower than "
+            f"{t.expected_s}")

@@ -126,6 +126,21 @@ class Target(object):
     # explicitly rather than formatting None into something that looks like
     # a real time.
     expected_s: float | None = None
+    # The SLOW end of the same measurement, when a booth's chips do not all
+    # fold at the same speed. Optional and independent of `expected_s`:
+    # absent means "one number covers this target".
+    #
+    # It exists because the Task 19 soak measured two of this box's four
+    # chips throttling to 906 MHz about fifteen minutes into a session --
+    # chassis position, not workload -- which costs the long targets 4-26%.
+    # `expected_s` matched the fast pair to within 0.1 s and was therefore
+    # optimistic by up to a quarter on the other two, and a visitor's pick
+    # lands on whichever chip frees up first. Short targets are untouched
+    # (they finish before the chip heats), so most entries never need this.
+    #
+    # ui/gallery.py renders a range when it is set. See the manifest's own
+    # entries for the measured numbers behind each one.
+    expected_slow_s: float | None = None
     thumbnail: Path | None = None
     # One short sentence about the molecule, for the caption under the live
     # render (ui/app.py's `_build_target_info`). Deliberately a SECOND field
@@ -242,6 +257,30 @@ def load_playlist(path):
                     f"for 'not yet measured'), got {raw_expected_s!r}"
                 ) from exc
 
+        # Same rule as `expected_s`, and validated the same way: a range is
+        # a measurement or it is absent, never a guess bolted onto a real
+        # number.
+        raw_slow_s = entry.get("expected_slow_s")
+        if raw_slow_s is None:
+            expected_slow_s = None
+        else:
+            try:
+                expected_slow_s = float(raw_slow_s)
+            except (TypeError, ValueError) as exc:
+                raise PlaylistError(
+                    f"{entry_id}: 'expected_slow_s' must be a number (or "
+                    f"absent for 'one number covers it'), got {raw_slow_s!r}"
+                ) from exc
+            if expected_s is None:
+                raise PlaylistError(
+                    f"{entry_id}: 'expected_slow_s' without 'expected_s' -- "
+                    f"a range needs both ends")
+            if expected_slow_s < expected_s:
+                raise PlaylistError(
+                    f"{entry_id}: 'expected_slow_s' ({expected_slow_s}) is "
+                    f"below 'expected_s' ({expected_s}); the slow end of a "
+                    f"range cannot be faster than the fast end")
+
         thumbnail = entry.get("thumbnail")
         thumbnail_path = (manifest_dir / thumbnail).resolve() if thumbnail else None
 
@@ -260,6 +299,7 @@ def load_playlist(path):
             name=entry["name"],
             blurb=entry["blurb"],
             expected_s=expected_s,
+            expected_slow_s=expected_slow_s,
             thumbnail=thumbnail_path,
             tagline=tagline,
         ))

@@ -487,9 +487,63 @@ def test_the_docs_site_cards_say_what_the_manifest_says():
         assert tagline == t.tagline, (
             f"{t.id}: the site's tagline has drifted from the manifest's\n"
             f"  site:     {tagline}\n  manifest: {t.tagline}")
-        assert f"{t.expected_s:g} s" in meta, (
-            f"{t.id}: the site says {meta!r}, the manifest measured "
-            f"{t.expected_s}s")
+        # A ranged target must show BOTH ends; a single-number one shows its
+        # number. The site writes an en dash, the manifest holds two floats.
+        if t.expected_slow_s is not None:
+            fast = f"{t.expected_s:g}"
+            slow = f"{t.expected_slow_s:g}"
+            rounded = (f"{t.expected_s:.0f}", f"{t.expected_slow_s:.0f}")
+            assert (fast in meta or rounded[0] in meta), (
+                f"{t.id}: the site's meta {meta!r} does not show the fast end "
+                f"({fast}s) the manifest measured")
+            assert (slow in meta or rounded[1] in meta), (
+                f"{t.id}: the site's meta {meta!r} does not show the slow end "
+                f"({slow}s) the manifest measured -- a card promising only "
+                f"the fast half of a measured range is the defect the range "
+                f"exists to fix")
+        else:
+            assert f"{t.expected_s:g} s" in meta, (
+                f"{t.id}: the site says {meta!r}, the manifest measured "
+                f"{t.expected_s}s")
 
     extra = set(cards) - {t.name for t in targets}
     assert not extra, f"the site has cards for targets the booth does not fold: {extra}"
+
+
+def test_a_range_without_a_fast_end_is_rejected(tmp_path):
+    """`expected_slow_s` alone is not a measurement of anything.
+
+    Mutation: dropping the `expected_s is None` check. Red.
+    """
+    (tmp_path / "a.yaml").write_text("version: 1\n")
+    m = tmp_path / "m.yaml"
+    m.write_text(
+        "- id: x\n  input: a.yaml\n  name: X\n  blurb: b\n"
+        "  expected_slow_s: 25.0\n")
+    with pytest.raises(PlaylistError, match="both ends"):
+        load_playlist(m)
+
+
+def test_a_backwards_range_is_rejected(tmp_path):
+    """A slow end faster than the fast end is a typo, and it would render as
+    a backwards range on a gallery card rather than failing anywhere.
+
+    Mutation: dropping the ordering check. Red.
+    """
+    (tmp_path / "a.yaml").write_text("version: 1\n")
+    m = tmp_path / "m.yaml"
+    m.write_text(
+        "- id: x\n  input: a.yaml\n  name: X\n  blurb: b\n"
+        "  expected_s: 25.0\n  expected_slow_s: 19.7\n")
+    with pytest.raises(PlaylistError, match="cannot be faster"):
+        load_playlist(m)
+
+
+def test_a_non_numeric_slow_end_is_loud(tmp_path):
+    (tmp_path / "a.yaml").write_text("version: 1\n")
+    m = tmp_path / "m.yaml"
+    m.write_text(
+        "- id: x\n  input: a.yaml\n  name: X\n  blurb: b\n"
+        "  expected_s: 19.7\n  expected_slow_s: soon\n")
+    with pytest.raises(PlaylistError, match="expected_slow_s"):
+        load_playlist(m)

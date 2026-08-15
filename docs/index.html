@@ -438,7 +438,7 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
         <div class="card-body">
           <h3>FKBP12</h3>
           <p>The molecular lock that anti-rejection drugs are shaped to pick, so a transplanted organ survives.</p>
-          <p class="meta">107 residues &middot; 11.7 s</p>
+          <p class="meta">107 residues &middot; 11.7&ndash;12.3 s</p>
         </div>
       </article>
 
@@ -448,7 +448,7 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
         <div class="card-body">
           <h3>Dihydrofolate Reductase</h3>
           <p>Every dividing cell needs it to build new DNA &mdash; which is why a classic cancer drug jams it shut.</p>
-          <p class="meta">187 residues &middot; 19.7 s</p>
+          <p class="meta">187 residues &middot; 20&ndash;25 s</p>
         </div>
       </article>
 
@@ -458,7 +458,7 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
         <div class="card-body">
           <h3>Trypsin</h3>
           <p>Built switched off by the pancreas, armed in the gut, where it cuts up the protein in your meal.</p>
-          <p class="meta">223 residues &middot; 22.3 s</p>
+          <p class="meta">223 residues &middot; 22&ndash;27 s</p>
         </div>
       </article>
 
@@ -485,9 +485,18 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
 
     <div class="col" style="margin-top:2.2rem">
       <p>
-        Times are measured on one Blackhole chip with the model already
+        Times are measured on a Blackhole chip with the model already
         loaded. A cold start costs more; the booth keeps the model resident so
         that a visitor's pick almost always lands warm.
+      </p>
+      <p>
+        The three longest targets show a <em>range</em>, and the reason is
+        specific to this machine: two of its four chips settle to a lower
+        clock about fifteen minutes into a session &mdash; they run a few
+        degrees hotter at idle too, so it is where they sit in the chassis
+        rather than anything about the work. A fold takes whichever chip is
+        free, so the card promises the band. The short targets finish before a
+        chip has time to warm up and are unaffected.
       </p>
       <p>
         The stripe on each card is that molecule's measured confidence, taken
