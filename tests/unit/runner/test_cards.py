@@ -153,3 +153,56 @@ def test_all_indices_reports_every_card_regardless_of_busy_or_hot_state():
     pool.update([_card(1, 91.0)])
     assert pool.schedulable() == []            # neither card is free
     assert pool.all_indices() == [0, 1]        # both still exist
+
+
+# ── a clean shutdown must read like one ─────────────────────────────────────
+
+def test_a_tt_smi_killed_by_a_signal_is_not_an_error(monkeypatch, caplog):
+    """Stopping the booth by process group -- `kill -INT -<pgid>`, which is
+    what the README recommends and what a terminal Ctrl-C does -- also
+    signals whatever `tt-smi` child the telemetry thread has in flight. Every
+    clean shutdown therefore ended with an ERROR and a full traceback at the
+    bottom of a run that went perfectly (docs/followups.md, from Task 19).
+
+    Mutation: removing the `returncode < 0` branch. Red -- the record comes
+    back at ERROR with exc_info attached.
+    """
+    import logging
+    import subprocess
+
+    from runner import cards as cards_module
+
+    def killed_by_sigint(*a, **kw):
+        raise subprocess.CalledProcessError(-2, "tt-smi")
+
+    monkeypatch.setattr(cards_module.subprocess, "run", killed_by_sigint)
+    with caplog.at_level(logging.INFO, logger="runner.cards"):
+        assert cards_module.sample_tt_smi() == []
+
+    assert caplog.records, "the sample failed and said nothing at all"
+    for record in caplog.records:
+        assert record.levelno < logging.ERROR, (
+            f"a signalled tt-smi logged at {record.levelname}: "
+            f"{record.getMessage()}")
+        assert record.exc_info is None, "a clean shutdown printed a traceback"
+
+
+def test_a_tt_smi_that_really_failed_still_gets_its_traceback(monkeypatch, caplog):
+    """The other half. A sample that fails while the booth is RUNNING blinds
+    the scheduler's health view, and that is what the handler exists for --
+    so the fix above must not have silenced it too."""
+    import logging
+    import subprocess
+
+    from runner import cards as cards_module
+
+    def exited_nonzero(*a, **kw):
+        raise subprocess.CalledProcessError(1, "tt-smi")
+
+    monkeypatch.setattr(cards_module.subprocess, "run", exited_nonzero)
+    with caplog.at_level(logging.INFO, logger="runner.cards"):
+        assert cards_module.sample_tt_smi() == []
+
+    assert any(r.levelno >= logging.ERROR and r.exc_info
+               for r in caplog.records), \
+        "a real tt-smi failure lost its traceback"

@@ -14,6 +14,8 @@ trees under test (`_build_help_overlay`, `_build_side_rail`) rather than a
 whole window.
 """
 
+import contextlib
+import logging
 from pathlib import Path
 
 import gi
@@ -34,6 +36,7 @@ from ui.app import DemoApp
 from ui.geometry import PLDDT_STOPS
 from ui.panels import MIN_CONTRAST_RATIO, contrast_ratio
 from ui.playlist import Target, load_playlist
+from ui.slots import SlotRouter
 from ui.telemetry import ChipReading
 
 # The wiring tests' fakes are the right ones here too -- reusing them is
@@ -143,6 +146,31 @@ def _drive_to(app, state):
     app._sync_to_state()
     return app
 
+
+@contextlib.contextmanager
+def _app_log():
+    """Capture what `ui.app` logs inside the block, as LogRecords.
+
+    A context manager rather than pytest's `caplog` fixture because these
+    tests need to capture around ONE part of a longer sequence -- the point
+    is what is logged for the second fold, not for the whole test.
+    """
+    logger = logging.getLogger(app_module.__name__)
+    records = []
+
+    class _Collect(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    handler = _Collect()
+    previous = logger.level
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    try:
+        yield records
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(previous)
 
 def _a_fold_starting(job_id="j1", card=0, target_id="t"):
     """The `job_start` every later event of a fold depends on.
@@ -2421,3 +2449,83 @@ def test_a_visitor_reaching_for_a_panel_keeps_the_menu_too():
     assert app.states.state == BoothState.GALLERY, \
         "the menu was taken away the moment a visitor pressed a panel key"
     assert app.diagnostics_visible, "and the key they pressed must still work"
+
+
+def test_a_booth_that_refused_this_daemon_does_not_promise_a_fold():
+    """The version guard stopped the send but not the promise.
+
+    Verified live against a daemon with PROTOCOL_VERSION 999: the UI goes
+    `incompatible`, shows the neutral "getting the booth ready" overlay and
+    sends zero picks -- and a tap still raised "NEXT UP: FKBP12 -- starting
+    on the next free chip" on top of it. Two contradictory sentences on one
+    screen, one of them a promise nothing was going to keep.
+
+    Driven through `_on_pick` with the connection state set, NOT through the
+    router: a SlotRouter-only test could not fail against this bug, because
+    the router was doing exactly what it was asked.
+
+    Mutation: removing the `incompatible` early return from `_on_pick`. Red.
+    """
+    app = _app()
+    app.router = SlotRouter(cards=[0])
+    app._connection_state = "incompatible"
+
+    app._on_pick("fkbp12")
+
+    assert app.router.selected_target is None, \
+        "the booth selected a target it had already refused to ask for"
+    assert app.router.pick_status(now=app._tick_now) is None, \
+        "the booth promised a fold on a daemon it cannot speak to"
+
+
+def test_the_log_carries_one_line_per_stage_transition_not_per_event():
+    """8.0 MB/h, and no budget in this codebase covers it.
+
+    The daemon emits `stage` continuously, and the UI logged every one:
+    measured at 17.0 MB / 488,048 lines in 2h07m of four-chip folding, or
+    ~64 MB across a conference day, growing with the number of chips
+    (docs/followups.md, from the Task 19 soak). `run-demo.sh` leaves the UI's
+    stdout on a terminal so an operator never sees it, but under systemd or
+    `nohup` it lands in the journal or a file with nothing bounding it.
+
+    The transition is what a log is read for. Bounded by folds x stages
+    rather than by wall time.
+
+    Mutation: logging unconditionally in the `stage` branch. Red (40 lines
+    instead of 3).
+    """
+    app = _app()
+    app._handle_event(_a_fold_starting(card=0))
+
+    with _app_log() as records:
+        for stage in ("msa", "prep", "trunk"):
+            for percent in range(0, 100, 10):        # ten events per stage
+                app._handle_event({"type": "stage", "job_id": "j1",
+                                   "stage": stage, "frac": percent / 100.0})
+
+    lines = [r.getMessage() for r in records if "stage" in r.getMessage()]
+    assert len(lines) == 3, (
+        f"thirty stage events produced {len(lines)} log lines: {lines}")
+    assert "msa" in lines[0] and "prep" in lines[1] and "trunk" in lines[2]
+
+
+def test_a_new_fold_logs_its_first_stage_even_if_it_repeats_the_last_one():
+    """De-duplication must be per FOLD, not for the life of the process:
+    every fold starts at `msa`, so a booth that remembered the last stage
+    forever would log the first fold and nothing ever again.
+
+    Mutation: dropping the `_last_logged_stage.pop(slot)` in `job_start`. Red.
+    """
+    app = _app()
+    app._handle_event(_a_fold_starting(job_id="j1", card=0))
+    with _app_log() as first:
+        app._handle_event({"type": "stage", "job_id": "j1", "stage": "msa",
+                           "frac": 0.1})
+    app._handle_event(_a_fold_starting(job_id="j2", card=0))
+    with _app_log() as second:
+        app._handle_event({"type": "stage", "job_id": "j2", "stage": "msa",
+                           "frac": 0.1})
+
+    assert [r.getMessage() for r in first], "the first fold logged no stage"
+    assert [r.getMessage() for r in second], \
+        "the second fold's first stage was swallowed as a duplicate"

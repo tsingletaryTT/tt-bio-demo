@@ -562,3 +562,84 @@ def test_run_serves_the_socket_before_it_looks_for_any_hardware(tmp_path):
     _run(daemon)
     assert daemon.server.started == 1
     assert daemon.server.stopped == 1
+
+
+# ── the device-scan retry's log, which is unbounded on a broken booth ───────
+
+def test_a_permanent_device_scan_failure_logs_one_traceback_not_one_per_retry(
+        tmp_path, monkeypatch, caplog):
+    """A booth that cannot see its chips retries forever by design -- and
+    logged a full traceback every 5 s while doing it, roughly 25 MB/day into
+    `daemon.log`, which `--log-budget-gb` does not cover (that governs the
+    tt-metal log root only). See docs/followups.md, from Phase 3a.
+
+    Mutation: restoring the unconditional `log.exception`. Red -- five
+    tracebacks instead of one.
+    """
+    import logging
+
+    import runner.daemon as mod
+
+    daemon = _daemon(tmp_path, _FakePool([0]))
+    daemon.pool = None
+
+    attempts = {"n": 0}
+
+    def always_fails(*a, **kw):
+        attempts["n"] += 1
+        if attempts["n"] >= 5:
+            daemon._stop.set()          # let the loop end
+        raise RuntimeError("no chips detected")
+
+    monkeypatch.setattr(mod, "worker_specs", always_fails)
+    monkeypatch.setattr(daemon._stop, "wait", lambda *_a, **_k: False)
+
+    with caplog.at_level(logging.INFO, logger="runner.daemon"):
+        assert daemon._build_pool() is False
+
+    assert attempts["n"] >= 5, "the retry loop did not actually retry"
+    tracebacks = [r for r in caplog.records if r.exc_info]
+    assert len(tracebacks) == 1, (
+        f"{attempts['n']} identical failures produced {len(tracebacks)} "
+        f"tracebacks; a booth left in this state fills the disk with them")
+    # And it must still say something each time, or an operator cannot tell a
+    # stuck booth from a quiet one.
+    assert len([r for r in caplog.records if "chips to fold" in r.getMessage()]) \
+        >= attempts["n"], "later retries went entirely unlogged"
+
+
+def test_a_different_scan_failure_gets_its_own_traceback(
+        tmp_path, monkeypatch, caplog):
+    """De-duplication is per failure, not "one traceback ever": a new fault
+    is new information and prints in full.
+
+    Mutation: keying the de-duplication on nothing (a plain `logged_once`
+    flag). Red.
+    """
+    import logging
+
+    import runner.daemon as mod
+
+    daemon = _daemon(tmp_path, _FakePool([0]))
+    daemon.pool = None
+
+    faults = iter([RuntimeError("no chips detected"),
+                   RuntimeError("no chips detected"),
+                   ValueError("driver is mid-reload")])
+
+    def failing(*a, **kw):
+        try:
+            raise next(faults)
+        except StopIteration:
+            daemon._stop.set()
+            raise RuntimeError("done")
+
+    monkeypatch.setattr(mod, "worker_specs", failing)
+    monkeypatch.setattr(daemon._stop, "wait", lambda *_a, **_k: False)
+
+    with caplog.at_level(logging.INFO, logger="runner.daemon"):
+        daemon._build_pool()
+
+    tracebacks = [r for r in caplog.records if r.exc_info]
+    assert len(tracebacks) >= 2, \
+        "a genuinely different failure was swallowed as a repeat"

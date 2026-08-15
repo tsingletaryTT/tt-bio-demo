@@ -328,6 +328,11 @@ class Daemon:
         # run() spawns worker processes; guards against a second call spawning
         # a second set onto chips the first call's teardown has just released.
         self._started = False
+        # The device-scan retry's log de-duplication: the last failure seen,
+        # and how many times running. See `_build_pool` for why a traceback
+        # per retry was a disk-space problem rather than a tidiness one.
+        self._last_scan_failure = None
+        self._scan_failures = 0
 
     # -- inventory ---------------------------------------------------------
 
@@ -1000,10 +1005,33 @@ class Daemon:
             # gone wrong. Every one of them is better served by a daemon that
             # stays up answering not_ready than by a traceback and a dead
             # socket with a UI reconnecting to nothing.
-            except Exception:
-                log.exception("could not determine which chips to fold on; "
-                              "serving not_ready and retrying in %.0fs",
-                              DEVICE_SCAN_RETRY_S)
+            except Exception as exc:
+                # THE TRACEBACK GOES IN ONCE, NOT EVERY FIVE SECONDS. A
+                # PERMANENT failure here retries forever by design (see
+                # above), and a full traceback per retry measured out at
+                # roughly 25 MB/day into `daemon.log` -- which
+                # `--log-budget-gb` does NOT cover, because that governs the
+                # tt-metal log root only (docs/followups.md, from Phase 3a).
+                # An unattended booth that cannot see its chips would slowly
+                # fill the disk with the same stack, over and over.
+                #
+                # The first one carries everything a diagnosis needs; every
+                # one after it says the same thing in one line, and the
+                # counter is what tells an operator this is stuck rather
+                # than flapping. A DIFFERENT failure prints in full again,
+                # because it is new information.
+                summary = f"{type(exc).__name__}: {exc}"
+                if summary != self._last_scan_failure:
+                    self._last_scan_failure = summary
+                    self._scan_failures = 1
+                    log.exception("could not determine which chips to fold "
+                                  "on; serving not_ready and retrying every "
+                                  "%.0fs", DEVICE_SCAN_RETRY_S)
+                else:
+                    self._scan_failures += 1
+                    log.warning("still cannot determine which chips to fold "
+                                "on (%s), attempt %d; serving not_ready",
+                                summary, self._scan_failures)
                 self._stop.wait(DEVICE_SCAN_RETRY_S)
                 continue
             self.pool = WorkerPool(specs, self.on_event,

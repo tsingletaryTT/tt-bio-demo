@@ -253,3 +253,57 @@ def test_no_protect_argument_behaves_exactly_as_before(tmp_path):
     freed, removed = prune_log_root(tmp_path, max_bytes=1500)
     assert freed == 1000
     assert removed == [str(tmp_path / "old.yaml")]
+
+
+def test_a_budget_the_protected_floor_exceeds_says_so(tmp_path, caplog):
+    """An over-budget root where everything is protected must not look
+    exactly like a healthy sweep.
+
+    `prune_log_root` returns `removed=[]` in both cases and the daemon's
+    `if removed:` gate means an operator who sets a budget below the
+    protected floor sees the same silence as a run with nothing to do
+    (docs/followups.md, from Phase 3a). The floor is deliberate -- never
+    delete a file a caller asked to keep -- so the fix is a signal, not a
+    behaviour change.
+
+    Mutation: dropping the `elif` branch in prune_log_root. Red.
+    """
+    import logging
+
+    for name in ("a.log", "b.log"):
+        (tmp_path / name).write_bytes(b"x" * 1000)
+    protect = [str(tmp_path / "a.log"), str(tmp_path / "b.log")]
+
+    with caplog.at_level(logging.WARNING, logger="runner.env"):
+        freed, removed = prune_log_root(tmp_path, max_bytes=100,
+                                        protect=protect)
+
+    assert (freed, removed) == (0, []), "protected files must survive"
+    assert any("every file over it is protected" in r.getMessage()
+               for r in caplog.records), \
+        "an over-budget, all-protected root pruned silently"
+
+
+def test_a_sweep_that_actually_pruned_does_not_warn(tmp_path, caplog):
+    """The other half, and it has to reach the same branch to mean anything.
+
+    An UNDER-budget root returns before that branch exists, so asserting
+    silence there proves nothing -- which a mutation showed: replacing the
+    warning's guard with `True` left such a test green. This one goes over
+    budget and leaves something prunable, so the function walks the same path
+    and must still say nothing alarming.
+    """
+    import logging
+
+    old = tmp_path / "old.log"
+    old.write_bytes(b"x" * 1000)
+    os.utime(old, (1, 1))                       # oldest, so it goes first
+    keep = tmp_path / "keep.log"
+    keep.write_bytes(b"x" * 10)
+
+    with caplog.at_level(logging.WARNING, logger="runner.env"):
+        freed, removed = prune_log_root(tmp_path, max_bytes=100)
+
+    assert removed == [str(old)] and freed == 1000
+    assert not caplog.records, \
+        "a sweep that did its job warned as though it could not"

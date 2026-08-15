@@ -55,11 +55,34 @@ def parse_tt_smi(snapshot):
 
 
 def sample_tt_smi(timeout=5.0):
-    """Run `tt-smi -s` and parse it. Returns [] if it cannot be read."""
+    """Run `tt-smi -s` and parse it. Returns [] if it cannot be read.
+
+    A sample that DIED BY SIGNAL is logged as one INFO line and no
+    traceback, because it means the booth is shutting down and nothing is
+    wrong. Stopping the booth by process group -- `kill -INT -<pgid>`, which
+    is what the README recommends and what a terminal Ctrl-C does -- also
+    signals whatever `tt-smi` child the telemetry thread has in flight.
+    Every clean shutdown therefore ended with `ERROR runner.cards: tt-smi
+    sample failed` and a full traceback at the bottom of a run that went
+    perfectly, which is a bad last thing for an operator to read.
+
+    Everything else keeps the traceback. A sample that fails while the booth
+    is RUNNING is the interesting case -- it blinds the scheduler's health
+    view -- and that is the one this handler was written for.
+    """
     try:
         out = subprocess.run(["tt-smi", "-s", "--snapshot_no_tty"],
                              capture_output=True, timeout=timeout, check=True)
         return parse_tt_smi(json.loads(out.stdout))
+    except subprocess.CalledProcessError as exc:
+        # A negative return code is POSIX for "killed by signal -N"; it is
+        # not an error tt-smi reported, it is one it was given.
+        if exc.returncode is not None and exc.returncode < 0:
+            log.info("tt-smi sample was killed by signal %d (shutting down); "
+                     "treating as no telemetry", -exc.returncode)
+        else:
+            log.exception("tt-smi sample failed; treating as no telemetry")
+        return []
     except Exception:
         log.exception("tt-smi sample failed; treating as no telemetry")
         return []

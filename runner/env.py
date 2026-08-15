@@ -239,4 +239,22 @@ def prune_log_root(log_root, max_bytes, *, dry_run=False, protect=None):
     if removed:
         log.info("pruned %d log file(s), freed %.1f MB%s",
                  len(removed), freed / 1e6, " (dry run)" if dry_run else "")
+    else:
+        # OVER BUDGET AND NOTHING WAS PRUNABLE. Without this line the caller's
+        # `if removed:` gate makes a misconfigured budget look exactly like a
+        # healthy sweep -- same silence, run after run, while the root sits
+        # above its limit (docs/followups.md, from Phase 3a). The floor itself
+        # is deliberate (never delete a file a caller asked to keep), so this
+        # is not an error; it is the one case the metric could not otherwise
+        # distinguish from "nothing to do".
+        #
+        # No condition on this `else`, and that is deliberate. Getting here
+        # means the early return above did not fire (so `total > max_bytes`)
+        # and nothing was removed -- and `freed` only ever moves with
+        # `removed`, so `freed` is 0 and the root IS still over budget. A
+        # guard restating that could never be false; it was written that way
+        # first, and the mutation that proved it redundant is why it is not.
+        log.warning("log root %s holds %.1f MB against a %.1f MB budget and "
+                    "every file over it is protected; nothing was pruned",
+                    root, total / 1e6, max_bytes / 1e6)
     return freed, removed

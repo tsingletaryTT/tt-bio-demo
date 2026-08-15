@@ -1529,6 +1529,12 @@ class DemoApp(Gtk.Application):
         # to every reader.
         self._tick_now = 0.0
         self._pick_at = 0.0
+        # The last stage LOGGED per slot, so the log carries one line per
+        # stage transition rather than one per stage event. See the `stage`
+        # branch in `_handle_event` for the measurement behind this.
+        # Cleared for a slot when a new fold starts on it, so a fold whose
+        # first stage matches the previous fold's last one still says so.
+        self._last_logged_stage = {}
 
         # Neutral copy for the preparing overlay plus the raw `missing`
         # detail, which goes to the log and NEVER to the screen. The state
@@ -3421,6 +3427,22 @@ class DemoApp(Gtk.Application):
         self._note_input()
         self._note_diagnostics(
             self.diagnostics.note, f"visitor picked {target_id}", KIND_MARK)
+        if self._connection_state == "incompatible":
+            # THE ONE CASE WHERE A TAP MUST NOT BE ACKNOWLEDGED. Everything
+            # below promises a fold; this booth has already decided it cannot
+            # speak to this daemon and is showing the "getting the booth
+            # ready" overlay. Acknowledging anyway put "NEXT UP: FKBP12 --
+            # starting on the next free chip" on top of that overlay: two
+            # contradictory sentences on one screen, one of them a promise
+            # nothing was ever going to keep (verified against a daemon with
+            # PROTOCOL_VERSION 999). The overlay is the honest answer to the
+            # tap, and it is already on the glass.
+            log.info("pick %s dropped: this build cannot speak to that daemon",
+                     target_id)
+            self._note_diagnostics(
+                self.diagnostics.note,
+                f"pick {target_id} dropped: incompatible daemon", KIND_MARK)
+            return
         if self.router is not None:
             # The SAME clock reading the state tick uses, kept in
             # `_tick_now`. A pick stamped off `self._clock()` while
@@ -3723,8 +3745,10 @@ class DemoApp(Gtk.Application):
         # nothing signals that it happened. Guard this one too for the same
         # "never let wire-shaped data reach an unguarded field access"
         # reason: `event` always has a valid "type" (decode() guarantees
-        # that much, nothing else), but e.g. a non-numeric "frac" would
-        # still raise inside the %.0f formatting below.
+        # that much, nothing else), but e.g. a non-numeric "frac" still
+        # raises -- now where the `stage` branch coerces it, on purpose,
+        # rather than inside a log line's %.0f formatting as it did until
+        # that line became one-per-transition.
         try:
             kind = event["type"]
 
@@ -3800,6 +3824,9 @@ class DemoApp(Gtk.Application):
                 log.info("folding %s (%s residues) on chip %s",
                          event.get("target_id"), event.get("n_residues"),
                          event.get("card"))
+                # A new fold on this chip: its first stage is a transition
+                # even if it repeats the last fold's final stage.
+                self._last_logged_stage.pop(slot, None)
                 view = self._slot_view(slot)
                 if view is None:
                     # A fold on a chip this booth has no cell for. Logged
@@ -3856,8 +3883,42 @@ class DemoApp(Gtk.Application):
                 for index in range(len(self._slots)):
                     self._end_fold_in_flight(index)
             elif kind == "stage":
-                log.info("stage %s %.0f%%", event.get("stage"),
-                         100.0 * event.get("frac", 0.0))
+                # ONE LINE PER STAGE TRANSITION, NOT PER STAGE EVENT. The
+                # daemon emits progress continuously, so logging every event
+                # measured 17.0 MB / 488,048 lines in 2h07m of four-chip
+                # folding -- 8.0 MB/h, ~64 MB across a conference day, and
+                # growing with the number of chips. `run-demo.sh` leaves the
+                # UI's stdout on a terminal so an operator never sees it, but
+                # under systemd or `nohup` it goes to the journal or a file
+                # and NO BUDGET IN THIS CODEBASE COVERS IT (docs/followups.md;
+                # the same gap as daemon.log's, on the health path rather than
+                # the failure path).
+                #
+                # The transition is the part worth keeping: "this fold
+                # reached diffusion" is the line anyone reads a log for, and
+                # it is bounded by folds x stages instead of by wall time.
+                # Per SLOT, because four chips interleave and a booth-wide
+                # "last stage" would log every time the chips disagreed --
+                # which is always.
+                stage = event.get("stage")
+                # `frac` IS WIRE DATA AND IS COERCED HERE, deliberately
+                # before the slot check below, so a malformed one is caught
+                # for every event and not only for the focused cell's.
+                #
+                # This used to happen by accident: the log line above was
+                # `"stage %s %.0f%%" % (stage, 100.0 * frac)`, and a
+                # non-numeric `frac` raised inside that formatting -- which
+                # is what `_handle_event`'s own guard cites as the reason it
+                # is broad. Logging one line per stage TRANSITION rather than
+                # per event removed the arithmetic, and with it a type check
+                # nobody had written down (caught by
+                # `test_malformed_event_is_still_dropped_not_raised`). A
+                # value the booth is about to draw a progress bar from should
+                # be checked on purpose, not as a side effect of formatting.
+                frac = float(event.get("frac", 0.0))
+                if self._last_logged_stage.get(slot) != stage:
+                    self._last_logged_stage[slot] = stage
+                    log.info("chip %s: stage %s", event.get("card"), stage)
                 # Every cell says its own stage, under its own chip label.
                 self._sync_cell_caption(slot, stage=event.get("stage"))
                 if slot is not None and slot == self.router.focus_slot:
@@ -3871,8 +3932,7 @@ class DemoApp(Gtk.Application):
                     # one place that conversion lives, which is precisely
                     # why this call site uses it and never set_stage.
                     self._call_pipeline_panel(
-                        "set_stage_from_wire",
-                        event.get("stage"), event.get("frac", 0.0))
+                        "set_stage_from_wire", stage, frac)
             elif kind == "job_done":
                 log.info("done in %.2fs", event.get("wall_s", 0.0))
                 self._sync_cell_caption(slot)
