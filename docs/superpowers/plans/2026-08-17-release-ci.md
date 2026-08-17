@@ -90,25 +90,7 @@ Run: `.venvs/venv-ui/bin/python3 -m pytest tests/unit/test_packaging.py -k metap
 
 Expected: PASS if the packaging is already sound, FAIL if it is not. **Either outcome is informative and neither is a reason to change the test.** If it fails, read `result.log` — you have found the real defect this whole plan was built to catch, and fixing the packaging is the correct next move. Report it rather than weakening the assertion.
 
-- [ ] **Step 4: Prove the test can fail**
-
-A test that has never failed is not yet a test. Temporarily assert against a package that is not installed:
-
-```bash
-python3 - <<'PY'
-import pathlib
-p = pathlib.Path("tests/unit/test_packaging.py"); s = p.read_text()
-p.write_text(s.replace('for pkg in sorted(EXPECTED):',
-                       'for pkg in sorted(EXPECTED | {"coreutils-not-installed"}):'))
-PY
-.venvs/venv-ui/bin/python3 -m pytest tests/unit/test_packaging.py -k metapackage_installs -q
-# Expected: FAIL, naming coreutils-not-installed as None
-git checkout tests/unit/test_packaging.py   # discard BOTH the probe and the test
-```
-
-Then re-apply Step 2's test (the `git checkout` removes it too) and re-run Step 3 to confirm it passes again.
-
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add tests/unit/test_packaging.py
@@ -123,6 +105,28 @@ path an unattended install takes. Declining has to leave a complete installed
 set: the weights download and the venv build are later deliberate steps, not
 preconditions for the packages being installed."
 ```
+
+- [ ] **Step 5: Prove the test can fail**
+
+A test that has never failed is not yet a test. Now that it is committed, a probe is safe to
+throw away — corrupt the assertion, watch it fail, restore:
+
+```bash
+python3 - <<'PY'
+import pathlib
+p = pathlib.Path("tests/unit/test_packaging.py"); s = p.read_text()
+assert 'for pkg in sorted(EXPECTED):' in s
+p.write_text(s.replace('for pkg in sorted(EXPECTED):',
+                       'for pkg in sorted(EXPECTED | {"a-package-nobody-installed"}):'))
+PY
+.venvs/venv-ui/bin/python3 -m pytest tests/unit/test_packaging.py -k metapackage_installs -q
+# Expected: FAIL, reporting a-package-nobody-installed as None
+git checkout tests/unit/test_packaging.py    # safe: the test is already committed
+git status --porcelain tests/unit/test_packaging.py   # expected: empty
+```
+
+Report the probe's failure output in your report. If the probe did **not** fail, the
+assertion is not doing anything and that is the finding.
 
 ---
 
