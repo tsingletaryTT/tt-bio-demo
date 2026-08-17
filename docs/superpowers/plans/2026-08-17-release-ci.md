@@ -2,22 +2,23 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Tagging `v0.1.0` builds the four `.deb` packages and publishes them as a GitHub Release, and every push proves they still build.
+**Goal:** Tagging `v0.1.0` builds the four `.deb` packages and publishes them as a GitHub Release, having first proved they build and install.
 
-**Architecture:** One GitHub Actions workflow with two jobs — `build` (runs on every trigger, gated on the `venv-ui` half of the suite plus the packaging tests) and `release` (tag refs only, the only job with write permission). Version consistency across four sources is enforced by ordinary pytest tests so it fails on a developer's machine too, not only in CI.
+**Architecture:** One GitHub Actions workflow with two jobs — `build` (every trigger; gated on the packaging tests plus version consistency) and `release` (tag refs only, the only job with write permission). No venv is built and no application code runs: the gate answers *"does it build, and will apt install it"* and nothing else.
 
-**Tech Stack:** GitHub Actions, `ubuntu-24.04`, `dpkg-buildpackage`/`debhelper`, `gh` CLI, pytest, bash.
+**Tech Stack:** GitHub Actions, `ubuntu-24.04`, `dpkg-buildpackage`/`debhelper`, Docker (`ubuntu:24.04` throwaway containers), `gh` CLI, pytest, system Python 3.12.
 
-**Spec:** `docs/superpowers/specs/2026-08-17-release-ci-design.md`
+**Spec:** `docs/superpowers/specs/2026-08-17-release-ci-design.md` (see §4a — the gate was narrowed after the first draft).
 
 ## Global Constraints
 
 - **Runner is `ubuntu-24.04`, pinned.** Never `ubuntu-latest` — `debian/changelog` targets `noble` and the build environment is part of the contract.
 - **Never touch hardware.** No `/dev/tenstorrent`, no `--device` passed to any container, no `tests/integration`.
 - **Never run `tt-bio install-deps`.** Nothing installs kernel modules.
-- **Never build `venv-runner` in CI.** It means torch + ttnn + SFPI, several GB per run.
-- **A skipped check must never look like a passed one.** Anything that narrows what ran has to name itself in the verdict.
-- **No apt repository, no GPG signing.** Out of scope for this plan.
+- **Build no venv in CI**, and install no GTK/OpenGL/torch dependency. The gate's modules import only `re`, `subprocess`, `pathlib`, `shutil`, `tempfile`, `pytest`.
+- **`scripts/test.sh` is not modified by this plan.** An earlier draft added `--ui-only`; the narrowed gate removed the need for it.
+- **A skipped check must never look like a passed one.** Missing Docker or missing `pdftotext` fails; it never skips.
+- **No apt repository, no GPG signing.** Out of scope.
 - Repo root in tests is `pathlib.Path(__file__).resolve().parents[2]`, following `tests/unit/test_packaging.py`.
 
 ---
@@ -26,291 +27,101 @@
 
 | File | Responsibility |
 |---|---|
-| `scripts/test.sh` (modify) | Gains `--ui-only`: runs the UI half alone, requires no `venv-runner`, names itself in the verdict |
-| `tests/unit/test_version_consistency.py` (create) | The three tag-free version checks: `VERSION` ↔ `debian/changelog` ↔ the handout PDF |
-| `tests/unit/test_test_sh_ui_only.py` (create) | Proves `--ui-only` behaves — no `venv-runner` required, verdict names it, `--hw` rejected |
-| `.github/workflows/packages.yml` (create) | The workflow: `build` on everything, `release` on tags |
+| `tests/unit/test_packaging.py` (modify) | Gains one test: the metapackage installs and all four packages land |
+| `tests/unit/test_version_consistency.py` (create) | `VERSION` ↔ `debian/changelog` ↔ the handout PDF |
+| `.github/workflows/packages.yml` (create) | `build` on every trigger, `release` on tags |
 
-**One refinement of the spec.** The spec placed the version checks in `tests/unit/test_packaging.py`. They go in their own module instead: every test in `test_packaging.py` depends on the module-scoped `built` fixture, which runs a full `dpkg-buildpackage`. The version checks need no build at all, and binding them to that fixture would make three cheap string comparisons wait on a package build. Same half, same conventions, better boundary.
+Task 1 is the one that answers the question this CI exists for; Tasks 2 and 3 make it run automatically and turn a tag into a release.
 
 ---
 
-### Task 1: `test.sh --ui-only`
+### Task 1: Prove the metapackage actually installs
+
+The existing container tests install `tt-bio-demo-runtime` individually under various debconf answers. Nothing installs `tt-bio-demo-all` and checks that all four packages end up installed — which is exactly the "will a debian file install" question.
 
 **Files:**
-- Modify: `scripts/test.sh` (usage block ~line 84; flag parsing ~line 141; venv requirements ~line 178; half invocation ~line 229; verdict ~line 283)
-- Test: `tests/unit/test_test_sh_ui_only.py` (create)
+- Modify: `tests/unit/test_packaging.py` (append; it already has the `built` and `container` fixtures)
 
 **Interfaces:**
-- Consumes: nothing from earlier tasks.
-- Produces: `scripts/test.sh --ui-only` — exit 0 iff the UI half passes; requires only `${TT_BIO_DEMO_PREFIX}/venv-ui`; prints `runner half: SKIPPED (--ui-only)` and an `OVERALL:` line containing `--ui-only`. Task 3 calls it.
+- Consumes: the existing `container` fixture from `tests/unit/conftest.py` (re-exported from `conftest_container.py`), whose `.install(pkg, preseed=…)` returns an object with `.installed`, `.log` and `.status(pkg) -> str | None`.
+- Produces: no importable API. Task 3 runs this file as the gate.
 
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 1: Read the harness contract before writing against it**
 
-Create `tests/unit/test_test_sh_ui_only.py`:
+Run: `sed -n '190,270p' tests/unit/conftest_container.py`
+
+Confirm the exact signature of `Container.install` and what `ContainerResult.status()` returns for a package that installed cleanly (`"install ok installed"`). Do not guess these — the test below asserts on them.
+
+- [ ] **Step 2: Write the failing test**
+
+Append to `tests/unit/test_packaging.py`:
 
 ```python
-"""`scripts/test.sh --ui-only`: the flag CI needs, and the honesty it owes.
+def test_the_metapackage_installs_and_brings_all_four_with_it(container):
+    """The question this repo's CI exists to answer: will a .deb install?
 
-CI builds venv-ui alone -- venv-runner means torch, ttnn and the SFPI
-toolchain, several GB per run -- so it needs a way to run just the UI half.
-It cannot get one by passing a `-k` selector, because test.sh deliberately
-treats a half matching zero tests as a failure (pytest exit 5). Hence a real
-flag that removes the runner half outright.
+    Every other container test here installs ONE package to check one
+    behaviour -- what a debconf answer does, whether install-deps ran. None of
+    them asks the plain question an operator asks, which is whether
+    `apt install tt-bio-demo-all` on a clean machine ends with four installed
+    packages and no broken state.
 
-The tests below are mostly about the SECOND half of that: a run which proved
-less than a full run must never be readable as a full one.
-
-Runs under venv-ui. Invokes test.sh as a subprocess with --collect-only, so
-these cost a collection rather than 1115 real tests.
-"""
-import os
-import pathlib
-import subprocess
-
-import pytest
-
-REPO = pathlib.Path(__file__).resolve().parents[2]
-TEST_SH = REPO / "scripts" / "test.sh"
-
-
-@pytest.fixture(scope="module")
-def ui_only_prefix(tmp_path_factory):
-    """A venv prefix holding venv-ui and DELIBERATELY NO venv-runner.
-
-    This is the shape of a CI checkout after `setup-venvs.sh --skip-runner`,
-    and it is the case that fails today: test.sh calls require_venv on
-    venv-runner unconditionally and exits 1 before running anything.
-
-    venv-ui is symlinked to the real one rather than rebuilt -- the point is
-    the absence of venv-runner, not a fresh venv.
+    Preseeded to decline both prompts, because those are the DEFAULTS and
+    therefore the path an unattended install actually takes. Declining must
+    leave a complete, installed set -- the downloads and the venv build are
+    later, deliberate steps (see INSTALL.md), not preconditions for the
+    packages being installed.
     """
-    real_ui = REPO / ".venvs" / "venv-ui"
-    if not (real_ui / "bin" / "python3").exists():
-        pytest.fail(
-            f"{real_ui} is missing; run scripts/setup-venvs.sh before this test. "
-            "This is a failure rather than a skip: a silently skipped test here "
-            "is indistinguishable from a passing one."
+    result = container.install("tt-bio-demo-all", preseed={
+        "tt-bio-demo-runtime/install-deps": "boolean false",
+        "tt-bio-demo-weights/download": "boolean false",
+    })
+    assert result.installed, result.log
+    for pkg in sorted(EXPECTED):
+        assert result.status(pkg) == "install ok installed", (
+            f"{pkg} is {result.status(pkg)!r} after installing the metapackage; "
+            f"apt did not end up with all four installed.\n{result.log}"
         )
-    prefix = tmp_path_factory.mktemp("ui-only-prefix")
-    (prefix / "venv-ui").symlink_to(real_ui, target_is_directory=True)
-    assert not (prefix / "venv-runner").exists()
-    return prefix
-
-
-def _run(args, prefix, timeout=900):
-    env = dict(os.environ, TT_BIO_DEMO_PREFIX=str(prefix))
-    return subprocess.run(
-        [str(TEST_SH), *args],
-        cwd=REPO, env=env, capture_output=True, text=True, timeout=timeout,
-    )
-
-
-def test_ui_only_runs_without_a_venv_runner(ui_only_prefix):
-    """The regression that matters: no venv-runner must not be fatal."""
-    r = _run(["--ui-only", "--collect-only", "-q"], ui_only_prefix)
-    assert "venv-runner not found" not in r.stderr, r.stderr
-    assert r.returncode == 0, f"stdout:\n{r.stdout}\nstderr:\n{r.stderr}"
-
-
-def test_ui_only_names_itself_in_the_verdict(ui_only_prefix):
-    """A narrowed run has to say so where the verdict is read."""
-    r = _run(["--ui-only", "--collect-only", "-q"], ui_only_prefix)
-    assert "runner half: SKIPPED (--ui-only)" in r.stdout, r.stdout
-    overall = [ln for ln in r.stdout.splitlines() if ln.startswith("OVERALL:")]
-    assert overall, r.stdout
-    assert "--ui-only" in overall[-1], overall
-
-
-def test_ui_only_never_claims_both_halves_are_green(ui_only_prefix):
-    """The exact sentence a full run prints must not appear."""
-    r = _run(["--ui-only", "--collect-only", "-q"], ui_only_prefix)
-    assert "both halves green" not in r.stdout, r.stdout
-
-
-def test_ui_only_and_hw_are_rejected_together(ui_only_prefix):
-    """Every hardware test lives in the half --ui-only removes."""
-    r = _run(["--ui-only", "--hw", "--collect-only", "-q"], ui_only_prefix)
-    assert r.returncode == 1, r.stdout
-    assert "mutually exclusive" in r.stderr, r.stderr
-
-
-def test_ui_only_is_documented_in_usage():
-    r = subprocess.run([str(TEST_SH), "--help"],
-                       cwd=REPO, capture_output=True, text=True, timeout=60)
-    assert r.returncode == 0
-    assert "--ui-only" in r.stdout, r.stdout
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [ ] **Step 3: Run it**
 
-Run: `.venvs/venv-ui/bin/python3 -m pytest tests/unit/test_test_sh_ui_only.py -v`
+Run: `.venvs/venv-ui/bin/python3 -m pytest tests/unit/test_packaging.py -k metapackage_installs -v`
 
-Expected: FAIL. `test_ui_only_runs_without_a_venv_runner` fails with `venv-runner not found` in stderr and returncode 1, because `require_venv "$VENV_RUNNER"` runs unconditionally today.
+Expected: PASS if the packaging is already sound, FAIL if it is not. **Either outcome is informative and neither is a reason to change the test.** If it fails, read `result.log` — you have found the real defect this whole plan was built to catch, and fixing the packaging is the correct next move. Report it rather than weakening the assertion.
 
-- [ ] **Step 3: Document the flag in `usage()`**
+- [ ] **Step 4: Prove the test can fail**
 
-In `scripts/test.sh`, inside the `usage()` heredoc, after the paragraph ending `See the comment above HW_POOL_TEST in this script.`, insert:
-
-```
---ui-only runs ONLY the venv-ui half, and does not require venv-runner to
-exist at all. It is for CI, which builds venv-ui alone because venv-runner
-means torch, ttnn and the SFPI toolchain -- gigabytes per run. The runner
-half is then reported as SKIPPED on its own line and named in the OVERALL
-verdict: a run that proved less than a full one must never read like a full
-one. --ui-only and --hw are mutually exclusive, because every hardware test
-lives in the half --ui-only removes.
-```
-
-- [ ] **Step 4: Parse the flag and reject the contradiction**
-
-Replace the `RUN_HW=0` block (through the `set --` line) with:
+A test that has never failed is not yet a test. Temporarily assert against a package that is not installed:
 
 ```bash
-RUN_HW=0
-UI_ONLY=0
-if [[ "${TT_BIO_DEMO_HW_TESTS:-0}" == "1" ]]; then
-  RUN_HW=1
-fi
-_passthrough=()
-for _arg in "$@"; do
-  if [[ "$_arg" == "--hw" ]]; then
-    RUN_HW=1
-  elif [[ "$_arg" == "--ui-only" ]]; then
-    UI_ONLY=1
-  else
-    _passthrough+=("$_arg")
-  fi
-done
-set -- ${_passthrough[@]+"${_passthrough[@]}"}
-
-# Contradictory rather than merely redundant: every hardware test lives in
-# tests/integration, which runs in the runner half -- the half --ui-only
-# removes. Honouring both would mean silently dropping the hardware coverage
-# someone just asked for, which is the exact failure --hw's own comment above
-# exists to prevent.
-if [[ "$UI_ONLY" -eq 1 && "$RUN_HW" -eq 1 ]]; then
-  echo "ERROR: --ui-only and --hw are mutually exclusive -- every hardware test lives in the runner half, which --ui-only does not run." >&2
-  if [[ "${TT_BIO_DEMO_HW_TESTS:-0}" == "1" ]]; then
-    echo "       (--hw was not passed on the command line; TT_BIO_DEMO_HW_TESTS=1 is set in this environment.)" >&2
-  fi
-  exit 1
-fi
+python3 - <<'PY'
+import pathlib
+p = pathlib.Path("tests/unit/test_packaging.py"); s = p.read_text()
+p.write_text(s.replace('for pkg in sorted(EXPECTED):',
+                       'for pkg in sorted(EXPECTED | {"coreutils-not-installed"}):'))
+PY
+.venvs/venv-ui/bin/python3 -m pytest tests/unit/test_packaging.py -k metapackage_installs -q
+# Expected: FAIL, naming coreutils-not-installed as None
+git checkout tests/unit/test_packaging.py   # discard BOTH the probe and the test
 ```
 
-- [ ] **Step 5: Require `venv-runner` only when it will be used**
+Then re-apply Step 2's test (the `git checkout` removes it too) and re-run Step 3 to confirm it passes again.
 
-Replace the four `require_venv`/`require_pytest` calls with:
-
-```bash
-require_venv "$VENV_UI" "venv-ui"
-require_pytest "$VENV_UI" "venv-ui" \
-  "venv-ui is built --system-site-packages and should always have pytest via apt's python3-pytest. Rerun scripts/setup-venvs.sh --force to rebuild it."
-
-# Under --ui-only these are not merely skipped checks -- venv-runner is
-# expected to be ABSENT (CI runs setup-venvs.sh --skip-runner), so demanding
-# it here would fail every CI run before a single test executed.
-if [[ "$UI_ONLY" -eq 0 ]]; then
-  require_venv "$VENV_RUNNER" "venv-runner"
-  require_pytest "$VENV_RUNNER" "venv-runner" \
-    "'pip install tt-bio' does not pull in pytest -- it is not one of tt-bio's own dependencies. Rerun scripts/setup-venvs.sh --dev to add pytest to venv-runner (see docs/venv-bootstrap-notes.md, '--dev, and why it's a flag, not automatic')."
-fi
-```
-
-- [ ] **Step 6: Skip the runner half and the hardware block**
-
-Wrap the hardware-note block and both runner-side `run_half` calls. The `if [[ -d "${REPO_ROOT}/tests/integration" ]]` block that sets `HW_NOTE` and the two `run_half` calls that follow it become:
+- [ ] **Step 5: Commit**
 
 ```bash
-if [[ "$UI_ONLY" -eq 0 ]]; then
-  if [[ -d "${REPO_ROOT}/tests/integration" ]]; then
-    if [[ "$RUN_HW" -eq 1 ]]; then
-      RUNNER_PATHS+=(tests/integration --ignore="${HW_POOL_TEST}")
-      RUN_HW_POOL=1
-      HW_NOTE="INCLUDED (--hw) -- this opens every Tenstorrent card on the box"
-    else
-      HW_NOTE="SKIPPED -- pass --hw (or TT_BIO_DEMO_HW_TESTS=1) to run them"
-    fi
-    echo
-    echo "hardware tests (tests/integration): ${HW_NOTE}"
-  fi
+git add tests/unit/test_packaging.py
+git commit -m "test: the metapackage installs, and brings all four with it
 
-  # First, so the process that spawns worker children is the freshest one
-  # there is. See the comment above HW_POOL_TEST for why this cannot share a
-  # process with the in-process device tests.
-  if [[ "$RUN_HW_POOL" -eq 1 ]]; then
-    run_half HWPOOL "${VENV_RUNNER}/bin/python3" "$HW_POOL_TEST"
-  fi
-  run_half RUNNER "${VENV_RUNNER}/bin/python3" "${RUNNER_PATHS[@]}"
-fi
-```
+Every other container test installs one package to check one behaviour. None
+asked the plain question an operator asks -- whether apt install
+tt-bio-demo-all on a clean machine ends with four installed packages.
 
-Keep the `HW_POOL_TEST`, `RUNNER_PATHS`, `HW_NOTE` and `RUN_HW_POOL` initialisations where they are, above this block.
-
-- [ ] **Step 7: Make the verdict tell the truth**
-
-In the combined-result block, replace the runner-half report with:
-
-```bash
-if [[ "$UI_ONLY" -eq 1 ]]; then
-  echo "runner half: SKIPPED (--ui-only) -- venv-runner was neither required nor run"
-elif [[ "$RUNNER_RC" -eq 0 ]]; then
-  echo "runner half: passed   (${RUNNER_SUMMARY})"
-else
-  echo "runner half: FAILED (exit ${RUNNER_RC})   (${RUNNER_SUMMARY})"
-  overall_rc=1
-fi
-```
-
-Guard the trailing hardware line so it does not appear for a run that never considered hardware:
-
-```bash
-if [[ "$UI_ONLY" -eq 0 && -d "${REPO_ROOT}/tests/integration" ]]; then
-  echo "hardware:    ${HW_NOTE}"
-fi
-```
-
-And replace the `OVERALL: PASS` branch:
-
-```bash
-if [[ "$overall_rc" -eq 0 ]]; then
-  if [[ "$UI_ONLY" -eq 1 ]]; then
-    echo "OVERALL: PASS (UI half only -- --ui-only; the runner half did NOT run)"
-  elif [[ "$RUN_HW" -eq 1 ]]; then
-    echo "OVERALL: PASS (both halves green, hardware tests included)"
-  else
-    echo "OVERALL: PASS (both halves green, hardware tests NOT run)"
-  fi
-else
-  echo "OVERALL: FAIL -- see the half(s) marked FAILED above"
-fi
-```
-
-- [ ] **Step 8: Run the new tests to verify they pass**
-
-Run: `.venvs/venv-ui/bin/python3 -m pytest tests/unit/test_test_sh_ui_only.py -v`
-Expected: 5 passed.
-
-- [ ] **Step 9: Verify the full suite is unharmed**
-
-Run: `./scripts/test.sh -q`
-Expected: `OVERALL: PASS (both halves green, hardware tests NOT run)` — the unflagged path must be byte-for-byte the behaviour it had before.
-
-- [ ] **Step 10: Commit**
-
-```bash
-git add scripts/test.sh tests/unit/test_test_sh_ui_only.py
-git commit -m "test.sh: --ui-only, for a CI that has no venv-runner
-
-CI builds venv-ui alone; venv-runner is torch, ttnn and SFPI. A -k selector
-cannot express that, because a half matching zero tests is a failure here by
-design, so this is a real flag that drops the runner half outright and does
-not require the venv to exist.
-
-It narrows what runs without weakening how the result is judged: the runner
-half is reported SKIPPED on its own line, OVERALL names the flag, and the
-'both halves green' sentence cannot appear. --hw is rejected alongside it,
-since every hardware test lives in the half this removes."
+Preseeded to decline both prompts, because those are the defaults and so the
+path an unattended install takes. Declining has to leave a complete installed
+set: the weights download and the venv build are later deliberate steps, not
+preconditions for the packages being installed."
 ```
 
 ---
@@ -321,10 +132,10 @@ since every hardware test lives in the half this removes."
 - Create: `tests/unit/test_version_consistency.py`
 
 **Interfaces:**
-- Consumes: nothing from earlier tasks.
-- Produces: three tests that run inside the UI half, and therefore inside Task 3's gate. No importable API.
+- Consumes: nothing from Task 1.
+- Produces: three tests. Task 3 runs this file alongside `test_packaging.py`.
 
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 1: Write the tests**
 
 Create `tests/unit/test_version_consistency.py`:
 
@@ -346,9 +157,9 @@ bumping VERSION without re-running that script ships a handout claiming the
 previous version -- on the one artefact most likely to be printed and handed
 to a stranger, where nobody would think to check.
 
-Runs under venv-ui. Needs no venv, no device and no package build -- which is
-why it is here rather than in test_packaging.py, where every test waits on a
-module-scoped dpkg-buildpackage.
+Needs no venv, no device and no package build -- which is why it is here
+rather than in test_packaging.py, where every test waits on a module-scoped
+dpkg-buildpackage that three string comparisons do not need.
 """
 import pathlib
 import re
@@ -416,51 +227,45 @@ def test_the_version_is_a_plain_three_part_number():
     )
 ```
 
-- [ ] **Step 2: Run the tests to verify they pass, then prove they can fail**
+- [ ] **Step 2: Run them**
 
 Run: `.venvs/venv-ui/bin/python3 -m pytest tests/unit/test_version_consistency.py -v`
-Expected: 3 passed (the repo is currently consistent at `0.1.0`).
+Expected: 3 passed — the repo is currently consistent at `0.1.0`.
 
-A test that has never failed is not yet a test. Prove each one bites:
+- [ ] **Step 3: Prove each one bites**
 
 ```bash
-# 1. changelog drift
 sed -i '1s/(0.1.0)/(0.9.9)/' debian/changelog
 .venvs/venv-ui/bin/python3 -m pytest tests/unit/test_version_consistency.py -x -q
 # Expected: test_the_changelog_agrees_with_the_version_file FAILS
 git checkout debian/changelog
 
-# 2. a stale handout
 echo "0.2.0" > VERSION
 .venvs/venv-ui/bin/python3 -m pytest tests/unit/test_version_consistency.py -q
 # Expected: the changelog AND handout tests both FAIL
 git checkout VERSION
 ```
 
-- [ ] **Step 3: Confirm the working tree is clean again**
+- [ ] **Step 4: Confirm the tree is clean**
 
 Run: `git status --porcelain`
-Expected: only `tests/unit/test_version_consistency.py` as untracked. If `VERSION` or `debian/changelog` appear, the `git checkout`s above did not run — restore them before committing.
+Expected: only `tests/unit/test_version_consistency.py`, untracked. If `VERSION` or `debian/changelog` appear, the `git checkout`s did not run — restore them before committing.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add tests/unit/test_version_consistency.py
 git commit -m "test: one version, and the four places it has to agree
 
-VERSION, debian/changelog and the handout PDF are checked here so they fail
-on a developer's machine; the git tag is checked in CI, which is the only
-place a tag exists.
+VERSION, debian/changelog and the handout PDF are checked here so they fail on
+a developer's machine; the git tag is checked in CI, the only place a tag
+exists.
 
 The PDF is why this exists. docs/onepager/build.sh stamps VERSION into the
-sheet, so bumping VERSION without re-rendering ships a handout claiming the
-old version -- on the artefact most likely to be printed and handed to a
-stranger. pdftotext catches it for the cost of poppler-utils, and its absence
-FAILS rather than skips: a silently skipped check reads exactly like a
-passing one.
-
-Own module rather than test_packaging.py, whose every test waits on a
-module-scoped dpkg-buildpackage these three string comparisons do not need."
+sheet, so bumping VERSION without re-rendering ships a handout claiming the old
+version -- on the artefact most likely to be printed and handed to a stranger.
+pdftotext catches it, and its absence FAILS rather than skips: a silently
+skipped check reads exactly like a passing one."
 ```
 
 ---
@@ -471,8 +276,8 @@ module-scoped dpkg-buildpackage these three string comparisons do not need."
 - Create: `.github/workflows/packages.yml`
 
 **Interfaces:**
-- Consumes: `scripts/test.sh --ui-only` (Task 1); the version tests (Task 2) via the gate; the existing `scripts/setup-venvs.sh --skip-runner` and `scripts/build-deb.sh`.
-- Produces: a GitHub Release on tags, carrying `dist/*.deb`, `dist/*.buildinfo`, `dist/*.changes` and `docs/tt-bio-demo-onepager.pdf`.
+- Consumes: `tests/unit/test_packaging.py` (Task 1), `tests/unit/test_version_consistency.py` (Task 2), and the existing `scripts/build-deb.sh`.
+- Produces: a GitHub Release on tags carrying `dist/*.deb`, `dist/*.buildinfo`, `dist/*.changes` and `docs/tt-bio-demo-onepager.pdf`.
 
 - [ ] **Step 1: Create the workflow**
 
@@ -484,15 +289,19 @@ Create `.github/workflows/packages.yml`:
 #
 # Design: docs/superpowers/specs/2026-08-17-release-ci-design.md
 #
-# What this deliberately does NOT do:
-#   - build venv-runner (torch + ttnn + SFPI, several GB per run), so the
-#     runner half of the suite is NOT covered here. Known limitation, not an
-#     oversight: ./scripts/test.sh with no flags is what covers it locally,
-#     before you tag.
+# WHAT THIS GATE IS FOR, precisely: "if we make a debian file, is it going to
+# be installable?" It runs the packaging tests -- which build the real .debs
+# and install them into throwaway ubuntu:24.04 containers -- and the version
+# consistency tests. That is all.
+#
+# What it deliberately does NOT do:
+#   - build venv-ui or venv-runner, or install any GTK, OpenGL or torch
+#     dependency. The .debs compile nothing and carry no Python runtime; both
+#     venvs are built at install time by setup-venvs.sh. Application
+#     correctness lives in ./scripts/test.sh, run locally before tagging.
 #   - touch Tenstorrent hardware, or pass --device to any container.
 #   - run `tt-bio install-deps`, which installs kernel modules.
-#   - publish an apt repository or sign anything. Installing still means
-#     downloading the .debs from the release page.
+#   - publish an apt repository or sign anything.
 name: packages
 
 on:
@@ -518,9 +327,9 @@ jobs:
       - uses: actions/checkout@v4
 
       # First, and before anything slow: a mis-tagged release should fail in
-      # seconds rather than after a five-minute gate. VERSION's agreement with
-      # the changelog and the handout is checked by the test suite below --
-      # only the tag needs CI, because only CI has one.
+      # seconds. VERSION's agreement with the changelog and the handout is
+      # checked by the test suite below -- only the tag needs CI, because only
+      # CI has one.
       - name: The tag must agree with VERSION
         if: startsWith(github.ref, 'refs/tags/')
         run: |
@@ -532,37 +341,28 @@ jobs:
           fi
           echo "tag ${GITHUB_REF_NAME} agrees with VERSION ${file_version}"
 
-      # python3-pytest is not optional: venv-ui is built --system-site-packages
-      # and takes pytest from apt rather than pip (see test.sh's require_pytest
-      # message). poppler-utils backs the handout version check in
-      # tests/unit/test_version_consistency.py.
-      - name: Install build and UI dependencies
+      # Deliberately short. debhelper/devscripts/dpkg-dev build the packages;
+      # poppler-utils backs the handout version check; python3-pytest runs the
+      # tests under the SYSTEM interpreter -- the gate's two modules import
+      # only re, subprocess, pathlib, shutil, tempfile and pytest, so no venv
+      # is needed. Docker is preinstalled on this runner and the container
+      # tests fail rather than skip without it.
+      - name: Install build and test dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             debhelper devscripts dpkg-dev \
             poppler-utils \
-            python3-venv python3-pip python3-pytest \
-            python3-gi python3-gi-cairo gir1.2-gtk-4.0 \
-            python3-gemmi python3-opengl python3-numpy \
-            libgl1 libglu1-mesa
+            python3-pytest
 
-      # --skip-runner is the whole reason --ui-only exists. Default prefix
-      # (.venvs/) -- CI is not installing a booth, only building one venv to
-      # test with.
-      - name: Build venv-ui
-        run: ./scripts/setup-venvs.sh --skip-runner
-
-      # The gate. Carries the version-consistency tests and the packaging
-      # tests -- including the throwaway-container install harness, which
-      # needs the Docker preinstalled on this runner and must FAIL, never
-      # skip, if it is missing.
-      #
-      # No xvfb-run, deliberately. Measured 2026-08-17: this half passes with
-      # DISPLAY and WAYLAND_DISPLAY both unset (1115 passed in 228s). If that
-      # ever stops being true here, wrap this one line -- nothing else changes.
-      - name: Gate — UI half, version and packaging tests
-        run: ./scripts/test.sh --ui-only
+      # The gate: do the packages build, and do they install. tests/unit/
+      # conftest.py re-exports the container fixture, so running the two files
+      # from the repo root is enough.
+      - name: Gate — the packages build and install
+        run: |
+          python3 -m pytest -v \
+            tests/unit/test_packaging.py \
+            tests/unit/test_version_consistency.py
 
       - name: Build the packages
         run: ./scripts/build-deb.sh
@@ -626,30 +426,37 @@ jobs:
             docs/tt-bio-demo-onepager.pdf
 ```
 
-- [ ] **Step 2: Lint the YAML before pushing it**
-
-Run:
+- [ ] **Step 2: Check the YAML parses and says what it should**
 
 ```bash
-.venvs/venv-ui/bin/python3 -c "
+python3 -c "
 import yaml, pathlib
 d = yaml.safe_load(pathlib.Path('.github/workflows/packages.yml').read_text())
-print('jobs:', list(d['jobs']))
+assert list(d['jobs']) == ['build', 'release'], list(d['jobs'])
 assert d['jobs']['build']['runs-on'] == 'ubuntu-24.04'
-assert d['jobs']['release']['permissions']['contents'] == 'write'
+assert d['jobs']['release']['runs-on'] == 'ubuntu-24.04'
 assert d['permissions']['contents'] == 'read'
+assert d['jobs']['release']['permissions']['contents'] == 'write'
+steps = ' '.join(str(s) for s in d['jobs']['build']['steps'])
+assert 'setup-venvs' not in steps, 'the gate must build no venv'
+assert 'gir1.2-gtk' not in steps, 'the gate must install no GTK stack'
 print('ok')
 "
 ```
 
-Expected: `jobs: ['build', 'release']` then `ok`. If PyYAML is not importable under `venv-ui`, use `python3 -c` with the system interpreter instead — this is a syntax check, not a test.
+Expected: `ok`.
 
-Note: `on:` parses as the boolean key `True` in YAML 1.1. That is a quirk of the loader, not a defect in the file; do not "fix" it.
+Note: `on:` parses as the boolean key `True` under YAML 1.1. That is a loader quirk, not a defect — do not "fix" it. If PyYAML is unavailable, `pip install --user pyyaml` or skip this step and rely on the first CI run.
 
-- [ ] **Step 3: Verify the gate command works end to end locally**
+- [ ] **Step 3: Run the exact gate command locally**
 
-Run: `./scripts/test.sh --ui-only`
-Expected: `OVERALL: PASS (UI half only -- --ui-only; the runner half did NOT run)`, having run the version and packaging tests. This is exactly the command the workflow runs.
+Run:
+
+```bash
+python3 -m pytest -v tests/unit/test_packaging.py tests/unit/test_version_consistency.py
+```
+
+Expected: all pass, using the **system** python3 with no venv — proving the CI invocation works. If `python3 -m pytest` reports no pytest, `sudo apt-get install python3-pytest` (this mirrors exactly what the workflow does).
 
 - [ ] **Step 4: Commit**
 
@@ -657,20 +464,18 @@ Expected: `OVERALL: PASS (UI half only -- --ui-only; the runner half did NOT run
 git add .github/workflows/packages.yml
 git commit -m "ci: build the packages on every push, publish them on a tag
 
-One workflow. build runs everywhere and is gated on the UI half plus the
-packaging and version tests; release runs on tag refs only and is the one
-job with contents: write.
+One workflow. build runs everywhere and is gated on exactly the question this
+CI exists to answer -- do the packages build, and will apt install them --
+which is the packaging tests plus version consistency, and nothing else. No
+venv is built and no GTK or torch dependency is installed; the .debs compile
+nothing and carry no Python runtime, so application correctness stays in
+./scripts/test.sh, run locally before tagging.
 
-The tag/VERSION check runs first so a mis-tagged release dies in seconds
-rather than after the gate. Release notes are the debian/changelog stanza via
-dpkg-parsechangelog -- hand-written prose about this exact version, where
-generated notes would publish our internal commit messages. The release job
-downloads rather than rebuilds, so what was tested is what ships, and it
-refuses to replace an existing release.
-
-No xvfb: measured 2026-08-17, the UI half passes with DISPLAY and
-WAYLAND_DISPLAY unset. runs-on is pinned to ubuntu-24.04 because
-debian/changelog targets noble."
+release runs on tag refs only and is the one job with contents: write. The
+tag/VERSION check runs first so a mis-tagged release dies in seconds. Notes are
+the debian/changelog stanza via dpkg-parsechangelog, where generated notes
+would publish our internal commit messages. It downloads rather than rebuilds,
+so what was tested is what ships, and refuses to replace an existing release."
 ```
 
 - [ ] **Step 5: Push and watch the first run**
@@ -680,22 +485,22 @@ git push origin main
 gh run watch
 ```
 
-Expected: the `build` job succeeds; `release` is skipped (not a tag). If the gate fails on a display error, wrap the gate step in `xvfb-run --auto-servernum` and note that the 2026-08-17 measurement did not transfer to a runner.
+Expected: `build` succeeds; `release` is skipped (not a tag). If `build` fails, read the failing test before changing the workflow — a genuine packaging defect is the outcome this plan was written to surface.
 
 ---
 
 ## What this plan does NOT do
 
-Cutting the first actual release, and updating the docs afterwards. `INSTALL.md` step 1 and README's "Installing a booth machine" still tell a reader to build the packages themselves — correct until a release exists to link to, and a follow-up once one does. `VERSION` stays at `0.1.0`; tagging is a human decision, not a plan step.
+Cut the first release, or update the docs afterwards. `INSTALL.md` step 1 and README's "Installing a booth machine" still tell a reader to build the packages themselves — correct until a release exists to link to. `VERSION` stays at `0.1.0`; tagging is a human decision.
 
 ---
 
 ## Self-Review
 
-**Spec coverage.** §2 trigger/shape → Task 3 Step 1. §3 version invariant: `VERSION`↔changelog↔PDF → Task 2; tag → Task 3's first step. §4 gate and the `--ui-only` requirement → Task 1, used in Task 3. §5 jobs and permissions → Task 3. §6 failure modes: version mismatch (Task 2), tag mismatch (Task 3 step 1), stale PDF (Task 2), Docker missing (inherited — the container harness already fails rather than skips), release exists (Task 3), runner-half gap (documented in the workflow header). §7 doc consequences → deliberately excluded above. §8 no xvfb → Task 3 comment plus the fallback in Step 5.
+**Spec coverage.** §2 trigger/shape → Task 3 Step 1. §3 version invariant → Task 2 (three checks) and Task 3 Step 1 (the tag). §4 gate, and the metapackage-install gap it identifies → Task 1, run by Task 3. §4a's deletions → honoured: no `--ui-only`, no venv, no GTK, asserted mechanically in Task 3 Step 2. §5 jobs and permissions → Task 3. §6 failure modes: version mismatch (Task 2), tag mismatch (Task 3), stale PDF (Task 2), Docker missing (inherited from the harness), release exists (Task 3), metapackage install failure (Task 1). §7 doc consequences → excluded above, deliberately.
 
-**Placeholder scan.** No TBDs. Every code step carries the actual code; every run step carries the command and its expected output.
+**Placeholder scan.** No TBDs. Every code step carries real code; every run step carries its command and expected output.
 
-**Type and name consistency.** `--ui-only` is spelled identically in the usage text, the parser, the tests, and the workflow. `UI_ONLY` matches the existing `RUN_HW` convention. The verdict strings asserted in Task 1's tests (`runner half: SKIPPED (--ui-only)`, `both halves green`, `--ui-only` inside the `OVERALL:` line) are exactly the strings Steps 6–7 emit. Artifact name `packages` matches between upload and download.
+**Name consistency.** `EXPECTED` in Task 1 is the existing module-level set in `test_packaging.py` (`{"tt-bio-demo", "tt-bio-demo-runtime", "tt-bio-demo-weights", "tt-bio-demo-all"}`) — not redefined. `result.status(pkg)`/`result.installed`/`result.log` match `ContainerResult` in `conftest_container.py`. Artifact name `packages` matches between upload and download. The two test paths in Task 3's gate match the files created in Tasks 1 and 2.
 
-**One risk carried knowingly.** Task 1's tests shell out to `test.sh --collect-only`, so pytest runs inside pytest. It is the only way to test the script's own control flow rather than a reimplementation of it, and collection of 1115 tests is seconds rather than the 228 s a real run costs.
+**One thing the implementer must not do.** If Task 1's new test fails, that is a real packaging defect and the finding this plan exists to produce. Report it; do not relax the assertion to make the gate green.

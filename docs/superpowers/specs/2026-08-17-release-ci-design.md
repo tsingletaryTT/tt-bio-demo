@@ -1,8 +1,30 @@
 # Release CI — build the Debian packages for every release
 
-**Status:** design, approved 2026-08-17.
+**Status:** design, approved 2026-08-17. **Revised the same day** — see §4a.
 **Goal:** tagging `v0.1.0` produces a GitHub Release carrying the four `.deb` packages,
 so `INSTALL.md` step 1 stops saying "build them yourself first".
+
+> **§4a — Scope revision (2026-08-17, after the first draft).**
+> The gate was narrowed on instruction: *"focus the CI jobs on overall 'it should work'
+> quality. We don't need the UI validated. We don't need the hardware validated. We just
+> need to know that if we make a debian file it's going to be installable."*
+>
+> The original §4 gated on the `venv-ui` half of the suite — 1115 tests, a GTK/OpenGL apt
+> stack, and a whole venv build — to protect a `.deb` that contains no Python runtime and
+> no UI code that CI could exercise. That is off-target for the stated question.
+>
+> **The gate is now: do the packages build, and do they install.** Which deletes two things
+> outright:
+> - **`test.sh --ui-only` is no longer needed and is not built.** It existed only to run the
+>   UI half without `venv-runner`. With no UI half in the gate there is no flag to add, and
+>   `scripts/test.sh` is left untouched.
+> - **No venv is built in CI at all**, and none of the GTK/OpenGL apt packages are installed.
+>   `tests/unit/test_packaging.py` and `tests/unit/conftest_container.py` import only
+>   `re`, `subprocess`, `pathlib`, `shutil`, `tempfile` and `pytest` — verified — so the
+>   system interpreter plus `python3-pytest` runs them.
+>
+> §4 and §5 below are rewritten accordingly. §8's headless measurement is kept as a recorded
+> fact but no longer gates anything.
 
 ---
 
@@ -80,10 +102,14 @@ pdftotext docs/tt-bio-demo-onepager.pdf - | grep -q "v$(cat VERSION)"
 which costs one `poppler-utils` install.
 
 **Where each check lives matters.** The three checks that need no tag —
-`VERSION` ↔ changelog ↔ PDF — belong in `tests/unit/test_packaging.py`, so they run on a
-developer's machine during an ordinary `./scripts/test.sh` and not only in CI. That is this
-project's standing rule: a check that can only fail in CI is a check most people never see
-fail. Only the tag comparison is CI-only, because only CI has a tag.
+`VERSION` ↔ changelog ↔ PDF — live in `tests/unit/test_version_consistency.py`, so they run
+on a developer's machine during an ordinary `./scripts/test.sh` and not only in CI. That is
+this project's standing rule: a check that can only fail in CI is a check most people never
+see fail. Only the tag comparison is CI-only, because only CI has a tag.
+
+Their own module rather than `test_packaging.py`: every test there depends on a
+module-scoped `built` fixture that runs a full `dpkg-buildpackage`, and three string
+comparisons have no business waiting on a package build.
 
 **On mismatch the run fails.** It does not auto-correct, and it does not warn. Version bumps
 in this repo are deliberate, hand-written acts — the changelog stanza is Debian prose someone
@@ -94,50 +120,40 @@ reading.
 
 ## 4. The gate
 
-**Gate = the `venv-ui` half of the suite + the packaging tests, including the throwaway
-container install harness.** No multi-gigabyte downloads.
+**Gate = the packages build, and the packages install.** Nothing else.
 
-**Measured, not estimated:** on this box, `tests/unit` minus `tests/unit/runner` is
-**1115 tests in 228 s (3 m 48 s)**, and that figure already includes the packaging and
-container-install tests, which live in the same half. Budget 5–10 minutes on a GitHub runner,
-which is slower and additionally has to build `venv-ui` and pull the `ubuntu:24.04` image.
+The question this CI exists to answer is *"if we make a debian file, is it going to be
+installable?"* — so the gate is `tests/unit/test_packaging.py` (57 tests, including roughly
+ten that install into a throwaway `ubuntu:24.04` via `scripts/deb-container.sh`) plus the
+version-consistency tests of §3.
 
-This is matched to what actually ships: the `.deb`s compile nothing and carry no Python
-runtime, so what needs proving is package metadata, contents, and postinst behaviour — which
-is exactly what `scripts/deb-container.sh` and `tests/unit/test_packaging.py` already do
-against a disposable `ubuntu:24.04`. **If Docker is unavailable those tests must fail, not
-skip**, per the rule already written into the packaging plan: a silently skipped install test
-is indistinguishable from a passing one.
+**No venv is built.** Those modules import only `re`, `subprocess`, `pathlib`, `shutil`,
+`tempfile` and `pytest`, so the system interpreter plus apt's `python3-pytest` runs them.
+`tests/unit/conftest.py` re-exports the `container` fixture, so invoking pytest on the two
+files from the repo root is enough.
 
-### A change this forces: `test.sh --ui-only`
+**If Docker is unavailable those tests must fail, not skip**, per the rule already written
+into the packaging plan: a silently skipped install test is indistinguishable from a passing
+one. The harness already behaves this way; CI must not weaken it.
 
-`scripts/test.sh` runs both halves and deliberately treats *a half matching zero tests* as a
-failure. CI therefore cannot get a UI-only run by passing a `-k` selector — that is precisely
-the case the script is written to reject.
+### The one real gap in existing coverage
 
-So this design requires a real, small change to `test.sh`: add **`--ui-only`**, which skips
-the `venv-runner` half **outright** rather than selecting zero tests from it, and which
-**names itself in the verdict line** so a CI log can never be misread as a full-suite pass.
-
-To be unambiguous about what `--ui-only` relaxes: it removes the runner half from the run
-entirely, and with it that half's zero-test check. **The UI half keeps every existing rule**,
-including that a UI half matching zero tests is still a failure. The flag narrows what is
-run; it must not weaken how what is run gets judged.
-
-The alternative — CI invoking pytest directly for `tests/unit --ignore=tests/unit/runner` —
-was rejected. The directory-based venv split is a real decision documented in one place, and
-copying it into a YAML file is how it ends up maintained in two.
+The container tests install packages *individually* — `tt-bio-demo-runtime` under various
+debconf answers. **Nothing installs `tt-bio-demo-all`**, the metapackage, and asserts that
+all four packages end up installed. That is precisely the question being asked, so this
+design adds it: one test that installs the metapackage into a fresh container and requires
+every one of the four to reach `install ok installed`.
 
 ### What the gate does not cover, and why
 
-The `venv-runner` half does not run. Building that venv means torch, ttnn, tt-bio and the
-SFPI toolchain — several GB and 10–20 minutes per run, fetched from PyPI and Hugging Face,
-with network flakes presenting as failures that are not defects.
+Neither half of the application suite runs. No `venv-ui`, no `venv-runner`, no GTK, no
+torch/ttnn, no hardware, no `tests/integration`.
 
-This is a **known limitation, not an oversight**, and the workflow says so in a comment. The
-daemon source does ship inside `tt-bio-demo`, so it is genuinely less covered than the UI
-half. The mitigation is that `./scripts/test.sh` with no flags — the full suite, both halves
-— remains what a developer runs locally before tagging.
+This is **deliberate and instructed**, not an oversight. The `.deb`s compile nothing, carry
+no Python runtime, and build both venvs at install time from `setup-venvs.sh` — so what CI
+can meaningfully prove about them is that they build, that their metadata and contents are
+right, and that `apt` will install them. Application correctness stays where it already
+lives: `./scripts/test.sh` with no flags, run locally before tagging.
 
 ---
 
@@ -147,14 +163,12 @@ half. The mitigation is that `./scripts/test.sh` with no flags — the full suit
 
 `permissions: contents: read`.
 
-1. Check out; install build dependencies (`debhelper`, `devscripts`, `poppler-utils`) and
-   the apt packages `venv-ui` needs.
-2. Assert the tag matches `VERSION` — **tag refs only**, and first, so a mis-tagged release
+1. Check out.
+2. **Tag refs only, and first:** assert the tag matches `VERSION`, so a mis-tagged release
    fails in seconds rather than after the gate.
-3. `scripts/setup-venvs.sh --skip-runner` — the repo-default `.venvs/` prefix, not
-   `/opt/tt-bio-demo`; CI is not installing a booth, it is building one venv to test with.
-4. The gate: `scripts/test.sh --ui-only` (which carries the three tag-free version checks
-   with it, as ordinary tests).
+3. `apt-get install` the build and test dependencies only: `debhelper`, `devscripts`,
+   `dpkg-dev`, `poppler-utils`, `python3-pytest`. No GTK, no OpenGL, no venv tooling.
+4. The gate: `python3 -m pytest tests/unit/test_packaging.py tests/unit/test_version_consistency.py`.
 5. `scripts/build-deb.sh`.
 6. Upload everything in `dist/` as a workflow artifact.
 
@@ -186,7 +200,8 @@ version number is the specific thing package managers are built to trust.
 | One-pager PDF stamped with an older version | Fail — re-run `docs/onepager/build.sh` and commit |
 | Docker unavailable to the container harness | Fail loudly; never skip |
 | Release already exists for this tag | Fail; do not replace |
-| A `venv-runner`-half regression | **Not caught.** Documented limitation; local `test.sh` covers it |
+| Any application-code regression, UI or runner | **Not caught, by instruction.** CI answers "does it build and install"; local `./scripts/test.sh` covers correctness |
+| `tt-bio-demo-all` fails to install | Fail — the new metapackage install test is the point of the gate |
 
 ---
 
@@ -200,7 +215,12 @@ exists to link to.
 
 ---
 
-## 8. The display question, settled
+## 8. The display question, settled — and now moot
+
+> **Superseded by §4a.** The UI half no longer runs in CI at all, so nothing below gates
+> anything. It is kept because the measurement is real and worth having on record the next
+> time someone asks whether this suite needs a display.
+
 
 The one risk in this design was whether the `venv-ui` half needs a display on a headless
 runner — a GTK4 suite is a fair thing to suspect, and getting it wrong means the whole gate
