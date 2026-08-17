@@ -1,0 +1,478 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>tt-bio-demo — booth one-pager</title>
+<style>
+  @page { size: Letter; margin: 0; }
+
+  :root {
+    --dark:    #092221;   /* signature near-black teal */
+    --bg:      #F1F8F8;
+    --alt:     #C7D9D8;
+    --alt2:    #DCF0EE;
+    --accent:  #1B8EB1;
+    --textacc: #1E86A9;
+    --sec:     #3A5452;
+    --teal:    #74C5DF;
+    --green:   #6FABA0;
+    --yellow:  #F6BC42;
+    --red:     #FF9E8A;
+    --orange:  #FA512E;
+    --sans: "Neue Haas Unica Pro", "Helvetica Neue", Inter, Helvetica, Arial, sans-serif;
+    --mono: "Berkeley Mono", "JetBrains Mono", "DejaVu Sans Mono", ui-monospace, monospace;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: var(--sans);
+    color: var(--dark);
+    background: #fff;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .page {
+    width: 8.5in;
+    height: 11in;
+    padding: 0.40in 0.5in 0.30in;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    position: relative;
+  }
+  .page + .page { page-break-before: always; }
+
+  /* ── masthead ─────────────────────────────────────────── */
+  .mast {
+    display: flex; align-items: baseline; gap: 0.14in;
+    border-bottom: 2.5px solid var(--dark);
+    padding-bottom: 6px; margin-bottom: 11px;
+  }
+  .mast h1 {
+    font-size: 25px; line-height: 1; margin: 0;
+    letter-spacing: -0.6px; font-weight: 700;
+  }
+  .mast .sub {
+    font-size: 10.5px; color: var(--sec); margin-left: auto;
+    text-align: right; line-height: 1.35;
+  }
+  .mast .sub b { color: var(--accent); }
+
+  .lede {
+    font-size: 12.4px; line-height: 1.48; margin: 0 0 9px;
+    color: var(--dark);
+  }
+  .lede strong { color: var(--textacc); }
+
+  /* ── hero ─────────────────────────────────────────────── */
+  .hero { margin: 0 0 5px; }
+  .hero img {
+    width: 100%; display: block; border-radius: 3px;
+    border: 1px solid var(--alt);
+  }
+  .cap {
+    font-size: 8.9px; line-height: 1.4; color: var(--sec);
+    margin: 5px 0 0; font-style: italic;
+  }
+  .cap b { font-style: normal; color: var(--dark); }
+
+  /* ── section head ─────────────────────────────────────── */
+  h2 {
+    font-size: 12.5px; margin: 10px 0 5px; letter-spacing: 0.7px;
+    text-transform: uppercase; color: var(--accent); font-weight: 700;
+  }
+  h2:first-child { margin-top: 0; }
+
+  /* ── columns ──────────────────────────────────────────── */
+  .cols { display: flex; gap: 0.28in; }
+  .cols > * { flex: 1; min-width: 0; }
+
+  p { font-size: 10.4px; line-height: 1.48; margin: 0 0 6px; }
+  p.tight { margin-bottom: 4px; }
+
+  /* ── target table ─────────────────────────────────────── */
+  table { width: 100%; border-collapse: collapse; }
+  th {
+    font-size: 8.4px; text-transform: uppercase; letter-spacing: 0.6px;
+    color: var(--sec); text-align: left; font-weight: 700;
+    border-bottom: 1.5px solid var(--alt); padding: 0 0 3px;
+  }
+  td {
+    font-size: 10.1px; padding: 3.4px 0; vertical-align: baseline;
+    border-bottom: 0.5px solid var(--alt2);
+  }
+  td.num { font-family: var(--mono); font-size: 9.6px; white-space: nowrap; }
+  td.t   { font-family: var(--mono); font-size: 9.6px; color: var(--textacc);
+           white-space: nowrap; text-align: right; font-weight: 700; }
+  .lig { color: var(--sec); font-size: 8.9px; }
+
+  /* ── callout ──────────────────────────────────────────── */
+  .note {
+    background: var(--alt2); border-left: 3px solid var(--accent);
+    padding: 8px 10px; margin: 9px 0 0; border-radius: 0 3px 3px 0;
+  }
+  .note p { margin: 0; font-size: 9.9px; line-height: 1.48; }
+  .note p + p { margin-top: 5px; }
+  .note b { color: var(--dark); }
+
+  .warn { background: #FFF1EC; border-left-color: var(--orange); }
+
+  /* ── pLDDT legend ─────────────────────────────────────── */
+  .legend { display: flex; gap: 0; margin: 4px 0 6px; border-radius: 3px; overflow: hidden; }
+  .legend div {
+    flex: 1; font-size: 8.2px; padding: 4px 3px; text-align: center;
+    font-weight: 700; color: var(--dark);
+  }
+
+  /* ── keys ─────────────────────────────────────────────── */
+  kbd {
+    font-family: var(--mono); font-size: 9.3px; font-weight: 700;
+    background: var(--dark); color: var(--bg);
+    padding: 2px 5px; border-radius: 3px; white-space: nowrap;
+  }
+  .keytab td { padding: 4.4px 0; }
+  .keytab td:first-child { width: 1.28in; }
+
+  /* ── code ─────────────────────────────────────────────── */
+  code {
+    font-family: var(--mono); font-size: 9.2px;
+    background: var(--alt2); padding: 1px 4px; border-radius: 2.5px;
+  }
+  pre {
+    font-family: var(--mono); font-size: 9.1px; line-height: 1.55;
+    background: var(--dark); color: #DCF0EE;
+    padding: 8px 10px; border-radius: 3px; margin: 0 0 7px;
+    overflow: hidden;
+  }
+  pre .c { color: var(--green); }
+  pre b { color: var(--teal); font-weight: 700; }
+
+  /* ── panel diagram ────────────────────────────────────── */
+  .panels { margin: 0; }
+  .panels dt {
+    font-size: 10.2px; font-weight: 700; color: var(--dark);
+    margin-top: 6px;
+  }
+  .panels dt span { font-family: var(--mono); color: var(--accent); font-size: 9.4px; }
+  .panels dd { font-size: 9.8px; line-height: 1.45; margin: 1px 0 0; color: var(--sec); }
+
+  /* ── stage list (page 1) ──────────────────────────────── */
+  .stages td {
+    font-size: 9.4px; line-height: 1.36; padding: 2.7px 0; vertical-align: top;
+    color: var(--sec); border-bottom: 0.5px solid var(--alt2);
+  }
+  .stages td:first-child {
+    width: 0.72in; padding-right: 7px;
+    font-family: var(--mono); font-size: 8.9px; font-weight: 700;
+    color: var(--accent); text-transform: uppercase; letter-spacing: 0.3px;
+  }
+  .stages td b { color: var(--dark); }
+
+  /* ── quick-fix table (page 2) ─────────────────────────── */
+  .fix td {
+    font-size: 9.5px; line-height: 1.4; padding: 5px 0; vertical-align: top;
+    color: var(--sec);
+  }
+  .fix td:first-child { width: 1.18in; padding-right: 8px; color: var(--dark); }
+  .fix td b { color: var(--dark); font-family: var(--mono); font-size: 9px; }
+
+  /* ── pre-open checklist (page 2) ──────────────────────── */
+  .check {
+    display: grid; grid-template-columns: 1fr 1fr;
+    gap: 5px 0.28in; margin-top: 2px;
+  }
+  .check > div {
+    font-size: 9.4px; line-height: 1.4; color: var(--sec);
+    padding-left: 17px; position: relative;
+  }
+  .check span {
+    position: absolute; left: 0; top: 1px;
+    width: 10px; height: 10px; border: 1.5px solid var(--accent);
+    border-radius: 2px; display: block;
+  }
+  .check b { color: var(--dark); }
+
+  /* ── footer ───────────────────────────────────────────── */
+  .foot {
+    margin-top: auto; border-top: 1.5px solid var(--alt);
+    padding-top: 6px; font-size: 8.4px; color: var(--sec); line-height: 1.45;
+    display: flex; gap: 0.2in; align-items: flex-end;
+  }
+  .foot .l { flex: 1; }
+  .foot b { color: var(--dark); }
+  .pill {
+    font-family: var(--mono); font-size: 8px; letter-spacing: 0.3px;
+    background: var(--dark); color: var(--bg); padding: 3px 7px;
+    border-radius: 9px; white-space: nowrap;
+  }
+</style>
+</head>
+<body>
+
+<!-- ══════════════════════ PAGE 1 ══════════════════════ -->
+<section class="page">
+
+  <div class="mast">
+    <h1>Watch a protein fold</h1>
+    <div class="sub">Live on <b>Tenstorrent Blackhole</b><br>tt-bio-demo &middot; v__VERSION__</div>
+  </div>
+
+  <p class="lede">
+    A protein is a chain of amino acids that only works once it has folded into a specific
+    three-dimensional shape. Predicting that shape from the sequence alone was an open
+    problem in biology for fifty years. This booth does it in front of you — <strong>on the
+    four Blackhole chips a few feet away</strong>, in seconds, with nothing pre-recorded.
+  </p>
+
+  <div class="hero">
+    <img src="__IMG_QUAD__" alt="Four chips folding four different molecules at once">
+    <p class="cap">
+      <b>The real application, on real silicon.</b> Four Blackhole chips (two p300c boards),
+      each folding a different molecule at its own point in the pipeline. Structures are drawn
+      as a cartoon — helices as ribbons, sheets as arrows. The loose dots are the model's
+      actual denoising trajectory, streamed one step at a time as it condenses into structure.
+    </p>
+  </div>
+
+  <div class="cols">
+    <div>
+      <h2>What you are watching</h2>
+      <p class="tight">
+        The model starts from <b>pure noise</b> — a cloud of atoms in random positions — and
+        removes a little of that noise at a time, guided by what it has learned about how real
+        proteins are built. Every dot on screen is a genuine intermediate step, sent from the
+        chip as it happens.
+      </p>
+      <p>
+        Nothing here is an animation of a finished answer. When a fold has no coordinates yet,
+        the booth holds the <b>previous real structure</b>, dimmed and labelled, rather than
+        inventing something to show you.
+      </p>
+
+      <h2>Colour = the model's confidence</h2>
+      <div class="legend">
+        <div style="background:#4b8bd6;color:#fff">very high</div>
+        <div style="background:#74C5DF">confident</div>
+        <div style="background:#F6BC42">low</div>
+        <div style="background:#FA512E;color:#fff">very low</div>
+      </div>
+      <p>
+        Each residue is coloured by <b>pLDDT</b> — the model scoring its own certainty. Blue
+        regions it is sure about; orange it is guessing. An honest model tells you where it is
+        weak, and this one is shown doing exactly that.
+      </p>
+
+      <h2>The six stages on the panel</h2>
+      <table class="stages">
+        <tr><td>msa</td><td>related sequences from other organisms — skipped here, which is
+            why some targets come back orange</td></tr>
+        <tr><td>prep</td><td>builds the model's input features</td></tr>
+        <tr><td>trunk</td><td>how every residue relates to every other. Makes <b>no
+            coordinates</b> — so a big protein shows nothing new at first, and the booth keeps
+            the previous structure up</td></tr>
+        <tr><td>diffusion</td><td>the part you watch: noise becomes structure</td></tr>
+        <tr><td>confidence</td><td>the model scores itself — where the colours come from</td></tr>
+        <tr><td>saving</td><td>writes the result out as mmCIF</td></tr>
+      </table>
+    </div>
+
+    <div>
+      <h2>What it folds</h2>
+      <table>
+        <thead>
+          <tr><th>Molecule</th><th>Size</th><th style="text-align:right">Warm</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Trp-cage</td><td class="num">20 res</td><td class="t">4.4 s</td></tr>
+          <tr><td>DNA double helix</td><td class="num">—</td><td class="t">4.6 s</td></tr>
+          <tr><td>Transfer RNA</td><td class="num">—</td><td class="t">8.6 s</td></tr>
+          <tr><td>FKBP12 <span class="lig">+ binder</span></td><td class="num">107 res</td><td class="t">11.7–12.3 s</td></tr>
+          <tr><td>DHFR <span class="lig">+ methotrexate</span></td><td class="num">187 res</td><td class="t">20–25 s</td></tr>
+          <tr><td>Trypsin <span class="lig">+ benzamidine</span></td><td class="num">223 res</td><td class="t">22–27 s</td></tr>
+        </tbody>
+      </table>
+      <p class="cap" style="margin-top:5px">
+        Measured on this hardware, warm. Three targets fold a <b>bound ligand</b> alongside the
+        protein — including DHFR with methotrexate, a chemotherapy drug, shown sitting in the
+        pocket it blocks.
+      </p>
+
+      <div class="note">
+        <p><b>Four chips, four proteins — not one protein four times faster.</b></p>
+        <p>
+          A single fold runs on a single chip; that is tt-bio's documented limit, not something
+          this demo works around. Four chips buy four folds at once, and a shorter wait for
+          whatever you pick.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div class="foot">
+    <div class="l">
+      <b>The science is not ours.</b> This booth exists to show other people's work running on
+      Tenstorrent hardware. Folding is <b>tt-bio</b> (MIT) by Moritz Thüning; the demo around it
+      is Apache-2.0. Structures are the model's own output, written as mmCIF and drawn here —
+      no reference structure is ever shown in its place.
+    </div>
+    <div class="pill">github.com/tsingletaryTT/tt-bio-demo</div>
+  </div>
+
+</section>
+
+<!-- ══════════════════════ PAGE 2 ══════════════════════ -->
+<section class="page">
+
+  <div class="mast">
+    <h1>Operating the booth</h1>
+    <div class="sub">For the person <b>running</b> it<br>tt-bio-demo &middot; v__VERSION__</div>
+  </div>
+
+  <div class="cols">
+    <div>
+      <h2>Starting it</h2>
+      <pre><span class="c"># the normal way — double-click</span>
+<span class="c"># "tt-bio Protein Folding Demo"</span>
+
+<span class="c"># or, from a terminal:</span>
+/opt/tt-bio-demo/scripts/run-demo.sh
+/opt/tt-bio-demo/scripts/run-demo.sh <b>--quad</b></pre>
+      <p class="tight">
+        <code>--quad</code> starts in the 2&times;2 grid; <kbd>Q</kbd> toggles it either way at
+        runtime. The launcher starts <b>both</b> halves — the compute daemon and the UI — and
+        tears the daemon down when it exits.
+      </p>
+
+      <h2>Stopping it</h2>
+      <p class="tight">
+        <kbd>Ctrl</kbd> + <kbd>Q</kbd>, or <kbd>Ctrl</kbd>-<kbd>C</kbd> in its terminal. One
+        INFO line about a <code>tt-smi</code> sample killed by a signal is <b>normal</b> on a
+        clean stop.
+      </p>
+      <p>
+        Signalling by pid does nothing — the launcher's trap cannot run until the UI returns.
+        Signal the whole process group:
+      </p>
+      <pre>kill -INT -$(ps -o pgid= -p &lt;pid&gt; | tr -d ' ')</pre>
+
+      <h2>Keys</h2>
+      <table class="keytab">
+        <tr><td><kbd>?</kbd> or <kbd>F1</kbd></td><td>the help card, from any screen</td></tr>
+        <tr><td><kbd>Q</kbd></td><td>quad view — all four chips at once</td></tr>
+        <tr><td><kbd>T</kbd></td><td>Tensix activity — live core grids</td></tr>
+        <tr><td><kbd>D</kbd></td><td>diagnostics — the live protocol log</td></tr>
+        <tr><td><kbd>Esc</kbd></td><td>close the card, or either rail panel</td></tr>
+        <tr><td><kbd>Ctrl</kbd>+<kbd>G</kbd></td><td>easter egg: the Tenstorrent mark, computed on a chip</td></tr>
+        <tr><td><kbd>Ctrl</kbd>+<kbd>F</kbd></td><td>leave / return to fullscreen</td></tr>
+        <tr><td><kbd>Ctrl</kbd>+<kbd>Q</kbd></td><td>quit</td></tr>
+        <tr><td style="color:var(--sec)">any other key<br>or a tap anywhere</td><td>wake the booth and show what it folds</td></tr>
+      </table>
+
+      <h2>Running it unattended</h2>
+      <p class="tight">
+        For a booth that must survive all day, let systemd own the compute daemon so it comes
+        back by itself:
+      </p>
+      <pre>systemctl --user <b>enable --now</b> tt-bio-demo
+systemctl --user <b>status</b>  tt-bio-demo
+systemctl --user <b>restart</b> tt-bio-demo</pre>
+      <p>
+        It restarts <b>on failure only</b> — if you stop it deliberately it stays stopped. The
+        UI is still launched separately, from the desktop entry.
+      </p>
+    </div>
+
+    <div>
+      <h2>The right-hand rail</h2>
+      <dl class="panels">
+        <dt>Pipeline</dt>
+        <dd>One row per stage — msa, prep, trunk, diffusion, confidence, saving. The bright row
+            is running now; diffusion owns most of the bar. Clears itself after 20 s of silence,
+            so a dead daemon cannot leave a bar frozen all day.</dd>
+        <dt>Chips</dt>
+        <dd>Temperature, power and clock per chip, from a <code>tt-smi</code> snapshot every two
+            seconds — sampled on the UI's own thread, never through the daemon, so a wedged
+            daemon still leaves the hardware readout live.</dd>
+        <dt>Tensix activity <span>&mdash; T</span></dt>
+        <dd>One animated core grid per chip. Only the chip actually running the fold animates
+            the work, and the header names it.</dd>
+        <dt>Diagnostics <span>&mdash; D</span></dt>
+        <dd>Every protocol event as it arrives, with a plain-language line for each stage.
+            Closes itself after five minutes of no input.</dd>
+        <dt>Help card <span>&mdash; ?</span></dt>
+        <dd>Works from any screen without pausing the fold. Closes after a minute.</dd>
+      </dl>
+
+      <h2>When a visitor taps a protein</h2>
+      <p class="tight">
+        It gets folded <b>next</b> — never "now". The tap goes to the head of the queue and
+        lands on the next chip to come free. Nothing already running is cancelled, because
+        tearing a fold down mid-device-operation is a known instability source.
+      </p>
+      <p>
+        Measured: <b>0.25–5.5 s</b> with all four chips busy (median ≈ 2 s). And most taps
+        queue nothing at all — with six targets on four chips the protein is usually already
+        folding, so that cell simply takes focus. The booth acknowledges every tap immediately
+        on a one-line notice.
+      </p>
+
+      <div class="note warn">
+        <p><b>Never run <code>tt-smi -r</code> on a shared machine.</b> A chip missing from
+           telemetry may have been deliberately quarantined by the daemon for temperature.
+           Check <code>tt-smi -s</code> first.</p>
+      </div>
+
+      <div class="note">
+        <p><b>Do the first fold before doors open.</b> Every time on the front of this sheet is
+           measured <b>warm</b>. A cold tt-metal kernel cache adds roughly ten seconds to a
+           chip's first run — enough that the booth's own fallback animation takes over.</p>
+      </div>
+
+      <h2>Quick fixes</h2>
+      <table class="fix">
+        <tr><td>A cell says <b>TRUNK</b> and<br>looks frozen</td>
+            <td>Working as designed — trunk makes no coordinates. It is holding the last real
+                structure and says so.</td></tr>
+        <tr><td>A chip missing from<br>the chips panel</td>
+            <td>Check <code>tt-smi -s</code>. It may be quarantined for temperature on purpose.</td></tr>
+        <tr><td>Panels frozen, protein<br>still moving</td>
+            <td>Telemetry is sampled separately from the daemon. Restart the daemon; the UI can stay up.</td></tr>
+        <tr><td>Everything stopped</td>
+            <td><kbd style="font-size:8px;padding:1px 4px">Ctrl</kbd>+<kbd style="font-size:8px;padding:1px 4px">Q</kbd>,
+                then relaunch from the desktop entry.</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <h2 style="margin-top:14px">Before doors open</h2>
+  <div class="check">
+    <div><span></span><b>Four chips present.</b> <code>tt-smi -s</code> lists four entries
+         across two <code>board_id</code>s. Three means one did not come up.</div>
+    <div><span></span><b>Weights on disk.</b> The venue is offline — nothing downloads at the
+         booth. <code>dpkg -l tt-bio-demo-weights</code>.</div>
+    <div><span></span><b>Fold each target once.</b> This is the one that gets skipped. It warms
+         the kernel cache so no visitor watches a cold compile.</div>
+    <div><span></span><b>Fullscreen and quad.</b> <kbd style="font-size:8px;padding:1px 4px">Ctrl</kbd>+<kbd style="font-size:8px;padding:1px 4px">F</kbd>,
+         then <kbd style="font-size:8px;padding:1px 4px">Q</kbd> — or start with <code>--quad</code>.</div>
+    <div><span></span><b>Help card opens.</b> Press <kbd style="font-size:8px;padding:1px 4px">?</kbd>.
+         It is what a visitor reads when you are talking to someone else.</div>
+    <div><span></span><b>Leave it alone for a minute.</b> The attract loop should start folding
+         on its own, unprompted.</div>
+  </div>
+
+  <div class="foot">
+    <div class="l">
+      <b>If something looks wrong:</b> press <kbd style="font-size:8px;padding:1px 4px">D</kbd>
+      for the live protocol log — it names the stage and the chip. The UI never displays a stack
+      trace or raw error text by design, so the log is where the detail lives. Install and
+      recovery: <b>INSTALL.md</b>. Known gotchas: <b>docs/followups.md</b>.
+    </div>
+    <div class="pill">4 chips &middot; 2&times; p300c &middot; Ubuntu 24.04</div>
+  </div>
+
+</section>
+
+</body>
+</html>

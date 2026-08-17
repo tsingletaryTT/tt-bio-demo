@@ -1,0 +1,261 @@
+# Installing tt-bio-demo on a booth machine
+
+This document starts from **a QB2 that has just had the most recent `tt-installer` run on
+it** and ends at a booth folding proteins in front of visitors.
+
+If your starting point is a development checkout rather than a booth machine, you want
+[`README.md`](README.md#quick-start) instead — `scripts/setup-venvs.sh --dev` and
+`scripts/run-demo.sh` from the repo, no packages involved.
+
+> **Do not run this on a shared development box.** These packages install into `/opt`,
+> register a `systemd --user` service, and (if you let them) install kernel modules.
+> `dpkg -i` on a shared host is forbidden by this project's own packaging plan — install
+> tests belong in a throwaway container (`scripts/deb-container.sh`). This document
+> describes a machine that is going to a conference.
+
+---
+
+## 0. What `tt-installer` already gave you
+
+Everything in this column is assumed present and is **not** re-installed by anything below:
+
+| Provided by `tt-installer` | Why it matters here |
+|---|---|
+| `tt-kmd` kernel module, loaded and bound | The container/venv can only *consume* `/dev/tenstorrent/*`; nothing in this repo can create it |
+| `/dev/tenstorrent/0..3` present | Four chips on two p300c boards — see [Hardware](#hardware-this-expects) |
+| Hugepages configured | tt-metal will not open a device without them |
+| Firmware flashed, `tt-smi` on `PATH` | The booth's chip telemetry panel shells out to `tt-smi -s` every two seconds |
+
+Confirm all four in one command before going further:
+
+```bash
+tt-smi -s --snapshot_no_tty | head -40
+```
+
+You want four chip entries sharing two `board_id` values. If `tt-smi` reports nothing, stop
+here — this is a `tt-installer` problem, not a tt-bio-demo problem, and nothing below will
+work around it.
+
+### What `tt-installer` did *not* give you
+
+- The GTK4 / OpenGL system libraries the UI needs (`python3-gi`, `gir1.2-gtk-4.0`, `libgl1`, …)
+- tt-bio itself, or the torch/ttnn stack it sits on
+- The SFPI RISC-V cross-toolchain tt-bio's kernels compile against
+- The model weights (3.7 GB)
+- The application
+
+Steps 1–4 supply exactly those, in that order.
+
+---
+
+## 1. Install the packages
+
+There is **no apt repository yet**, so install the built artifacts from `dist/` directly.
+`apt install ./…` (rather than `dpkg -i`) is deliberate — it resolves the apt dependencies
+in `debian/control` instead of failing on them:
+
+```bash
+sudo apt install ./dist/tt-bio-demo_0.1.0_all.deb \
+                 ./dist/tt-bio-demo-runtime_0.1.0_amd64.deb \
+                 ./dist/tt-bio-demo-weights_0.1.0_all.deb \
+                 ./dist/tt-bio-demo-all_0.1.0_all.deb
+```
+
+Once a repository exists this collapses to the single command the README advertises:
+
+```bash
+sudo apt install tt-bio-demo-all      # not yet available — no repo is published
+```
+
+**Two debconf prompts appear, and the safe answer to both is the default (No):**
+
+| Prompt | Default | What to answer on a post-`tt-installer` box |
+|---|---|---|
+| `Run "tt-bio install-deps" now?` | No | **No.** `tt-installer` has already installed the Tenstorrent system packages and kernel modules this would fetch. Saying yes re-runs a kernel-module installer you do not need. |
+| `Download the model weights now (3.7 GB)?` | No | **No here, yes in step 3.** The download is better run deliberately, where you can watch it, than under the dpkg lock. |
+
+The install finishes by printing `ONE STEP LEFT` and the exact command for step 2. That is
+expected — the postinst deliberately does not build the Python environments while apt holds
+the dpkg lock.
+
+### What landed where
+
+```
+/opt/tt-bio-demo/              the application, playlist, scripts
+/opt/tt-bio-demo/.venvs/       (empty until step 2)
+~/.config/systemd/user/        tt-bio-demo.user.service  (see step 5)
+/usr/share/applications/       tt-bio-demo.desktop
+```
+
+---
+
+## 2. Build the two Python environments
+
+```bash
+sudo /opt/tt-bio-demo/scripts/setup-venvs.sh --prefix /opt/tt-bio-demo
+```
+
+This is the long step: it downloads gigabytes and takes minutes. It builds two venvs that
+are deliberately kept apart, because a torch/ttnn stack and PyGObject have no business
+sharing a `site-packages`:
+
+| venv | Built how | Holds |
+|---|---|---|
+| `venv-ui` | system `python3` **with** `--system-site-packages` | PyGObject (GTK4), gemmi, PyOpenGL, numpy |
+| `venv-runner` | isolated, no system packages | torch, ttnn, tt-bio **0.6.2** (pinned release), vendored SFPI |
+
+Note `--dev` is **not** passed. That flag adds pytest to `venv-runner`, and test tooling is
+dead weight and extra supply-chain surface on a booth machine.
+
+**Read the exit code — it is three-valued and the middle one is easy to miss:**
+
+| Exit | Meaning | Do what |
+|---|---|---|
+| `0` | Everything built and verified, including a real device open/close | Continue |
+| `1` | Hard failure — bad preconditions, missing apt packages, a failed pip install or SFPI hash check | Fix and re-run |
+| `2` | **Built but non-functional** — venv exists with the right pin, but its torch/ttnn/tt_bio stack will not import, or hardware is present and unusable (driver unbound, failed `open_device()`, wedged card) | Do **not** ship the box. Investigate before the venue. |
+
+A second run without `--force` is a ~0.3–0.5 s no-op, so re-running to confirm is cheap.
+
+---
+
+## 3. Fetch the model weights
+
+**The venue is offline. This must happen before the machine leaves.**
+
+```bash
+sudo dpkg-reconfigure tt-bio-demo-weights      # answer Yes this time
+```
+
+That pulls two artifacts totalling ~3.7 GB through tt-bio's own Hugging Face client:
+
+- `protenix-v2.pt` — 1.86 GB
+- `mols.tar` — the CCD molecule library, 1.85 GB
+
+The download is **resumable**: an interrupted attempt continues rather than restarting. The
+postinst verifies what landed and prints `weights present and verified. The booth can fold
+offline.` — treat any other final line as a failure.
+
+---
+
+## 4. Verify the machine
+
+```bash
+/opt/tt-bio-demo/scripts/doctor.sh          # check everything, change nothing
+/opt/tt-bio-demo/scripts/doctor.sh --fix    # also perform the safe repairs
+```
+
+Then prove it end to end with the cheapest real fold — Trp-cage, 20 residues, ~4.4 s warm:
+
+```bash
+/opt/tt-bio-demo/scripts/run-demo.sh --targets trpcage
+```
+
+A structure condensing out of a point cloud on real silicon is the only acceptance test
+that counts. `Ctrl-C` in the terminal tears the daemon down cleanly.
+
+> **Budget real time for the first fold.** Every fold time quoted in this project is
+> measured **warm**. The first fold on a freshly imaged machine also pays a cold tt-metal
+> kernel compile, and **that cost has never been measured** — see
+> [`docs/spike-real-fold.md`](docs/spike-real-fold.md) point 8. The only cold-cache datum in
+> the repo is that a chip's first run costs roughly ten seconds extra. Do not do your first
+> fold in front of visitors.
+>
+> The `tt-bio-demo-weights` package description claims it "pre-warms the tt-metal kernel
+> cache." **It does not** — the postinst contains no pre-warm code, only weight download and
+> verification. Until that is implemented, warming the cache means running step 4's fold
+> once per target you intend to show.
+
+---
+
+## 5. Launch at the booth
+
+Two supported ways, and they are not interchangeable:
+
+### Desktop entry (what an operator uses)
+
+Double-click **tt-bio Protein Folding Demo**, or run:
+
+```bash
+/opt/tt-bio-demo/scripts/run-demo.sh          # add --quad to start in the 2×2 grid
+```
+
+`run-demo.sh` starts *both* halves — the daemon in `venv-runner`, the UI in `venv-ui` — and
+tears the daemon down on exit. This is the normal path.
+
+### Supervised daemon (what runs all day)
+
+For an unattended booth, let systemd own the daemon so it comes back by itself:
+
+```bash
+systemctl --user enable --now tt-bio-demo
+systemctl --user status tt-bio-demo
+```
+
+It is a **`--user`** service, not a system one: the daemon serves its socket out of the
+user's runtime directory, where the UI — an ordinary desktop application — can reach it
+without permission plumbing. `Restart=on-failure` (not `always`) means a deliberate
+`systemctl --user stop` stays stopped.
+
+If the booth must survive a reboot with nobody logged in, enable lingering:
+
+```bash
+sudo loginctl enable-linger "$USER"
+```
+
+---
+
+## Hardware this expects
+
+- **Tenstorrent QB2** — 2× p300c Blackhole *boards* presenting **4 chips**. `tt-smi` lists
+  one entry per chip; the two chips of a p300c share a `board_id`. A visitor reading
+  "4 cards" would picture the wrong machine, and the booth's own panel says so.
+- **Ubuntu 24.04, Wayland**
+- **Network at provisioning time; none required at the venue**
+
+A single fold is a **single-chip** fold — that is tt-bio's documented limit, not something
+this demo works around. Four chips buy four proteins at once and a shorter wait for a
+visitor's pick; they do not make any one fold faster.
+
+---
+
+## Troubleshooting the install
+
+**`ModuleNotFoundError: gi` or `gemmi`** — something ran a bare `python3`. Every entry point
+must go through `venv-ui` or `venv-runner`; never a system or personal interpreter.
+
+**`setup-venvs.sh` exits 2** — see the table in step 2. The venv is built but its stack does
+not import, or a chip is present and unusable. This is the failure mode that silently ships
+a dead booth.
+
+**The booth will not stop when signalled by pid** — `kill -INT <pid>` on `run-demo.sh` does
+nothing visible: the launcher's trap cannot run until its foreground command returns. Signal
+the whole process *group*, which is what a terminal `Ctrl-C` does:
+
+```bash
+kill -INT -$(ps -o pgid= -p <pid> | tr -d ' ')     # note the '-' before the pgid
+```
+
+One INFO line about a `tt-smi` sample killed by a signal is expected on a clean stop.
+
+**A chip is missing from telemetry** — check `tt-smi -s` directly. A chip the daemon has
+quarantined for temperature is deliberately withheld from scheduling. **Never run
+`tt-smi -r` on a shared machine.**
+
+**tt-metal filling the disk** — the daemon's unit passes `--log-root` into the user runtime
+directory for a measured reason: tt-metal writes Inspector/Watcher output relative to the
+working directory, and this project measured 13–14 MB/s going into an already-unlinked file,
+invisible to a directory walk and enough to exhaust a tmpfs in ~31 minutes. Do not launch
+the daemon without `--log-root`.
+
+---
+
+## What this document has not verified
+
+Written against the packaging as it stands at VERSION `0.1.0` and the `.debs` in `dist/`.
+The package contents, debconf templates, postinst behaviour, unit file and script flags
+above were read from the source in this repo. **A full clean-machine install has not been
+run end to end against a freshly imaged QB2** — the container harness
+(`scripts/deb-container.sh`) tests install behaviour without silicon, and the steps above
+compose paths that are individually tested. Expect step 2 and step 3 to be where a real
+first run finds something.
