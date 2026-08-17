@@ -1,0 +1,140 @@
+# Builds the four Debian packages on every push, and publishes them as a
+# GitHub Release when the ref is a tag.
+#
+# Design: docs/superpowers/specs/2026-08-17-release-ci-design.md
+#
+# WHAT THIS GATE IS FOR, precisely: "if we make a debian file, is it going to
+# be installable?" It runs the packaging tests -- which build the real .debs
+# and install them into throwaway ubuntu:24.04 containers -- and the version
+# consistency tests. That is all.
+#
+# What it deliberately does NOT do:
+#   - build venv-ui or venv-runner, or install any GTK, OpenGL or torch
+#     dependency. The .debs compile nothing and carry no Python runtime; both
+#     venvs are built at install time by setup-venvs.sh. Application
+#     correctness lives in ./scripts/test.sh, run locally before tagging.
+#   - touch Tenstorrent hardware, or pass --device to any container.
+#   - run `tt-bio install-deps`, which installs kernel modules.
+#   - publish an apt repository or sign anything.
+name: packages
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Read-only by default. Only the release job widens this, and only to create
+# the release.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    # PINNED, never ubuntu-latest: debian/changelog targets noble and
+    # debian/control names noble-era packages, so the build environment is
+    # part of the contract. Moving it must be a deliberate edit here.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # First, and before anything slow: a mis-tagged release should fail in
+      # seconds. VERSION's agreement with the changelog and the handout is
+      # checked by the test suite below -- only the tag needs CI, because only
+      # CI has one.
+      - name: The tag must agree with VERSION
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          file_version="$(cat VERSION)"
+          if [ "$tag_version" != "$file_version" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} means version ${tag_version}, but VERSION says ${file_version}"
+            exit 1
+          fi
+          echo "tag ${GITHUB_REF_NAME} agrees with VERSION ${file_version}"
+
+      # Deliberately short. debhelper/devscripts/dpkg-dev build the packages;
+      # poppler-utils backs the handout version check; python3-pytest runs the
+      # tests under the SYSTEM interpreter -- the gate's two modules import
+      # only re, subprocess, pathlib, shutil, tempfile and pytest, so no venv
+      # is needed. Docker is preinstalled on this runner and the container
+      # tests fail rather than skip without it.
+      - name: Install build and test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            debhelper devscripts dpkg-dev \
+            poppler-utils \
+            python3-pytest
+
+      # The gate: do the packages build, and do they install. tests/unit/
+      # conftest.py re-exports the container fixture, so running the two files
+      # from the repo root is enough.
+      - name: Gate — the packages build and install
+        run: |
+          python3 -m pytest -v \
+            tests/unit/test_packaging.py \
+            tests/unit/test_version_consistency.py
+
+      - name: Build the packages
+        run: ./scripts/build-deb.sh
+
+      - name: Upload the packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: dist/
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    # The only place in this file that can write to the repository.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # Downloaded, never rebuilt: the artefact that was tested is the
+      # artefact that gets published.
+      - name: Download the packages built and tested above
+        uses: actions/download-artifact@v4
+        with:
+          name: packages
+          path: dist
+
+      # The changelog stanza IS the release notes. It is hand-written Debian
+      # prose describing exactly this version; generating notes from commits
+      # instead would publish this project's long internal commit messages.
+      - name: Release notes from debian/changelog
+        run: |
+          dpkg-parsechangelog -l debian/changelog -S Changes > release-notes.md
+          echo "--- notes ---"
+          cat release-notes.md
+
+      # A published .deb is never replaced. Someone may already have installed
+      # it, and package managers are built on the assumption that a fixed
+      # version number means fixed contents.
+      - name: Refuse to replace an existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            echo "::error::release ${GITHUB_REF_NAME} already exists; refusing to replace it. Bump the version and tag again."
+            exit 1
+          fi
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "tt-bio-demo ${GITHUB_REF_NAME}" \
+            --notes-file release-notes.md \
+            dist/*.deb \
+            dist/*.buildinfo \
+            dist/*.changes \
+            docs/tt-bio-demo-onepager.pdf
