@@ -160,6 +160,42 @@ figcaption { color: var(--ink-3); font-size: .88rem; margin-top: .7rem; line-hei
   background: var(--base); border: 1px solid var(--rule); border-radius: 10px;
 }
 
+/* ── The closing band — the mark, computed on the chips ───────────────── */
+/* The clip's own background samples to rgb(9,35,33), which IS --base. So the
+   band is painted that same colour and the video carries no border and no
+   radius: the points appear to condense directly out of the page rather than
+   inside a window on it. That is the whole reason this section is inverted --
+   not decoration, but the only way to hide the video's edges.
+
+   EVERY COLOUR IN THIS BLOCK IS A LITERAL, NOT A TOKEN, and that is the point.
+   This band is painted --base in BOTH themes -- it is always dark, because it
+   is always matching the clip. The tokens are not: --bg and --ink flip with
+   `prefers-color-scheme`, so `color: var(--bg)` here rendered dark-on-dark and
+   made the heading invisible in dark mode. A permanently inverted surface has
+   to opt out of the theme, not inherit it. */
+/* NOT var(--base), and not a typo. --base is #092221 = rgb(9,34,33), but the
+   clip is h264 and decodes through a limited-range YUV->RGB conversion that
+   lands its identical-by-intent background on rgb(8,32,32). A delta of 1-2 per
+   channel is still a visible rectangle edge around the video on a good display
+   -- measured off a render, not guessed. Painting the band the value the video
+   ACTUALLY decodes to is what makes the edges vanish, which is the entire
+   reason this section is inverted. If the clip is ever re-encoded, re-sample a
+   frame's corner pixel and update this. */
+#mark {
+  background: rgb(8, 32, 32);
+  color: #F1F8F8;
+  padding-block: clamp(3rem, 6vw, 5rem);
+}
+#mark h2       { color: #F1F8F8; }
+#mark .eyebrow { color: #6FABA0; }
+#mark figure   { margin: 0; }
+#mark video {
+  display: block; width: 100%; height: auto;
+  max-width: 48rem; margin: 1.6rem auto 0;
+}
+#mark figcaption { color: #9DBAB6; margin-top: 1.1rem; }
+#mark figcaption strong { color: #F1F8F8; }
+
 /* ── The confidence ramp, as a legend ─────────────────────────────────── */
 .ramp { margin-block: 1.6rem; }
 .ramp-bar { display: flex; height: 12px; border-radius: 6px; overflow: hidden; }
@@ -925,6 +961,39 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
 
 
 
+<!-- ═══ §12 — THE CLOSING BAND ═════════════════════════════════════════
+     The last thing on the page, and the one place the site shows the egg
+     rather than describing it (§10 does the describing). Recorded from the
+     booth, not reconstructed: this is `Ctrl+G` on real silicon. -->
+<section id="mark">
+  <div class="wrap">
+    <div class="col">
+      <span class="eyebrow">Not a fold</span>
+      <h2>The mark, computed on the chips</h2>
+    </div>
+
+    <figure>
+      <video id="mark-video"
+             src="screenshots/tenstorrent-mark-on-chip-8s.mp4"
+             poster="screenshots/tenstorrent-mark-on-chip-poster.png"
+             autoplay loop muted playsinline
+             aria-label="An eight-second recording: a cloud of scattered violet points is pulled step by step into the Tenstorrent logo, then holds on the finished mark before starting over."></video>
+      <figcaption class="col">
+        Eight seconds from the booth. A cloud of random points pulled into the
+        Tenstorrent mark by gradient descent on a signed distance field &mdash;
+        the arithmetic running <strong>on the accelerators</strong>, in the same
+        framework a fold uses, streaming back over the same protocol a fold's
+        frames come down. It comes out slightly differently every time.
+        <br><br>
+        The booth labels it <strong>&ldquo;Not a fold&rdquo;</strong>, in those
+        words, and so does this page. A demo that asks you to believe what it
+        shows you cannot let a pretty thing pass as science because it happens
+        to look like the real output.
+      </figcaption>
+    </figure>
+  </div>
+</section>
+
 <footer>
   <div class="wrap col">
     <p>
@@ -1058,6 +1127,28 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
   } else {
     requestAnimationFrame(step);
   }
+})();
+</script>
+
+<script>
+/* ── The closing band, for someone who asked for less motion ───────────────
+   The canvas above checks the same query and settles on its answer instead of
+   animating; this does the equivalent for the clip. `autoplay` is an attribute
+   the browser may already have acted on by the time this runs, so it is not
+   enough to remove it -- the video is explicitly paused, then given controls
+   so the choice to watch it stays available. It lands on its poster frame,
+   which is the resolved mark. */
+(function () {
+  var v = document.getElementById('mark-video');
+  if (!v) return;
+  var mq = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)');
+  if (!mq || !mq.matches) return;
+  v.removeAttribute('autoplay');
+  v.autoplay = false;
+  v.loop = false;
+  v.pause();
+  v.currentTime = 0;
+  v.controls = true;
 })();
 </script>
 </body>
