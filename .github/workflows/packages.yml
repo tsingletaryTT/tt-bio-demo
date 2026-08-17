@@ -126,21 +126,40 @@ jobs:
       # The changelog stanza IS the release notes. It is hand-written Debian
       # prose describing exactly this version; generating notes from commits
       # instead would publish this project's long internal commit messages.
-      # dpkg-parsechangelog -S Changes emits RFC822 continuation format: an
-      # empty leading line (dropped here by `1d`), then the stanza's own
-      # "pkg (version) dist; urgency=..." header, then the body with each
-      # non-blank line prefixed by one space. A fully blank body line is
-      # rendered as either a bare "." or a single-space-then-"." depending
-      # on position -- both stripped by `s/^ ?\.$//`. Left alone, that reads
-      # as literal "." lines in the published release body; the trailing
-      # `s/^ //` removes the one RFC822 leading space so bullets keep their
-      # own original indent.
+      # WHAT THE RAW OUTPUT ACTUALLY LOOKS LIKE, measured against this repo's
+      # own debian/changelog rather than assumed -- every clause below exists
+      # because of something in it:
+      #
+      #     line 1:  (empty)
+      #     line 2:  tt-bio-demo (0.1.0) noble; urgency=medium
+      #     line 3:  .
+      #     line 4:    * Initial Debian packaging scaffold (Task 1 of the ...
+      #
+      # 1. The stanza header is Debian packaging metadata, not release prose,
+      #    and the release page's title already says the version -- so it is
+      #    deleted by pattern. An earlier draft used `1d` for this and quietly
+      #    did the wrong thing: line 1 is the EMPTY line, so `1d` ate the
+      #    blank and published the header. Matching the header itself is what
+      #    actually removes it.
+      # 2. A fully blank body line arrives as a bare "." or as " ." depending
+      #    on position; `s/^ ?\.$//` turns both back into blank lines. Left
+      #    alone they publish as literal "." lines.
+      # 3. `s/^ //` is cosmetic and does NOT undo an RFC822 prefix -- there
+      #    isn't one. dpkg-parsechangelog preserves the file's own 2-space
+      #    bullets and 4-space wraps, so this shaves one space to give 1/3
+      #    instead of 2/4, keeping the wrapped lines from rendering as
+      #    Markdown code blocks.
+      # 4. `/./,$!d` drops the leading blank lines left behind by 1 and 2.
       - name: Release notes from debian/changelog
         run: |
           dpkg-parsechangelog -l debian/changelog -S Changes \
-            | sed -E '1d; s/^ ?\.$//; s/^ //' > release-notes.md
+            | sed -E '/^tt-bio-demo \(.*urgency=/d; s/^ ?\.$//; s/^ //' \
+            | sed '/./,$!d' > release-notes.md
           echo "--- notes ---"
           cat release-notes.md
+          # An empty notes file would publish a release with no description,
+          # which is a silent failure of this step rather than of the release.
+          test -s release-notes.md
 
       # A published .deb is never replaced. Someone may already have installed
       # it, and package managers are built on the assumption that a fixed
