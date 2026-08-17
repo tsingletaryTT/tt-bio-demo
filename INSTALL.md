@@ -64,11 +64,11 @@ is the exact sequence, verified end to end against a clean Ubuntu 24.04 with not
 
 ```bash
 mkdir -p ~/tt-bio-demo-pkgs && cd ~/tt-bio-demo-pkgs
-BASE=https://github.com/tsingletaryTT/tt-bio-demo/releases/download/v0.2.0
-for f in tt-bio-demo_0.2.0_all.deb \
-         tt-bio-demo-runtime_0.2.0_amd64.deb \
-         tt-bio-demo-weights_0.2.0_all.deb \
-         tt-bio-demo-all_0.2.0_all.deb; do
+BASE=https://github.com/tsingletaryTT/tt-bio-demo/releases/download/v0.2.1
+for f in tt-bio-demo_0.2.1_all.deb \
+         tt-bio-demo-runtime_0.2.1_amd64.deb \
+         tt-bio-demo-weights_0.2.1_all.deb \
+         tt-bio-demo-all_0.2.1_all.deb; do
     curl -fsSLO "$BASE/$f"
 done
 sudo apt install ./*.deb
@@ -114,22 +114,12 @@ the dpkg lock.
 ~/.config/systemd/user/        tt-bio-demo.user.service  (see step 5)
 /usr/share/applications/       tt-bio-demo.desktop
 /usr/share/icons/hicolor/      the app icon, 16px through 512px
-/usr/share/desktop-directories/  tenstorrent.directory
-/etc/xdg/menus/applications-merged/  tenstorrent.menu
 ```
 
-The last three make the booth **discoverable without a terminal**: after install it appears
-in the application launcher as *tt-bio Protein Folding Demo*, with the Tenstorrent mark as
-its icon, grouped under a **Tenstorrent** section.
-
-That section is a standard XDG menu merge, and it behaves differently per desktop:
-
-- **KDE Plasma** builds its application menu from the XDG menu spec, so the Tenstorrent
-  section appears on its own, as written.
-- **GNOME Shell** dropped menu hierarchies — it does not read `.menu` files. The app still
-  shows up and is searchable, just not grouped. Grouping there means an *app folder*
-  (`org.gnome.desktop.app-folders` in GSettings), which is per-user configuration rather than
-  something a package should silently write.
+The icon and the desktop entry make the booth **discoverable without a terminal**: after
+install it appears in the application launcher as *tt-bio Protein Folding Demo*, filed under
+**Science** (shown as *Science & Math* or *Education & Science* depending on the desktop),
+with the Tenstorrent mark as its icon.
 
 If the icon does not appear immediately, the desktop's caches are stale rather than the
 install being wrong:
@@ -306,7 +296,7 @@ the daemon without `--log-root`.
 
 ## What is verified, and what is not
 
-Written against release **v0.2.0**.
+Written against release **v0.2.1**.
 
 **Step 1 is verified end to end.** The exact `curl` sequence above was run against a clean
 `ubuntu:24.04` container with nothing preinstalled: the four assets downloaded from the

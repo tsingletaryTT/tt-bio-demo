@@ -881,25 +881,25 @@ def test_the_icon_ships_the_small_sizes_a_panel_actually_uses(built):
             f"no {size} app icon in the package"
 
 
-def test_the_menu_section_uses_an_X_prefixed_category(built):
-    """`Tenstorrent` would be an invalid category; `X-Tenstorrent` is the
-    spec-conformant spelling for a vendor's own section, and the .menu file
-    and the .desktop file have to agree on it."""
-    entry = (REPO / "debian" / "tt-bio-demo.desktop").read_text()
-    menu = (REPO / "debian" / "tenstorrent.menu").read_text()
+def test_the_desktop_entry_files_under_exactly_one_main_category():
+    """Two main categories means the app can appear twice in the menu.
 
+    Science, Education, Development, Utility and the rest are the spec's
+    registered MAIN categories -- each one is a section a desktop may file
+    this under. The entry carried both Science and Education for a while and
+    desktop-file-validate warned about it. Biology is an ADDITIONAL category
+    and does not count; it refines placement inside Science.
+    """
+    MAIN = {"AudioVideo", "Audio", "Video", "Development", "Education", "Game",
+            "Graphics", "Network", "Office", "Science", "Settings", "System",
+            "Utility"}
+    entry = (REPO / "debian" / "tt-bio-demo.desktop").read_text()
     cats = [l.split("=", 1)[1] for l in entry.splitlines() if l.startswith("Categories=")]
     assert cats, "no Categories= key"
-    assert "X-Tenstorrent" in cats[0], f"Categories is {cats[0]!r}"
-    assert ";Tenstorrent;" not in cats[0], \
-        "bare 'Tenstorrent' is not a registered category; it must be X-Tenstorrent"
-    assert "<Category>X-Tenstorrent</Category>" in menu, \
-        "the menu file includes a different category than the desktop entry declares"
-
-
-def test_the_menu_section_and_its_directory_entry_both_ship(built):
-    c = _contents(_app_deb(built))
-    assert "etc/xdg/menus/applications-merged/tenstorrent.menu" in c
-    assert "usr/share/desktop-directories/tenstorrent.directory" in c
-    assert "/icons/hicolor/48x48/apps/tenstorrent.png" in c, \
-        "the directory entry says Icon=tenstorrent; something has to ship it"
+    listed = [c for c in cats[0].split(";") if c]
+    main = [c for c in listed if c in MAIN]
+    assert main == ["Science"], (
+        f"expected exactly one main category, Science; got {main} from {listed}")
+    assert not any(c.startswith("X-") for c in listed), (
+        "a vendor X- category needs a .directory and .menu owned by a shared "
+        "Tenstorrent package -- see docs/followups.md")

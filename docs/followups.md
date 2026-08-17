@@ -619,3 +619,38 @@ where it started. See the Task 19 section above. And the same soak found the
 *third* instance of this trap — two tt-metal watcher files that four workers
 hold open and the pruner is not told to protect — which is recorded there as
 unreachable at the measured growth rate rather than fixed.
+
+## A "Tenstorrent" application-menu section — built, then deliberately withdrawn
+
+**Status: parked, 2026-08-17.** Working code existed and was removed on instruction
+("we will wait for that other stuff"). Recorded here so the next attempt does not
+rediscover the constraints from scratch.
+
+`tt-bio-demo` files under **Science** alone today (`Categories=Science;Biology;`), which a
+desktop shows as *Science & Math* or *Education & Science*. That is the whole of it.
+
+What a vendor section needs, if it comes back:
+
+1. **`X-Tenstorrent`, never a bare `Tenstorrent`.** The Desktop Entry Spec reserves
+   unprefixed names for its registered categories; a vendor's own must carry `X-`.
+   `desktop-file-validate` accepted `X-Tenstorrent` when this was tried.
+2. **`tenstorrent.directory`** in `/usr/share/desktop-directories/` — the section's name and
+   icon.
+3. **`tenstorrent.menu`** in `/etc/xdg/menus/applications-merged/` — an XDG merge file that
+   grafts the submenu on and includes `<Category>X-Tenstorrent</Category>`.
+
+Two things that will bite:
+
+- **Only one package may own items 2 and 3.** Ship them from `tt-bio-demo` and the day
+  `tt-toplike`, `tt-local-generator` or `tt-station` ships them too is a dpkg file conflict
+  on install — the same failure this repo already hit with `helpers.sh`. They belong in a
+  shared `tenstorrent-desktop-common` that each app depends on. Which is precisely why this
+  was parked rather than shipped from here.
+- **GNOME Shell will not show it.** It dropped menu hierarchies and does not read `.menu`
+  files at all; the app appears and is searchable but ungrouped. KDE Plasma does honour it.
+  Grouping under GNOME means a GSettings app folder (`org.gnome.desktop.app-folders`), which
+  is per-user configuration a package has no business writing silently.
+
+Also worth keeping: **one main category only.** Science, Education, Development, Utility and
+friends are each a section; listing two puts the app in the menu twice.
+`test_the_desktop_entry_files_under_exactly_one_main_category` holds that line now.

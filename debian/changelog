@@ -1,3 +1,10 @@
+tt-bio-demo (0.2.1) noble; urgency=medium
+
+  * The application now ships its own icon and appears in the desktop
+    launcher under Science, so the booth can be started without a terminal.
+
+ -- Taylor Singletary <tsingletary@tenstorrent.com>  Mon, 17 Aug 2026 16:20:00 -0700
+
 tt-bio-demo (0.2.0) noble; urgency=medium
 
   * Readied for distribution. The four packages build and install cleanly on

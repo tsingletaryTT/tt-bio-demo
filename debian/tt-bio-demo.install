@@ -35,12 +35,6 @@ debian/tt-bio-demo.desktop    usr/share/applications/
 # silhouette of the same shape, because a point cloud is illegible at 16px.
 assets/icons/hicolor          usr/share/icons/
 
-# The "Tenstorrent" application-menu section. SEE debian/tenstorrent.menu for
-# why tt-bio-demo owns these two paths today and why they must move to a shared
-# package the moment a second Tenstorrent app is packaged.
-debian/tenstorrent.directory  usr/share/desktop-directories/
-debian/tenstorrent.menu       etc/xdg/menus/applications-merged/
-
 # helpers.sh lives in the BASE package, which tt-bio-demo-runtime and
 # tt-bio-demo-weights both depend on. It used to be shipped by BOTH of those,
 # to the same path -- two packages owning one file, which dpkg refuses when

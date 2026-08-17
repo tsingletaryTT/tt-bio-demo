@@ -9,12 +9,18 @@ Comment=Watch a protein fold in real time on Tenstorrent Blackhole hardware
 Exec=/opt/tt-bio-demo/scripts/run-demo.sh
 Icon=tt-bio-demo
 Terminal=false
-# X-Tenstorrent puts this in the "Tenstorrent" section of the application
-# menu (debian/tenstorrent.menu). The X- prefix is required: the Desktop
-# Entry Spec reserves unprefixed names for its own registered categories,
-# so a bare "Tenstorrent" would be invalid and desktop-file-validate
-# would reject it. The registered categories stay, so the app is still
-# found by anyone browsing Science or Education.
-Categories=Science;Biology;Education;X-Tenstorrent;
+# ONE main category, deliberately. Science, Development, Education, Utility
+# and friends are the spec's registered MAIN categories, and each one is a
+# section a desktop can file this under -- listing two makes the app appear
+# twice in the menu, which desktop-file-validate warns about. Science is the
+# right single home (it shows as "Science & Math" or "Education & Science"
+# depending on the desktop); Biology is an ADDITIONAL category, which refines
+# placement without creating a second one.
+#
+# A vendor "Tenstorrent" section was built and then deliberately withdrawn --
+# see docs/followups.md. It needs an X- prefixed category plus a .directory
+# and an XDG .menu merge, and those last two must be owned by a package shared
+# with the other Tenstorrent apps rather than by this one.
+Categories=Science;Biology;
 Keywords=protein;folding;tenstorrent;blackhole;
 StartupNotify=true
