@@ -814,3 +814,32 @@ def test_every_package_setup_venvs_requires_is_declared_as_a_dependency():
         f"setup-venvs.sh requires {missing}, which no package declares. An "
         f"operator who runs `apt install tt-bio-demo-all` on a clean machine "
         f"gets a successful install and then a booth that cannot be built.")
+
+
+# ── Task 1 (release CI): the metapackage actually installs all four ─────────
+
+def test_the_metapackage_installs_and_brings_all_four_with_it(container):
+    """The question this repo's CI exists to answer: will a .deb install?
+
+    Every other container test here installs ONE package to check one
+    behaviour -- what a debconf answer does, whether install-deps ran. None
+    of them asks the plain question an operator asks, which is whether
+    `apt install tt-bio-demo-all` on a clean machine ends with four installed
+    packages and no broken state.
+
+    Preseeded to decline both prompts, because those are the DEFAULTS and
+    therefore the path an unattended install actually takes. Declining must
+    leave a complete, installed set -- the downloads and the venv build are
+    later, deliberate steps (see INSTALL.md), not preconditions for the
+    packages being installed.
+    """
+    result = container.install("tt-bio-demo-all", preseed={
+        "tt-bio-demo-runtime/install-deps": "boolean false",
+        "tt-bio-demo-weights/download": "boolean false",
+    })
+    assert result.installed, result.log
+    for pkg in sorted(EXPECTED):
+        assert result.status(pkg) == "install ok installed", (
+            f"{pkg} is {result.status(pkg)!r} after installing the metapackage; "
+            f"apt did not end up with all four installed.\n{result.log}"
+        )
