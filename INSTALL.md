@@ -50,8 +50,8 @@ Steps 1–4 supply exactly those, in that order.
 
 ## 1. Install the packages
 
-**Download them from the release page.** There is still no apt repository, but the packages
-are published as release assets, so nothing has to be built to install them:
+**Download the packages from the latest release, then install them.** Nothing is built and
+nothing is added to your apt sources:
 
 ```bash
 gh release download --repo tsingletaryTT/tt-bio-demo --pattern '*.deb'
@@ -80,13 +80,6 @@ and version if a later release exists — see
 
 `apt install ./…` rather than `dpkg -i` is deliberate: it resolves the apt dependencies in
 `debian/control` instead of failing on them.
-
-Once an apt repository exists this collapses further, to the command the README has always
-wanted to be able to give:
-
-```bash
-sudo apt install tt-bio-demo-all      # not yet available — no repo is published
-```
 
 ### Building them yourself instead
 
@@ -120,6 +113,30 @@ the dpkg lock.
 /opt/tt-bio-demo/.venvs/       (empty until step 2)
 ~/.config/systemd/user/        tt-bio-demo.user.service  (see step 5)
 /usr/share/applications/       tt-bio-demo.desktop
+/usr/share/icons/hicolor/      the app icon, 16px through 512px
+/usr/share/desktop-directories/  tenstorrent.directory
+/etc/xdg/menus/applications-merged/  tenstorrent.menu
+```
+
+The last three make the booth **discoverable without a terminal**: after install it appears
+in the application launcher as *tt-bio Protein Folding Demo*, with the Tenstorrent mark as
+its icon, grouped under a **Tenstorrent** section.
+
+That section is a standard XDG menu merge, and it behaves differently per desktop:
+
+- **KDE Plasma** builds its application menu from the XDG menu spec, so the Tenstorrent
+  section appears on its own, as written.
+- **GNOME Shell** dropped menu hierarchies — it does not read `.menu` files. The app still
+  shows up and is searchable, just not grouped. Grouping there means an *app folder*
+  (`org.gnome.desktop.app-folders` in GSettings), which is per-user configuration rather than
+  something a package should silently write.
+
+If the icon does not appear immediately, the desktop's caches are stale rather than the
+install being wrong:
+
+```bash
+sudo update-desktop-database
+sudo gtk-update-icon-cache -f /usr/share/icons/hicolor
 ```
 
 ---

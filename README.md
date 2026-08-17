@@ -478,9 +478,8 @@ which is also why the other three cells keep moving while you wait.
 ## Not yet built
 
 Pre-cached MSAs — every shipped target is `msa: empty` today, which is why three of the four
-proteins come back yellow and orange. An **apt repository**, so the packages can be installed
-by name rather than from `dist/`. And a **kernel-cache pre-warm**, which the weights package
-already advertises but does not do — see
+proteins come back yellow and orange. And a **kernel-cache pre-warm**, which the weights
+package already advertises but does not do — see
 [Installing a booth machine](#installing-a-booth-machine).
 
 Debian packaging itself has landed (four packages, via `scripts/build-deb.sh`), as did the 2×2 quad
@@ -547,14 +546,8 @@ metapackage. `apt install ./…` rather than `dpkg -i` is deliberate — it reso
 dependencies in `debian/control` instead of failing on them.
 
 **Releases:** [github.com/tsingletaryTT/tt-bio-demo/releases](https://github.com/tsingletaryTT/tt-bio-demo/releases).
-Each one is cut by CI from a tag, having first proved the packages build and that
-`apt install tt-bio-demo-all` succeeds on a clean machine.
-
-There is still **no apt repository**, so this cannot yet be done by name. When there is one:
-
-```bash
-sudo apt install tt-bio-demo-all       # not yet available — no repo is published
-```
+Each one is cut by CI from a tag, having first proved the packages build and install
+cleanly on a fresh Ubuntu 24.04 machine.
 
 To install an unreleased commit, build the packages yourself — `dist/` is gitignored, so a
 clone contains none:

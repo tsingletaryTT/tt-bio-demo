@@ -24,6 +24,23 @@ VERSION             opt/tt-bio-demo/
 
 debian/tt-bio-demo.desktop    usr/share/applications/
 
+# The app icon, at every size a panel or launcher asks for. Until now the
+# desktop entry said `Icon=tt-bio-demo` and NOTHING shipped that name, so every
+# launcher fell back to a generic placeholder -- the entry referenced an icon
+# that did not exist. `test_the_desktop_entry_names_an_icon_that_ships` is what
+# holds this line now.
+#
+# The artwork is the Ctrl+G easter egg: the Tenstorrent mark as the point cloud
+# a chip descends into. Sizes 64 and up keep the dots; 48 and below are a solid
+# silhouette of the same shape, because a point cloud is illegible at 16px.
+assets/icons/hicolor          usr/share/icons/
+
+# The "Tenstorrent" application-menu section. SEE debian/tenstorrent.menu for
+# why tt-bio-demo owns these two paths today and why they must move to a shared
+# package the moment a second Tenstorrent app is packaged.
+debian/tenstorrent.directory  usr/share/desktop-directories/
+debian/tenstorrent.menu       etc/xdg/menus/applications-merged/
+
 # helpers.sh lives in the BASE package, which tt-bio-demo-runtime and
 # tt-bio-demo-weights both depend on. It used to be shipped by BOTH of those,
 # to the same path -- two packages owning one file, which dpkg refuses when

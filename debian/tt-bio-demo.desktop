@@ -9,6 +9,12 @@ Comment=Watch a protein fold in real time on Tenstorrent Blackhole hardware
 Exec=/opt/tt-bio-demo/scripts/run-demo.sh
 Icon=tt-bio-demo
 Terminal=false
-Categories=Science;Biology;Education;
+# X-Tenstorrent puts this in the "Tenstorrent" section of the application
+# menu (debian/tenstorrent.menu). The X- prefix is required: the Desktop
+# Entry Spec reserves unprefixed names for its own registered categories,
+# so a bare "Tenstorrent" would be invalid and desktop-file-validate
+# would reject it. The registered categories stay, so the app is still
+# found by anyone browsing Science or Education.
+Categories=Science;Biology;Education;X-Tenstorrent;
 Keywords=protein;folding;tenstorrent;blackhole;
 StartupNotify=true

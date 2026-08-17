@@ -843,3 +843,63 @@ def test_the_metapackage_installs_and_brings_all_four_with_it(container):
             f"{pkg} is {result.status(pkg)!r} after installing the metapackage; "
             f"apt did not end up with all four installed.\n{result.log}"
         )
+
+
+# ── the app icon and the Tenstorrent menu section ───────────────────────────
+
+def test_the_desktop_entry_names_an_icon_that_ships(built):
+    """The bug this exists to prevent, which was live until it was written.
+
+    The desktop entry said `Icon=tt-bio-demo` and the package shipped no icon
+    of that name, so every launcher and panel fell back to a generic
+    placeholder. Nothing caught it: the entry was syntactically valid and the
+    install succeeded. An Icon= key naming a file nobody ships is exactly the
+    kind of break that only shows up as "why does it look like that" on the
+    booth machine.
+    """
+    icon = None
+    for line in (REPO / "debian" / "tt-bio-demo.desktop").read_text().splitlines():
+        if line.startswith("Icon="):
+            icon = line.split("=", 1)[1].strip()
+    assert icon, "the desktop entry has no Icon= key"
+
+    c = _contents(_app_deb(built))
+    shipped = [ln for ln in c.splitlines()
+               if f"/icons/hicolor/" in ln and ln.rstrip().endswith(f"/{icon}.png")]
+    assert shipped, (
+        f"the desktop entry says Icon={icon} but the package ships no "
+        f"usr/share/icons/hicolor/*/apps/{icon}.png")
+
+
+def test_the_icon_ships_the_small_sizes_a_panel_actually_uses(built):
+    """22 and 24 px are the panel sizes. Shipping only 256 looks fine in a
+    launcher grid and blurry everywhere else, because the theme is left to
+    downscale one bitmap."""
+    c = _contents(_app_deb(built))
+    for size in ("16x16", "22x22", "24x24", "32x32", "48x48", "256x256"):
+        assert f"/icons/hicolor/{size}/apps/tt-bio-demo.png" in c, \
+            f"no {size} app icon in the package"
+
+
+def test_the_menu_section_uses_an_X_prefixed_category(built):
+    """`Tenstorrent` would be an invalid category; `X-Tenstorrent` is the
+    spec-conformant spelling for a vendor's own section, and the .menu file
+    and the .desktop file have to agree on it."""
+    entry = (REPO / "debian" / "tt-bio-demo.desktop").read_text()
+    menu = (REPO / "debian" / "tenstorrent.menu").read_text()
+
+    cats = [l.split("=", 1)[1] for l in entry.splitlines() if l.startswith("Categories=")]
+    assert cats, "no Categories= key"
+    assert "X-Tenstorrent" in cats[0], f"Categories is {cats[0]!r}"
+    assert ";Tenstorrent;" not in cats[0], \
+        "bare 'Tenstorrent' is not a registered category; it must be X-Tenstorrent"
+    assert "<Category>X-Tenstorrent</Category>" in menu, \
+        "the menu file includes a different category than the desktop entry declares"
+
+
+def test_the_menu_section_and_its_directory_entry_both_ship(built):
+    c = _contents(_app_deb(built))
+    assert "etc/xdg/menus/applications-merged/tenstorrent.menu" in c
+    assert "usr/share/desktop-directories/tenstorrent.directory" in c
+    assert "/icons/hicolor/48x48/apps/tenstorrent.png" in c, \
+        "the directory entry says Icon=tenstorrent; something has to ship it"
