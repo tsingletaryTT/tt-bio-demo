@@ -1,3 +1,10 @@
+tt-bio-demo (0.2.0) noble; urgency=medium
+
+  * Readied for distribution. The four packages build and install cleanly on
+    a fresh Ubuntu 24.04 machine, and a tagged release now publishes them.
+
+ -- Taylor Singletary <tsingletary@tenstorrent.com>  Mon, 17 Aug 2026 13:24:34 -0700
+
 tt-bio-demo (0.1.0) noble; urgency=medium
 
   * Initial Debian packaging scaffold (Task 1 of the debian-packaging plan,
