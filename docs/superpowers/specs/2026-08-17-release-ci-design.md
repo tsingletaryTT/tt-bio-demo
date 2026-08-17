@@ -19,9 +19,12 @@ so `INSTALL.md` step 1 stops saying "build them yourself first".
 >   UI half without `venv-runner`. With no UI half in the gate there is no flag to add, and
 >   `scripts/test.sh` is left untouched.
 > - **No venv is built in CI at all**, and none of the GTK/OpenGL apt packages are installed.
->   `tests/unit/test_packaging.py` and `tests/unit/conftest_container.py` import only
->   `re`, `subprocess`, `pathlib`, `shutil`, `tempfile` and `pytest` — verified — so the
->   system interpreter plus `python3-pytest` runs them.
+>   At module scope, `tests/unit/test_packaging.py` and `tests/unit/conftest_container.py`
+>   import only `re`, `subprocess`, `pathlib`, `shutil`, `tempfile` and `pytest` — but
+>   `test_packaging.py` also has a function-local `import yaml` inside two tests
+>   (`test_every_playlist_input_ships`, `test_every_playlist_thumbnail_ships`), which the
+>   original scan of top-level imports missed entirely. The system interpreter plus
+>   `python3-pytest` **and `python3-yaml`** is what actually runs them.
 >
 > §4 and §5 below are rewritten accordingly. §8's headless measurement is kept as a recorded
 > fact but no longer gates anything.
@@ -127,8 +130,11 @@ installable?"* — so the gate is `tests/unit/test_packaging.py` (57 tests, incl
 ten that install into a throwaway `ubuntu:24.04` via `scripts/deb-container.sh`) plus the
 version-consistency tests of §3.
 
-**No venv is built.** Those modules import only `re`, `subprocess`, `pathlib`, `shutil`,
-`tempfile` and `pytest`, so the system interpreter plus apt's `python3-pytest` runs them.
+**No venv is built.** At module scope those files import only `re`, `subprocess`,
+`pathlib`, `shutil`, `tempfile` and `pytest` — but `test_packaging.py` also carries a
+function-local `import yaml` inside two tests, easy to miss when scanning only a module's
+top-level imports (which is exactly how the original version of this design missed it). So
+the system interpreter plus apt's `python3-pytest` **and `python3-yaml`** runs them.
 `tests/unit/conftest.py` re-exports the `container` fixture, so invoking pytest on the two
 files from the repo root is enough.
 

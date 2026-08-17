@@ -57,17 +57,22 @@ jobs:
 
       # Deliberately short. debhelper/devscripts/dpkg-dev build the packages;
       # poppler-utils backs the handout version check; python3-pytest runs the
-      # tests under the SYSTEM interpreter -- the gate's two modules import
-      # only re, subprocess, pathlib, shutil, tempfile and pytest, so no venv
-      # is needed. Docker is preinstalled on this runner and the container
-      # tests fail rather than skip without it.
+      # tests under the SYSTEM interpreter. At module scope the gate's two
+      # files import only re, subprocess, pathlib, shutil, tempfile and
+      # pytest -- but test_packaging.py also has function-local `import yaml`
+      # inside test_every_playlist_input_ships and
+      # test_every_playlist_thumbnail_ships, which a top-level-imports scan
+      # misses entirely. python3-yaml is listed below for exactly that
+      # reason. No venv is needed either way -- everything here runs under
+      # the system interpreter. Docker is preinstalled on this runner and the
+      # container tests fail rather than skip without it.
       - name: Install build and test dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             debhelper devscripts dpkg-dev \
             poppler-utils \
-            python3-pytest
+            python3-pytest python3-yaml
 
       # The gate: do the packages build, and do they install. tests/unit/
       # conftest.py re-exports the container fixture, so running the two files
@@ -90,7 +95,12 @@ jobs:
 
   release:
     needs: build
-    if: startsWith(github.ref, 'refs/tags/')
+    # Require the push event as well as the tag-shaped ref: workflow_dispatch
+    # lets a human pick any ref from the run-workflow ref picker, including
+    # an existing tag, and startsWith(github.ref, 'refs/tags/') alone would
+    # be satisfied by a manual dispatch on tag v0.1.1 -- which must never
+    # publish a release on its own.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-24.04
     # The only place in this file that can write to the repository.
     permissions:
@@ -98,8 +108,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Downloaded, never rebuilt: the artefact that was tested is the
-      # artefact that gets published.
+      # Downloaded, never rebuilt between jobs: this job installs the exact
+      # artifact the build job produced rather than running build-deb.sh
+      # again. That is not quite "the artefact that was tested is the
+      # artefact that gets published" -- the container install test in
+      # test_packaging.py builds its own throwaway .debs into a temp dir via
+      # the test harness, a separate invocation from the build job's
+      # scripts/build-deb.sh run that produces what's uploaded here. Same
+      # source tree and the same build command, so practically equivalent,
+      # but two distinct builds, not one shared artifact.
       - name: Download the packages built and tested above
         uses: actions/download-artifact@v4
         with:
@@ -109,9 +126,19 @@ jobs:
       # The changelog stanza IS the release notes. It is hand-written Debian
       # prose describing exactly this version; generating notes from commits
       # instead would publish this project's long internal commit messages.
+      # dpkg-parsechangelog -S Changes emits RFC822 continuation format: an
+      # empty leading line (dropped here by `1d`), then the stanza's own
+      # "pkg (version) dist; urgency=..." header, then the body with each
+      # non-blank line prefixed by one space. A fully blank body line is
+      # rendered as either a bare "." or a single-space-then-"." depending
+      # on position -- both stripped by `s/^ ?\.$//`. Left alone, that reads
+      # as literal "." lines in the published release body; the trailing
+      # `s/^ //` removes the one RFC822 leading space so bullets keep their
+      # own original indent.
       - name: Release notes from debian/changelog
         run: |
-          dpkg-parsechangelog -l debian/changelog -S Changes > release-notes.md
+          dpkg-parsechangelog -l debian/changelog -S Changes \
+            | sed -E '1d; s/^ ?\.$//; s/^ //' > release-notes.md
           echo "--- notes ---"
           cat release-notes.md
 
