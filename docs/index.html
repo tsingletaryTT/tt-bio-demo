@@ -274,6 +274,43 @@ tbody tr:last-child td { border-bottom: 0; }
 .refs .t { display: block; font-weight: 600; }
 .refs .m { display: block; font-size: .87rem; color: var(--ink-3); font-family: var(--font-mono); margin-top: .2rem; }
 
+/* ── The handout — two sides of one sheet ─────────────────────────────── */
+/* Unlike the #mark band at the foot of the page, everything here is a TOKEN,
+   because this surface is meant to follow the theme: the previews are pictures
+   of white paper, and they should sit on whichever ground the reader chose.
+   Both pages link to the same PDF -- redundant as a pair of targets, but each
+   link's own text says which side it is showing, so neither reads as a
+   mystery destination. */
+.sheets {
+  display: grid; gap: var(--gap); margin-top: 2.5rem;
+  grid-template-columns: 1fr;
+}
+@media (min-width: 46rem) { .sheets { grid-template-columns: 1fr 1fr; } }
+.sheet {
+  display: block; text-decoration: none; color: inherit;
+  border: 1px solid var(--rule); border-radius: 10px; overflow: hidden;
+  background: var(--surface);
+  transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
+}
+/* The preview keeps its own white ground in dark mode -- it is a photograph of
+   paper, not a themed surface, and tinting it would misrepresent the artefact
+   someone is about to print. */
+.sheet img { display: block; width: 100%; height: auto; border-bottom: 1px solid var(--rule); }
+.sheet .lbl   { display: block; padding: .85rem 1rem 1.05rem; }
+.sheet .lbl b { display: block; font-weight: 650; }
+.sheet .lbl span {
+  display: block; font-size: .9rem; color: var(--ink-2); margin-top: .18rem;
+}
+.sheet:hover, .sheet:focus-visible {
+  transform: translateY(-3px);
+  box-shadow: 0 10px 26px rgb(9 34 33 / .16);
+  border-color: var(--accent);
+}
+.sheet-meta {
+  font-family: var(--font-mono); font-size: .8rem; color: var(--ink-3);
+  letter-spacing: .04em; margin-top: .9rem;
+}
+
 footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--ink-3); font-size: .9rem; }
 .todo {
   border: 1px dashed var(--rule); border-radius: 8px;
@@ -925,6 +962,54 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
       carries the amino acid that word calls for. Fold all three and you have
       watched the path from a gene to a protein, one step per card.
     </p>
+  </div>
+</section>
+
+<!-- ═══ §10b — THE HANDOUT ═════════════════════════════════════════════
+     The printable version of this page's argument, for someone standing at
+     the booth with no screen in front of them. -->
+<section id="handout">
+  <div class="wrap">
+    <div class="col">
+      <span class="eyebrow">Two sides of one sheet</span>
+      <h2>Take it with you</h2>
+      <p>
+        Everything above, printed: the front explains what the booth is doing
+        for anyone who has just walked up to it, and the back is the operator's
+        card &mdash; every key binding, what each panel means, and what to check
+        before the doors open.
+      </p>
+    </div>
+
+    <div class="sheets">
+      <a class="sheet" href="tt-bio-demo-onepager.pdf">
+        <img src="screenshots/onepager-front.jpg"
+             alt="Page one of the handout: a headline reading &ldquo;Watch a protein fold&rdquo;, the four-chip quad screenshot, the confidence colour ramp, and a table of the six molecules with their fold times.">
+        <span class="lbl">
+          <b>Front &mdash; what you are watching</b>
+          <span>Why a protein's shape matters, what the dots are, the six
+                molecules and their measured times.</span>
+        </span>
+      </a>
+
+      <a class="sheet" href="tt-bio-demo-onepager.pdf">
+        <img src="screenshots/onepager-back.jpg"
+             alt="Page two of the handout: how to start and stop the booth, a table of every key binding, an explanation of each panel in the right-hand rail, quick fixes, and a checklist to run before the doors open.">
+        <span class="lbl">
+          <b>Back &mdash; how to run it</b>
+          <span>Starting, stopping, every key, the rail panels, quick fixes and
+                a pre-open checklist.</span>
+        </span>
+      </a>
+    </div>
+
+    <div class="col">
+      <div class="cta">
+        <a class="btn btn-solid" href="tt-bio-demo-onepager.pdf" download>Download the handout</a>
+        <a class="btn" href="https://github.com/tsingletaryTT/tt-bio-demo/blob/main/INSTALL.md">Install it on a booth machine</a>
+      </div>
+      <p class="sheet-meta">PDF &middot; 2 pages &middot; US&nbsp;Letter &middot; 600&nbsp;KB</p>
+    </div>
   </div>
 </section>
 

@@ -114,6 +114,24 @@ start, and all four then fold Trp-cage concurrently to pLDDT 95.2–95.3.
 
 ---
 
+## The handout
+
+Everything above, printed — two sides of one sheet.
+**[Download the PDF →](docs/tt-bio-demo-onepager.pdf)** · 2 pages · US Letter · 600 KB
+
+| [<img src="docs/screenshots/onepager-front.jpg" width="100%">](docs/tt-bio-demo-onepager.pdf) | [<img src="docs/screenshots/onepager-back.jpg" width="100%">](docs/tt-bio-demo-onepager.pdf) |
+|:--|:--|
+| **Front — what you are watching**<br>For anyone who has just walked up to the booth: why a protein's shape matters, what the dots actually are, the confidence colours, and the six molecules with their measured fold times. | **Back — how to run it**<br>The operator's card: starting and stopping, every key binding, what each rail panel means, quick fixes, and a checklist for before the doors open. |
+
+Rebuild it after changing fold times, key bindings or `VERSION` with
+[`docs/onepager/build.sh`](docs/onepager/build.sh) — it re-renders from
+`onepager.html.tmpl` and asserts the result is still exactly two pages.
+
+Putting a booth machine together is [`INSTALL.md`](INSTALL.md), which starts from a QB2 that
+has just had `tt-installer` run on it.
+
+---
+
 ## Quick start
 
 On a box with a Tenstorrent device, from a fresh clone:
