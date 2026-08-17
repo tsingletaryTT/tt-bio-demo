@@ -142,6 +142,20 @@ files from the repo root is enough.
 into the packaging plan: a silently skipped install test is indistinguishable from a passing
 one. The harness already behaves this way; CI must not weaken it.
 
+### The one test the gate cannot run
+
+`test_the_weights_postinst_uses_the_tt_bio_api_that_actually_exists` parses `tt_bio/main.py`
+out of **`venv-runner`'s** site-packages, to check the weights postinst calls an API that
+still exists. It needs the multi-GB venv this workflow deliberately never builds, and it
+correctly `pytest.fail`s rather than skips when the venv is missing — which is what turned
+the first green-ish run red.
+
+It is therefore **`--deselect`ed by name on the CI command line**, not skipped. The
+distinction matters: the deselection is one visible line in the workflow and in the run log,
+and the test still fails properly for anyone running the full suite locally, where
+`venv-runner` exists. A second test needing exclusion would be a signal to re-examine this
+scope rather than to lengthen the list.
+
 ### The one real gap in existing coverage
 
 The container tests install packages *individually* — `tt-bio-demo-runtime` under various
