@@ -310,6 +310,9 @@ tbody tr:last-child td { border-bottom: 0; }
   font-family: var(--font-mono); font-size: .8rem; color: var(--ink-3);
   letter-spacing: .04em; margin-top: .9rem;
 }
+/* The handout section's button row, which has three buttons rather than the
+   hero's two and does not fit the 34rem prose measure. */
+.cta-wide { justify-content: center; margin-top: 2rem; }
 
 footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--ink-3); font-size: .9rem; }
 .todo {
@@ -1003,12 +1006,16 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
       </a>
     </div>
 
+    <!-- Full wrap width, not the 34rem prose measure: three buttons wrap to a
+         ragged 2+1 stack inside `col`, and the third looks orphaned. -->
+    <div class="cta cta-wide">
+      <a class="btn btn-solid" href="tt-bio-demo-onepager.pdf" download>Download the handout</a>
+      <a class="btn" href="https://github.com/tsingletaryTT/tt-bio-demo/releases/latest">Get the packages</a>
+      <a class="btn" href="https://github.com/tsingletaryTT/tt-bio-demo/blob/main/INSTALL.md">Install it on a booth machine</a>
+    </div>
     <div class="col">
-      <div class="cta">
-        <a class="btn btn-solid" href="tt-bio-demo-onepager.pdf" download>Download the handout</a>
-        <a class="btn" href="https://github.com/tsingletaryTT/tt-bio-demo/blob/main/INSTALL.md">Install it on a booth machine</a>
-      </div>
-      <p class="sheet-meta">PDF &middot; 2 pages &middot; US&nbsp;Letter &middot; 600&nbsp;KB</p>
+      <p class="sheet-meta">Handout &middot; PDF &middot; 2 pages &middot; US&nbsp;Letter &nbsp;|&nbsp;
+         Packages &middot; four <code>.deb</code>s &middot; Ubuntu&nbsp;24.04 &middot; no apt repo yet</p>
     </div>
   </div>
 </section>
@@ -1039,6 +1046,10 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
       <li>
         <a class="t" href="https://github.com/tsingletaryTT/tt-bio-demo">tsingletaryTT/tt-bio-demo</a>
         <span class="m">this booth &middot; the application in the video above</span>
+      </li>
+      <li>
+        <a class="t" href="https://github.com/tsingletaryTT/tt-bio-demo/releases/latest">Releases &mdash; the booth as installable packages</a>
+        <span class="m">four .debs per release &middot; cut by CI from a tag, after proving they install on a clean machine</span>
       </li>
     </ul>
   </div>

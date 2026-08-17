@@ -50,34 +50,57 @@ Steps 1–4 supply exactly those, in that order.
 
 ## 1. Install the packages
 
-There is **no apt repository yet**, so the packages are installed from files.
-
-**Where the files come from.** `dist/` is gitignored — a clone does not contain them. Build
-them on a machine with `dpkg-buildpackage` and `debhelper` (a dev box, or the container
-harness), then copy the four `.deb`s to the booth machine:
+**Download them from the release page.** There is still no apt repository, but the packages
+are published as release assets, so nothing has to be built to install them:
 
 ```bash
-./scripts/build-deb.sh                 # writes four .debs into dist/
+gh release download --repo tsingletaryTT/tt-bio-demo --pattern '*.deb'
+sudo apt install ./*.deb
 ```
 
-Building on the booth machine itself works too, but it means installing a build toolchain on
-a machine going to a conference, which is the opposite of what this packaging is for.
-
-`apt install ./…` (rather than `dpkg -i`) is deliberate — it resolves the apt dependencies
-in `debian/control` instead of failing on them:
+Without `gh` — and a freshly imaged QB2 will not have it — plain `curl` does the same. This
+is the exact sequence, verified end to end against a clean Ubuntu 24.04 with nothing but
+`curl` installed:
 
 ```bash
-sudo apt install ./dist/tt-bio-demo_0.1.0_all.deb \
-                 ./dist/tt-bio-demo-runtime_0.1.0_amd64.deb \
-                 ./dist/tt-bio-demo-weights_0.1.0_all.deb \
-                 ./dist/tt-bio-demo-all_0.1.0_all.deb
+mkdir -p ~/tt-bio-demo-pkgs && cd ~/tt-bio-demo-pkgs
+BASE=https://github.com/tsingletaryTT/tt-bio-demo/releases/download/v0.2.0
+for f in tt-bio-demo_0.2.0_all.deb \
+         tt-bio-demo-runtime_0.2.0_amd64.deb \
+         tt-bio-demo-weights_0.2.0_all.deb \
+         tt-bio-demo-all_0.2.0_all.deb; do
+    curl -fsSLO "$BASE/$f"
+done
+sudo apt install ./*.deb
 ```
 
-Once a repository exists this collapses to the single command the README advertises:
+The repository is public, so neither path needs a token or a login. Substitute a newer tag
+and version if a later release exists — see
+[the releases page](https://github.com/tsingletaryTT/tt-bio-demo/releases).
+
+`apt install ./…` rather than `dpkg -i` is deliberate: it resolves the apt dependencies in
+`debian/control` instead of failing on them.
+
+Once an apt repository exists this collapses further, to the command the README has always
+wanted to be able to give:
 
 ```bash
 sudo apt install tt-bio-demo-all      # not yet available — no repo is published
 ```
+
+### Building them yourself instead
+
+Only needed to install a commit that has not been released. `dist/` is gitignored, so a clone
+contains no packages:
+
+```bash
+./scripts/build-deb.sh                 # writes the four .debs into dist/
+sudo apt install ./dist/*.deb
+```
+
+Build on a dev box or in the container harness and copy the `.deb`s across. Building on the
+booth machine means putting a build toolchain on a machine going to a conference, which is
+the opposite of what this packaging is for.
 
 **Two debconf prompts appear, and the safe answer to both is the default (No):**
 
@@ -264,12 +287,22 @@ the daemon without `--log-root`.
 
 ---
 
-## What this document has not verified
+## What is verified, and what is not
 
-Written against the packaging as it stands at VERSION `0.1.0` and the `.debs` in `dist/`.
-The package contents, debconf templates, postinst behaviour, unit file and script flags
-above were read from the source in this repo. **A full clean-machine install has not been
-run end to end against a freshly imaged QB2** — the container harness
-(`scripts/deb-container.sh`) tests install behaviour without silicon, and the steps above
-compose paths that are individually tested. Expect step 2 and step 3 to be where a real
-first run finds something.
+Written against release **v0.2.0**.
+
+**Step 1 is verified end to end.** The exact `curl` sequence above was run against a clean
+`ubuntu:24.04` container with nothing preinstalled: the four assets downloaded from the
+release, `apt install ./*.deb` succeeded, and all four packages reached
+`install ok installed`. CI re-proves the equivalent on every push, and a release cannot be
+published unless it passes.
+
+**Steps 2–5 are not.** The package contents, debconf templates, postinst behaviour, unit file
+and script flags were read from source and are individually tested, but **no full
+clean-machine install has been run against a freshly imaged QB2** — CI has no Tenstorrent
+hardware and never will. Expect step 2 (the venv build, which needs network and the SFPI
+toolchain) and step 3 (3.7 GB of weights) to be where a real first run finds something.
+
+**Budget the first fold.** Step 4's fold on a machine that has never folded that target costs
+~94.5 s rather than the warm ~9 s — see [`docs/cold-start.md`](docs/cold-start.md). That is
+measured, not estimated.

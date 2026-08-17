@@ -530,21 +530,38 @@ launching to get it back — `runner_environ()` uses `setdefault` and never over
 
 ## Installing a booth machine
 
-Four packages exist — the application, the Python runtime, the weights fetcher, and a
-metapackage — but **no apt repository is published yet**, and `dist/` is gitignored, so a
-clone has no packages until you build them. Build, then install from the files, using
-`apt install ./…` rather than `dpkg -i` so apt resolves the system dependencies in
-`debian/control` instead of failing on them:
+**Download the packages from the latest release and install them.** Nothing to build, no
+token, no login — the repo is public:
 
 ```bash
-./scripts/build-deb.sh                 # writes the four .debs into dist/
-sudo apt install ./dist/*.deb          # app, runtime, weights, metapackage
+gh release download --repo tsingletaryTT/tt-bio-demo --pattern '*.deb'
+sudo apt install ./*.deb
 ```
 
-Once a repository exists, that collapses to the one command this section used to promise:
+A freshly imaged QB2 will not have `gh`, and does not need it — `curl` is enough. See
+[`INSTALL.md`](INSTALL.md) for that form, verified end to end against a clean Ubuntu 24.04
+with nothing but `curl` installed.
+
+Four packages arrive: the application, the Python runtime, the weights fetcher, and a
+metapackage. `apt install ./…` rather than `dpkg -i` is deliberate — it resolves the system
+dependencies in `debian/control` instead of failing on them.
+
+**Releases:** [github.com/tsingletaryTT/tt-bio-demo/releases](https://github.com/tsingletaryTT/tt-bio-demo/releases).
+Each one is cut by CI from a tag, having first proved the packages build and that
+`apt install tt-bio-demo-all` succeeds on a clean machine.
+
+There is still **no apt repository**, so this cannot yet be done by name. When there is one:
 
 ```bash
 sudo apt install tt-bio-demo-all       # not yet available — no repo is published
+```
+
+To install an unreleased commit, build the packages yourself — `dist/` is gitignored, so a
+clone contains none:
+
+```bash
+./scripts/build-deb.sh                 # writes the four .debs into dist/
+sudo apt install ./dist/*.deb
 ```
 
 On a QB2 that has just had `tt-installer` run on it, this brings the application, the
