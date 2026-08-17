@@ -55,7 +55,15 @@ jobs:
           fi
           echo "tag ${GITHUB_REF_NAME} agrees with VERSION ${file_version}"
 
-      # Deliberately short. debhelper/devscripts/dpkg-dev build the packages;
+      # build-essential is here because dpkg-checkbuilddeps demands it as an
+      # IMPLICIT build-dependency of every Debian source package -- it is not
+      # in debian/control and nothing else in this list pulls it in. Omitting
+      # it failed run 32062850024 in 31s with "Unmet build dependencies:
+      # build-essential:native", taking 8 tests and 14 errors down with it.
+      # It could not be caught locally: a developer box has build-essential,
+      # the runner image does not.
+      #
+      # Otherwise deliberately short. debhelper/devscripts/dpkg-dev build the packages;
       # poppler-utils backs the handout version check; python3-pytest runs the
       # tests under the SYSTEM interpreter. At module scope the gate's two
       # files import only re, subprocess, pathlib, shutil, tempfile and
@@ -70,7 +78,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            debhelper devscripts dpkg-dev \
+            build-essential debhelper devscripts dpkg-dev \
             poppler-utils \
             python3-pytest python3-yaml
 
