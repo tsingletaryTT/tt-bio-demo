@@ -477,11 +477,15 @@ which is also why the other three cells keep moving while you wait.
 
 ## Not yet built
 
-Debian packaging, and pre-cached MSAs (every shipped target is `msa: empty` today — which
-is why three of the four proteins come back yellow and orange).
+Pre-cached MSAs — every shipped target is `msa: empty` today, which is why three of the four
+proteins come back yellow and orange. An **apt repository**, so the packages can be installed
+by name rather than from `dist/`. And a **kernel-cache pre-warm**, which the weights package
+already advertises but does not do — see
+[Installing a booth machine](#installing-a-booth-machine).
 
-The 2×2 quad view and the visitor's pick both landed in Phase 5 and are no longer on this
-list: four chips fold at once (press `Q`), and a tap puts a protein next — see
+Debian packaging itself has landed (four packages, via `scripts/build-deb.sh`), as did the 2×2 quad
+view and the visitor's pick in Phase 5 — none of the three are on this list any more: four
+chips fold at once (press `Q`), and a tap puts a protein next — see
 [What happens when a visitor taps a protein](#what-happens-when-a-visitor-taps-a-protein).
 See [`docs/followups.md`](docs/followups.md) for known gotchas and
 [`docs/superpowers/plans/`](docs/superpowers/plans/) for the phase plans.
@@ -524,15 +528,40 @@ rate). tt-metal warns that `tt-triage` degrades without it; nothing here uses `t
 so the default trades it for a bounded log root. Set `TT_METAL_INSPECTOR=1` yourself before
 launching to get it back — `runner_environ()` uses `setdefault` and never overrides you.
 
-## Intended install
+## Installing a booth machine
+
+Four packages exist — the application, the Python runtime, the weights fetcher, and a
+metapackage — but **no apt repository is published yet**, and `dist/` is gitignored, so a
+clone has no packages until you build them. Build, then install from the files, using
+`apt install ./…` rather than `dpkg -i` so apt resolves the system dependencies in
+`debian/control` instead of failing on them:
 
 ```bash
-sudo apt install tt-bio-demo-all
+./scripts/build-deb.sh                 # writes the four .debs into dist/
+sudo apt install ./dist/*.deb          # app, runtime, weights, metapackage
 ```
 
-On a freshly imaged QB2 this brings tt-bio, the model weights (including the OpenFold3
-checkpoint), the curated content, and the application — and pre-warms the tt-metal kernel
-cache so the first fold at the booth is a warm one. Not built yet.
+Once a repository exists, that collapses to the one command this section used to promise:
+
+```bash
+sudo apt install tt-bio-demo-all       # not yet available — no repo is published
+```
+
+On a QB2 that has just had `tt-installer` run on it, this brings the application, the
+curated content, the systemd `--user` unit and the desktop entry. Two things it deliberately
+does **not** do: build the Python environments (that downloads gigabytes and cannot run while
+apt holds the dpkg lock — the postinst prints the one command left to run), and fetch the
+~3.7 GB of model weights, which is offered as a debconf question defaulting to *no* because
+the venue is offline and an unattended install should not start a 3.7 GB download on its own.
+
+It also does not pre-warm the tt-metal kernel cache. The `tt-bio-demo-weights` package
+description claims it does; its postinst only downloads and verifies weights. Warm the cache
+by folding each target once before the doors open — and note every fold time on this page is
+measured **warm**, with the true cold-start cost still unmeasured
+([`docs/spike-real-fold.md`](docs/spike-real-fold.md) point 8).
+
+Full steps — including what `tt-installer` has already provided, so no step re-installs it —
+are in [`INSTALL.md`](INSTALL.md).
 
 ## Requirements
 

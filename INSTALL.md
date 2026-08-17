@@ -50,7 +50,19 @@ Steps 1–4 supply exactly those, in that order.
 
 ## 1. Install the packages
 
-There is **no apt repository yet**, so install the built artifacts from `dist/` directly.
+There is **no apt repository yet**, so the packages are installed from files.
+
+**Where the files come from.** `dist/` is gitignored — a clone does not contain them. Build
+them on a machine with `dpkg-buildpackage` and `debhelper` (a dev box, or the container
+harness), then copy the four `.deb`s to the booth machine:
+
+```bash
+./scripts/build-deb.sh                 # writes four .debs into dist/
+```
+
+Building on the booth machine itself works too, but it means installing a build toolchain on
+a machine going to a conference, which is the opposite of what this packaging is for.
+
 `apt install ./…` (rather than `dpkg -i`) is deliberate — it resolves the apt dependencies
 in `debian/control` instead of failing on them:
 
