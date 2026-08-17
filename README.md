@@ -556,9 +556,9 @@ the venue is offline and an unattended install should not start a 3.7 GB downloa
 
 It also does not pre-warm the tt-metal kernel cache. The `tt-bio-demo-weights` package
 description claims it does; its postinst only downloads and verifies weights. Warm the cache
-by folding each target once before the doors open — and note every fold time on this page is
-measured **warm**, with the true cold-start cost still unmeasured
-([`docs/spike-real-fold.md`](docs/spike-real-fold.md) point 8).
+by folding each target once before the doors open — every fold time on this page is measured
+**warm**, and on an empty cache Trp-cage's first fold costs **94.5 s** against 9.4 s warm,
+about 83 s of it kernel compilation ([`docs/cold-start.md`](docs/cold-start.md)).
 
 Full steps — including what `tt-installer` has already provided, so no step re-installs it —
 are in [`INSTALL.md`](INSTALL.md).

@@ -402,7 +402,10 @@ unit tests still pass (`scripts/test.sh`, unaffected by anything in this spike).
    exactly once per daemon lifetime (which the design's "models resident" plan already
    intends).
 
-8. **Cold-start timing is still unmeasured and should be budgeted, not assumed.** Every
+8. **Cold-start timing is still unmeasured and should be budgeted, not assumed.**
+   [**Resolved 2026-08-17** — measured at last: 94.5 s cold against 9.4 s warm for Trp-cage,
+   ~83 s of it kernel compilation. See `docs/cold-start.md`. The rest of this point stands as
+   written at the time.] Every
    number in this report (2.45 s model load, 5.7 s first fold) was measured with a warm
    weight cache and a warm kernel-compile cache. A fresh-imaged booth machine's real
    first-run cost (≥3.65 GB of downloads plus first-time kernel JIT compilation) is

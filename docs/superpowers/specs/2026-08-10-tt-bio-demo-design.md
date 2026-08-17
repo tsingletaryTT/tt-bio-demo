@@ -310,7 +310,10 @@ month and its own README describes `main` as untested nightly. A demo box must b
 reproducible; the pin is bumped deliberately and re-soaked.
 
 **Kernel cache pre-warming matters more than it appears.** Per `docs/cold-start.md`, a
-first-ever compile costs ~177 s versus ~12 s warm. Doing this at install time means the
+first-ever compile costs ~177 s versus ~12 s warm. [**Superseded 2026-08-17:** those figures
+were never sourced — `docs/cold-start.md` did not exist when this cited it, and now does. The
+measured cost for one target is 94.5 s cold against 9.4 s warm. The conclusion below still
+holds; only the numbers were wrong.] Doing this at install time means the
 first fold at the booth is already a warm one.
 
 ### Desktop application, not kiosk boot

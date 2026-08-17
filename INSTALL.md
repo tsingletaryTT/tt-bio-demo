@@ -166,12 +166,14 @@ Then prove it end to end with the cheapest real fold — Trp-cage, 20 residues, 
 A structure condensing out of a point cloud on real silicon is the only acceptance test
 that counts. `Ctrl-C` in the terminal tears the daemon down cleanly.
 
-> **Budget real time for the first fold.** Every fold time quoted in this project is
-> measured **warm**. The first fold on a freshly imaged machine also pays a cold tt-metal
-> kernel compile, and **that cost has never been measured** — see
-> [`docs/spike-real-fold.md`](docs/spike-real-fold.md) point 8. The only cold-cache datum in
-> the repo is that a chip's first run costs roughly ten seconds extra. Do not do your first
-> fold in front of visitors.
+> **Budget real time for the first fold — about a minute and a half per target.** Every fold
+> time quoted in this project is measured **warm**. Measured 2026-08-17 on an empty kernel
+> cache: Trp-cage's first fold takes **94.5 s** (of which ~83 s is kernel compilation) against
+> **9.4 s** warm. Full numbers and method in [`docs/cold-start.md`](docs/cold-start.md).
+>
+> That is per *target*, and the six playlist targets share kernels unevenly, so the cost of
+> warming the whole playlist is not simply six times it — and has not been measured. Do not do
+> your first fold in front of visitors.
 >
 > The `tt-bio-demo-weights` package description claims it "pre-warms the tt-metal kernel
 > cache." **It does not** — the postinst contains no pre-warm code, only weight download and
