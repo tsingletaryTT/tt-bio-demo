@@ -1,0 +1,58 @@
+# Human serum albumin, 585 residues, no MSA.
+#
+# Vendored into this repo rather than read from a sibling tt-boltz checkout,
+# for the same reason examples/trpcage_no_msa.yaml is -- see that file's own
+# header for the full story. Copied byte-for-byte from
+# ~/code/tt-boltz/examples/hsa_no_msa.yaml (upstream tt-bio); only this
+# comment block is added.
+#
+# WHY IT IS HERE, AND WHY IT IS NOT ON THE PLAYLIST YET.
+#
+# playlist/manifest.yaml's header has carried this target as an explicit
+# EXCLUSION since Phase 3b: "585 residues, human serum albumin, EXCLUDED for
+# THIS pass on pacing grounds: it is ~29x Trp-cage's residue count with no
+# measured fold time on this hardware to bound how long that actually runs,
+# and a booth attract loop a visitor watches must not gamble a multi-minute
+# stall on an unmeasured target. Worth reconsidering once a hardware pass has
+# real numbers for it."
+#
+# tt-bio 0.6.3 (2026-08-17) is what makes it worth re-asking. That release
+# fixed a Protenix-v2 crash on targets between 385 and 506 residues (a normed
+# pair tensor held past its last use) and row-blocks the pair track above a
+# size threshold so structure models reach ~1095 residues. HSA at 585 sits
+# past the old crash window; before 0.6.3 there was a real chance this input
+# simply could not fold here at all.
+#
+# It is deliberately NOT added to playlist/manifest.yaml by the same commit
+# that vendors it. This project's rule is that a gallery card shows a measured
+# number or says "not yet timed" -- never a guess -- and nobody has folded
+# this on these cards. tests/integration/test_new_targets_timing.py is the
+# harness that closes that gap; see its `hsa` leg.
+#
+# WHAT TO EXPECT WHEN SOMEONE DOES FOLD IT, so the result is read honestly:
+#
+#   - `msa: empty` below is load-bearing. The three other MSA-less proteins on
+#     this playlist come back at mean pLDDT 39.5 (trypsin), 50.8 (FKBP12) and
+#     52.9 (DHFR) -- yellow-to-orange, i.e. the model saying it is unsure --
+#     against 95.3 for Trp-cage and 95.7 for the DNA duplex. A 585-residue
+#     protein folded with no evolutionary signal should be expected to land in
+#     that same unsure band or below, and a low number here is a correct
+#     report of the model's confidence, not a broken fold.
+#   - HSA's real structure is almost entirely alpha-helical: three homologous
+#     domains in a heart-shaped bundle. "Does it come back as a helical bundle"
+#     is a shape question a human answers by looking at the booth's own render,
+#     which is why the timing harness measures numbers and explicitly does not
+#     claim to judge this.
+#
+# The protein itself, for whoever writes the gallery copy: albumin is the most
+# abundant protein in blood plasma, made by the liver, and it is the blood's
+# general-purpose carrier -- it ferries fatty acids, hormones, calcium and a
+# great many drugs, and it is what keeps fluid inside the vessels rather than
+# leaking into tissue. It is also the "albumin" on a routine blood test.
+# None of that is on a card until the fold is measured.
+version: 1
+sequences:
+  - protein:
+      id: A
+      sequence: DAHKSEVAHRFKDLGEENFKALVLIAFAQYLQQCPFEDHVKLVNEVTEFAKTCVADESAENCDKSLHTLFGDKLCTVATLRETYGEMADCCAKQEPERNECFLQHKDDNPNLPRLVRPEVDVMCTAFHDNEETFLKKYLYEIARRHPYFYAPELLFFAKRYKAAFTECCQAADKAACLLPKLDELRDEGKASSAKQRLKCASLQKFGERAFKAWAVARLSQRFPKAEFAEVSKLVTDLTKVHTECCHGDLLECADDRADLAKYICENQDSISSKLKECCEKPLLEKSHCIAEVENDEMPADLPSLAADFVESKDVCKNYAEAKDVFLGMFLYEYARRHPDYSVVLLLRLAKTYETTLEKCCAAADPHECYAKVFDEFKPLVEEPQNLIKQNCELFEQLGEYKFQNALLVRYTKKVPQVSTPTLVEVSRNLGKVGSKCCKHPEAKRMPCAEDYLSVVLNQLCVLHEKTPVSDRVTKCCTESLVNRRPCFSALEVDETYVPKEFNAETFTFHADICTLSEKERQIKKQTALVELVKHKPKATKEQLKAVMDDFAAFVEKCCKADDKETCFAEEGKKLVAASQAALGL
+      msa: empty

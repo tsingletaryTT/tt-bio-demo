@@ -195,8 +195,17 @@ def _forbid_a_poisoned_process():
 
 
 @pytest.fixture(scope="module")
-def four_workers(tt_device, tmp_path_factory, monkeypatch_module):
+def four_workers(tt_cards_present, tmp_path_factory, monkeypatch_module):
     """A real `WorkerPool` over every chip on this box, torn down for real.
+
+    Depends on `tt_cards_present`, NOT `tt_device`: this fixture's whole point
+    is spanning every chip, and `tt_device` narrows TT_VISIBLE_DEVICES to one
+    (tt-bio 0.6.3 requires that of an in-process open -- see that fixture).
+    Taking it here would silently leave one chip visible and turn "every chip
+    on this box" into one, which is precisely the mutation this module's own
+    docstring says it exists to fail against. This process opens no device
+    itself; the children do, and each is pinned to its own chip by
+    runner/workers.py.
 
     Yields `(pool, specs, events, pids, envs, log_root, shared)`. `pids` are
     the CHILDREN's real pids, captured through the `spawn` seam -- so the

@@ -95,7 +95,7 @@ set -euo pipefail
 # tt-bio's `main` (see CLAUDE.md conventions — same rule as the runner venv
 # tt-bio-demo will eventually shell out to).
 # ---------------------------------------------------------------------------
-TT_BIO_VERSION="0.6.2"
+TT_BIO_VERSION="0.6.3"
 
 # Bounds on the two network/hardware-adjacent operations that could otherwise
 # hang this script indefinitely in an unattended postinst with nobody present
@@ -580,7 +580,7 @@ ensure_test_deps_installed() {
 # ---------------------------------------------------------------------------
 #
 # ttnn JIT-compiles Tenstorrent device kernels with a RISC-V toolchain called
-# SFPI. tt-bio 0.6.2's ttnn==0.68.0 requires SFPI 7.35.3 specifically (see
+# SFPI. tt-bio 0.6.3's ttnn==0.68.0 requires SFPI 7.35.3 specifically (see
 # <ttnn>/tt_metal/sfpi-version, the wheel's own manifest) — but this box also
 # has a *different* SFPI (7.61.0) installed system-wide at
 # /opt/tenstorrent/sfpi, shared with the user's other Tenstorrent projects.

@@ -558,6 +558,156 @@ cannot reference a file outside `docs/`. Keeping them in step was a manual
 `cp` nobody had written down — discovered by having to do it. The script
 writes both now, and a test compares them byte for byte.
 
+### tt-bio 0.6.3, and a 585-residue candidate (2026-08-17)
+
+Prompted with "there's a new version of tt-bio out. Let's upgrade and see what
+we need to do to support it better!". 0.6.3 was cut the same day.
+
+**The scare was a false alarm, and checking it was still the right first move.**
+0.6.3's headline fix is that `--trace` silently returned wrong structures for
+every target after the first when one process folds several same-size
+Protenix-v2 targets. That is this daemon's exact shape -- one long-lived
+process, six targets on repeat -- so the first thing done was to check whether
+the booth has been showing wrong molecules. It has not: `runner/folder.py`
+folds with `n_step`, `n_sample=1` and `progress_fn`, and never passes
+`trace=True`. Worth keeping the habit: the release note that describes your own
+architecture deserves a source check before anything else gets touched.
+
+**The upgrade itself is one variable and no dependency churn.** 0.6.3 ships
+identical metadata to 0.6.2 -- same `ttnn==0.68.0`, same requires-python -- so
+the vendored SFPI 7.35.3 machinery needed no thought at all.
+
+**The live trajectory tap survives, and upstream did not take the patch.**
+`edm_sample` still accepts `dump_fn` in 0.6.3, so `runner/dump_tap.py` still
+works and `runner/preflight.py`'s `check_tap_supported()` is still the guard
+that would catch it breaking. But `Protenix.fold` STILL has no public
+`dump_fn`, and `docs/upstream/protenix-dump-fn/`'s patch no longer applies --
+`fold` moved and its body changed. What 0.6.3 added instead is
+`TT_PROTENIX_DUMP`, an env var that `torch.save`s one `.pt` per step to a
+directory: a parity-debugging facility, not a callback, and no substitute for
+a live stream. That is evidence *for* the patch rather than against it, and
+the README now says so. It was NOT rebased, because its reproducer runs a real
+fold on a card and an unverified rebase is worth less than an honest "stale".
+
+**The upgrade falsified booth copy nobody would have thought to check.** The
+docs site prints a measured claim tied to the version -- "As of v0.6.2 the
+repository holds 2,181 commits, 1,744 of them are his" -- so bumping the pin
+without re-measuring would have put a fabricated number on the landing page.
+Re-measured at v0.6.3: **3,312 and 2,875**. 1,131 commits in ten days is a big
+enough jump to be worth verifying rather than pasting, so it was: every
+identity in the range is Moritz's, and the 134 merges are his own branches, no
+imported history. Two things fell out of it. The spec's documented method
+(`git log --author=moritz | wc -l`) never reproduced its own published number
+-- it yields 1742, not 1744, because the shipped figure came from the
+case-insensitive form; the spec now says `-i`. And one 0.6.2 mention in
+`docs/venv-bootstrap-notes.md` was deliberately NOT bumped: it is a record of
+one measured 55s build, and rewriting the version there would attach a timing
+to a build nobody has done.
+
+**HSA is a candidate, not an entry.** `playlist/manifest.yaml` has carried
+human serum albumin (585 residues) as an explicit exclusion since Phase 3b --
+"~29x Trp-cage's residue count with no measured fold time ... worth
+reconsidering once a hardware pass has real numbers for it". 0.6.3 is what
+makes it worth re-asking: it fixed a Protenix-v2 crash on 385-506 residue
+targets and row-blocks the pair track so structure models reach ~1095, so
+before this release HSA may simply not have folded here. The input is now
+vendored at `examples/hsa_no_msa.yaml` (byte-identical sequence, house-style
+header) and is deliberately NOT on the playlist in the same commit that
+vendors it, because nobody has folded it on these cards.
+
+**The accept criterion is "is there something to show", not a stopwatch** --
+which is Taylor's answer to the pacing question, and a better test than the
+time limits offered. It changed what the harness measures.
+`tests/integration/test_new_targets_timing.py` now timestamps events as they
+arrive (the protocol carries no wall clock, so this is unrecoverable
+afterwards) and reports two numbers per target: time to the first `frame`
+event, and the longest stretch with no event at all. Only `diffusion` emits
+frames, so the first number is exactly the window where the hero slot is
+holding the PREVIOUS fold dimmed and captioned. The second is the one that can
+fail a target: `_SILENCE_BUDGET_S = 30.0`, on the reasoning that a fold of any
+length is fine but a progress bar frozen for half a minute reads as a hung
+booth whatever else is rotating on screen. The three shipped targets stay in
+the run as the baseline -- a pacing number for 585 residues means little
+without the 107/187/223 rows folded beside it on the same card.
+
+The specific thing to look at when it runs: on a chip's FIRST fold after
+launch there is no previous structure to hold, so that same pre-diffusion
+window is genuinely empty. If HSA leads a cold rotation a visitor could meet a
+blank hero for a long time -- and the fix for that is ordering or cell-level
+copy, not dropping the target.
+
+**0.6.3 broke one shipped target, and made every other one faster.** Measured
+on chip 0, model resident, kernel cache warm, reproduced across three separate
+runs that agree within ~2%:
+
+| target | 0.6.2 warm | 0.6.3 warm | 1st coords | max silence |
+|---|---|---|---|---|
+| Trp-cage | 4.4 s | 4.1 s | 2.1 s | 0.9 s |
+| **FKBP12** | **11.7 s** | **FAILS** | — | — |
+| DHFR | 19.7 s | 15.7 s | 10.3 s | 1.3 s |
+| Trypsin | 22.3 s | 17.5 s | 11.6 s | 1.4 s |
+| DNA duplex | 4.6 s | 4.5 s | 1.1 s | 0.2 s |
+| tRNA | 8.6 s | 7.3 s | 2.7 s | 0.3 s |
+| **HSA (new)** | — | **96.8 s** | 82.3 s | 9.5 s |
+
+Every pLDDT the shipped copy makes a claim about held: Trp-cage 95.27 (was
+95.3), trypsin 38.5-39.2 (39.5), DNA 95.71 (95.7), tRNA 88.53 (88.6). So the
+gallery blurbs are still true; only the times moved, and they moved down.
+
+**The FKBP12 regression is the ligand, and it is precise.** `examples/
+affinity_fkg.yaml` (107 residues + CCD ligand SB3, `msa: empty`) dies in the
+MSA track -- `_trunk_cond` -> `_msa` -> `_in_proj_matmul` -- with
+
+    Statically allocated circular buffers in program 909 clash with L1 buffers
+    on core range [(x=0,y=0) - (x=10,y=9)]. L1 buffer allocated at 1155072 and
+    static circular buffer region ends at 1159680
+
+Deterministic, and not order- or state-dependent: it fails as the first fold of
+a fresh process just as it does mid-sequence. Three facts narrow it to a
+shape-dependent L1 allocation bug rather than "ligands broke": **the same
+protein without SB3 folds fine** (pLDDT 43.52), **DHFR with its own MTX ligand
+folds fine** at nearly twice the residue count, and 0.6.2 folded this exact
+input 2,143 times. Worth the irony: FKBP12+SB3 is the very complex 0.6.3's
+release notes headline for the affinity speedup (294 s -> 206 s), so upstream
+exercises it through the Boltz-2 affinity path but evidently not through
+protenix-v2 structure folding.
+
+**0.6.3 requires one-chip visibility, and that broke the tests, not the booth.**
+`get_device()` now calls `ensure_p300_mesh_descriptor()` (new in 0.6.3, absent
+from 0.6.2), forcing `TT_MESH_GRAPH_DESC_PATH` to a **1x1** P300 descriptor --
+right for a lone chip, wrong for anything else. The booth already complies
+(runner/workers.py pins one chip per worker; the daemon opens no device), but
+the integration tests build a `Folder` in-process and inherited a gozer lease's
+whole board pair, so every fold died at `control_plane.cpp:1262` with "Physical
+chip id 0 not found in control plane chip mapping". Fixed at the root:
+`runner.env.single_visible_device()` (4 unit tests), a new `tt_cards_present`
+gate so the four-worker test still sees every chip, and `tt_device` narrowing
+visibility for every in-process opener.
+
+**A third cold/warm layer nobody had written down.** This project already
+distinguishes cold vs warm *model residency*. There is a layer under it: the
+persistent JIT kernel cache, which a board reset or a tt-bio upgrade
+invalidates. The first harness run after the 0.6.3 install measured DHFR at
+25.7 s and HSA at 150.4 s; the second, on the same chip, measured 15.7 s and
+96.8 s. Both were "warm" by the old definition. At a venue this is real: reset
+the boards in the morning and the first pass through the playlist runs up to
+64% slower than the numbers printed on the gallery cards.
+
+**Two harness lessons, both paid for.** A target that fails must not abort the
+run -- the first 7-target attempt lost every other target's numbers to FKBP12's
+failure, which is exactly how "all five others got faster" stayed hidden for an
+hour; the fixture now records a per-target error and keeps folding. And a
+diagnostic experiment belongs in the background from the start: running one in
+the foreground let a 2-minute tool timeout SIGTERM a fold mid-DMA
+(`pin_user_pages_longterm failed: -14`), which wedged a whole p300c board --
+`tt_serial` unreadable, `tt-smi -s` failing, and gozer unable to enumerate or
+even reset, since its lease grain is the board serial. Recovered with
+`sudo <full-path>/tt-smi -r 0000:01:00.0 0000:02:00.0` then `gozer reconcile`.
+Note the full path: `sudo tt-smi` is `command not found` (it lives in a user
+venv) **and still exits 0**, so the first reset silently did nothing.
+
+Suite green at 1,465 tests with hardware skipped.
+
 ## Conventions
 
 - **Keep the README's screenshots current.** The README claims every image on it is the

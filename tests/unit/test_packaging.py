@@ -270,7 +270,7 @@ def test_the_pin_is_read_from_setup_venvs_not_duplicated():
 
 def test_the_pin_is_the_one_setup_venvs_actually_declares():
     """Stronger than "appears somewhere in the file": pin the exact
-    assignment. `0.6.2` also appears in that script's prose, so a helper that
+    assignment. `0.6.3` also appears in that script's prose, so a helper that
     returned any substring of it would pass the looser check."""
     import re
     declared = re.search(r'^TT_BIO_VERSION="([^"]+)"',

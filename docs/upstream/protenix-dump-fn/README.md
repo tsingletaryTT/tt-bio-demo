@@ -3,6 +3,32 @@
 **Applies to:** `moritztng/tt-bio` v0.6.2, commit `7ae0b961f2a069c476a558756d931491a70c005b`
 (local checkout: `~/code/tt-boltz`, installed wheel matches byte-for-byte).
 
+> **Status at v0.6.3 (2026-08-17): the patch is stale and does NOT apply.**
+> Verified with `git apply --check` against v0.6.3's `tt_bio/protenix.py`:
+> `Protenix.fold` moved (1691 → ~1993) and its body changed, so the hunk's
+> context no longer matches. The patch needs a rebase before it can be offered
+> upstream. It has not been rebased here because the reproducer
+> (`reproduce.py`) runs a real fold on a card, and an unverified rebase is
+> worth less than an honest "stale".
+>
+> **The inconsistency this patch exists to fix is still present in v0.6.3.**
+> `Protenix.fold` still has no public `dump_fn` while `OpenDDE.fold` still
+> does. What v0.6.3 *did* add is `TT_PROTENIX_DUMP`, an environment variable
+> that makes `fold` build a private `_dump_fn` writing one `torch.save`d `.pt`
+> file per step to a directory (`protenix.py:2016-2037`). That is a
+> parity-debugging facility, not a callback: it costs a disk write per step and
+> gives a caller no way to receive coordinates in-process, so it is no
+> substitute for this patch — and it is evidence *for* it, since upstream
+> clearly wants per-step trajectory access and has now built a second,
+> narrower way to get it.
+>
+> **This project does not depend on the patch landing.** `runner/dump_tap.py`
+> monkeypatches `edm_sample`, which still accepts `dump_fn` in v0.6.3, and
+> `runner/preflight.py`'s `check_tap_supported()` fails loudly if that ever
+> stops being true. The tap deliberately *overrides* rather than defers to a
+> caller's `dump_fn`, which is what makes it compose correctly with
+> `TT_PROTENIX_DUMP` instead of one silently displacing the other.
+
 ## The inconsistency
 
 `OpenDDE.fold` accepts a `dump_fn` parameter (`tt_bio/opendde.py:340-342`) and threads it

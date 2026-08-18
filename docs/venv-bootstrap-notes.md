@@ -236,6 +236,9 @@ scripts/setup-venvs.sh --prefix /tmp/tt-bio-demo-fresh-venvs --dev
 SFPI download+verify+install, device probe), 55s wall clock (pip's cache was
 warm; see "measured on this box" above for why that's expected), summary
 reported `test deps: installed (pytest, just added via --dev)`, exit `0`.
+The version above is deliberately not bumped with the pin: this is a record of
+one measured run against 0.6.2, and rewriting it to say 0.6.3 would attach a
+timing to a build nobody has done. It stands until someone re-runs it.
 Then, against that exact freshly-built venv:
 ```bash
 /tmp/tt-bio-demo-fresh-venvs/venv-runner/bin/python3 -m pytest tests/unit/test_runner_env.py -v
@@ -278,7 +281,7 @@ right site-packages, not just the right interpreter.
 
 ## `venv-runner` / `tt-bio` — what actually happens on install
 
-`pip install tt-bio==0.6.2` (from PyPI, requires-python `>=3.10,<3.13,!=3.11.*`
+`pip install tt-bio==0.6.3` (from PyPI, requires-python `>=3.10,<3.13,!=3.11.*`
 — system Python is 3.12.3, so it qualifies) pulls in a large dependency tree:
 torch, `ttnn==0.68.0` (also on PyPI), rdkit, pandas, transformers, biotite,
 matplotlib, scikit-learn, and a long tail of smaller packages — including a
@@ -366,7 +369,7 @@ that used to require `tt-bio install-deps`) is now handled below without it.
 ## The SFPI toolchain: why it's vendored per-venv, not taken from the system
 
 `ttnn` doesn't just import — at first use it JIT-compiles Tenstorrent device
-kernels with a RISC-V toolchain called **SFPI**. tt-bio 0.6.2's
+kernels with a RISC-V toolchain called **SFPI**. tt-bio 0.6.3's
 `ttnn==0.68.0` requires **SFPI 7.35.3** specifically; this fact lives in
 `<ttnn>/tt_metal/sfpi-version`, a small manifest the wheel ships, not
 anywhere this script guesses at. This dev box, though, also has a

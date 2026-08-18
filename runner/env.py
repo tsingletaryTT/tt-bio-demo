@@ -159,6 +159,46 @@ def runner_environ(log_root, base=None):
     return env
 
 
+def single_visible_device(visible):
+    """The first chip named by a ``TT_VISIBLE_DEVICES`` string, or None.
+
+    tt-bio 0.6.3 made one-chip visibility a hard requirement of opening a
+    device in-process on this box. `get_device()` now calls
+    `ensure_p300_mesh_descriptor()`, which forces `TT_MESH_GRAPH_DESC_PATH` to
+    a **1x1** P300 mesh-graph descriptor whenever P300 chips are detected
+    (tt_bio/tenstorrent.py; new in 0.6.3, absent from 0.6.2). A 1x1 descriptor
+    is right for a lone chip and wrong for anything else, so with a whole
+    p300c board pair visible ttnn refuses the open:
+
+        TT_FATAL @ tt_metal/fabric/control_plane.cpp:1262
+        Physical chip id 0 not found in control plane chip mapping.
+        You are calling for a chip outside of the fabric cluster.
+
+    The booth already satisfies this and did not need changing: every `Folder`
+    lives in a worker process that runner/workers.py pins to exactly one chip
+    (`env["TT_VISIBLE_DEVICES"] = spec.visible_devices`), and the daemon itself
+    opens no device. What does NOT satisfy it is anything opening a device in
+    the *current* process while several chips are visible -- which is every
+    integration test that builds a `Folder` directly, under a gozer lease that
+    grants a board pair because visibility cannot fence a p300c to one chip.
+
+    Returns None when nothing is set, which is not the same as "one chip": an
+    unset variable means every chip on the box is visible, the very case that
+    breaks. This helper cannot invent a BDF it was never given, so the caller
+    decides what to do about it.
+
+    NOTE the value is BDFs (`0000:01:00.0,...`), not indices, and it must be
+    set before ttnn is imported to have any effect.
+    """
+    if not visible:
+        return None
+    for chunk in visible.split(","):
+        chunk = chunk.strip()
+        if chunk:
+            return chunk
+    return None
+
+
 def log_root_size(log_root):
     """Total bytes of regular files under `log_root`. Missing root counts as 0."""
     root = Path(log_root)
