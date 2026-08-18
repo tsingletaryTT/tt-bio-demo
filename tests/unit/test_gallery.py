@@ -542,7 +542,19 @@ def test_the_shipped_playlist_ranges_are_ordered_and_measured():
 
     ranged = [t for t in load_playlist("playlist/manifest.yaml")
               if t.expected_slow_s is not None]
-    assert ranged, "no shipped target carries a range at all"
+    # The shipped playlist may legitimately carry NO range. `expected_slow_s`
+    # is a second MEASURED number, and as of tt-bio 0.6.3 there is none: the
+    # 0.6.2 slow ends came from a two-hour four-chip soak, and a 25-minute
+    # single-chip soak on 0.6.3 held 17.3s flat at 1350 MHz with no drift at
+    # all (see playlist/manifest.yaml's header). Carrying the old numbers
+    # forward would print an unmeasured claim on a gallery card.
+    #
+    # So this no longer asserts that a range EXISTS -- that made the shipped
+    # data a precondition for the check rather than its subject. What it
+    # guards is that any range present is ordered, and the loader's own
+    # rejection of a backwards or orphaned range is covered directly, on
+    # synthetic manifests, by test_playlist.py (a slow end without a fast one,
+    # a slow end below the fast one, a non-numeric slow end -- all red there).
     for t in ranged:
         assert t.expected_s is not None, f"{t.id}: a range needs both ends"
         assert t.expected_slow_s > t.expected_s, (

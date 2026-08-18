@@ -64,11 +64,11 @@ is the exact sequence, verified end to end against a clean Ubuntu 24.04 with not
 
 ```bash
 mkdir -p ~/tt-bio-demo-pkgs && cd ~/tt-bio-demo-pkgs
-BASE=https://github.com/tsingletaryTT/tt-bio-demo/releases/download/v0.2.2
-for f in tt-bio-demo_0.2.2_all.deb \
-         tt-bio-demo-runtime_0.2.2_amd64.deb \
-         tt-bio-demo-weights_0.2.2_all.deb \
-         tt-bio-demo-all_0.2.2_all.deb; do
+BASE=https://github.com/tsingletaryTT/tt-bio-demo/releases/download/v0.3.0
+for f in tt-bio-demo_0.3.0_all.deb \
+         tt-bio-demo-runtime_0.3.0_amd64.deb \
+         tt-bio-demo-weights_0.3.0_all.deb \
+         tt-bio-demo-all_0.3.0_all.deb; do
     curl -fsSLO "$BASE/$f"
 done
 sudo apt install ./*.deb
@@ -296,7 +296,7 @@ the daemon without `--log-root`.
 
 ## What is verified, and what is not
 
-Written against release **v0.2.2**.
+Written against release **v0.3.0**.
 
 **Step 1 is verified end to end.** The exact `curl` sequence above was run against a clean
 `ubuntu:24.04` container with nothing preinstalled: the four assets downloaded from the

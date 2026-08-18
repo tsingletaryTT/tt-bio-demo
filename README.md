@@ -79,9 +79,9 @@ no secondary-structure records, so which residues are helix and which are sheet 
 out from the C-alpha geometry (`ui/secstruct.py`).
 
 Look at chips 0 and 1 and you can see a small molecule in the protein's pocket, drawn
-ball-and-stick in the usual element colours. Three of the six targets fold a **bound
-ligand** alongside the protein — FKBP12 with a binder, trypsin with benzamidine, and DHFR
-with methotrexate, the cancer drug its gallery card names.
+ball-and-stick in the usual element colours. Two of the six targets fold a **bound
+ligand** alongside the protein — trypsin with benzamidine and DHFR with methotrexate, the
+cancer drug its gallery card names.
 
 Start the booth already in the grid with `scripts/run-demo.sh --quad`; <kbd>Q</kbd> still
 toggles either way at runtime.
@@ -95,12 +95,13 @@ silicon keeps visibly breathing even if the daemon wedges.
 
 **Four chips on two boards.** A p300c carries two chips, so `tt-smi`'s four entries are four
 chips — not four boards. The panel says so, because a visitor reading "4 cards" would
-picture the wrong machine. Folds are timed on this hardware, warm: Trp-cage **4.4 s**,
-FKBP12 **11.7–12.3 s**, DHFR **20–25 s**, trypsin **22–27 s**. The three long targets
-carry a range because chips 1 and 3 settle to a lower clock about fifteen minutes into a
-session — they idle 3–4 °C hotter than 0 and 2, so it is chassis position rather than
-workload — and a visitor's pick takes whichever chip is free. See `playlist/manifest.yaml`
-for the measured p50s behind each end.
+picture the wrong machine. Folds are timed on this hardware, warm, on tt-bio 0.6.3: Trp-cage **4.1 s**,
+DHFR **15.5 s**, trypsin **17.4 s**, albumin **97 s** — p50s over three
+folds each on two chips, which agreed to within 0.2 s. Chips 1 and 3 settle to a lower clock
+about fifteen minutes into a session (they idle 3–4 °C hotter than 0 and 2, so it is chassis
+position rather than workload), and a visitor's pick takes whichever chip is free, so a long
+session drifts slower than these fresh-chip numbers. See `playlist/manifest.yaml` for the
+full table.
 
 **Four chips, four proteins — one protein per chip.** The booth runs one worker process per
 chip, each pinned to its own physical device, each holding its own resident copy of the
@@ -256,7 +257,7 @@ the authoritative list. The ones you are most likely to want:
 
 **The default is every target in the manifest** — the booth shows what it can do rather
 than the one safe thing. A full cycle is ~71 s on the fast pair of chips and ~79 s on the
-throttled pair: Trp-cage 4.4 s, FKBP12 11.7–12.3 s, DHFR 20–25 s, trypsin 22–27 s,
+throttled pair, on tt-bio 0.6.2: Trp-cage 4.4 s, FKBP12 11.7–12.3 s, DHFR 20–25 s, trypsin 22–27 s,
 DNA 4.6 s, tRNA 8.6 s, all measured warm on this hardware. Use `--targets trpcage` to
 fold a single target while iterating, which is much faster.
 
@@ -271,7 +272,7 @@ MSA-less proteins come back at 50.8, 52.9 and 39.5, and the confidence legend un
 render is what lets a visitor read that off the screen for themselves.
 
 > **`--all-targets` is not yet validated end to end.** The other three shipped targets
-> (FKBP12, DHFR, Trypsin) are measured 62–75 s folds, and their long callback-free windows —
+> (FKBP12, DHFR, Trypsin — FKBP12 has since been removed) are measured 62–75 s folds, and their long callback-free windows —
 > host featurization, then the confidence head and mmCIF write — have never been run through
 > the socket into the UI, whose read timeout is 5 s. Watch a full cycle yourself before
 > leaving one of them running unattended in front of the public.

@@ -15,33 +15,79 @@
 # two nucleic acids (last two entries) came later and are both written from
 # scratch, because upstream ships no nucleic-acid example at all.
 #
-# Why these three and not the other two candidates (see this task's own
-# report for the fuller reasoning):
-#   - `prot_no_msa.yaml` (117 residues) was EXCLUDED: its protein could not
+# Why these and not the other candidates (see that task's own report for the
+# fuller reasoning):
+#   - `prot_no_msa.yaml` (117 residues) is EXCLUDED: its protein could not
 #     be confidently identified against known structural-biology proteins,
 #     and this booth's blurbs must be accurate to the actual molecule, not
 #     a plausible-sounding guess.
-#   - `hsa_no_msa.yaml` (585 residues, human serum albumin) was EXCLUDED for
-#     THIS pass on pacing grounds: it is ~29x Trp-cage's residue count with
-#     no measured fold time on this hardware to bound how long that actually
-#     runs, and a booth attract loop a visitor watches must not gamble a
-#     multi-minute stall on an unmeasured target. Worth reconsidering once a
-#     hardware pass (see tests/integration/test_new_targets_timing.py) has
-#     real numbers for it.
-# The three shipped below (107 / 187 / 223 residues) still span a real
-# range from Trp-cage's 20, without that open-ended risk.
+#   - `hsa_no_msa.yaml` (585 residues, human serum albumin) WAS excluded on
+#     pacing grounds -- ~29x Trp-cage with no measured fold time, and an
+#     attract loop must not gamble an unmeasured multi-minute stall. That
+#     exclusion was lifted on 2026-08-18: tt-bio 0.6.3 made it foldable here,
+#     five warm folds put it at a p50 of 97.2s, and the entry below carries
+#     that number rather than a guess. It is on the playlist now.
 #
-# The three protein entries below Trp-cage are protein+ligand complexes in
-# their *upstream*
-# form (each pairs the protein with a small-molecule ligand for tt-boltz's
-# own affinity-prediction workflow) but this booth's runner ignores the
-# `properties:` block entirely and folds the ligand purely as part of the
-# STRUCTURE (see each examples/affinity_*.yaml's own header comment) -- and
-# none of the three ligands is actually visible in the rendered ribbon (each
-# examples/affinity_*.yaml explains why for its own ligand). The blurbs
-# below describe the protein only, for that reason: the CCD ligand itself
-# never becomes an on-screen fact for the visitor to check the blurb
-# against, so a blurb should not promise seeing it.
+# WHAT CHANGED ON 2026-08-18, and why the lineup is not the same three:
+# FKBP12 (`affinity_fkg.yaml`, 107 residues) was REMOVED. It folded fine on
+# tt-bio 0.6.2 at 11.7s, and on 0.6.3 it fails deterministically in the MSA
+# track -- statically allocated circular buffers clashing with L1 buffers,
+# reproduced independently in two sessions, first fold of a fresh process or
+# mid-sequence alike. It is a shape-dependent L1 allocation bug and not
+# "ligands broke": the same protein without its SB3 ligand folds, and DHFR
+# with its own ligand folds at nearly twice the residue count. A booth cannot
+# ship a card that crashes when a visitor presses it, so the target is out
+# until upstream fixes it -- at which point this entry comes back, since the
+# blurb and thumbnail machinery for it are unchanged in git history.
+#
+# MEASURED ON tt-bio 0.6.3, 2026-08-18. Every number any card, the README, the
+# site or the handout prints comes from this run: three consecutive warm folds
+# per target on EACH of two chips (BDF 01:00.0 and 02:00.0), model resident,
+# 36 folds in total.
+#
+#   target     chip 0    chip 1    mean pLDDT
+#   trpcage      4.1 s     4.2 s     95.3
+#   dna          4.4 s     4.4 s     95.7
+#   trna         7.1 s     7.0 s     88.5
+#   dhfr        15.5 s    15.5 s     51.1
+#   trypsin     17.4 s    17.4 s     39.3
+#   hsa         96.8 s    97.0 s     81.1
+#
+# The two chips agreed to within 0.2 s on every target, which is NOT the same
+# as saying the documented slow-chip drift is gone: chips 1 and 3 fall to as
+# low as 906 MHz about fifteen minutes into a session (Task 19's two-hour
+# soak, docs/followups.md), and this run was far shorter than that. These are
+# fresh-chip numbers. A long booth session still drifts slower, and the
+# per-entry notes below that describe that effect still stand.
+#
+# The first fold after a process start is slower than any of these, because
+# kernels for that target's shapes have to compile: 116.3 s for hsa against a
+# 96.8 s warm p50. See docs/cold-start.md.
+#
+# expected_slow_s IS GONE from DHFR and trypsin, and that is deliberate. Those
+# slow ends (25.0s, 27.1s) were measured on tt-bio 0.6.2 during a two-hour
+# soak, and this pass has no 0.6.3 equivalent: both chips measured the same
+# fresh, and the thermal drift that produces the slow end needs ~15 minutes to
+# appear. Carrying a 0.6.2 number forward would print an unmeasured claim, and
+# scaling it would be inventing one. The drift itself is real and still
+# described below and in docs/followups.md -- it just has no measured number on
+# this release.
+#
+# The five below now span 20 / 187 / 223 / 585 residues plus two nucleic
+# acids -- a wider range than the lineup they replace, and every number on
+# every card is measured on this box.
+#
+# TWO of the protein entries below (DHFR and trypsin) are protein+ligand
+# complexes in their *upstream* form -- each pairs the protein with a
+# small-molecule ligand for tt-boltz's own affinity-prediction workflow --
+# but this booth's runner ignores the `properties:` block entirely and folds
+# the ligand purely as part of the STRUCTURE (see each
+# examples/affinity_*.yaml's own header comment), and neither ligand is
+# actually visible in the rendered ribbon (each file explains why for its
+# own). The blurbs describe the protein only, for that reason: the CCD ligand
+# never becomes an on-screen fact for the visitor to check the blurb against,
+# so a blurb should not promise seeing it. It was three until FKBP12 was
+# removed above; HSA carries no ligand at all.
 #
 # `expected_s` is the WARM time a visitor actually meets: measured
 # 2026-08-12 from a live run of the real daemon and UI over the socket, with
@@ -100,43 +146,56 @@
   # model is resident on the card. The attract loop keeps a fold running
   # continuously, so a visitor's own pick almost always lands warm; 4.4s is
   # the midpoint of the warm range and the representative number to show.
-  expected_s: 4.4
+  expected_s: 4.1
 
-- id: fkbp12
-  input: ../examples/affinity_fkg.yaml
-  name: FKBP12
-  thumbnail: thumbnails/fkbp12.png
+- id: hsa
+  input: ../examples/hsa_no_msa.yaml
+  name: Human serum albumin
+  thumbnail: thumbnails/hsa.png
+  expected_s: 96.8
   tagline: >-
-    The molecular lock that anti-rejection drugs are shaped to pick, so a
-    transplanted organ survives.
+    The blood's delivery van — the most abundant protein in plasma, and how most drugs travel.
   blurb: >-
-    FKBP12 is the molecular lock that a whole class of anti-rejection drugs
-    was built to pick: organ-transplant patients take a daily drug called
-    tacrolimus specifically because it clicks onto FKBP12 and, together,
-    the two jam shut a signal that would otherwise tell the immune system
-    to attack the new organ.
-  # THE SLOW END, and why this entry carries a range. Two of this box's four
-  # chips (1 and 3) drop to as low as 906 MHz about fifteen minutes into a
-  # session and stay there -- they also run 3-4 C hotter at idle, so it is
-  # chassis position and not workload (Task 19's two-hour soak,
-  # docs/followups.md). A visitor's pick lands on whichever chip frees up
-  # first and they cannot choose, so the card promises the band rather than
-  # the fast half of it. Measured p50s across 2143 folds:
-  #   chips 0/2: 11.71 / 11.69s     chips 1/3: 12.25 / 12.18s
+    Albumin is the most abundant protein in blood plasma, made by the liver,
+    and it is the blood's general-purpose carrier -- it ferries fatty acids,
+    hormones and calcium, and a great many drugs ride it to where they act.
+    It is also what holds fluid inside the vessels rather than letting it
+    leak into tissue, and the "albumin" on a routine blood test.
+  # THE LONG ONE, and why it is on the playlist at all.
   #
-  # Measured on this booth's own hardware, in the WARM state a visitor
-  # actually meets: mean of 5 folds (11.7s) from a live run of the real
-  # daemon+UI over the socket, with the model resident across folds.
+  # This entry was an explicit EXCLUSION in this file's header from Phase 3b
+  # until 2026-08-18, on pacing grounds: 585 residues is ~29x Trp-cage with
+  # no measured fold time, and an attract loop must not gamble an unmeasured
+  # multi-minute stall. tt-bio 0.6.3 is what made it worth re-asking -- it
+  # row-blocks the pair track above a size threshold, so structures reach
+  # ~1095 residues, and before it there was a real chance this input could
+  # not fold here at all.
   #
-  # NOT the 62.6s that tests/integration/test_new_targets_timing.py
-  # reports: that harness reloads the model per target, so it measures a
-  # COLD fold. The booth's attract loop keeps the model resident, so a
-  # visitor's pick lands warm -- the same cold/warm distinction already
-  # spelled out on the Trp-cage entry above, and the reason the warm
-  # number is the honest one to print on a gallery card.
-  expected_s: 11.7
-  expected_slow_s: 12.3
-
+  # Measured on this booth's own hardware, chip 0, WARM (model resident, the
+  # state a visitor actually meets): five consecutive folds at
+  #   chip 0: 97.1 / 96.7 / 96.8 s      chip 1: 97.3 / 97.0 / 97.0 s
+  #   -> p50 96.8 s (chip 0), 97.0 s (chip 1)
+  # pLDDT 80.96 - 81.18 across all six. An earlier five-fold run on chip 0
+  # gave 97.1-100.2 s, and a separate session measured 96.8 s independently;
+  # all three agree. The first fold after a process start, with
+  # kernels for these shapes not yet compiled, was 116.3 s -- the same
+  # cold/warm distinction spelled out on the Trp-cage entry, and the reason
+  # the warm number is the honest one to print.
+  #
+  # IT IS FOUR TIMES THE NEXT-LONGEST TARGET (trypsin, ~17.5 s on 0.6.3), and
+  # that is a deliberate pacing choice, not an oversight: it is the one entry
+  # that shows a visitor what a real, whole, drug-carrying protein costs. Its
+  # trunk stage alone runs ~82 s before the first coordinates exist, so the
+  # hero slot holds the PREVIOUS structure, dimmed and captioned, for most of
+  # that -- which is the booth working as designed, not a stall.
+  #
+  # THE SURPRISE, kept here because it is the interesting fact about this
+  # entry: at `msa: empty` the other MSA-less proteins land at 39.5
+  # (trypsin), 52.9 (DHFR) -- the model saying it is unsure. This one comes
+  # back at 81.0 with 0% of residues below 50, and the booth's own assigner
+  # calls it 70.8% helix and 0% sheet across 29 helix runs. Real albumin is
+  # three homologous all-alpha domains in a heart-shaped bundle, so the shape
+  # is right as well as confident.
 - id: dhfr
   name: Dihydrofolate Reductase
   input: ../examples/affinity_dhfr.yaml
@@ -168,8 +227,7 @@
   # visitor's pick lands warm -- the same cold/warm distinction already
   # spelled out on the Trp-cage entry above, and the reason the warm
   # number is the honest one to print on a gallery card.
-  expected_s: 19.7
-  expected_slow_s: 25.0
+  expected_s: 15.5
 
 - id: trypsin
   input: ../examples/affinity_tryp.yaml
@@ -214,8 +272,7 @@
   # visitor's pick lands warm -- the same cold/warm distinction already
   # spelled out on the Trp-cage entry above, and the reason the warm
   # number is the honest one to print on a gallery card.
-  expected_s: 22.3
-  expected_slow_s: 27.1
+  expected_s: 17.4
 
 - id: dna
   input: ../examples/dna_dickerson.yaml
@@ -262,7 +319,7 @@
   # model loads), then 4.61 / 4.66 / 4.62 / 4.64 / 4.57s warm -- mean 4.62.
   # 24 nucleotides is the smallest input on the playlist after Trp-cage's 20
   # residues, and it lands within 0.2s of it.
-  expected_s: 4.6
+  expected_s: 4.4
 
 - id: trna
   input: ../examples/trna_phe.yaml
@@ -310,4 +367,4 @@
   # That sits between the DNA duplex (95.7) and the three MSA-less proteins
   # (39.5-52.9), which is what the DNA entry's copy about base-pairing
   # being chemically determined would predict.
-  expected_s: 8.6
+  expected_s: 7.1

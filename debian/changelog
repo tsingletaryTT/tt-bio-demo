@@ -1,3 +1,11 @@
+tt-bio-demo (0.3.0) noble; urgency=medium
+
+  * Human serum albumin joins the playlist at 585 residues, and FKBP12 leaves
+    it: FKBP12 no longer folds on the pinned tt-bio 0.6.3. Every fold time on
+    every card, the site and the handout is re-measured on 0.6.3.
+
+ -- Taylor Singletary <tsingletary@tenstorrent.com>  Tue, 18 Aug 2026 11:05:00 -0700
+
 tt-bio-demo (0.2.2) noble; urgency=medium
 
   * The desktop entry and its icon now use the reverse-DNS application id
