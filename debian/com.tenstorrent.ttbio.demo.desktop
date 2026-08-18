@@ -1,4 +1,14 @@
 [Desktop Entry]
+# FILENAME AND Icon= ARE BOTH THE APP ID, reverse-DNS on tenstorrent.com.
+# That is the freedesktop convention for a globally unique application
+# identity, and it is what the other Tenstorrent apps are converging on
+# (tt-station already ships com.tenstorrent.ttstation.panel).
+#
+# com, not ai: tenstorrent.com is the identity of record -- the docs site and
+# the maintainer address both live there. And NO HYPHENS in the components:
+# a Flatpak app ID must be a valid D-Bus name, and D-Bus name elements cannot
+# contain hyphens, so "tt-bio-demo" could never be one. The Debian PACKAGE is
+# still called tt-bio-demo; a package name and an app ID are different things.
 Type=Application
 Name=tt-bio Protein Folding Demo
 GenericName=Protein Structure Prediction
@@ -7,7 +17,7 @@ Comment=Watch a protein fold in real time on Tenstorrent Blackhole hardware
 # daemon too and tears it down on exit, which is what someone double-clicking
 # an icon expects. It picks venv-ui for the UI half itself.
 Exec=/opt/tt-bio-demo/scripts/run-demo.sh
-Icon=tt-bio-demo
+Icon=com.tenstorrent.ttbio.demo
 Terminal=false
 # ONE main category, deliberately. Science, Development, Education, Utility
 # and friends are the spec's registered MAIN categories, and each one is a

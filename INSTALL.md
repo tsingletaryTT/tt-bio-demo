@@ -64,11 +64,11 @@ is the exact sequence, verified end to end against a clean Ubuntu 24.04 with not
 
 ```bash
 mkdir -p ~/tt-bio-demo-pkgs && cd ~/tt-bio-demo-pkgs
-BASE=https://github.com/tsingletaryTT/tt-bio-demo/releases/download/v0.2.1
-for f in tt-bio-demo_0.2.1_all.deb \
-         tt-bio-demo-runtime_0.2.1_amd64.deb \
-         tt-bio-demo-weights_0.2.1_all.deb \
-         tt-bio-demo-all_0.2.1_all.deb; do
+BASE=https://github.com/tsingletaryTT/tt-bio-demo/releases/download/v0.2.2
+for f in tt-bio-demo_0.2.2_all.deb \
+         tt-bio-demo-runtime_0.2.2_amd64.deb \
+         tt-bio-demo-weights_0.2.2_all.deb \
+         tt-bio-demo-all_0.2.2_all.deb; do
     curl -fsSLO "$BASE/$f"
 done
 sudo apt install ./*.deb
@@ -112,7 +112,7 @@ the dpkg lock.
 /opt/tt-bio-demo/              the application, playlist, scripts
 /opt/tt-bio-demo/.venvs/       (empty until step 2)
 ~/.config/systemd/user/        tt-bio-demo.user.service  (see step 5)
-/usr/share/applications/       tt-bio-demo.desktop
+/usr/share/applications/       com.tenstorrent.ttbio.demo.desktop
 /usr/share/icons/hicolor/      the app icon, 16px through 512px
 ```
 
@@ -296,7 +296,7 @@ the daemon without `--log-root`.
 
 ## What is verified, and what is not
 
-Written against release **v0.2.1**.
+Written against release **v0.2.2**.
 
 **Step 1 is verified end to end.** The exact `curl` sequence above was run against a clean
 `ubuntu:24.04` container with nothing preinstalled: the four assets downloaded from the

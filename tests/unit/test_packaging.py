@@ -15,6 +15,7 @@ import pathlib
 import pytest
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
+APP_ID = "com.tenstorrent.ttbio.demo"   # reverse-DNS app id; NOT the package name
 EXPECTED = {"tt-bio-demo", "tt-bio-demo-runtime",
             "tt-bio-demo-weights", "tt-bio-demo-all"}
 
@@ -687,14 +688,14 @@ def test_the_unit_runs_the_daemon_from_the_runner_venv():
 
 
 def test_the_desktop_entry_is_valid_and_names_the_ui():
-    d = (REPO / "debian" / "tt-bio-demo.desktop").read_text()
+    d = (REPO / "debian" / f"{APP_ID}.desktop").read_text()
     assert d.startswith("[Desktop Entry]")
     for key in ("Type=Application", "Name=", "Exec="):
         assert key in d
 
 
 def test_the_desktop_entry_launches_the_ui_venv_not_the_runner():
-    d = (REPO / "debian" / "tt-bio-demo.desktop").read_text()
+    d = (REPO / "debian" / f"{APP_ID}.desktop").read_text()
     exec_line = [l for l in d.splitlines() if l.startswith("Exec=")][0]
     assert "venv-ui" in exec_line or "run-demo.sh" in exec_line, exec_line
     assert "venv-runner/bin/python3 -m ui" not in exec_line
@@ -858,7 +859,7 @@ def test_the_desktop_entry_names_an_icon_that_ships(built):
     booth machine.
     """
     icon = None
-    for line in (REPO / "debian" / "tt-bio-demo.desktop").read_text().splitlines():
+    for line in (REPO / "debian" / f"{APP_ID}.desktop").read_text().splitlines():
         if line.startswith("Icon="):
             icon = line.split("=", 1)[1].strip()
     assert icon, "the desktop entry has no Icon= key"
@@ -877,8 +878,8 @@ def test_the_icon_ships_the_small_sizes_a_panel_actually_uses(built):
     downscale one bitmap."""
     c = _contents(_app_deb(built))
     for size in ("16x16", "22x22", "24x24", "32x32", "48x48", "256x256"):
-        assert f"/icons/hicolor/{size}/apps/tt-bio-demo.png" in c, \
-            f"no {size} app icon in the package"
+        assert f"/icons/hicolor/{size}/apps/{APP_ID}.png" in c, \
+            f"no {size} app icon named {APP_ID} in the package"
 
 
 def test_the_desktop_entry_files_under_exactly_one_main_category():
@@ -893,7 +894,7 @@ def test_the_desktop_entry_files_under_exactly_one_main_category():
     MAIN = {"AudioVideo", "Audio", "Video", "Development", "Education", "Game",
             "Graphics", "Network", "Office", "Science", "Settings", "System",
             "Utility"}
-    entry = (REPO / "debian" / "tt-bio-demo.desktop").read_text()
+    entry = (REPO / "debian" / f"{APP_ID}.desktop").read_text()
     cats = [l.split("=", 1)[1] for l in entry.splitlines() if l.startswith("Categories=")]
     assert cats, "no Categories= key"
     listed = [c for c in cats[0].split(";") if c]

@@ -1,3 +1,10 @@
+tt-bio-demo (0.2.2) noble; urgency=medium
+
+  * The desktop entry and its icon now use the reverse-DNS application id
+    com.tenstorrent.ttbio.demo, matching the other Tenstorrent applications.
+
+ -- Taylor Singletary <tsingletary@tenstorrent.com>  Mon, 17 Aug 2026 17:30:00 -0700
+
 tt-bio-demo (0.2.1) noble; urgency=medium
 
   * The application now ships its own icon and appears in the desktop
