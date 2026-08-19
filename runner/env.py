@@ -162,6 +162,14 @@ def runner_environ(log_root, base=None):
 def single_visible_device(visible):
     """The first chip named by a ``TT_VISIBLE_DEVICES`` string, or None.
 
+    SUPERSEDED BY tt-bio 0.6.4, and kept deliberately. 0.6.4 applies the 1x1
+    descriptor only when exactly one chip is visible, so a board pair opens as a
+    mesh again and this narrowing is no longer REQUIRED (confirmed on a p300c
+    against the fix branch: a pair opened in 3.5 s). It is still correct, still
+    harmless, and still what the booth's workers do anyway -- so it stays until
+    someone has re-run the hardware suite on 0.6.4 without it. Removing it is a
+    hardware-gated cleanup, not a source edit; see docs/followups.md.
+
     tt-bio 0.6.3 made one-chip visibility a hard requirement of opening a
     device in-process on this box. `get_device()` now calls
     `ensure_p300_mesh_descriptor()`, which forces `TT_MESH_GRAPH_DESC_PATH` to

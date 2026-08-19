@@ -144,7 +144,7 @@ sharing a `site-packages`:
 | venv | Built how | Holds |
 |---|---|---|
 | `venv-ui` | system `python3` **with** `--system-site-packages` | PyGObject (GTK4), gemmi, PyOpenGL, numpy |
-| `venv-runner` | isolated, no system packages | torch, ttnn, tt-bio **0.6.3** (pinned release), vendored SFPI |
+| `venv-runner` | isolated, no system packages | torch, ttnn, tt-bio **0.6.4** (pinned release), vendored SFPI |
 
 Note `--dev` is **not** passed. That flag adds pytest to `venv-runner`, and test tooling is
 dead weight and extra supply-chain surface on a booth machine.

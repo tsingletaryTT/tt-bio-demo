@@ -95,7 +95,7 @@ set -euo pipefail
 # tt-bio's `main` (see CLAUDE.md conventions — same rule as the runner venv
 # tt-bio-demo will eventually shell out to).
 # ---------------------------------------------------------------------------
-TT_BIO_VERSION="0.6.3"
+TT_BIO_VERSION="0.6.4"
 
 # Bounds on the two network/hardware-adjacent operations that could otherwise
 # hang this script indefinitely in an unattended postinst with nobody present
