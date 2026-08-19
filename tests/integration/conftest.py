@@ -13,7 +13,7 @@ import tempfile
 
 import pytest
 
-from runner.env import runner_environ, single_visible_device
+from runner.env import runner_environ
 
 TT_VENDOR_ID = "0x1e52"
 
@@ -61,42 +61,26 @@ def tt_cards_present():
 
 @pytest.fixture(scope="session")
 def tt_device(tt_cards_present):
-    """One chip, visible, addressable as logical device 0.
+    """The logical device these tests open. Always 0.
 
-    Narrowing is load-bearing since tt-bio 0.6.3, not tidiness. `get_device()`
-    now forces a 1x1 P300 mesh-graph descriptor (see
-    runner.env.single_visible_device for the full mechanism), so opening a
-    device in THIS process while a whole p300c board pair is visible dies with
+    This fixture used to narrow TT_VISIBLE_DEVICES to a single BDF, because
+    tt-bio 0.6.3 forced a 1x1 P300 mesh-graph descriptor and refused to open a
+    device at all while a whole p300c board pair was visible:
 
         TT_FATAL @ tt_metal/fabric/control_plane.cpp:1262
         Physical chip id 0 not found in control plane chip mapping.
 
-    A gozer lease is exactly that case: asking for one chip on a p300c grants
-    the pair, because visibility cannot fence a board. The booth itself is
-    unaffected -- runner/workers.py pins each worker to one chip and the daemon
-    opens nothing -- so this fixture is the in-process equivalent of the rule
-    production already follows, not a workaround for a booth defect.
+    A gozer lease is exactly that case -- asking for one chip on a p300c grants
+    the pair, because visibility cannot fence a board -- so every in-process
+    test needed narrowing to run under a lease at all.
 
-    An unset TT_VISIBLE_DEVICES means EVERY chip is visible, which is the
-    broken case and not the safe one, so it is narrowed to the first card on
-    the box rather than left alone.
-
-    Session-scoped and set before any test opens a device: TT_VISIBLE_DEVICES
-    is only read when ttnn is imported, so a later assignment is a no-op. Any
-    test that must see several chips (tests/integration/test_four_workers.py)
-    depends on `tt_cards_present` instead, and scripts/test.sh already runs it
-    in its own pytest process.
+    tt-bio 0.6.4 applies the 1x1 descriptor only when exactly one chip IS
+    visible, so a pair opens as a mesh again (upstream #11) and the narrowing
+    is retired. Nothing replaced it: with the pair visible, logical device 0
+    already resolves to the first visible chip, which is the first chip the
+    lease granted -- so the narrowing was buying determinism it did not
+    actually add. `./scripts/test.sh --hw` on 0.6.4 is what proves it.
     """
-    chosen = single_visible_device(os.environ.get("TT_VISIBLE_DEVICES"))
-    if chosen is None:
-        bdfs = _tt_bdfs()
-        if not bdfs:
-            pytest.skip(
-                "Tenstorrent cards are present but none could be enumerated "
-                "from sysfs, so this process cannot narrow TT_VISIBLE_DEVICES "
-                "to one chip -- which tt-bio 0.6.3 requires to open a device")
-        chosen = bdfs[0]
-    os.environ["TT_VISIBLE_DEVICES"] = chosen
     return 0
 
 
