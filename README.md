@@ -79,9 +79,9 @@ no secondary-structure records, so which residues are helix and which are sheet 
 out from the C-alpha geometry (`ui/secstruct.py`).
 
 Look at chips 0 and 1 and you can see a small molecule in the protein's pocket, drawn
-ball-and-stick in the usual element colours. Two of the six targets fold a **bound
-ligand** alongside the protein — trypsin with benzamidine and DHFR with methotrexate, the
-cancer drug its gallery card names.
+ball-and-stick in the usual element colours. Three of the seven targets fold a **bound
+ligand** alongside the protein — FKBP12 with a binder, trypsin with benzamidine, and DHFR
+with methotrexate, the cancer drug its gallery card names.
 
 Start the booth already in the grid with `scripts/run-demo.sh --quad`; <kbd>Q</kbd> still
 toggles either way at runtime.
@@ -95,8 +95,8 @@ silicon keeps visibly breathing even if the daemon wedges.
 
 **Four chips on two boards.** A p300c carries two chips, so `tt-smi`'s four entries are four
 chips — not four boards. The panel says so, because a visitor reading "4 cards" would
-picture the wrong machine. Folds are timed on this hardware, warm, on tt-bio 0.6.3: Trp-cage **4.1 s**,
-DHFR **15.5 s**, trypsin **17.4 s**, albumin **97 s** — p50s over three
+picture the wrong machine. Folds are timed on this hardware, warm, on tt-bio 0.6.4: Trp-cage **4.2 s**,
+FKBP12 **9.6 s**, DHFR **15.4 s**, trypsin **17.3 s**, albumin **97 s** — p50s over three
 folds each on two chips, which agreed to within 0.2 s. Chips 1 and 3 settle to a lower clock
 about fifteen minutes into a session (they idle 3–4 °C hotter than 0 and 2, so it is chassis
 position rather than workload), and a visitor's pick takes whichever chip is free, so a long

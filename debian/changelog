@@ -1,3 +1,10 @@
+tt-bio-demo (0.4.0) noble; urgency=medium
+
+  * FKBP12 returns to the playlist, folding faster than it ever did, on
+    tt-bio 0.6.4. Every fold time is re-measured on that release.
+
+ -- Taylor Singletary <tsingletary@tenstorrent.com>  Wed, 19 Aug 2026 09:15:00 -0700
+
 tt-bio-demo (0.3.0) noble; urgency=medium
 
   * Human serum albumin joins the playlist at 585 residues, and FKBP12 leaves

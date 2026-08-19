@@ -830,10 +830,17 @@ create_runner_venv() {
   "$SYSTEM_PYTHON" -m venv "$VENV_RUNNER"
   "${VENV_RUNNER}/bin/python3" -m pip install --upgrade pip >/dev/null
 
-  log "venv-runner: installing tt-bio==${TT_BIO_VERSION} — this pulls torch + ttnn and is expected to be multiple GB and slow"
+  # THE [tenstorrent] EXTRA IS LOAD-BEARING as of tt-bio 0.6.4. Up to 0.6.3 ttnn
+  # was a base dependency; 0.6.4 moved it into an optional extra so the CPU/GPU
+  # path and the CLI install without a Tenstorrent SDK (upstream issue #6).
+  # A plain `pip install tt-bio==0.6.4` therefore installs NO ttnn, and this
+  # script fails a few steps later at ensure_sfpi_installed with "no ttnn
+  # package found" -- which is how we found it. Without the extra the venv is
+  # useless to the booth: no ttnn, no device.
+  log "venv-runner: installing tt-bio[tenstorrent]==${TT_BIO_VERSION} — this pulls torch + ttnn and is expected to be multiple GB and slow"
   local t0 t1
   t0=$(date +%s)
-  if "${VENV_RUNNER}/bin/python3" -m pip install "tt-bio==${TT_BIO_VERSION}"; then
+  if "${VENV_RUNNER}/bin/python3" -m pip install "tt-bio[tenstorrent]==${TT_BIO_VERSION}"; then
     t1=$(date +%s)
     RUNNER_INSTALL_SECONDS=$((t1 - t0))
     RUNNER_SIZE="$(du -sh "$VENV_RUNNER" 2>/dev/null | cut -f1)" || true
@@ -842,7 +849,7 @@ create_runner_venv() {
     t1=$(date +%s)
     RUNNER_INSTALL_SECONDS=$((t1 - t0))
     RUNNER_SIZE="$(du -sh "$VENV_RUNNER" 2>/dev/null | cut -f1)" || true
-    die "venv-runner: 'pip install tt-bio==${TT_BIO_VERSION}' FAILED after ${RUNNER_INSTALL_SECONDS}s (venv left at $VENV_RUNNER, ${RUNNER_SIZE}, for inspection). Not retrying automatically — see pip's own error above."
+    die "venv-runner: 'pip install tt-bio[tenstorrent]==${TT_BIO_VERSION}' FAILED after ${RUNNER_INSTALL_SECONDS}s (venv left at $VENV_RUNNER, ${RUNNER_SIZE}, for inspection). Not retrying automatically — see pip's own error above."
   fi
 
   ensure_sfpi_installed "$VENV_RUNNER"
