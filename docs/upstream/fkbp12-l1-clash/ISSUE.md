@@ -1,6 +1,6 @@
 # protenix-v2: 107-residue protein+ligand dies with an L1/circular-buffer clash on 0.6.3 (worked on 0.6.2) — grid-dependent, fails ≥110 cores
 
-**FILED, FIXED AND RELEASED.**
+**FILED, FIXED, RELEASED — AND CLOSED** (#11 closed 2026-08-19).
 
 - Filed 2026-08-18 as **[moritztng/tt-bio#11](https://github.com/moritztng/tt-bio/issues/11)**.
 - Moritz root-caused it the same day: the 0.6.3 trimul performance work widened the

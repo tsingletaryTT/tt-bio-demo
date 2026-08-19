@@ -1,5 +1,15 @@
 # Putting FKBP12 back, on tt-bio 0.6.4
 
+> **DONE — every step, 2026-08-19, shipped as v0.4.0** (`41263f9`). FKBP12 folds at 9.6 s,
+> all seven targets were re-measured on 0.6.4 (42 folds, two chips), the thumbnail was
+> re-rendered, and upstream **#11 is closed**. Kept as the record of what the integration
+> actually required — including the one thing this checklist did NOT predict: 0.6.4 moved
+> `ttnn` into a `tenstorrent` extra, so `setup-venvs.sh` had to become
+> `pip install tt-bio[tenstorrent]==...` or the venv ends up with no ttnn at all.
+>
+> One item deliberately left open: **step 7**, retiring `single_visible_device`. It is dead
+> weight on 0.6.4 but wants `./scripts/test.sh --hw` green and its own commit.
+
 Everything here needs the chips. The source-only half is already done and committed: the pin
 is `0.6.4`, `INSTALL.md` says so, and `runner/env.py` records that 0.6.4 supersedes the
 one-chip-visibility workaround.
