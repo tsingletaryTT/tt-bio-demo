@@ -442,7 +442,10 @@ def test_the_showcase_dwell_is_neither_dimmed_nor_captioned(fake_ribbon):
 
     # Inside the dwell.
     app._tick_state()
-    clock.advance(app.states.showcase_dwell_s - 0.3)
+    # effective_dwell_s, not showcase_dwell_s: the latter is the MAXIMUM a
+    # showcase may take, and this fixture's incoming target carries no
+    # measured first_frame_s, so its hold is capped to the floor.
+    clock.advance(app.states.effective_dwell_s - 0.3)
     app._tick_state()
     assert app.states.state == "showcase"
     assert app._caption is None, "the hero image was captioned as a leftover"

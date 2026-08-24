@@ -132,8 +132,37 @@ class SlotState:
     happily mid-diffusion on the next one.
     """
 
-    def __init__(self, showcase_dwell_s=2.0, card=None):
+    def __init__(self, showcase_dwell_s=2.0, card=None, dwell_caps=None,
+                 dwell_floor_s=None):
         self.showcase_dwell_s = showcase_dwell_s
+
+        # PER-TARGET DWELL. `showcase_dwell_s` is the MAXIMUM a finished
+        # structure may hold this cell; `dwell_caps` is {target_id: seconds}
+        # -- each target's measured time to its own first frame
+        # (`Target.first_frame_s`) -- and `dwell_floor_s` the minimum any
+        # dwell may be clamped to.
+        #
+        # Why a cap keyed on the INCOMING target rather than the one being
+        # shown: holding fold N on screen is paid for by suppressing fold
+        # N+1's opening frames, because the daemon starts N+1 the instant N
+        # ends and its first frame is what supersedes the structure. So the
+        # affordable dwell is a property of what is coming, not of what is
+        # finished. A target that reaches coordinates in ~1s cannot have a
+        # long hold in front of it without its whole collapse going unseen
+        # (measured: a flat 7s dwell put Trp-cage's visible collapse at
+        # 0/30 frames); one that takes 80s can afford any hold at all.
+        #
+        # Empty/None means "one number covers every target", which is what
+        # every existing caller and test does -- so this is inert unless a
+        # playlist supplies measurements.
+        self.dwell_caps = dict(dwell_caps or {})
+        self.dwell_floor_s = (showcase_dwell_s if dwell_floor_s is None
+                              else dwell_floor_s)
+
+        # The dwell THIS showcase is actually serving. Starts as the maximum
+        # and is narrowed the moment the incoming job_start tells us what is
+        # next; `tick` reads this, never `showcase_dwell_s` directly.
+        self._effective_dwell_s = showcase_dwell_s
 
         # Which physical chip this cell is showing. Fixed for the life of
         # the cell when a router builds it; a bare SlotState learns it from
@@ -171,6 +200,12 @@ class SlotState:
         """
         if self.state == SlotPhase.SHOWCASE:
             self._deferred = [("job_start", event)]
+            # We now know what is coming, so we know what this hold can
+            # afford. Narrow it (never widen: a dwell already being served
+            # must not grow under a visitor's feet), and if the narrowed
+            # dwell is already spent the next tick ends the showcase at once.
+            self._effective_dwell_s = min(self._effective_dwell_s,
+                                          self._dwell_for(event.get("target_id")))
             return self.state
         self._apply_job_start(event)
         return self.state
@@ -244,7 +279,7 @@ class SlotState:
             self._showcase_entered_at = now
             return self.state
 
-        if now - self._showcase_entered_at < self.showcase_dwell_s:
+        if now - self._showcase_entered_at < self._effective_dwell_s:
             return self.state
 
         # The dwell has been paid in full. Drop back to idle, then replay
@@ -311,8 +346,41 @@ class SlotState:
         self.state = SlotPhase.FOLDING
         self._showcase_entered_at = None
 
+    @property
+    def effective_dwell_s(self):
+        """How long THIS showcase actually holds, in seconds.
+
+        `showcase_dwell_s` is the maximum any showcase may take;
+        this is what the one currently being served will take, after the
+        incoming target's cap has been applied. Read this, not
+        `showcase_dwell_s`, when you need the number the clock is being
+        compared against -- they differ whenever the next fold cannot afford
+        the full hold.
+        """
+        return self._effective_dwell_s
+
+    def _dwell_for(self, target_id):
+        """The longest dwell affordable in front of `target_id`.
+
+        Its measured `first_frame_s`, clamped into
+        [dwell_floor_s, showcase_dwell_s]. An unmeasured or unknown target
+        gets the FLOOR, not the maximum. A long hold is a bet that the
+        incoming fold can afford to have its opening frames suppressed, and
+        only a measurement settles that; with no number the cell declines the
+        bet and keeps the behaviour it had before per-target dwells existed.
+        """
+        cap = self.dwell_caps.get(target_id)
+        if cap is None:
+            return self.dwell_floor_s
+        return max(self.dwell_floor_s, min(self.showcase_dwell_s, cap))
+
     def _apply_job_done(self, event):
         self.state = SlotPhase.SHOWCASE
+        # A NEW showcase starts at the maximum; the incoming job_start
+        # narrows it (see on_job_start). Without this reset a cell would
+        # inherit the last fold's narrowed dwell forever -- so one Trp-cage
+        # in the rotation would pin every later hold on this chip to 2s.
+        self._effective_dwell_s = self.showcase_dwell_s
         # Unknown until the next tick supplies a clock reading; restamped
         # again if/when the ribbon is actually revealed.
         self._showcase_entered_at = None
@@ -354,16 +422,19 @@ class SlotRouter:
     owns no clock of its own.
     """
 
-    def __init__(self, cards, showcase_dwell_s=2.0):
+    def __init__(self, cards, showcase_dwell_s=2.0, dwell_caps=None,
+                 dwell_floor_s=None):
         # Kept so `add_card` below can build a cell that keeps the same dwell
         # as the ones built here -- one cell holding a finished structure for
         # a different length of time than its neighbours would be a bug
-        # nobody would think to look for.
+        # nobody would think to look for. (The per-target caps are shared for
+        # the same reason: two cells showing the same target must agree.)
         self.showcase_dwell_s = showcase_dwell_s
+        self.dwell_caps = dict(dwell_caps or {})
+        self.dwell_floor_s = dwell_floor_s
         # More chips than cells: fold on all of them, show the first four.
         self.cards = list(cards)[:MAX_SLOTS]
-        self.slots = [SlotState(showcase_dwell_s=showcase_dwell_s, card=card)
-                      for card in self.cards]
+        self.slots = [self._new_slot(card) for card in self.cards]
         self._slot_by_card = {card: index for index, card in enumerate(self.cards)}
 
         # job_id -> slot index, oldest first, bounded (see JOB_MAP_LIMIT).
@@ -392,6 +463,15 @@ class SlotRouter:
     def slot_for_card(self, card):
         """Which cell shows this chip, or None if this chip has no cell."""
         return self._slot_by_card.get(card)
+
+    def _new_slot(self, card):
+        """Build one cell. The ONLY place a SlotState is constructed here, so
+        a cell added later cannot be given a different dwell policy than the
+        ones built at startup."""
+        return SlotState(showcase_dwell_s=self.showcase_dwell_s,
+                         card=card,
+                         dwell_caps=self.dwell_caps,
+                         dwell_floor_s=self.dwell_floor_s)
 
     def add_card(self, card):
         """Give a chip the router has not seen before its own cell.
@@ -426,8 +506,7 @@ class SlotRouter:
             return None
         index = len(self.slots)
         self.cards.append(card)
-        self.slots.append(SlotState(showcase_dwell_s=self.showcase_dwell_s,
-                                    card=card))
+        self.slots.append(self._new_slot(card))
         self._slot_by_card[card] = index
         self._showcase_seq.append(None)
         self._showcase_keys.append(None)

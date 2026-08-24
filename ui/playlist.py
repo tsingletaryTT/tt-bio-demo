@@ -141,6 +141,24 @@ class Target(object):
     # ui/gallery.py renders a range when it is set. See the manifest's own
     # entries for the measured numbers behind each one.
     expected_slow_s: float | None = None
+    # Seconds from `job_start` to this target's FIRST `frame` event -- the
+    # measured length of the window in which the fold is running and has no
+    # coordinates to show yet, because only the `diffusion` stage emits
+    # frames (msa/prep/trunk emit progress and nothing to draw).
+    #
+    # Optional and measured, exactly like `expected_s`: absent means nobody
+    # has timed it, never a guess. Also INDEPENDENT of `expected_s` -- it is
+    # not a fraction of it, and the ratio is not constant across the
+    # playlist (24 residues of DNA reach coordinates in a quarter of their
+    # fold; 585 residues of albumin take 85% of theirs).
+    #
+    # It exists for the showcase dwell. ui/app.py caps how long a finished
+    # structure holds the screen by the INCOMING target's value, because
+    # dwelling on fold N is paid for by suppressing fold N+1's opening
+    # frames -- so a target that reaches coordinates in a second cannot
+    # afford a long dwell in front of it, and one that takes eighty can
+    # afford any dwell at all. See `_SHOWCASE_DWELL_MAX_S` there.
+    first_frame_s: float | None = None
     thumbnail: Path | None = None
     # One short sentence about the molecule, for the caption under the live
     # render (ui/app.py's `_build_target_info`). Deliberately a SECOND field
@@ -257,6 +275,24 @@ def load_playlist(path):
                     f"for 'not yet measured'), got {raw_expected_s!r}"
                 ) from exc
 
+        # Same rule as `expected_s`: measured or absent, never guessed.
+        raw_first_frame_s = entry.get("first_frame_s")
+        if raw_first_frame_s is None:
+            first_frame_s = None
+        else:
+            try:
+                first_frame_s = float(raw_first_frame_s)
+            except (TypeError, ValueError) as exc:
+                raise PlaylistError(
+                    f"{entry_id}: 'first_frame_s' must be a number (or "
+                    f"absent/null for 'not yet measured'), got "
+                    f"{raw_first_frame_s!r}"
+                ) from exc
+            if first_frame_s < 0:
+                raise PlaylistError(
+                    f"{entry_id}: 'first_frame_s' must not be negative, got "
+                    f"{first_frame_s!r}")
+
         # Same rule as `expected_s`, and validated the same way: a range is
         # a measurement or it is absent, never a guess bolted onto a real
         # number.
@@ -300,6 +336,7 @@ def load_playlist(path):
             blurb=entry["blurb"],
             expected_s=expected_s,
             expected_slow_s=expected_slow_s,
+            first_frame_s=first_frame_s,
             thumbnail=thumbnail_path,
             tagline=tagline,
         ))

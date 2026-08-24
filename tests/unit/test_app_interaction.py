@@ -478,7 +478,12 @@ def test_the_fold_keeps_running_behind_the_help_card():
     app._handle_event({"type": "job_done", "job_id": "j1", "wall_s": 4.4,
                        "mean_plddt": 91.2})
     app._tick_state()               # stamps the showcase dwell
-    clock.advance(5.0)
+    # Past the dwell this showcase is actually serving. No job_start follows
+    # the job_done here, so nothing narrows it from the maximum -- and the
+    # maximum is per-target policy that may change (it went 2.0 -> 7.0 when
+    # the dwell became a cap). A hardcoded advance would silently stop
+    # testing expiry the next time that number moves.
+    clock.advance(app.states.effective_dwell_s + 0.3)
     app._tick_state()               # ...and expires it
 
     assert _cell(app).point_frames, "diffusion frames stopped reaching the viewer"

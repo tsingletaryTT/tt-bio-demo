@@ -72,6 +72,27 @@
 # recorded "both chips within 0.2 s"; that claim is NOT restated for 0.7.0,
 # because this run is long enough to have crossed the drift.
 #
+# `first_frame_s` (added 2026-08-24) is seconds from `job_start` to that
+# target's FIRST `frame` event -- the window in which the fold is running and
+# has nothing to draw yet, because only the `diffusion` stage emits frames.
+# Measured in the same session as the times above, one fold per target on
+# chip 0 (tests/integration/test_new_targets_timing.py prints the table):
+#
+#   dna 1.1s   trpcage 1.9s   trna 2.8s   fkbp12 5.3s
+#   dhfr 10.4s   trypsin 11.7s   hsa 82.7s
+#
+# It is NOT a fraction of `expected_s` and the ratio is not constant: DNA
+# reaches coordinates in a quarter of its fold, albumin in 85% of its. That is
+# why it is measured separately rather than derived.
+#
+# It exists to size the showcase dwell per target. Lingering on a finished
+# structure is paid for by suppressing the NEXT fold's opening frames -- the
+# daemon never pauses, so that fold is already running -- so the dwell in
+# front of a target is capped by ITS OWN first_frame_s. A target that reaches
+# coordinates in 1.1s cannot afford a long hold ahead of it; albumin at 82.7s
+# can afford any. See `_SHOWCASE_DWELL_MAX_S` in ui/app.py for the clamp and
+# the reason the maximum is 7.0s.
+#
 # WHAT DID NOT HAPPEN, and it was the reason for measuring at all. tt-bio 0.6.7
 # fixed two real accuracy bugs in the Protenix-v2 pair trunk both this booth and
 # OpenDDE ride on: the mask marking which residue pairs are real reached only
@@ -171,12 +192,14 @@
   # continuously, so a visitor's own pick almost always lands warm; 4.4s is
   # the midpoint of the warm range and the representative number to show.
   expected_s: 4.2
+  first_frame_s: 1.9
 
 - id: hsa
   input: ../examples/hsa_no_msa.yaml
   name: Human serum albumin
   thumbnail: thumbnails/hsa.png
   expected_s: 97.5
+  first_frame_s: 82.7
   tagline: >-
     The blood's delivery van — the most abundant protein in plasma, and how most drugs travel.
   blurb: >-
@@ -234,6 +257,7 @@
     the two jam shut a signal that would otherwise tell the immune system
     to attack the new organ.
   expected_s: 9.8
+  first_frame_s: 5.3
   # IT LEFT AND CAME BACK, and the number is lower than it ever was.
   #
   # FKBP12 shipped at 11.7s on tt-bio 0.6.2. On 0.6.3 it stopped folding
@@ -302,6 +326,7 @@
   # spelled out on the Trp-cage entry above, and the reason the warm
   # number is the honest one to print on a gallery card.
   expected_s: 15.5
+  first_frame_s: 10.4
 
 - id: trypsin
   input: ../examples/affinity_tryp.yaml
@@ -347,6 +372,7 @@
   # spelled out on the Trp-cage entry above, and the reason the warm
   # number is the honest one to print on a gallery card.
   expected_s: 17.4
+  first_frame_s: 11.7
 
 - id: dna
   input: ../examples/dna_dickerson.yaml
@@ -394,6 +420,7 @@
   # 24 nucleotides is the smallest input on the playlist after Trp-cage's 20
   # residues, and it lands within 0.2s of it.
   expected_s: 4.4
+  first_frame_s: 1.1
 
 - id: trna
   input: ../examples/trna_phe.yaml
@@ -442,3 +469,4 @@
   # (39.5-52.9), which is what the DNA entry's copy about base-pairing
   # being chemically determined would predict.
   expected_s: 7.1
+  first_frame_s: 2.8

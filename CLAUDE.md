@@ -827,6 +827,63 @@ content, never by position.** And a `grep -E "^  [a-z]+ +[0-9]+ res"` over the
 results quietly dropped FKBP12 from a summary table -- `[a-z]+` does not match a
 target id with digits in it -- which briefly read as "FKBP12 did not fold".
 
+### The dwell stopped being one number (2026-08-24)
+
+Prompted, while the booth was running, with "we should linger a little longer
+on completed renderings. like 5s at least longer."
+
+**The one-line version of that change is measurably wrong, and the repo said
+so.** Raising `_SHOWCASE_DWELL_S` from 2.0 to 7.0 does exactly what was asked
+on the four long targets and costs them nothing. On the three short ones it is
+fatal, because holding fold N on screen is PAID FOR by suppressing fold N+1's
+opening frames -- the daemon starts N+1 the instant N ends, and its first frame
+is what supersedes the structure. `test_live_diffusion_is_visible_for_a_
+substantial_share_of_each_cycle` replays the recorded real Trp-cage fold and
+measured the visible collapse at **0 of 30 frames**, against the 40% floor it
+holds. Four other tests went red on fixed clock advances that assumed 2.0s.
+
+That is the same mistake `ui/app.py` already records once -- a fixed budget
+tuned to a 4.4s cycle applied to a 22.3s one -- so the fix was not a different
+constant. **The dwell is now a maximum, capped per target.**
+
+  * `Target.first_frame_s` (new, optional, measured like `expected_s`) is
+    seconds from `job_start` to that target's FIRST `frame` event. Measured on
+    0.7.0, one fold per target on chip 0: dna 1.1, trpcage 1.9, trna 2.8,
+    fkbp12 5.3, dhfr 10.4, trypsin 11.7, hsa 82.7. It is NOT a fraction of
+    `expected_s` and the ratio is not constant -- DNA reaches coordinates in a
+    quarter of its fold, albumin in 85% of its -- which is why it is measured
+    rather than derived.
+  * The cap is keyed on the **incoming** target, not the finished one, because
+    what a hold can afford is a property of what is coming next.
+  * Clamped into [2.0, 7.0]. Resulting dwells: dna and trpcage 2.0 (the floor,
+    i.e. exactly today's behaviour), trna 2.8, fkbp12 5.3, dhfr/trypsin/hsa
+    7.0. The requested linger lands in full on the four targets that can pay
+    for it and no guard is weakened.
+
+**Three decisions worth keeping.** A dwell is narrowed, never widened -- a hold
+already being served must not grow under a visitor looking at it. A new
+showcase resets to the maximum, or one Trp-cage in the rotation would pin every
+later hold on that chip for the session. And an **unmeasured** incoming target
+gets the FLOOR, not the maximum: a long hold is a bet that the incoming fold
+can afford to lose its opening frames, and only a measurement settles that.
+That default is also what makes the whole mechanism a no-op on a playlist that
+measures nothing, which is how it was verified against the existing suite --
+the first draft defaulted to the maximum and turned five unrelated tests red.
+
+`effective_dwell_s` is now public on both `StateMachine` and `SlotState`:
+`showcase_dwell_s` is the maximum any showcase MAY take, and two tests were
+reading it as the number the clock is compared against. Both now read the
+effective one, so neither silently stops testing expiry the next time the
+maximum moves.
+
+Four mutations, four red, control green: cap removed (5 tests, including the
+visibility guard), the per-showcase reset removed, `min` flipped to `max` in
+the narrowing, and the unmeasured default flipped to the maximum.
+
+Suite green at 1,467. Confirmed on the running booth: DNA was photographed
+mid-diffusion with its noise cloud on screen -- the exact thing a flat 7.0s
+dwell suppressed entirely.
+
 ## Conventions
 
 - **Keep the README's screenshots current.** The README claims every image on it is the

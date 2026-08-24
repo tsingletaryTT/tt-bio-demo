@@ -545,9 +545,50 @@ class _SlotView:
 # want a fixed number: how long the hero image is the booth's undimmed,
 # uncaptioned subject before it is demoted to a held leftover, and how long
 # the next fold's opening noise cloud is kept off the screen so it cannot
-# be drawn over a structure a visitor is still looking at. The 2.0s
-# measurement above is still the right answer to both.
-_SHOWCASE_DWELL_S = 2.0
+# be drawn over a structure a visitor is still looking at.
+#
+# 2026-08-24: THE DWELL IS NO LONGER ONE NUMBER, because it could not be.
+# The operator asked to linger about five seconds longer on a finished
+# structure. Raising this to a flat 7.0s does that for the long targets at
+# no cost -- and destroys the short ones: the replay guard
+# (test_live_diffusion_is_visible_for_a_substantial_share_of_each_cycle)
+# measured Trp-cage's visible collapse at 0/30 frames, against a floor of
+# 40%. The two things this constant governs are COUPLED for a short target,
+# because holding fold N on screen is paid for by suppressing fold N+1's
+# frames, and for Trp-cage those frames are all there is.
+#
+# That is the same mistake this file already records once (a fixed budget
+# tuned to a 4.4s cycle applied to a 22.3s one), so the fix is not a
+# different constant. The dwell is now a MAXIMUM, capped per target by the
+# INCOMING fold's measured time to its own first frame
+# (`Target.first_frame_s`, measured in playlist/manifest.yaml), clamped up
+# by a floor. What it can afford is a property of what is coming next, not
+# of what just finished.
+#
+#   incoming target   first_frame_s   dwell in front of it
+#   dna                    1.1s       2.0s  (floor)
+#   trpcage                1.9s       2.0s  (floor)
+#   trna                   2.8s       2.8s
+#   fkbp12                 5.3s       5.3s
+#   dhfr                  10.4s       7.0s  (max)
+#   trypsin               11.7s       7.0s  (max)
+#   hsa                   82.7s       7.0s  (max)
+#
+# So the requested linger lands in full on the four targets that can pay for
+# it, the three short ones keep exactly today's behaviour, and no guard is
+# weakened. A target with no measurement gets the MAXIMUM, not the floor --
+# see `_dwell_for` in ui/states.py for why that is the safe default.
+_SHOWCASE_DWELL_MAX_S = 7.0
+
+# The floor a per-target cap may narrow the dwell to. This is the old
+# `_SHOWCASE_DWELL_S`, and the measurement at the top of this block is still
+# exactly its justification: 2.0s is the balance point for a 4.4s cycle, and
+# a 4.4s cycle is what the short targets still are.
+_SHOWCASE_DWELL_MIN_S = 2.0
+
+# Kept as the name the rest of this module and its tests already use for
+# "the dwell", now meaning the maximum.
+_SHOWCASE_DWELL_S = _SHOWCASE_DWELL_MAX_S
 
 # How often the booth hands the state machine a clock reading. The machine
 # owns no timer of its own by design (ui/states.py), so this source is the
@@ -1395,7 +1436,8 @@ class DemoApp(Gtk.Application):
         # The booth's one source of truth for what is on screen. Everything
         # else in this class either feeds it (events, touches, the clock) or
         # reads it (`_sync_to_state`).
-        self.states = StateMachine(showcase_dwell_s=_SHOWCASE_DWELL_S)
+        self.states = StateMachine(showcase_dwell_s=_SHOWCASE_DWELL_MAX_S,
+                                   dwell_floor_s=_SHOWCASE_DWELL_MIN_S)
         # What `_sync_to_state` last acted on, so it can spot the EDGE of a
         # transition (`showcase_ended`) rather than its level.
         self._last_state = self.states.state
@@ -1745,7 +1787,10 @@ class DemoApp(Gtk.Application):
 
         if self.router is None or self.cards != cards:
             self.cards = cards
-            self.router = SlotRouter(cards, showcase_dwell_s=_SHOWCASE_DWELL_S)
+            self.router = SlotRouter(cards,
+                                     showcase_dwell_s=_SHOWCASE_DWELL_MAX_S,
+                                     dwell_caps=self._dwell_caps(),
+                                     dwell_floor_s=_SHOWCASE_DWELL_MIN_S)
             self._slots = [_SlotView() for _ in cards]
             # A frame buffered against the old shape names a job no cell can
             # claim any more; start clean rather than draining ghosts.
@@ -2179,6 +2224,17 @@ class DemoApp(Gtk.Application):
                           "run without a gallery", path)
             self.targets = []
             return
+        # The dwell caps come from the playlist, so they can only be known
+        # here -- StateMachine is built in __init__, long before any manifest
+        # is read. Assigned rather than passed for exactly that reason; the
+        # router (built later still, once the daemon names its chips) gets
+        # them as constructor arguments.
+        self.states.dwell_caps = self._dwell_caps()
+        if self.router is not None:
+            self.router.dwell_caps = dict(self.states.dwell_caps)
+            for slot in self.router.slots:
+                slot.dwell_caps = dict(self.states.dwell_caps)
+
         self.gallery = Gallery(self.targets, on_pick=self._on_pick,
                                width_px=_GALLERY_WIDTH_PX)
         # Cards at their natural width, centred -- NOT stretched to fill.
@@ -2273,6 +2329,20 @@ class DemoApp(Gtk.Application):
         # whatever the current answer is.
         self._sync_viewer_hold()
         return box
+
+    def _dwell_caps(self):
+        """{target_id: seconds} -- how long a finished structure may hold the
+        screen when THIS target is the one coming next.
+
+        Each target's own measured `first_frame_s`, straight from the
+        manifest, with unmeasured targets simply absent: the state machine
+        and the slots both read a missing key as "no cap, use the maximum",
+        which is the safe direction (see `_dwell_for` in ui/states.py).
+        Nothing is derived, scaled or guessed here -- if a number is not
+        measured it does not appear, exactly as with `expected_s`.
+        """
+        return {t.id: t.first_frame_s for t in self.targets
+                if t.first_frame_s is not None}
 
     def _build_target_info(self):
         """The caption under the render: what this protein actually is.

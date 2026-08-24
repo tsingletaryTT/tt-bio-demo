@@ -159,9 +159,23 @@ class StateMachine:
     showcase dwell). Every method returns the resulting `.state`.
     """
 
-    def __init__(self, idle_timeout_s=45.0, showcase_dwell_s=3.0):
+    def __init__(self, idle_timeout_s=45.0, showcase_dwell_s=3.0,
+                 dwell_caps=None, dwell_floor_s=None):
         self.idle_timeout_s = idle_timeout_s
         self.showcase_dwell_s = showcase_dwell_s
+
+        # PER-TARGET DWELL, the same policy ui/slots.py applies per cell and
+        # for the same reason: a hold on a finished structure is paid for by
+        # suppressing the NEXT fold's opening frames, so what it can afford
+        # is a property of the target that is COMING. `dwell_caps` is
+        # {target_id: seconds}, each target's measured `first_frame_s`;
+        # `dwell_floor_s` is the minimum a cap may narrow a dwell to.
+        # Absent (every existing caller and test) it is inert and this
+        # behaves exactly as a single fixed dwell.
+        self.dwell_caps = dict(dwell_caps or {})
+        self.dwell_floor_s = (showcase_dwell_s if dwell_floor_s is None
+                              else dwell_floor_s)
+        self._effective_dwell_s = showcase_dwell_s
 
         self.state = BoothState.ATTRACT
         self.selected_target = None
@@ -246,6 +260,12 @@ class StateMachine:
             # is exactly the bug this dwell exists to survive -- so a
             # job_start arriving mid-showcase must not cut it short.
             if self.state == BoothState.SHOWCASE:
+                # Knowing what is next is knowing what this hold can afford.
+                # Narrow only -- a dwell already being served must never grow
+                # under a visitor who is looking at it.
+                self._effective_dwell_s = min(
+                    self._effective_dwell_s,
+                    self._dwell_for(event.get("target_id")))
                 return self.state
             # The daemon folds continuously to keep the attract loop
             # alive; most job_start events have no visitor pick behind
@@ -298,6 +318,11 @@ class StateMachine:
             if self.state == BoothState.GALLERY:
                 return self.state
             self.state = BoothState.SHOWCASE
+            # A fresh showcase starts at the maximum; the next job_start
+            # narrows it. Without this reset one short target in the
+            # rotation would pin every later hold to its cap for the rest
+            # of the session.
+            self._effective_dwell_s = self.showcase_dwell_s
             self._showcase_entered_at = None
             return self.state
 
@@ -381,6 +406,37 @@ class StateMachine:
 
     # -- clock --------------------------------------------------------
 
+    @property
+    def effective_dwell_s(self):
+        """How long THIS showcase actually holds, in seconds.
+
+        `showcase_dwell_s` is the maximum any showcase may take;
+        this is what the one currently being served will take, after the
+        incoming target's cap has been applied. Read this, not
+        `showcase_dwell_s`, when you need the number the clock is being
+        compared against -- they differ whenever the next fold cannot afford
+        the full hold.
+        """
+        return self._effective_dwell_s
+
+    def _dwell_for(self, target_id):
+        """The longest dwell affordable in front of `target_id` -- its
+        measured `first_frame_s` clamped into
+        [dwell_floor_s, showcase_dwell_s].
+
+        An unmeasured or unknown target gets the FLOOR, not the maximum.
+        A long hold is a bet that the incoming fold can afford to have its
+        opening frames suppressed, and only a measurement settles that; with
+        no number, the booth declines the bet and keeps the behaviour it had
+        before per-target dwells existed. It also makes this whole mechanism
+        a no-op on any playlist that measures nothing, which is how it was
+        verified against the existing suite.
+        """
+        cap = self.dwell_caps.get(target_id)
+        if cap is None:
+            return self.dwell_floor_s
+        return max(self.dwell_floor_s, min(self.showcase_dwell_s, cap))
+
     def tick(self, now):
         """Advance the two time-based transitions given a clock reading,
         and return the resulting state. Never blocks, never sleeps, owns
@@ -392,7 +448,7 @@ class StateMachine:
                 # First tick since job_done -- this is "now" for dwell
                 # purposes.
                 self._showcase_entered_at = now
-            elif now - self._showcase_entered_at >= self.showcase_dwell_s:
+            elif now - self._showcase_entered_at >= self._effective_dwell_s:
                 # Where the booth goes now is the ONE thing the deferred
                 # touch changes: a visitor who tapped during the dwell gets
                 # the gallery they asked for, in the same instant the

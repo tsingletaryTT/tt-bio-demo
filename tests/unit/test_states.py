@@ -480,3 +480,85 @@ def test_the_attract_loops_own_job_done_does_not_close_an_open_gallery():
     # ...and the visitor's own pick still leads to a showcase as normal.
     sm.on_pick("trpcage")
     assert sm.on_event({"type": "job_done", "job_id": "theirs"}) == "showcase"
+
+
+# ── the per-target showcase dwell ───────────────────────────────────────────
+#
+# A finished structure holds the screen for as long as the INCOMING fold can
+# afford, because holding it is paid for by suppressing that fold's opening
+# frames (the daemon starts it before this one is even drawn). So the dwell is
+# a maximum, capped by the incoming target's measured `first_frame_s`.
+#
+# The measurement that forced this: a flat 7.0s dwell put Trp-cage's visible
+# collapse at 0/30 frames, against the 40% floor
+# test_live_diffusion_is_visible_for_a_substantial_share_of_each_cycle holds.
+
+def _showcase_then_next(sm, next_target_id):
+    """Finish a fold, then tell the machine what is coming. Returns the dwell
+    the resulting showcase will actually serve."""
+    sm.on_event({"type": "job_done", "job_id": "n"})
+    assert sm.state == "showcase"
+    sm.on_event({"type": "job_start", "job_id": "n+1",
+                 "target_id": next_target_id})
+    return sm.effective_dwell_s
+
+
+def test_a_slow_starting_incoming_target_gets_the_full_dwell():
+    """Albumin does not reach its first coordinates for 82.7s, so a 7s hold
+    in front of it costs its collapse nothing."""
+    sm = _sm(showcase_dwell_s=7.0, dwell_floor_s=2.0,
+             dwell_caps={"hsa": 82.7, "trpcage": 1.9})
+    assert _showcase_then_next(sm, "hsa") == 7.0
+
+
+def test_a_fast_starting_incoming_target_is_capped_to_the_floor():
+    """Trp-cage reaches coordinates in 1.9s. A 7s hold in front of it would
+    suppress its entire collapse, which is the defect this cap exists for."""
+    sm = _sm(showcase_dwell_s=7.0, dwell_floor_s=2.0,
+             dwell_caps={"hsa": 82.7, "trpcage": 1.9})
+    assert _showcase_then_next(sm, "trpcage") == 2.0
+
+
+def test_a_mid_range_target_gets_its_own_measured_number():
+    """Not just two buckets: the cap is the measurement, clamped."""
+    sm = _sm(showcase_dwell_s=7.0, dwell_floor_s=2.0,
+             dwell_caps={"fkbp12": 5.3})
+    assert _showcase_then_next(sm, "fkbp12") == pytest.approx(5.3)
+
+
+def test_an_unmeasured_incoming_target_gets_the_floor_not_the_maximum():
+    """A long hold is a bet that the incoming fold can afford it, and only a
+    measurement settles that. With no number the booth declines the bet --
+    which is also what makes this mechanism inert on a playlist that measures
+    nothing."""
+    sm = _sm(showcase_dwell_s=7.0, dwell_floor_s=2.0, dwell_caps={})
+    assert _showcase_then_next(sm, "something-nobody-timed") == 2.0
+
+
+def test_a_dwell_already_being_served_is_never_widened():
+    """Two job_starts, the second slower-starting than the first. The hold
+    must not GROW under a visitor who is already looking at it -- only the
+    narrowest answer seen so far may apply."""
+    sm = _sm(showcase_dwell_s=7.0, dwell_floor_s=2.0,
+             dwell_caps={"trpcage": 1.9, "hsa": 82.7})
+    sm.on_event({"type": "job_done", "job_id": "n"})
+    sm.on_event({"type": "job_start", "job_id": "a", "target_id": "trpcage"})
+    assert sm.effective_dwell_s == 2.0
+    sm.on_event({"type": "job_start", "job_id": "b", "target_id": "hsa"})
+    assert sm.effective_dwell_s == 2.0, "a served dwell was widened"
+
+
+def test_a_narrow_dwell_does_not_leak_into_the_next_showcase():
+    """One short target in the rotation must not pin every later hold to its
+    cap. Each new showcase starts from the maximum again."""
+    sm = _sm(showcase_dwell_s=7.0, dwell_floor_s=2.0,
+             dwell_caps={"trpcage": 1.9, "hsa": 82.7})
+    sm.on_event({"type": "job_done", "job_id": "n"})
+    sm.on_event({"type": "job_start", "job_id": "a", "target_id": "trpcage"})
+    assert sm.effective_dwell_s == 2.0
+    # That showcase ends; a later fold finishes and albumin is next.
+    sm.tick(0.0)
+    sm.tick(100.0)
+    sm.on_event({"type": "job_done", "job_id": "a"})
+    sm.on_event({"type": "job_start", "job_id": "b", "target_id": "hsa"})
+    assert sm.effective_dwell_s == 7.0, "the narrowed dwell leaked forward"
