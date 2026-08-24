@@ -340,11 +340,13 @@
 
 <span class="c"># or, from a terminal:</span>
 /opt/tt-bio-demo/scripts/run-demo.sh
-/opt/tt-bio-demo/scripts/run-demo.sh <b>--quad</b></pre>
+/opt/tt-bio-demo/scripts/run-demo.sh <b>--solo</b></pre>
       <p class="tight">
-        <code>--quad</code> starts in the 2&times;2 grid; <kbd>Q</kbd> toggles it either way at
-        runtime. The launcher starts <b>both</b> halves — the compute daemon and the UI — and
-        tears the daemon down when it exits.
+        A booth with more than one chip <b>comes up in the 2&times;2 grid</b>; one chip comes up
+        showing a single large protein. <code>--solo</code> forces the single view either way,
+        <code>--quad</code> forces the grid, and <kbd>Q</kbd> toggles at runtime. The launcher
+        starts <b>both</b> halves — the compute daemon and the UI — and tears the daemon down
+        when it exits.
       </p>
 
       <h2>Stopping it</h2>
@@ -457,8 +459,8 @@ systemctl --user <b>restart</b> tt-bio-demo</pre>
          booth. <code>dpkg -l tt-bio-demo-weights</code>.</div>
     <div><span></span><b>Fold each target once.</b> This is the one that gets skipped. It warms
          the kernel cache so no visitor watches a cold compile.</div>
-    <div><span></span><b>Fullscreen and quad.</b> <kbd style="font-size:8px;padding:1px 4px">Ctrl</kbd>+<kbd style="font-size:8px;padding:1px 4px">F</kbd>,
-         then <kbd style="font-size:8px;padding:1px 4px">Q</kbd> — or start with <code>--quad</code>.</div>
+    <div><span></span><b>Fullscreen.</b> <kbd style="font-size:8px;padding:1px 4px">Ctrl</kbd>+<kbd style="font-size:8px;padding:1px 4px">F</kbd>.
+         A multi-chip booth is already in the grid; <kbd style="font-size:8px;padding:1px 4px">Q</kbd> toggles.</div>
     <div><span></span><b>Help card opens.</b> Press <kbd style="font-size:8px;padding:1px 4px">?</kbd>.
          It is what a visitor reads when you are talking to someone else.</div>
     <div><span></span><b>Leave it alone for a minute.</b> The attract loop should start folding

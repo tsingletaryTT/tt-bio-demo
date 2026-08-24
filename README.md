@@ -83,7 +83,8 @@ ball-and-stick in the usual element colours. Three of the seven targets fold a *
 ligand** alongside the protein — FKBP12 with a binder, trypsin with benzamidine, and DHFR
 with methotrexate, the cancer drug its gallery card names.
 
-Start the booth already in the grid with `scripts/run-demo.sh --quad`; <kbd>Q</kbd> still
+A booth with more than one chip starts in the grid by itself; `scripts/run-demo.sh --solo`
+forces the single large view, `--quad` forces the grid on a one-chip booth. <kbd>Q</kbd> still
 toggles either way at runtime.
 
 ### The instrument
@@ -251,7 +252,8 @@ the authoritative list. The ones you are most likely to want:
 | `--targets a,b` | every target in the manifest | Which manifest ids to run, for both processes |
 | `--all-targets` | — | Accepted and harmless: running every target is the default, so this only restates it |
 | `--devices 0,2` | every detected chip | Which physical chips the booth folds on |
-| `--quad` | off | Come up in the 2×2 grid instead of one large protein; <kbd>Q</kbd> still toggles at runtime |
+| `--quad` | auto | Force the 2×2 grid, even on a one-chip booth; <kbd>Q</kbd> still toggles at runtime |
+| `--solo` | auto | Force one large protein on a booth that would otherwise come up in the grid |
 | `--windowed` | off | Come up in a normal window instead of fullscreen; <kbd>Ctrl</kbd>+<kbd>F</kbd> still toggles |
 | `--log-root PATH` | `<runtime-dir>/logs` | Where tt-metal's own log output is pinned |
 | `--log-budget-gb` | 2 | Sweep budget for tt-metal logs between folds |

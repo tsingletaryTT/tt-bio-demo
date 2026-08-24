@@ -221,7 +221,7 @@ Two supported ways, and they are not interchangeable:
 Double-click **tt-bio Protein Folding Demo**, or run:
 
 ```bash
-/opt/tt-bio-demo/scripts/run-demo.sh          # add --quad to start in the 2×2 grid
+/opt/tt-bio-demo/scripts/run-demo.sh          # >1 chip starts in the 2×2 grid; --solo for one
 ```
 
 `run-demo.sh` starts *both* halves — the daemon in `venv-runner`, the UI in `venv-ui` — and

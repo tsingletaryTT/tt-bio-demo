@@ -7,8 +7,20 @@ tt-bio-demo (0.5.0) noble; urgency=medium
   * The weight-artifact API the weights postinst and the runner both call
     moved into tt_bio.weights upstream; both are ported, and the packaging
     contract test now checks the artifact key as well as the function.
+  * A finished structure now holds the screen for as long as the NEXT fold can
+    afford rather than a flat two seconds, capped per target by its measured
+    time to first coordinates: about seven seconds ahead of the long targets,
+    unchanged ahead of the short ones, whose whole collapse a flat hold would
+    have suppressed.
+  * The cartoon draws nucleic acids instead of dropping them. A protein/DNA
+    complex used to render the protein and silently omit the DNA, and a pure
+    DNA or tRNA fold fell back to the old tube renderer by way of an
+    exception. Same picture as before for those two, now drawn on purpose.
+  * A booth with more than one chip comes up showing all of them. --quad still
+    forces the grid on a single-chip booth and the new --solo forces one large
+    protein; Q toggles either way at runtime, as before.
 
- -- Taylor Singletary <tsingletary@tenstorrent.com>  Mon, 24 Aug 2026 10:30:00 -0700
+ -- Taylor Singletary <tsingletary@tenstorrent.com>  Mon, 24 Aug 2026 11:30:00 -0700
 
 tt-bio-demo (0.4.0) noble; urgency=medium
 
