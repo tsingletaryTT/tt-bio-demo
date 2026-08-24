@@ -1418,7 +1418,11 @@ def _ensure_app_css_installed():
 
 class DemoApp(Gtk.Application):
     def __init__(self, socket_path=None, playlist_path=None, target_ids=None,
-                 clock=None, windowed=False, quad=False):
+                 clock=None, windowed=False, quad=None):
+        # `quad` is TRI-STATE -- None (auto), True (--quad), False
+        # (--solo). It defaulted to False before the booth learned to
+        # choose; leaving that default would have made auto dead code,
+        # which is exactly what the first run of the new tests showed.
         super().__init__(application_id="com.tenstorrent.ttbiodemo")
         self.socket_path = socket_path
         # Start windowed instead of fullscreen. The booth always wants
@@ -1500,7 +1504,20 @@ class DemoApp(Gtk.Application):
         # `_ensure_quad` reads this flag when it builds the real widget on
         # the daemon's `hello`, which is what keeps the bool and the cells on
         # screen from disagreeing.
+        # TRI-STATE, not a bool: None means AUTO -- come up in the quad on a
+        # booth that has more than one chip, solo on a single-chip one. The
+        # operator asked for the grid by default "when available", and the
+        # chip count is not knowable here: it arrives later, on the daemon's
+        # `hello` or (more usually, see `_note_card`) one chip at a time as
+        # `card_state`/`job_start` events name them. True/False are `--quad`
+        # and `--solo`, which force the start view and skip auto entirely.
+        self._quad_requested = quad
         self.quad_visible = bool(quad)
+        # Auto decides ONCE. A booth registers its chips one by one, so
+        # re-deciding on every arrival would yank the view out from under an
+        # operator who had already pressed `Q` -- and pressing `Q` is itself
+        # a decision, so `_set_quad_visible` sets this too.
+        self._quad_auto_resolved = quad is not None
 
         # ── the easter egg (Ctrl+G; mark.py, `_EGG_KEYS`) ─────────────
         #
@@ -1796,6 +1813,7 @@ class DemoApp(Gtk.Application):
             # claim any more; start clean rather than draining ghosts.
             self._frames = LatestFrameByJob()
 
+        self._resolve_auto_quad()
         self._ensure_quad(cards)
         self._sync_viewer_hold()
 
@@ -1823,7 +1841,25 @@ class DemoApp(Gtk.Application):
         self._slots.append(_SlotView())
         self.cards = list(self.router.cards)
         log.info("chip %s named by the daemon; giving it cell %d", card, index)
+        self._resolve_auto_quad()
         self._ensure_quad(self.cards)
+
+    def _resolve_auto_quad(self):
+        """Come up in the quad if this booth turns out to have several chips.
+
+        Called every time the card list grows, and decides at most once. A
+        single known chip is NOT a decision -- more may still be registering
+        (`_note_card`) -- so it leaves the booth solo and stays undecided,
+        which is exactly right for a one-chip booth that never grows.
+        """
+        if self._quad_auto_resolved:
+            return
+        if len(self.cards) <= 1:
+            return
+        self._quad_auto_resolved = True
+        log.info("booth has %d chips; starting in the quad view "
+                 "(Q toggles, --solo overrides)", len(self.cards))
+        self._set_quad_visible(True)
 
     def _ensure_quad(self, cards):
         """Make the on-screen quad show exactly these chips.
@@ -3162,6 +3198,9 @@ class DemoApp(Gtk.Application):
         above that method for why the hero is a cell of the quad rather than
         a fifth viewer with its own camera.
         """
+        # Whoever pressed `Q` has decided; auto must not overrule them when
+        # the next chip registers.
+        self._quad_auto_resolved = True
         self.quad_visible = bool(visible)
         if self.quad is None:
             return
@@ -4832,11 +4871,19 @@ def main(argv=None):
     parser.add_argument("--windowed", action="store_true",
                         help="start in a normal window instead of fullscreen "
                              "(Ctrl+F toggles either way at runtime)")
-    parser.add_argument("--quad", action="store_true",
-                        help="start showing all the booth's chips at once "
-                             "instead of one large protein (Q toggles either "
-                             "way at runtime). Only worth it with more than "
-                             "one chip")
+    # Tri-state: neither flag means AUTO -- the quad on a booth with more
+    # than one chip, solo on a single-chip one. Mutually exclusive because
+    # "--quad --solo" has no sensible reading, and argparse should say so
+    # rather than letting the last one silently win.
+    view = parser.add_mutually_exclusive_group()
+    view.add_argument("--quad", dest="quad", action="store_true", default=None,
+                      help="force the grid of every chip at startup, even on "
+                           "a one-chip booth (Q toggles either way at "
+                           "runtime). Without this or --solo the booth picks: "
+                           "the grid when it has more than one chip")
+    view.add_argument("--solo", dest="quad", action="store_false",
+                      help="force one large protein at startup on a booth "
+                           "that would otherwise come up in the grid")
     args = parser.parse_args(argv)
     target_ids = [part.strip() for part in (args.targets or "").split(",")
                   if part.strip()]

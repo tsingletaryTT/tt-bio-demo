@@ -567,20 +567,33 @@ def test_the_connection_state_reaches_every_cell():
 # ── the toggle ──────────────────────────────────────────────────────────────
 
 def test_the_booth_starts_on_the_single_large_view():
-    """The quad is optional, by request. One protein, large, is what a
-    visitor walks up to."""
-    app = _app()
+    """One protein, large, is what a visitor walks up to -- ON A ONE-CHIP
+    BOOTH.
+
+    This used to be unconditional. It stopped being the default on
+    2026-08-24: a booth with several chips now comes up in the grid, by
+    request, because coming up solo meant a four-chip booth showed one
+    protein unless somebody remembered `--quad`. The single-chip case is
+    unchanged, and is what this now pins; the multi-chip decision is covered
+    under "the start view decides itself" below.
+    """
+    app = _app(cards=(0,))
     assert app.quad_visible is False
 
 
 def test_q_toggles_the_quad_and_toggles_it_back():
+    """Written against the START STATE rather than a literal, so it keeps
+    testing the toggle if the default view changes again -- which it did once
+    already (a multi-chip booth now starts in the grid)."""
     app = _app()
+    start = app.quad_visible
     app._handle_key("q")
-    assert app.quad_visible is True
-    assert app.quad.solo_calls[-1] is False, "all four cells should be on screen"
+    assert app.quad_visible is not start
+    assert app.quad.solo_calls[-1] is start, \
+        "solo_mode should be the opposite of what is now visible"
     app._handle_key("q")
-    assert app.quad_visible is False
-    assert app.quad.solo_calls[-1] is True
+    assert app.quad_visible is start
+    assert app.quad.solo_calls[-1] is not start
 
 
 def test_q_is_documented_on_the_help_card():
@@ -598,9 +611,10 @@ def test_q_with_ctrl_still_quits_rather_than_toggling(monkeypatch):
     app = _app()
     quits = []
     monkeypatch.setattr(type(app), "quit", lambda self: quits.append(True))
+    before = app.quad_visible
     app._handle_key("q", ctrl=True)
     assert quits == [True]
-    assert app.quad_visible is False
+    assert app.quad_visible is before, "Ctrl+Q touched the view"
 
 
 def test_q_does_not_open_the_gallery():
@@ -618,7 +632,9 @@ def test_the_quad_is_not_closed_by_escape():
     the quad is a VIEW of the same four folds, not chrome laid over them, so
     there is nothing for Escape to get out of the way of."""
     app = _app()
-    app._handle_key("q")
+    if not app.quad_visible:            # a one-chip booth starts solo
+        app._handle_key("q")
+    assert app.quad_visible is True, "setup failed: the quad is not open"
     app._handle_key("escape")
     assert app.quad_visible is True
 
@@ -781,3 +797,75 @@ def test_an_empty_cell_does_not_claim_to_be_showing_a_structure():
     assert "Trypsin" not in caption, \
         f"empty cell claims to be showing trypsin: {caption!r}"
     assert "Dihydrofolate Reductase" in caption, "lost what IS computing"
+
+
+# ── the start view decides itself ───────────────────────────────────────────
+#
+# Asked for on 2026-08-24: "I like 4 chip by default when available." Solo was
+# the default and `--quad` was the only way to change it, which meant a
+# four-chip booth came up showing one protein unless somebody remembered a
+# flag. The chip count cannot be known at construction -- chips register one
+# at a time as the daemon names them (`_note_card`) -- so this is decided as
+# they arrive, and decided ONCE.
+
+def test_a_multi_chip_booth_comes_up_in_the_quad():
+    app = DemoApp(socket_path=None)
+    assert app.quad_visible is False, "nothing known yet; solo is right"
+    app.attach_cards([0, 1, 2, 3])
+    assert app.quad_visible is True
+
+
+def test_a_single_chip_booth_stays_solo():
+    """One chip has nothing to put in the other three cells."""
+    app = DemoApp(socket_path=None)
+    app.attach_cards([0])
+    assert app.quad_visible is False
+
+
+def test_a_one_chip_booth_that_grows_still_gets_the_quad():
+    """The real startup order: the router hears about chip 0, then the daemon
+    names the rest one at a time. A single known chip must NOT count as a
+    decision, or a four-chip booth that registers gradually stays solo."""
+    app = DemoApp(socket_path=None)
+    app.attach_cards([0])
+    assert app.quad_visible is False
+    app._note_card(1)
+    assert app.quad_visible is True, \
+        "the second chip should have flipped the booth into the quad"
+
+
+def test_pressing_q_beats_a_chip_arriving_later():
+    """A visitor or operator who has chosen a view keeps it. Without this the
+    next chip to register would yank the view back."""
+    app = DemoApp(socket_path=None)
+    app.attach_cards([0])
+    app._set_quad_visible(True)          # somebody pressed Q
+    app._set_quad_visible(False)         # ...and pressed it again
+    app._note_card(1)
+    assert app.quad_visible is False, "auto overruled a manual choice"
+
+
+def test_solo_is_forced_when_asked_for():
+    """`--solo` on a booth that would otherwise pick the quad."""
+    app = DemoApp(socket_path=None, quad=False)
+    app.attach_cards([0, 1, 2, 3])
+    assert app.quad_visible is False
+
+
+def test_quad_is_forced_even_on_one_chip():
+    """`--quad` still means what it meant: the grid, whatever the chip count.
+    One cell in a 2x2 is a legitimate thing to want when recording."""
+    app = DemoApp(socket_path=None, quad=True)
+    app.attach_cards([0])
+    assert app.quad_visible is True
+
+
+def test_auto_decides_only_once():
+    """Having chosen the quad, a further chip must not re-run the decision --
+    it would stamp on a `Q` press made in between."""
+    app = DemoApp(socket_path=None)
+    app.attach_cards([0, 1])
+    assert app.quad_visible is True
+    app._set_quad_visible(False)
+    app._note_card(2)
+    assert app.quad_visible is False

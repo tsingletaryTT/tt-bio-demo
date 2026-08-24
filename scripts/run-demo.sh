@@ -102,6 +102,10 @@
 #                                 was retired mid-session, is a fact the daemon
 #                                 has and a command line cannot.
 #
+#   --solo                        Start the UI showing ONE large protein on a
+#                                 booth that would otherwise come up in the
+#                                 grid. Without --quad or --solo the booth
+#                                 picks: the grid when it has >1 chip.
 #   --quad                        Start the UI showing every chip at once
 #                                 instead of one large protein. Q toggles
 #                                 either way at runtime; this only chooses
@@ -175,6 +179,7 @@ while [[ $# -gt 0 ]]; do
     --all-targets)          TARGETS=""; shift ;;
     --windowed)             WINDOWED=1; shift ;;
     --quad)                 QUAD=1; shift ;;
+    --solo)                 SOLO=1; shift ;;
     --weights)              WEIGHTS="$2"; shift 2 ;;
     --log-budget-gb)        LOG_BUDGET_GB="$2"; shift 2 ;;
     --structures-budget-gb) STRUCTURES_BUDGET_GB="$2"; shift 2 ;;
@@ -352,6 +357,7 @@ UI_ARGS=""
 # for an operator running a multi-chip booth who wants the grid up all day,
 # and for recording, where "press Q at the right moment" fails silently.
 [ "${QUAD:-0}" = "1" ] && UI_ARGS="${UI_ARGS} --quad"
+[ "${SOLO:-0}" = "1" ] && UI_ARGS="${UI_ARGS} --solo"
 
 "${VENV_UI}/bin/python3" -m ui.app \
   --socket "$SOCKET" \
