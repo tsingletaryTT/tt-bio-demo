@@ -884,6 +884,73 @@ Suite green at 1,467. Confirmed on the running booth: DNA was photographed
 mid-diffusion with its noise cloud on screen -- the exact thing a flat 7.0s
 dwell suppressed entirely.
 
+### The quad by default, and a cartoon that draws DNA (2026-08-24)
+
+Two things noticed while the booth was actually running, which is where both
+of them could only have been noticed.
+
+**"Is the solo view by default? I like 4 chip by default when available."** It
+was, and `--quad` was the only way out, so a four-chip booth showed one protein
+unless somebody remembered a flag. `quad` is tri-state now: None (auto), True
+(`--quad`), False (`--solo`, new). The interesting part is WHERE auto resolves.
+The chip count is not knowable at construction -- chips register one at a time
+as the daemon names them (`_note_card`; the very first live run of the quad
+drew one cell because the card list never arrived at all) -- so it resolves as
+the card list GROWS, and two things it must not do are pinned: it must not
+decide on one known chip (more may be coming, and a booth that registers
+gradually would stay solo forever), and it must not overrule a person, so
+pressing `Q` marks the question settled. The constructor default was
+`quad=False`, which would have made the whole mechanism dead code; the new
+tests caught that on their first run.
+
+**The cartoon was dropping nucleic chains, and its own docstring said not to.**
+`ui/cartoon.py` promises that a chain with no C-alphas "is swept as plain round
+tube using the anchors `ui.geometry` already chooses for it". The code said
+`continue`. Asked whether this needed an upstream fix -- it did not; tt-bio
+writes the CIF and this is entirely ours.
+
+Measured, not reasoned about, on a structure assembled from two real folds off
+these cards (Trp-cage + a 24-nt duplex, nucleic chains moved +200 A so the
+answer is geometry rather than coincidence):
+
+    cartoon built: 1380 verts, x-range -9.5 -> 7.2
+    DNA represented in the cartoon?  False
+
+So a **protein+nucleic complex drew the protein and silently omitted the
+nucleic acid** -- the worse half, and invisible on today's playlist because
+nothing on it mixes the two. The visible half: a pure DNA/tRNA fold had every
+chain dropped, so `cartoon_from_cif` raised, and the viewer answered with the
+old tube renderer -- the right picture arrived at by exception, logged ERROR
+with a traceback on **6 of 17 folds** of a live run.
+
+CA-less chains are now swept as a tube at `NUCLEIC_RADIUS`, chosen with
+`_best_anchor_atom` so it is the same per-residue choice `ui.geometry` makes
+(CA, then P, then C1'): a nucleic chain anchors on its phosphate, and a ligand
+-- which has none of the three -- still yields nothing and is still skipped,
+because a ligand swept through its own atoms would be a scribble. 1.6 A is not
+a new number: it is `ribbon_from_cif`'s own default, which has drawn DNA and
+tRNA here since the tube renderer shipped, so this changes WHICH code draws
+them and not how they look. After: **40 real structures build a cartoon, 0
+failures**, and a live 22-fold run logged zero.
+
+**Two mutations survived their first pass and are worth remembering**, because
+both were the same shape -- a guard whose absence no fixture could see. The
+`len(anchors) < 2` check (a one-residue chain cannot be a tube; without it
+`tube_mesh` raises and takes the whole cartoon down, reintroducing the original
+bug for any structure carrying a stray short chain) and `NUCLEIC_RADIUS`
+itself, which no assertion pinned until one measured the drawn surface against
+`DIMS[COIL]`. Both now fail.
+
+Also fixed here: four existing quad tests assumed solo-at-startup. The one that
+asserted it now asserts it for a ONE-CHIP booth and records why it narrowed;
+the three about `Q`, `Ctrl+Q` and `Escape` read the START STATE rather than a
+literal `False`, so they keep testing the toggle the next time the default
+moves -- which it has now done once.
+
+Suite green at 1,479. Both changes confirmed in one photograph of the running
+booth: four cells with no flag, DNA drawn as a tube by the cartoon, DHFR as
+ribbons and arrows, FKBP12 with its SB3 ligand as sticks, albumin mid-collapse.
+
 ## Conventions
 
 - **Keep the README's screenshots current.** The README claims every image on it is the
