@@ -1,3 +1,15 @@
+tt-bio-demo (0.5.0) noble; urgency=medium
+
+  * Pinned tt-bio moves to 0.7.0. Every fold time on every card, the site and
+    this handout is re-measured on that release; the numbers barely move, and
+    the 0.6.7 Protenix-v2 accuracy fixes are not visible on these targets
+    because all seven fold without an MSA.
+  * The weight-artifact API the weights postinst and the runner both call
+    moved into tt_bio.weights upstream; both are ported, and the packaging
+    contract test now checks the artifact key as well as the function.
+
+ -- Taylor Singletary <tsingletary@tenstorrent.com>  Mon, 24 Aug 2026 10:30:00 -0700
+
 tt-bio-demo (0.4.0) noble; urgency=medium
 
   * FKBP12 returns to the playlist, folding faster than it ever did, on
