@@ -63,6 +63,21 @@ DIMS = {
     COIL: (0.25, 0.25),
 }
 
+#: Radius of the plain round tube a CA-less POLYMER chain is swept as -- a
+#: nucleic acid, which has no secondary structure and no peptide plane to
+#: build a ribbon frame from.
+#:
+#: 1.6 A is not a new choice: it is `ui.geometry.ribbon_from_cif`'s default,
+#: which is what has drawn DNA and tRNA on this booth since the tube renderer
+#: shipped. So teaching the cartoon to draw these chains changes WHICH code
+#: draws them, not how they look -- deliberately, because the tube was already
+#: the right picture for a molecule with no helices or sheets to show.
+#:
+#: NOT `DIMS[COIL]` (0.25 A): a loop is drawn thin so it reads as subordinate
+#: to the helices and sheets around it, and a nucleic backbone is not
+#: subordinate to anything -- in a protein/DNA complex it is half the subject.
+NUCLEIC_RADIUS = 1.6
+
 #: How much of a strand run is arrowhead, and how wide the barbs get.
 ARROW_FRACTION = 0.28
 ARROW_WIDTH = 1.9          # multiple of the strand's body half-width
@@ -307,8 +322,8 @@ def cartoon_from_cif(cif_path, samples_per_residue=6):
     """
     import gemmi
 
-    from ui.geometry import (GeometryError, catmull_rom, plddt_colors,
-                             resample_scalar)
+    from ui.geometry import (GeometryError, _best_anchor_atom, catmull_rom,
+                             plddt_colors, resample_scalar, tube_mesh)
     from ui.secstruct import assign
 
     st = gemmi.read_structure(str(cif_path))
@@ -329,7 +344,39 @@ def cartoon_from_cif(cif_path, samples_per_residue=6):
             c_at.append([a_c.pos.x, a_c.pos.y, a_c.pos.z])
             o_at.append([a_o.pos.x, a_o.pos.y, a_o.pos.z])
             plddt.append(a_ca.b_iso)
+
         if len(ca) < 2:
+            # No peptide plane here, so no ribbon -- but this may still be a
+            # POLYMER worth drawing. `_best_anchor_atom` is the same per
+            # residue choice ui.geometry makes (CA, then P, then C1'), so a
+            # nucleic chain anchors on its phosphate and a ligand -- which has
+            # none of the three -- yields nothing and is correctly skipped
+            # here. Ligands are drawn separately (see ui/ligand.py); a ligand
+            # swept as a tube through its own atoms would be a scribble.
+            anchors, anchor_plddt = [], []
+            for res in chain:
+                atom = _best_anchor_atom(res)
+                if atom is not None:
+                    anchors.append([atom.pos.x, atom.pos.y, atom.pos.z])
+                    anchor_plddt.append(atom.b_iso)
+            if len(anchors) < 2:
+                continue
+
+            centre = catmull_rom(np.asarray(anchors), samples_per_residue)
+            v, nrm, idx = tube_mesh(centre, radius=NUCLEIC_RADIUS, sides=RING)
+            # Resampled against THIS chain's own sample count, for the reason
+            # ribbon_from_cif spells out: a global resample leaves every
+            # chain's colours shifted against its own residues, and no shape
+            # or dtype check can see it.
+            cols = np.repeat(
+                plddt_colors(resample_scalar(np.asarray(anchor_plddt),
+                                             len(centre))),
+                RING, axis=0)
+            vp.append(v)
+            np_.append(nrm)
+            cp.append(cols)
+            ip.append(idx.astype(np.uint32) + np.uint32(offset))
+            offset += len(v)
             continue
 
         ca = np.asarray(ca)

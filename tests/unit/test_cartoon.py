@@ -12,11 +12,13 @@ way a cartoon renderer can be wrong.
 """
 
 import math
+import pathlib
 
 import numpy as np
 import pytest
 
-from ui.cartoon import (ARROW_WIDTH, DIMS, RING, section_dims, side_vectors,
+from ui.cartoon import (ARROW_WIDTH, DIMS, NUCLEIC_RADIUS, RING,
+                        cartoon_from_cif, section_dims, side_vectors,
                         sweep)
 from ui.secstruct import COIL, HELIX, STRAND
 
@@ -269,3 +271,174 @@ def test_a_helix_is_framed_from_its_axis_not_its_carbonyls():
     assert winding(side_vectors(ca, c, o, labels=HELIX * n)) < \
         winding(side_vectors(ca, c, o)) / 2, \
         "the axis frame is winding up around the helix like the carbonyl one"
+
+
+# ── CA-less polymer chains: nucleic acids in a mixed structure ──────────────
+#
+# `cartoon_from_cif`'s own docstring promises this, and until 2026-08-24 the
+# code did the opposite:
+#
+#   "A chain with no C-alphas at all -- a nucleic acid, a ligand -- has no
+#    secondary structure and no peptide plane, so it is swept as plain round
+#    tube using the anchors `ui.geometry` already chooses for it."
+#
+# What it actually did was `continue`, dropping the chain. Two consequences,
+# both observed on the running booth: a protein+nucleic complex drew the
+# protein and SILENTLY OMITTED the nucleic acid, and a pure DNA/tRNA fold
+# raised GeometryError (every chain dropped, nothing left to build), which the
+# viewer caught and answered with the old tube renderer -- the right picture
+# reached by an exception, with an ERROR traceback on a third of all folds.
+
+_MIXED = (pathlib.Path(__file__).resolve().parents[1]
+          / "fixtures" / "structures" / "protein_nucleic_cartoon.cif")
+
+
+def _nucleic_anchor_positions(cif_path):
+    """Where the nucleic chains actually are, straight from gemmi."""
+    import gemmi
+    st = gemmi.read_structure(str(cif_path))
+    st.setup_entities()
+    pts = []
+    for chain in st[0]:
+        if any(r.find_atom("CA", "*") is not None for r in chain):
+            continue                      # a protein chain; not what we want
+        for res in chain:
+            for name in ("P", "C1'"):
+                atom = res.find_atom(name, "*")
+                if atom is not None:
+                    pts.append([atom.pos.x, atom.pos.y, atom.pos.z])
+                    break
+    return np.asarray(pts, dtype=np.float64)
+
+
+def test_a_nucleic_chain_is_drawn_alongside_a_protein_one():
+    """The defect: on a mixed structure the nucleic acid vanished.
+
+    The fixture is two REAL folds off this booth's own cards -- a 20-residue
+    Trp-cage and a 24-nucleotide duplex -- with the nucleic chains translated
+    +200 A in x so "did the nucleic acid get drawn" is a question about
+    geometry and not about a coordinate coincidence.
+    """
+    verts, norms, colors, indices = cartoon_from_cif(_MIXED)
+    nucleic = _nucleic_anchor_positions(_MIXED)
+    assert len(nucleic) > 0, "fixture has no nucleic chain; test is vacuous"
+
+    # Every nucleic anchor must have cartoon surface near it. 6 A is generous
+    # for a tube swept at ~1.6 A radius through those very points, and still
+    # nowhere near the protein 200 A away.
+    d = np.linalg.norm(verts[None, :, :] - nucleic[:, None, :], axis=2)
+    nearest = d.min(axis=1)
+    assert nearest.max() < 6.0, (
+        f"the nucleic chain is missing from the cartoon: its worst-covered "
+        f"anchor is {nearest.max():.1f} A from any vertex")
+
+
+def test_the_protein_is_still_a_cartoon_when_a_nucleic_chain_is_present():
+    """The fix must not cost the protein its secondary structure: a mixed
+    structure's protein half must still be built by the cartoon sweep, not
+    demoted to a tube along with its neighbour."""
+    mixed = cartoon_from_cif(_MIXED)[0]
+    # The protein chain alone, for comparison.
+    import gemmi
+    st = gemmi.read_structure(str(_MIXED))
+    st.setup_entities()
+    keep = [c.name for c in st[0]
+            if any(r.find_atom("CA", "*") is not None for r in c)]
+    assert keep, "fixture has no protein chain"
+    for name in [c.name for c in st[0] if c.name not in keep]:
+        st[0].remove_chain(name)
+    st.setup_entities()
+    only_protein = pathlib.Path("/tmp") / "cartoon_protein_only.cif"
+    st.make_mmcif_document().write_file(str(only_protein))
+
+    protein_only = cartoon_from_cif(only_protein)[0]
+    assert len(protein_only) > 0
+    # The protein's own vertices are unchanged by the nucleic chain's presence
+    # -- the mixed mesh is the protein's mesh plus the nucleic tube.
+    assert len(mixed) > len(protein_only), \
+        "adding a nucleic chain added no geometry"
+    near_protein = mixed[mixed[:, 0] < 100.0]
+    assert len(near_protein) == len(protein_only), (
+        "the protein half of the mixed cartoon is not the same mesh it is "
+        "on its own")
+
+
+def test_a_pure_nucleic_structure_builds_a_cartoon_instead_of_raising():
+    """A DNA duplex or a tRNA is now a cartoon result -- a round tube, which
+    is the correct picture for something with no secondary structure -- rather
+    than a GeometryError the viewer has to catch and paper over."""
+    import gemmi
+    st = gemmi.read_structure(str(_MIXED))
+    st.setup_entities()
+    for name in [c.name for c in st[0]
+                 if any(r.find_atom("CA", "*") is not None for r in c)]:
+        st[0].remove_chain(name)
+    st.setup_entities()
+    only_nucleic = pathlib.Path("/tmp") / "cartoon_nucleic_only.cif"
+    st.make_mmcif_document().write_file(str(only_nucleic))
+
+    verts, norms, colors, indices = cartoon_from_cif(only_nucleic)
+    assert len(verts) > 0 and len(indices) > 0
+    assert len(colors) == len(verts), "one colour per vertex"
+    assert len(norms) == len(verts), "one normal per vertex"
+
+
+def test_a_one_residue_polymer_chain_is_skipped_not_fatal():
+    """A chain with a single anchor cannot be a tube -- `tube_mesh` needs two
+    centreline points -- and must be SKIPPED, not allowed to raise.
+
+    Without the `len(anchors) < 2` guard the exception escapes and the whole
+    structure falls back to the tube renderer, which is precisely the bug the
+    nucleic-tube path exists to fix, reintroduced for every structure that
+    happens to carry a stray one-residue chain. Verified: removing that guard
+    leaves this test red and the other four green.
+    """
+    import gemmi
+    st = gemmi.read_structure(str(_MIXED))
+    st.setup_entities()
+    # Keep the protein, and cut one nucleic chain down to a single residue.
+    nucleic = [c.name for c in st[0]
+               if not any(r.find_atom("CA", "*") is not None for r in c)]
+    assert nucleic, "fixture has no nucleic chain"
+    for name in nucleic[1:]:
+        st[0].remove_chain(name)
+    victim = st[0][nucleic[0]]
+    while len(victim) > 1:
+        del victim[len(victim) - 1]
+    st.setup_entities()
+    path = pathlib.Path("/tmp") / "cartoon_one_residue_chain.cif"
+    st.make_mmcif_document().write_file(str(path))
+
+    verts = cartoon_from_cif(path)[0]
+    assert len(verts) > 0, "the protein chain should still have been drawn"
+
+
+def test_the_nucleic_tube_is_not_drawn_as_thin_as_a_cartoon_loop():
+    """`NUCLEIC_RADIUS`, not `DIMS[COIL]`.
+
+    A loop is deliberately thin (0.25 A) so it reads as subordinate to the
+    helices and sheets around it. A nucleic backbone is not subordinate to
+    anything -- in a protein/DNA complex it is half the subject -- so it is
+    swept at the same 1.6 A `ui.geometry.ribbon_from_cif` has always used.
+    Measured as the spread of surface around the chain's own anchors.
+    """
+    import gemmi
+    st = gemmi.read_structure(str(_MIXED))
+    st.setup_entities()
+    for name in [c.name for c in st[0]
+                 if any(r.find_atom("CA", "*") is not None for r in c)]:
+        st[0].remove_chain(name)
+    st.setup_entities()
+    path = pathlib.Path("/tmp") / "cartoon_nucleic_radius.cif"
+    st.make_mmcif_document().write_file(str(path))
+
+    verts = cartoon_from_cif(path)[0]
+    anchors = _nucleic_anchor_positions(path)
+    # Distance from each vertex to its nearest anchor. The tube's surface sits
+    # about NUCLEIC_RADIUS from the centreline, so the bulk of it must lie
+    # well outside a 0.25 A coil and inside a generous bound.
+    d = np.linalg.norm(verts[:, None, :] - anchors[None, :, :], axis=2).min(axis=1)
+    assert np.median(d) > DIMS[COIL][0] * 2, (
+        f"the nucleic tube is only {np.median(d):.2f} A from its anchors -- "
+        f"that is coil-thin, not {NUCLEIC_RADIUS} A")
+    assert np.median(d) < NUCLEIC_RADIUS * 2.0
