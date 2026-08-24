@@ -44,7 +44,7 @@ log = logging.getLogger(__name__)
 # already -- see tests/fixtures/streams/capture_real_fold.py, which reads
 # from and writes to this same path). Not configurable via Folder's own
 # constructor: Folder(device_id, model) is Task 9's fixed dependency surface,
-# and this is tt-bio's own artifact-cache convention (hf_artifact/
+# and this is tt-bio's own artifact-cache convention (tt_bio.weights.fetch /
 # download_mols are used the same way by every tt-bio model), not something
 # this module's callers should need to know about.
 _WEIGHTS_CACHE = Path.home() / ".boltz"
@@ -161,7 +161,15 @@ class Folder:
         t0 = time.monotonic()
         # Imported here rather than at module scope: importing tt_bio pulls in
         # torch and ttnn, which the unit tests must not need.
-        from tt_bio.main import PROTENIX_REPO, download_mols, hf_artifact
+        # tt-bio 0.7.0 moved the weight-artifact machinery out of tt_bio.main
+        # into tt_bio.weights (a registry of named artifacts, added by 0.6.6
+        # along with the `tt-bio weights` CLI). `hf_artifact` is GONE -- the
+        # import itself raises ImportError, which is how the 0.7.0 upgrade
+        # announced itself here. `weights.fetch(key, root=...)` is the
+        # replacement tt-bio's own CLI now uses; `download_mols` survives as a
+        # thin wrapper over `weights.fetch("mols", ...)` and is left alone.
+        from tt_bio import weights
+        from tt_bio.main import download_mols
         from tt_bio.protenix import Protenix
         from tt_bio.tenstorrent import get_device
 
@@ -194,7 +202,14 @@ class Folder:
         # too, not just a load() that was never attempted.
         try:
             _WEIGHTS_CACHE.mkdir(parents=True, exist_ok=True)
-            ckpt_path = hf_artifact(PROTENIX_REPO, "protenix-v2.pt", _WEIGHTS_CACHE)
+            # root=_WEIGHTS_CACHE, not the registry's own default: today they
+            # are the same directory (weights.cache_root() is ~/.boltz absent
+            # TT_BIO_CACHE), and passing it explicitly keeps this call and the
+            # download_mols() below agreeing on ONE cache no matter what the
+            # environment says. Honouring TT_BIO_CACHE is a deliberate,
+            # separate change -- preflight.py and doctor.sh check this path too
+            # and would have to move with it.
+            ckpt_path = weights.fetch("protenix-v2", root=_WEIGHTS_CACHE)
             self._model_obj = Protenix.load_from_checkpoint(
                 str(ckpt_path), device=self._device)
             self._mol_dir = download_mols(_WEIGHTS_CACHE)

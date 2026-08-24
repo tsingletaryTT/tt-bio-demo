@@ -19,6 +19,7 @@ tests/unit/runner/test_dump_tap.py fakes it, so none of this needs torch,
 ttnn, or a device.
 """
 
+import pathlib
 import sys
 import types
 
@@ -294,7 +295,7 @@ def test_an_unexpected_progress_stage_is_dropped_not_fatal(monkeypatch):
 def _fake_tt_bio_load_stack(monkeypatch, *, fail_at):
     """Install fake tt_bio.main / tt_bio.protenix / tt_bio.tenstorrent
     modules that support forcing any one of Folder.load()'s three fallible
-    post-device-open calls -- hf_artifact, Protenix.load_from_checkpoint,
+    post-device-open calls -- weights.fetch, Protenix.load_from_checkpoint,
     download_mols -- to raise, while counting get_device()/cleanup() calls
     so a test can observe whether the device was actually released. No
     torch/ttnn/hardware needed: get_device() here returns a plain sentinel
@@ -316,19 +317,25 @@ def _fake_tt_bio_load_stack(monkeypatch, *, fail_at):
     tenstorrent_mod.cleanup = cleanup
 
     main_mod = types.ModuleType("tt_bio.main")
-    main_mod.PROTENIX_REPO = "fake/repo"
 
-    def hf_artifact(repo_id, filename, dest_dir):
-        if fail_at == "hf_artifact":
+    # tt-bio 0.7.0: the checkpoint is resolved through tt_bio.weights.fetch(key)
+    # rather than tt_bio.main.hf_artifact(repo, filename, dest), which no longer
+    # exists. The fake follows the real import so this test keeps exercising the
+    # call Folder.load() actually makes.
+    weights_mod = types.ModuleType("tt_bio.weights")
+
+    def fetch(key, *, root=None, force=False):
+        if fail_at == "weights_fetch":
             raise RuntimeError("checkpoint download failed")
-        return dest_dir / filename
+        return (root or pathlib.Path("/nonexistent")) / f"{key}.pt"
+
+    weights_mod.fetch = fetch
 
     def download_mols(cache):
         if fail_at == "download_mols":
             raise RuntimeError("mol tarball extraction failed")
         return cache / "mols"
 
-    main_mod.hf_artifact = hf_artifact
     main_mod.download_mols = download_mols
 
     protenix_mod = types.ModuleType("tt_bio.protenix")
@@ -344,17 +351,19 @@ def _fake_tt_bio_load_stack(monkeypatch, *, fail_at):
 
     pkg = types.ModuleType("tt_bio")
     pkg.main = main_mod
+    pkg.weights = weights_mod
     pkg.protenix = protenix_mod
     pkg.tenstorrent = tenstorrent_mod
 
     monkeypatch.setitem(sys.modules, "tt_bio", pkg)
     monkeypatch.setitem(sys.modules, "tt_bio.main", main_mod)
+    monkeypatch.setitem(sys.modules, "tt_bio.weights", weights_mod)
     monkeypatch.setitem(sys.modules, "tt_bio.protenix", protenix_mod)
     monkeypatch.setitem(sys.modules, "tt_bio.tenstorrent", tenstorrent_mod)
     return calls
 
 
-@pytest.mark.parametrize("fail_at", ["hf_artifact", "load_from_checkpoint", "download_mols"])
+@pytest.mark.parametrize("fail_at", ["weights_fetch", "load_from_checkpoint", "download_mols"])
 def test_a_failed_load_releases_the_device_it_already_opened(monkeypatch, fail_at):
     """Regression: load() opens the device via get_device() *before* any of
     its three later fallible calls run. A failure in any of those three used

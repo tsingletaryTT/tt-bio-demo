@@ -4,8 +4,8 @@
 # Fetches the two artifacts the booth cannot fold without, and verifies them.
 #
 # WHY THERE IS NO curl AND NO URL HERE. tt-bio resolves its own weights
-# through huggingface_hub (`hf_artifact(PROTENIX_REPO, "protenix-v2.pt")` and
-# `hf_artifact(BOLTZ2_REPO, "mols.tar")`). Reimplementing that would mean
+# through huggingface_hub (`weights.fetch("protenix-v2")` and
+# `weights.fetch("mols")`). Reimplementing that would mean
 # hardcoding a URL this project does not control, and would throw away the
 # hub client's resume-and-verify behaviour -- which matters when the thing
 # being fetched is 3.7 GB over a conference-hotel connection. So this asks
@@ -90,20 +90,27 @@ case "$1" in
         fi
 
         tt_bio_demo_log "fetching weights via tt-bio's own resolver (resumable)..."
-        # Resolution, not a copy: hf_artifact returns the cached path and
+        # Resolution, not a copy: weights.fetch returns the cached path and
         # downloads only what is missing, so re-running this is cheap and an
-        # interrupted download continues where it stopped.
+        # interrupted download continues where it stopped. 0.7.0 also
+        # re-fetches a copy that is present but corrupt, which used to be
+        # scripts/doctor.sh's job alone to notice.
         "$runner_py" - <<'PYEOF'
 import os
 import sys
 from pathlib import Path
 
 try:
-    # These four names are the packaging<->tt-bio contract, and
+    # These names are the packaging<->tt-bio contract, and
     # `test_the_weights_postinst_uses_the_tt_bio_api_that_actually_exists`
     # checks them against the pinned tt-bio's own source so a rename upstream
-    # breaks the test suite rather than an operator's install.
-    from tt_bio.main import PROTENIX_REPO, download_mols, hf_artifact
+    # breaks the test suite rather than an operator's install. It did exactly
+    # that on the 0.7.0 upgrade: 0.6.6 moved the artifact machinery into
+    # tt_bio.weights and 0.7.0 shipped without `tt_bio.main.hf_artifact`, so
+    # this block imported a name that no longer existed. `weights.fetch(key)`
+    # takes a registry key rather than a (repo, filename) pair.
+    from tt_bio import weights
+    from tt_bio.main import download_mols
 except Exception as exc:                                  # noqa: BLE001
     print(f"cannot import tt_bio: {exc}", file=sys.stderr)
     raise SystemExit(1)
@@ -112,9 +119,10 @@ except Exception as exc:                                  # noqa: BLE001
 cache = Path(os.environ.get("BOLTZ_CACHE", str(Path("~/.boltz").expanduser())))
 cache.mkdir(parents=True, exist_ok=True)
 
-hf_artifact(PROTENIX_REPO, "protenix-v2.pt", cache)
-# download_mols, not a bare hf_artifact: the booth needs the EXTRACTED mols/
-# directory, and this fetches the tar and unpacks it in one resumable step.
+weights.fetch("protenix-v2", root=cache)
+# download_mols, not a bare weights.fetch("mols"): the booth needs the
+# EXTRACTED mols/ directory, and this fetches the tar and unpacks it in one
+# resumable step. (It is itself a thin wrapper over weights.fetch("mols").)
 download_mols(cache)
 PYEOF
 

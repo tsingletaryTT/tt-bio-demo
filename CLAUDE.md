@@ -708,6 +708,125 @@ venv) **and still exits 0**, so the first reset silently did nothing.
 
 Suite green at 1,465 tests with hardware skipped.
 
+### tt-bio 0.7.0: the pin was free, the API was not (2026-08-24)
+
+Prompted with "evaluate the latest tt-bio improvements recently released,
+identify which we can adopt in this project and the timeline", then "do the
+0.7.0 upgrade and re-measure". Five releases had landed in five days on top of
+our 0.6.4 pin -- 0.6.5, 0.6.6, 0.6.7, 0.6.8 and 0.7.0, the last of them the
+same day.
+
+**The reason to upgrade was 0.6.7, and it turned out to be invisible here.**
+0.6.7 fixed two real accuracy bugs in the Protenix-v2 pair trunk this booth
+rides on: the mask marking which residue pairs are real reached only one of the
+two triangle multiplications, and `OuterProductMean` added its output bias
+without the scale the reference applies. Upstream reports every Protenix-v2
+structure leg moving inside the reference's own seed-to-seed spread. On our
+seven targets **nothing moved** -- every pLDDT landed in the band 0.6.4
+recorded. The likely reason is that all seven are `msa: empty` (or nucleic
+acids, which have no `msa:` key at all), so the pair trunk here never carries
+the MSA depth those bugs distorted most. Recorded in the manifest header
+because the absence is the finding: no gallery blurb needed changing.
+
+**The pin cost nothing; the API cost an afternoon.** 0.7.0 ships the same
+`ttnn==0.68.0` and the same requires-python as 0.6.4, so the vendored SFPI
+7.35.3 machinery needed no thought (pip 41 s, SFPI hash unchanged). What broke
+was `tt_bio.main.hf_artifact`, which 0.6.6 moved into a new `tt_bio.weights`
+registry behind the `tt-bio weights` CLI and 0.7.0 shipped without. That is
+imported in four places, and the first fold of the measurement run died on it:
+
+  - `runner/folder.py` -- now `weights.fetch("protenix-v2", root=_WEIGHTS_CACHE)`.
+    `root=` is passed explicitly so this call and `download_mols()` below it
+    cannot disagree about which cache they mean; honouring `TT_BIO_CACHE` is a
+    deliberate separate change, because `preflight.py` and `doctor.sh` check
+    that path too and would have to move with it.
+  - `debian/tt-bio-demo-weights.postinst` -- the turnkey install's weight
+    download. **This is the one that mattered**, and this project's own
+    `test_the_weights_postinst_uses_the_tt_bio_api_that_actually_exists` is
+    exactly why it was found in a test run rather than on a venue floor. That
+    test was written after a first draft called `hf_artifact` with the wrong
+    arity; it has now done its job twice.
+  - `docs/upstream/protenix-dump-fn/reproduce.py` and
+    `tests/fixtures/streams/capture_real_fold.py`, both ported so no broken
+    import is left lying around.
+
+**Rewriting that contract test taught the usual lesson again.** The new version
+checks the replacement API *and* the artifact KEY -- `fetch("protenix-v2")`
+fails at install time and only there if that registry row is ever renamed, and
+a key is a string no type checker can help with. Two mutations were run.
+Renaming the key went red. Aliasing a dead name to the module
+(`from tt_bio.main import hf_artifact as weights`) **survived**, because every
+remaining assertion only read `weights.` textually -- so an assertion on the
+import itself was added, and that mutation now fails too.
+
+**Measured on 0.7.0, same method as the 0.6.4 pass** (three consecutive warm
+folds per target on each of two chips, model resident, 42 counted folds, plus a
+discarded first pass per chip because a version bump empties the JIT kernel
+cache):
+
+| target | 0.6.4 chip 0 | 0.7.0 chip 0 | mean pLDDT |
+|---|---|---|---|
+| Trp-cage | 4.2 s | 4.2 s | 95.24-95.27 |
+| DNA duplex | 4.4 s | 4.4 s | 95.69-95.72 |
+| tRNA | 7.1 s | 7.1 s | 88.52-88.57 |
+| FKBP12 | 9.6 s | 9.8 s | 48.25-51.91 |
+| DHFR | 15.4 s | 15.5 s | 51.52-52.39 |
+| Trypsin | 17.3 s | 17.4 s | 38.36-39.73 |
+| HSA | 97.1 s | 97.5 s | 80.96-81.14 |
+
+**The second chip is why the README lost a claim.** Chip 1 measured 0.5-1.4 s
+slower on every target (DNA 5.8 s against 4.3 s -- +35%, which looks like a
+regression and is not). Its per-target *minima* match chip 0 exactly, so chip 1
+started level and slowed as the run went on: the documented 906 MHz drift about
+fifteen minutes into a session, and chip 1 was measured second, roughly
+thirteen minutes in. The 0.6.4 run was short enough to stay on the fast side of
+it and recorded "both chips agreed to within 0.2 s". **That sentence is now
+gone from the README**, because this run is long enough to have crossed the
+drift and restating it would be printing a claim the measurement no longer
+supports.
+
+**The upgrade falsified site copy again, in a new place.** Last time it was the
+commit counts; this time those *and* the model count. tt-bio gained four model
+families since 0.6.3 -- RoseTTAFold3 (0.6.6), Nesso-1 (0.6.8), OpenBind-0 and
+PXDesign (0.7.0) -- so "Nine model families" was wrong in a heading, a section
+title, the timeline card's prose and a nine-row table. All four moved together
+to thirteen. Commits re-measured with the spec's own `-i` method: **4,314 total,
+3,877 by Moritz** (was 3,312 / 2,875 at 0.6.3), and every author in the range
+verified as his before the number went on the page.
+
+**Adopted, and deliberately not adopted.** Taken: the pin, and the weights-API
+port it forced. Skipped with reasons: OpenBind-0 co-folds ligands well and
+FKBP12+SB3 is literally its headline parity leg, but its checkpoint is not
+downloaded (manual `TT_BIO_OPENBIND`), which breaks the offline-at-the-venue
+install principle; RoseTTAFold3, PXDesign and the RFD3 speedups are models a
+folding booth does not use. `fold_many` (new in 0.7.0, B targets through ONE
+batched diffusion trajectory) is actively wrong for us -- it does not thread
+`dump_fn`, so batching would kill the live trajectory the whole demo rests on.
+Two things left as scoped follow-ups: `tt-bio weights` / `TT_BIO_CACHE` in the
+postinst (needs `preflight.py`, `doctor.sh` and a Debian retest moving
+together), and **Nesso-1 affinity**, which at 33 s for a 512 aa complex against
+386 s for the Boltz-2 path finally makes "what does the drug do" affordable for
+the three protein+ligand targets already on the playlist. That one is a feature
+and wants its own spec.
+
+Thumbnails were NOT regenerated: the playlist did not change and every pLDDT
+sits in its recorded band, so each thumbnail is still a picture of a real fold
+of that target. Worth revisiting if a future release moves coordinates enough
+to see at that size.
+
+Verified with the **full hardware suite on all four chips**: 1,122 UI + 405
+runner (unit + integration) + the four-worker pool test, **1,528 with hardware
+included**, after resetting all four chips through `gozer acquire`/`release`
+rather than a hand-run `tt-smi -r`.
+
+One instrument lesson, paid for twice in one session. A first integration run
+logged nothing but nanobind leak spam: the script piped pytest through
+`tail -25`, and tt-metal's teardown prints thousands of leak lines at exit, so
+position-based truncation threw the summary away. **Filter that stream by
+content, never by position.** And a `grep -E "^  [a-z]+ +[0-9]+ res"` over the
+results quietly dropped FKBP12 from a summary table -- `[a-z]+` does not match a
+target id with digits in it -- which briefly read as "FKBP12 did not fold".
+
 ## Conventions
 
 - **Keep the README's screenshots current.** The README claims every image on it is the

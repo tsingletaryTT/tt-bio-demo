@@ -514,7 +514,7 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
         <div class="card-body">
           <h3>Human serum albumin</h3>
           <p>The blood's delivery van — the most abundant protein in plasma, and how most drugs travel.</p>
-          <p class="meta">585 residues &middot; 97.1 s</p>
+          <p class="meta">585 residues &middot; 97.5 s</p>
         </div>
       </article>
 
@@ -524,7 +524,7 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
         <div class="card-body">
           <h3>FKBP12</h3>
           <p>The molecular lock that anti-rejection drugs are shaped to pick, so a transplanted organ survives.</p>
-          <p class="meta">107 residues &middot; 9.6 s</p>
+          <p class="meta">107 residues &middot; 9.8 s</p>
         </div>
       </article>
 
@@ -534,7 +534,7 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
         <div class="card-body">
           <h3>Dihydrofolate Reductase</h3>
           <p>Every dividing cell needs it to build new DNA &mdash; which is why a classic cancer drug jams it shut.</p>
-          <p class="meta">187 residues &middot; 15.4 s</p>
+          <p class="meta">187 residues &middot; 15.5 s</p>
         </div>
       </article>
 
@@ -544,7 +544,7 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
         <div class="card-body">
           <h3>Trypsin</h3>
           <p>Built switched off by the pancreas, armed in the gut, where it cuts up the protein in your meal.</p>
-          <p class="meta">223 residues &middot; 17.3 s</p>
+          <p class="meta">223 residues &middot; 17.4 s</p>
         </div>
       </article>
 
@@ -691,18 +691,19 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
         
   <div class="tl-item">
           <div class="tl-date">Through 2026</div>
-          <h3>Nine model families</h3>
+          <h3>Thirteen model families</h3>
           <p>
             Since joining Tenstorrent, Moritz has expanded tt-bio well past its
             starting point: BoltzGen, ESMFold2, Protenix-v2, OpenFold3, OpenDDE,
-            SaProt and RFD3 all land during 2026.
+            SaProt, RFD3, RoseTTAFold3, Nesso-1, OpenBind-0 and PXDesign all
+            land during 2026.
           </p>
         </div>
       </div>
 
       <p style="margin-top:2rem">
-        As of v0.6.3 the repository holds <span class="num">3,312</span> commits.
-        <span class="num">2,875</span> of them are his.
+        As of v0.7.0 the repository holds <span class="num">4,314</span> commits.
+        <span class="num">3,877</span> of them are his.
       </p>
     </div>
   </div>
@@ -764,9 +765,9 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
   <div class="wrap">
     <div class="col">
       <span class="eyebrow">What it runs today</span>
-      <h2>Nine model families, one command line</h2>
+      <h2>Thirteen model families, one command line</h2>
       <p>
-        tt-bio started as a Boltz-2 port. As of v0.6.3 it runs considerably
+        tt-bio started as a Boltz-2 port. As of v0.7.0 it runs considerably
         more than that, all through one CLI and all on Tenstorrent hardware.
       </p>
     </div>
@@ -780,10 +781,14 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
           <tr><td>boltz2</td><td>Structures and binding affinity &mdash; proteins, nucleic acids, ligands, modified residues</td></tr>
           <tr><td>protenix-v2</td><td>AlphaFold3-family folder for protein / RNA / DNA / ligand complexes. <strong>This is what the booth folds with.</strong></td></tr>
           <tr><td>openfold3</td><td>AlphaFold3-family folder for protein / RNA / DNA polymers, with optional templates</td></tr>
+          <tr><td>rf3</td><td>RoseTTAFold3 &mdash; folds proteins, RNA, DNA and ligands, including non-canonical residues and cyclic chains</td></tr>
+          <tr><td>openbind</td><td>OpenBind-0 &mdash; protein&ndash;ligand co-folding, ligands by SMILES or CCD code</td></tr>
           <tr><td>esmfold2</td><td>Single-sequence folding &mdash; no multiple-sequence alignment needed</td></tr>
           <tr><td>opendde</td><td>Antibody&ndash;antigen co-folding</td></tr>
           <tr><td>boltzgen</td><td>Binder design &mdash; proteins, peptides, nanobodies, antibodies against a target</td></tr>
           <tr><td>rfd3</td><td>All-atom design: binders, motif scaffolding, nucleic-acid binders</td></tr>
+          <tr><td>pxdesign</td><td>Binder backbone design from a target structure</td></tr>
+          <tr><td>nesso1</td><td>Binding affinity only &mdash; no structure, and far cheaper than folding for that question</td></tr>
           <tr><td>saprot</td><td>Structure-aware protein language modelling</td></tr>
           <tr><td>esmc</td><td>Protein language-model embeddings &mdash; 300M, 600M and 6B</td></tr>
         </tbody>

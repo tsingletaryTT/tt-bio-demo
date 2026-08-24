@@ -44,14 +44,17 @@ def radius_of_gyration(coords):
 
 def main():
     import torch  # noqa: F401
-    from tt_bio.main import PROTENIX_REPO, download_mols, hf_artifact
+    # tt-bio 0.7.0: the artifact machinery moved to tt_bio.weights and
+    # hf_artifact was removed. See runner/folder.py's load().
+    from tt_bio import weights
+    from tt_bio.main import download_mols
     from tt_bio.main import _read_bio_chains, _read_bio_constraints, _resolve_a3m_text
     from tt_bio.protenix_data import build_complex_features
     from tt_bio.protenix import Protenix
 
     cache = pathlib.Path("~/.boltz").expanduser()
     cache.mkdir(parents=True, exist_ok=True)
-    ckpt_path = hf_artifact(PROTENIX_REPO, "protenix-v2.pt", cache)
+    ckpt_path = weights.fetch("protenix-v2", root=cache)
 
     chains = _read_bio_chains(EXAMPLE_YAML)
     bonds = _read_bio_constraints(EXAMPLE_YAML)

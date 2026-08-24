@@ -281,8 +281,13 @@ right site-packages, not just the right interpreter.
 
 ## `venv-runner` / `tt-bio` — what actually happens on install
 
-`pip install tt-bio==0.6.3` (from PyPI, requires-python `>=3.10,<3.13,!=3.11.*`
-— system Python is 3.12.3, so it qualifies) pulls in a large dependency tree:
+`pip install 'tt-bio[tenstorrent]==0.7.0'` (from PyPI, requires-python
+`>=3.10,<3.13,!=3.11.*` — system Python is 3.12.3, so it qualifies) pulls in a
+large dependency tree. **The `[tenstorrent]` extra is load-bearing from 0.6.4
+on**: up to 0.6.3 `ttnn` was a base dependency, and 0.6.4 moved it behind the
+extra so the CPU/GPU path installs without a Tenstorrent SDK (upstream issue
+#6). Without it there is no `ttnn` and the venv is useless to the booth. The
+tree is:
 torch, `ttnn==0.68.0` (also on PyPI), rdkit, pandas, transformers, biotite,
 matplotlib, scikit-learn, and a long tail of smaller packages — including a
 full set of `nvidia-*` CUDA runtime wheels, because PyPI's `torch` wheel
@@ -369,7 +374,7 @@ that used to require `tt-bio install-deps`) is now handled below without it.
 ## The SFPI toolchain: why it's vendored per-venv, not taken from the system
 
 `ttnn` doesn't just import — at first use it JIT-compiles Tenstorrent device
-kernels with a RISC-V toolchain called **SFPI**. tt-bio 0.6.3's
+kernels with a RISC-V toolchain called **SFPI**. tt-bio 0.7.0's
 `ttnn==0.68.0` requires **SFPI 7.35.3** specifically; this fact lives in
 `<ttnn>/tt_metal/sfpi-version`, a small manifest the wheel ships, not
 anywhere this script guesses at. This dev box, though, also has a

@@ -95,7 +95,7 @@ set -euo pipefail
 # tt-bio's `main` (see CLAUDE.md conventions — same rule as the runner venv
 # tt-bio-demo will eventually shell out to).
 # ---------------------------------------------------------------------------
-TT_BIO_VERSION="0.6.4"
+TT_BIO_VERSION="0.7.0"
 
 # Bounds on the two network/hardware-adjacent operations that could otherwise
 # hang this script indefinitely in an unattended postinst with nobody present
@@ -833,7 +833,8 @@ create_runner_venv() {
   # THE [tenstorrent] EXTRA IS LOAD-BEARING as of tt-bio 0.6.4. Up to 0.6.3 ttnn
   # was a base dependency; 0.6.4 moved it into an optional extra so the CPU/GPU
   # path and the CLI install without a Tenstorrent SDK (upstream issue #6).
-  # A plain `pip install tt-bio==0.6.4` therefore installs NO ttnn, and this
+  # A plain `pip install tt-bio==<version>` therefore installs NO ttnn (still
+  # true at 0.7.0, where ttnn==0.68.0 remains behind the extra), and this
   # script fails a few steps later at ensure_sfpi_installed with "no ttnn
   # package found" -- which is how we found it. Without the extra the venv is
   # useless to the booth: no ttnn, no device.

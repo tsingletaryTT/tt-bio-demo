@@ -40,31 +40,49 @@
 # until upstream fixes it -- at which point this entry comes back, since the
 # blurb and thumbnail machinery for it are unchanged in git history.
 #
-# MEASURED ON tt-bio 0.6.4, 2026-08-19. Every number any card, the README, the
+# MEASURED ON tt-bio 0.7.0, 2026-08-24. Every number any card, the README, the
 # site or the handout prints comes from this one run: three consecutive warm
 # folds per target on EACH of two chips (BDF 01:00.0 and 02:00.0), model
-# resident, 42 folds in total.
+# resident, 42 counted folds -- plus a fourth pass per chip, run FIRST and
+# discarded, because a version bump empties the JIT kernel cache and the first
+# fold of each shape pays compilation (see the cold-start note below).
 #
-#   target     chip 0    chip 1    mean pLDDT     vs 0.6.3
-#   trpcage      4.2 s     4.2 s     95.3          4.1 s
-#   dna          4.4 s     4.3 s     95.7          4.4 s
-#   trna         7.1 s     7.0 s     88.5          7.1 s
-#   fkbp12       9.6 s     9.7 s     48.8-52.1     DID NOT FOLD
-#   dhfr        15.4 s    15.4 s     51.0         15.5 s
-#   trypsin     17.3 s    17.4 s     39.0         17.4 s
-#   hsa         97.1 s    97.3 s     81.1         96.8 s
+#   target     chip 0    chip 1    mean pLDDT     vs 0.6.4 (chip 0)
+#   trpcage      4.2 s     5.3 s     95.24-95.27    4.2 s
+#   dna          4.4 s     5.8 s     95.69-95.72    4.4 s
+#   trna         7.1 s     7.7 s     88.52-88.57    7.1 s
+#   fkbp12       9.8 s    10.4 s     48.25-51.91    9.6 s
+#   dhfr        15.5 s    16.2 s     51.52-52.39   15.4 s
+#   trypsin     17.4 s    18.2 s     38.36-39.73   17.3 s
+#   hsa         97.5 s    98.0 s     80.96-81.14   97.1 s
 #
-# Nothing moved outside run-to-run noise except FKBP12, which went from not
-# folding at all to 9.6 s -- faster than the 11.7 s it managed on 0.6.2, before
-# the regression that removed it. HSA is +0.3 s, which is noise at 97 s and the
-# answer to the one thing we promised upstream we would check: 0.6.4's trimul
-# narrowing does not cost the largest target anything measurable.
+# 0.7.0 reproduces 0.6.4 on every target: chip 0 is within 0.4 s everywhere,
+# which is inside each target's own min-max spread across the three folds. The
+# `expected_s` values below were refreshed to THIS run's chip-0 medians anyway,
+# so the "one run" claim above stays literally true rather than nearly true.
 #
-# The two chips agreed to within 0.2 s on every target, which is NOT the same
-# as saying the documented slow-chip drift is gone: chips 1 and 3 fall to as
-# low as 906 MHz about fifteen minutes into a session (Task 19's two-hour
-# soak, docs/followups.md), and this run was far shorter than that. These are
-# fresh-chip numbers.
+# THE CHIP 1 COLUMN IS DRIFT, NOT A VERSION EFFECT, and it is worth reading
+# carefully because it looks alarming: DNA at 5.8 s against 4.3 s on 0.6.4 is
+# +35%. Chip 1's *minima* over the same three folds are 4.3 / 4.4 / 7.0 / 9.8 /
+# 15.5 / 17.4 / 97.5 s -- i.e. chip 1 started level with chip 0 and slowed as
+# the run went on. That is the documented behaviour: chips 1 and 3 fall to as
+# low as 906 MHz about fifteen minutes into a session (Task 19's two-hour soak,
+# docs/followups.md), and chip 1 was measured second here, roughly thirteen
+# minutes in. The 0.6.4 run was short enough to stay on the fast side of it and
+# recorded "both chips within 0.2 s"; that claim is NOT restated for 0.7.0,
+# because this run is long enough to have crossed the drift.
+#
+# WHAT DID NOT HAPPEN, and it was the reason for measuring at all. tt-bio 0.6.7
+# fixed two real accuracy bugs in the Protenix-v2 pair trunk both this booth and
+# OpenDDE ride on: the mask marking which residue pairs are real reached only
+# one of the two triangle multiplications, and `OuterProductMean` added its
+# output bias without the scale the reference applies. Upstream reports every
+# Protenix-v2 structure leg moving inside the reference's own seed-to-seed
+# spread. On THESE seven targets it is not visible: every pLDDT above sits in
+# the band 0.6.4 recorded. The likely reason is that all seven are `msa: empty`
+# (or nucleic acids, which have no `msa:` key at all), so the pair trunk here
+# never carries the MSA depth those bugs distorted most. Recorded because the
+# absence is the finding: no gallery blurb's pLDDT claim needed changing.
 #
 # The first fold after a process start is slower than any of these, because
 # kernels for that target's shapes have to compile: 116.3 s for hsa against a
@@ -158,7 +176,7 @@
   input: ../examples/hsa_no_msa.yaml
   name: Human serum albumin
   thumbnail: thumbnails/hsa.png
-  expected_s: 97.1
+  expected_s: 97.5
   tagline: >-
     The blood's delivery van — the most abundant protein in plasma, and how most drugs travel.
   blurb: >-
@@ -215,7 +233,7 @@
     tacrolimus specifically because it clicks onto FKBP12 and, together,
     the two jam shut a signal that would otherwise tell the immune system
     to attack the new organ.
-  expected_s: 9.6
+  expected_s: 9.8
   # IT LEFT AND CAME BACK, and the number is lower than it ever was.
   #
   # FKBP12 shipped at 11.7s on tt-bio 0.6.2. On 0.6.3 it stopped folding
@@ -232,19 +250,22 @@
   # before any kernel runs, and retries one chunk width narrower. Narrowing is
   # bit-exact, so the structure is unchanged.
   #
-  # Measured on this booth's own hardware on 0.6.4, WARM (model resident),
+  # Measured on this booth's own hardware on 0.7.0, WARM (model resident),
   # three folds on each of two chips:
-  #   chip 0: 11.6 / 9.6 / 9.6 s      chip 1: 10.2 / 9.7 / 9.7 s
-  #   -> p50 9.6s (chip 0), 9.7s (chip 1)
-  # That is FASTER than the 11.7s it managed before it broke. The first fold of
-  # a process is the slow one because it pays the single caught clash; every
-  # later fold of this shape starts narrow.
+  #   chip 0: 9.6 / 10.2 / 9.8 s      chip 1: 10.5 / 10.4 / 9.8 s
+  #   -> p50 9.8s (chip 0), 10.4s (chip 1)
+  # That is FASTER than the 11.7s it managed before it broke, and unchanged
+  # from 0.6.4's 9.6s within this target's own spread. The discarded first
+  # fold of each process is slower still -- 12.7s and 11.3s here -- because it
+  # pays both the caught clash and JIT kernel compilation; every later fold of
+  # this shape starts narrow and precompiled. Chip 1's p50 sits 0.6s high for
+  # the drift reason in this file's header, not for a per-target one.
   #
   # No expected_slow_s: see this file's header. The 0.6.2 slow ends came from a
-  # two-hour four-chip soak and there is no 0.6.4 equivalent, so printing one
-  # would be an unmeasured claim.
+  # two-hour four-chip soak and there is still no equivalent at 0.7.0, so
+  # printing one would be an unmeasured claim.
   #
-  # pLDDT runs 48.8 - 52.1 across those six folds, a wider spread than the
+  # pLDDT runs 48.25 - 51.91 across those six folds, a wider spread than the
   # other targets show (they hold to +/-0.05). Worth knowing rather than
   # hiding: it is an `msa: empty` fold of a small protein, and the booth
   # reports whatever the model says.
@@ -280,7 +301,7 @@
   # visitor's pick lands warm -- the same cold/warm distinction already
   # spelled out on the Trp-cage entry above, and the reason the warm
   # number is the honest one to print on a gallery card.
-  expected_s: 15.4
+  expected_s: 15.5
 
 - id: trypsin
   input: ../examples/affinity_tryp.yaml
@@ -325,7 +346,7 @@
   # visitor's pick lands warm -- the same cold/warm distinction already
   # spelled out on the Trp-cage entry above, and the reason the warm
   # number is the honest one to print on a gallery card.
-  expected_s: 17.3
+  expected_s: 17.4
 
 - id: dna
   input: ../examples/dna_dickerson.yaml

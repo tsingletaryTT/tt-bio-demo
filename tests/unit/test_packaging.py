@@ -618,39 +618,78 @@ def test_the_weights_postinst_uses_the_tt_bio_api_that_actually_exists():
     own source.
 
     The first draft of this postinst called `hf_artifact(repo, filename)` --
-    it takes three arguments -- and imported `ccd_mols_dir`, which does not
+    it took three arguments -- and imported `ccd_mols_dir`, which did not
     exist. Both would have failed at install time on a real machine and
     nowhere else: the container tests never reach this branch (they decline
     the download), and no unit test imports tt_bio.
 
-    Parsed with `ast` rather than imported, because importing tt_bio.main
-    pulls torch into a test that has no business being that slow.
+    This test then did its job for real on the tt-bio 0.7.0 upgrade. 0.6.6
+    moved the artifact machinery into `tt_bio.weights` (a registry of named
+    artifacts behind the `tt-bio weights` CLI) and `tt_bio.main.hf_artifact`
+    was gone by 0.7.0, so the postinst imported a name that no longer
+    existed. What it checks now is the replacement contract:
+    `weights.fetch(key, root=...)` plus the surviving `download_mols`.
+
+    The KEY is checked too, not just the function. `fetch("protenix-v2")`
+    fails at install time and only there if that row is ever renamed, and a
+    key is a string the type system cannot help with -- which makes it
+    exactly the sort of thing this test exists to catch.
+
+    Parsed with `ast` rather than imported, because importing tt_bio pulls
+    torch into a test that has no business being that slow.
     """
     import ast
 
     venv = REPO / ".venvs" / "venv-runner"
-    main_py = next(venv.glob("lib/python3.*/site-packages/tt_bio/main.py"), None)
-    if main_py is None:
+    site = next(venv.glob("lib/python3.*/site-packages/tt_bio"), None)
+    if site is None:
         pytest.fail("venv-runner is not built; cannot check the tt-bio API "
                     "contract. Run scripts/setup-venvs.sh.")
 
-    tree = ast.parse(main_py.read_text())
-    functions = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
-    assigned = {t.id for n in tree.body if isinstance(n, ast.Assign)
-                for t in n.targets if isinstance(t, ast.Name)}
+    main_tree = ast.parse((site / "main.py").read_text())
+    main_funcs = {n.name for n in main_tree.body if isinstance(n, ast.FunctionDef)}
+    weights_tree = ast.parse((site / "weights.py").read_text())
+    weights_funcs = {n.name: n for n in weights_tree.body
+                     if isinstance(n, ast.FunctionDef)}
 
     postinst = _weights("postinst")
-    for name in ("PROTENIX_REPO",):
-        assert name in postinst and name in assigned, \
-            f"postinst imports {name}, which tt-bio no longer defines"
-    for name in ("hf_artifact", "download_mols"):
-        assert name in postinst and name in functions, \
-            f"postinst imports {name}, which tt-bio no longer defines"
 
-    # Arity, which is what the first draft got wrong.
-    args = functions["hf_artifact"].args.args
-    assert len(args) == 3, (
-        f"hf_artifact now takes {len(args)} args; the postinst calls it with 3")
+    assert "download_mols" in postinst and "download_mols" in main_funcs, \
+        "postinst imports download_mols, which tt_bio.main no longer defines"
+    # The import, before anything that reads `weights.` textually. Without
+    # this, aliasing any surviving name to `weights` (`from tt_bio.main import
+    # hf_artifact as weights`) satisfies every check below while importing a
+    # function 0.7.0 deleted -- verified: that mutation passed this test until
+    # this assertion was added.
+    assert "from tt_bio import weights" in postinst, \
+        "postinst must import tt_bio.weights itself; aliasing another name to " \
+        "`weights` would make every check below vacuous"
+    assert "weights.fetch(" in postinst, \
+        "postinst no longer calls weights.fetch; update this contract test"
+    assert "fetch" in weights_funcs, \
+        "tt_bio.weights no longer defines fetch(); the postinst cannot work"
+
+    # Arity/keyword shape, which is what the first draft got wrong: fetch
+    # takes the key positionally and `root` as a keyword-only argument.
+    fetch = weights_funcs["fetch"]
+    assert [a.arg for a in fetch.args.args] == ["key"], (
+        f"weights.fetch's positional args are now "
+        f"{[a.arg for a in fetch.args.args]}; the postinst passes one key")
+    assert "root" in [a.arg for a in fetch.args.kwonlyargs], \
+        "weights.fetch no longer takes root=; the postinst pins the cache with it"
+
+    # Every artifact key the postinst asks for must be a real registry row.
+    declared = {n.value for call in ast.walk(weights_tree)
+                if isinstance(call, ast.Call)
+                and getattr(call.func, "id", None) == "Artifact"
+                and call.args
+                for n in [call.args[0]] if isinstance(n, ast.Constant)}
+    assert declared, "could not find any Artifact(...) rows in tt_bio/weights.py"
+    import re
+    for key in re.findall(r'weights\.fetch\(\s*"([^"]+)"', postinst):
+        assert key in declared, (
+            f'postinst fetches artifact "{key}", which is not a row in '
+            f"tt_bio/weights.py (rows: {sorted(declared)})")
 
 
 # ── Task 7: the systemd user unit and the desktop entry ─────────────────────

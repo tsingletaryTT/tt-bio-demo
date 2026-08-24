@@ -58,7 +58,10 @@ def main():
 
     import torch  # noqa: F401  (imported for parity with tt_bio's own import order)
     import tt_bio.protenix as ptx
-    from tt_bio.main import PROTENIX_REPO, download_mols, hf_artifact
+    # tt-bio 0.7.0: the artifact machinery moved to tt_bio.weights and
+    # hf_artifact was removed. See runner/folder.py's load().
+    from tt_bio import weights
+    from tt_bio.main import download_mols
     from tt_bio.main import _read_bio_chains, _read_bio_constraints, _resolve_a3m_text
     from tt_bio.protenix_data import build_complex_features
     from tt_bio.protenix import Protenix
@@ -68,7 +71,7 @@ def main():
 
     # ---- Q1/Q5: weight resolution (downloads on first use if not cached) ----
     t0 = time.perf_counter()
-    ckpt_path = hf_artifact(PROTENIX_REPO, "protenix-v2.pt", cache)
+    ckpt_path = weights.fetch("protenix-v2", root=cache)
     t_weights = time.perf_counter() - t0
     print(f"[timing] weight resolution: {t_weights:.2f}s (path={ckpt_path})",
           file=sys.stderr)

@@ -95,12 +95,14 @@ silicon keeps visibly breathing even if the daemon wedges.
 
 **Four chips on two boards.** A p300c carries two chips, so `tt-smi`'s four entries are four
 chips — not four boards. The panel says so, because a visitor reading "4 cards" would
-picture the wrong machine. Folds are timed on this hardware, warm, on tt-bio 0.6.4: Trp-cage **4.2 s**,
-FKBP12 **9.6 s**, DHFR **15.4 s**, trypsin **17.3 s**, albumin **97 s** — p50s over three
-folds each on two chips, which agreed to within 0.2 s. Chips 1 and 3 settle to a lower clock
-about fifteen minutes into a session (they idle 3–4 °C hotter than 0 and 2, so it is chassis
-position rather than workload), and a visitor's pick takes whichever chip is free, so a long
-session drifts slower than these fresh-chip numbers. See `playlist/manifest.yaml` for the
+picture the wrong machine. Folds are timed on this hardware, warm, on tt-bio 0.7.0: Trp-cage **4.2 s**,
+FKBP12 **9.8 s**, DHFR **15.5 s**, trypsin **17.4 s**, albumin **97 s** — p50s over three
+folds each, on chip 0. The second chip measured 0.5–1.4 s slower on every target in the same
+run, and that is the drift below rather than a second opinion: chips 1 and 3 settle to a lower
+clock about fifteen minutes into a session (they idle 3–4 °C hotter than 0 and 2, so it is
+chassis position rather than workload), and chip 1 was measured second, about thirteen minutes
+in — its per-target *minima* match chip 0. A visitor's pick takes whichever chip is free, so a
+long session drifts slower than these fresh-chip numbers. See `playlist/manifest.yaml` for the
 full table.
 
 **Four chips, four proteins — one protein per chip.** The booth runs one worker process per
