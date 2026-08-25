@@ -3,6 +3,9 @@
 A turnkey conference demo for [tt-bio](https://github.com/moritztng/tt-bio) — protein
 structure prediction on Tenstorrent hardware.
 
+**[tsingletarytt.github.io/tt-bio-demo](https://tsingletarytt.github.io/tt-bio-demo/)** —
+what the models do, the research they come from, and what this booth is showing.
+
 Watch a protein condense out of noise into its folded structure, in real time, computed on
 the Blackhole chips a few feet away. Native GTK4 and OpenGL — with [one scoped
 exception](#the-one-webkit-exception) for a small hardware-activity animation.
