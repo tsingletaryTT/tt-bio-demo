@@ -39,7 +39,52 @@ from runner.dump_tap import TapUnavailable, check_tap_supported
 
 log = logging.getLogger(__name__)
 
-REQUIRED_WEIGHTS = ("protenix-v2.pt",)
+# The model the booth folds with. Everything protenix-v2 needs is derived
+# from tt-bio's own registry (see required_weights below), so this is the only
+# hand-written name in the chain.
+MODEL = "protenix-v2"
+
+# Used only when tt-bio's registry cannot be read at all -- a broken or
+# partial install, which preflight must still be able to REPORT rather than
+# crash on. Label, then the path relative to the cache. `mols` is the
+# EXTRACTED directory, not the mols.tar it came from: tt-bio discards the
+# archive once unpacked and `tt-bio weights --prune` removes it, so a fold
+# loads the directory and the tar's absence is not a fault.
+_FALLBACK_WEIGHTS = (("protenix-v2", "protenix-v2.pt"), ("mols", "mols"))
+
+
+def required_weights(cache):
+    """(label, path) pairs the booth cannot fold without.
+
+    Derived from `tt_bio.weights` so that a release adding a third artifact to
+    protenix-v2 is picked up here instead of surfacing as a fold that dies on
+    a machine preflight already called ready. That drift is exactly what this
+    function was written to end: the hand-written list said "protenix-v2.pt"
+    and nothing else, while protenix-v2 has needed the CCD molecule library
+    the whole time -- so a cache with the checkpoint and no molecules printed
+    `preflight: ok` and then died on the first fold.
+
+    A derived artifact is judged on its OUTPUT (mols/, not mols.tar). This
+    reports presence only; whether a present artifact is INTACT is
+    scripts/doctor.sh's question, asked there with tt-bio's own verifier
+    because it is too slow to pay at every daemon start (a full mols.tar
+    integrity walk is 45 228 members).
+    """
+    cache = Path(cache)
+    try:
+        from tt_bio import weights as tt_weights
+
+        return [
+            (a.key, a.derived_dest(cache) if a.derived else a.dest(cache))
+            for a in tt_weights.artifacts_for(MODEL)
+        ]
+    except Exception:                                          # noqa: BLE001
+        # Deliberately broad, and deliberately silent about the cause here:
+        # a tt-bio too broken to describe its own artifacts is already going
+        # to be reported by the trajectory-tap check below, which inspects
+        # the same package and produces a far more useful message about it.
+        # What must not happen is preflight raising -- it promises not to.
+        return [(label, cache / rel) for label, rel in _FALLBACK_WEIGHTS]
 
 
 @dataclass
@@ -53,16 +98,18 @@ def run_preflight(weights_dir, playlist_dir, *, check_tap=True, card_count=None)
     missing = []
 
     weights_dir = Path(weights_dir)
-    for name in REQUIRED_WEIGHTS:
-        path = weights_dir / name
+    for label, path in required_weights(weights_dir):
         try:
-            present = path.is_file()
+            # exists(), not is_file(): `mols` is a directory. Judging it with
+            # is_file() would report a perfectly unpacked molecule library as
+            # missing.
+            present = path.exists()
         except OSError as exc:
             # e.g. PermissionError on a directory with the wrong ownership.
             missing.append(f"model weights: cannot check {path}: {exc}")
             continue
         if not present:
-            missing.append(f"model weights: {path}")
+            missing.append(f"model weights: {label} ({path})")
 
     playlist_dir = Path(playlist_dir)
     targets = sorted(playlist_dir.glob("*.yaml")) if playlist_dir.is_dir() else []

@@ -19,6 +19,30 @@
 # debian/tt-bio-demo.install -- if the two drift, the maintainer scripts
 # operate confidently on an empty directory, so a test pins them together.
 # Overridable so the same helpers can be exercised against a staging tree.
+# The weights cache, from the one shell resolver.
+#
+# Sourced out of the base package's scripts/ directory rather than copied:
+# tt-bio-demo-weights Depends on tt-bio-demo, so /opt/tt-bio-demo/scripts/
+# is present whenever a maintainer script here runs. A local copy would be a
+# second implementation of exactly the thing that had four.
+tt_bio_demo_weights_cache() {
+    _wc="$(tt_bio_demo_prefix)/scripts/weights-cache.sh"
+    if [ -r "$_wc" ]; then
+        # Sourcing REDEFINES this function with the real one (same name), so
+        # the call below runs that and every later call skips this wrapper
+        # entirely. Deliberate: it keeps one name for callers and exactly one
+        # implementation of the rule.
+        # shellcheck source=/dev/null
+        . "$_wc"
+        tt_bio_demo_weights_cache
+    else
+        # The base package is somehow not unpacked. Say so rather than
+        # guessing a path and filling a directory nothing will read.
+        tt_bio_demo_log "cannot find ${_wc}; is tt-bio-demo installed?"
+        return 1
+    fi
+}
+
 tt_bio_demo_prefix() {
     printf '%s\n' "${TT_BIO_DEMO_PREFIX:-/opt/tt-bio-demo}"
 }

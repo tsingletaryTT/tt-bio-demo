@@ -144,8 +144,20 @@ has just had `tt-installer` run on it.
 On a box with a Tenstorrent device, from a fresh clone:
 
 ```bash
-./scripts/setup-venvs.sh --dev     # build both venvs (one-time, ~minutes)
+./scripts/setup-venvs.sh --dev     # build both venvs AND fetch the weights
 ./scripts/run-demo.sh              # start the daemon + UI, fold on real silicon
+```
+
+`setup-venvs.sh` fetches the ~3.7 GB of model weights as its last step, so a fresh clone
+ends up able to fold rather than able to start. Pass `--skip-weights` to opt out; the
+download is resumable and re-running the script is a cheap no-op once they are there.
+
+**If the booth is going to a venue, do this before it leaves** — the venue is offline.
+[`scripts/doctor.sh`](#is-this-machine-ready--scriptsdoctorsh) is the check, and it names
+the command to run if anything is missing:
+
+```bash
+.venvs/venv-runner/bin/tt-bio weights --download protenix-v2
 ```
 
 Ctrl-C tears the daemon down cleanly. Without hardware, the renderer still runs against a
@@ -179,11 +191,23 @@ They are split because tt-bio needs a torch/ttnn stack and GTK needs apt's `pyth
 keeping them apart removes the conflict rather than managing it, and means the UI holds no
 device handles and cannot be taken down by a wedged chip.
 
+It then fetches the **model weights** — `protenix-v2.pt` (1.86 GB) and the CCD molecule
+library `mols` (1.85 GB unpacked) — by running venv-runner's own
+`tt-bio weights --download protenix-v2`. They land in `$TT_BIO_CACHE`, else `$BOLTZ_CACHE`,
+else `~/.boltz`, which is tt-bio's own order and the one thing in this repo that decides
+where weights live ([`scripts/weights-cache.sh`](scripts/weights-cache.sh) and
+[`runner/env.py`](runner/env.py), pinned to each other by tests).
+
 Useful flags:
 
 - `--dev` — also install pytest into `venv-runner`, needed to run the runner-side tests.
   Off by default, because `venv-runner` is the same artifact a Debian build produces and
   test tooling should not ship to a booth machine.
+- `--skip-weights` — do not fetch the ~3.7 GB of model weights. They are fetched by
+  default, because a booth without them cannot fold: `setup-venvs.sh` used to build both
+  venvs and stop, which left a box that looked finished and wasn't. A failed download is
+  reported and is **not** fatal — the venvs are the expensive part and they are fine, and
+  the script prints the command to resume with.
 - `--force` — rebuild from scratch. A second run without it is a ~0.3–0.5 s no-op.
 - `--skip-runner` — skip the expensive half while iterating on the UI.
 - `--prefix PATH` — build somewhere other than `.venvs/` (production uses

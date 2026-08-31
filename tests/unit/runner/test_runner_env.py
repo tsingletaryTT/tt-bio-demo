@@ -1,5 +1,6 @@
 import os
 import time
+from pathlib import Path
 
 from runner.env import INSPECTOR_VAR, LOG_ROOT_VAR, log_root_size, prune_log_root, runner_environ
 
@@ -362,3 +363,131 @@ def test_an_unrelated_file_of_the_same_name_is_still_prunable(tmp_path):
     assert removed == [str(other)], \
         "a file tt-metal is not holding open was treated as though it were"
 
+
+
+# ---------------------------------------------------------------------------
+# weights_cache() -- the one place this repo decides where the weights live.
+#
+# Before this existed, four callers derived it four ways and none of them
+# honoured $TT_BIO_CACHE, which is the variable tt-bio itself prefers. They
+# all happened to agree on ~/.boltz by default, so the disagreement was
+# invisible until somebody set a variable -- at which point the doctor would
+# check one directory, the postinst download into a second, and the folder
+# load from a third.
+# ---------------------------------------------------------------------------
+
+def test_tt_bio_cache_wins_over_boltz_cache(tmp_path):
+    """$TT_BIO_CACHE is the knob tt-bio documents as relocating everything, so
+    it must outrank the older $BOLTZ_CACHE rather than the other way round. A
+    resolver that checked BOLTZ_CACHE first would send a fold to the cache the
+    operator moved *away* from."""
+    from runner.env import weights_cache
+
+    new, old = tmp_path / "new", tmp_path / "old"
+    got = weights_cache({"TT_BIO_CACHE": str(new), "BOLTZ_CACHE": str(old)})
+    assert got == new
+
+
+def test_boltz_cache_is_still_honoured_when_tt_bio_cache_is_unset(tmp_path):
+    """The older variable keeps working; booths already in the field set it."""
+    from runner.env import weights_cache
+
+    old = tmp_path / "old"
+    assert weights_cache({"BOLTZ_CACHE": str(old)}) == old
+
+
+def test_the_default_is_the_dot_boltz_directory_under_home():
+    """The literal default, pinned as a literal. Every caller this replaces
+    hardcoded `~/.boltz`, and a booth whose default silently moved would look
+    fully healthy while folding against an empty cache."""
+    from runner.env import weights_cache
+
+    assert weights_cache({"HOME": "/home/somebody"}) == Path("/home/somebody/.boltz")
+
+
+def test_an_empty_variable_is_ignored_rather_than_resolving_to_the_cwd(tmp_path):
+    """`TT_BIO_CACHE=` in a systemd unit or a sourced env file is how a
+    variable gets set to the empty string without anyone meaning to. Treating
+    that as a path resolves to the process's working directory, which for the
+    daemon is wherever run-demo.sh happened to start it."""
+    from runner.env import weights_cache
+
+    got = weights_cache({"TT_BIO_CACHE": "", "BOLTZ_CACHE": "", "HOME": "/home/somebody"})
+    assert got == Path("/home/somebody/.boltz")
+
+
+def test_a_tilde_in_the_variable_is_expanded(tmp_path):
+    """An operator typing TT_BIO_CACHE=~/big-disk/boltz into a unit file gets
+    the literal string, tilde and all -- the shell never saw it to expand."""
+    from runner.env import weights_cache
+
+    got = weights_cache({"TT_BIO_CACHE": "~/big-disk/boltz", "HOME": "/home/somebody"})
+    assert got == Path("/home/somebody/big-disk/boltz")
+
+
+def test_it_resolves_exactly_where_the_pinned_tt_bio_resolves(tmp_path):
+    """The contract that actually matters: our resolver and tt-bio's own
+    `weights.cache_root()` must name the same directory, or the doctor checks
+    one place and a fold loads from another. Checked against the PINNED
+    tt-bio, so an upstream change to the precedence breaks this test rather
+    than a booth."""
+    from tt_bio import weights as tt_weights
+
+    from runner.env import weights_cache
+
+    for env in (
+        {"TT_BIO_CACHE": str(tmp_path / "a"), "BOLTZ_CACHE": str(tmp_path / "b")},
+        {"BOLTZ_CACHE": str(tmp_path / "b")},
+        {},
+    ):
+        saved = {k: os.environ.get(k) for k in ("TT_BIO_CACHE", "BOLTZ_CACHE")}
+        try:
+            for k in saved:
+                os.environ.pop(k, None)
+            os.environ.update(env)
+            assert weights_cache(dict(os.environ)) == tt_weights.cache_root(), (
+                f"our resolver and tt_bio.weights.cache_root() disagree for {env}")
+        finally:
+            for k, v in saved.items():
+                os.environ.pop(k, None)
+                if v is not None:
+                    os.environ[k] = v
+
+
+def test_the_shell_resolver_answers_exactly_what_the_python_one_does(tmp_path):
+    """scripts/weights-cache.sh and runner.env.weights_cache() are the same
+    rule written twice, once per language, because a postinst and a doctor
+    cannot import python and a fold cannot source bash.
+
+    Twice is the minimum, and it is still twice -- so it is checked
+    BEHAVIOURALLY, across the matrix that actually distinguishes the
+    implementations, rather than by hoping two files stay in step. Each row
+    below is a case that a plausible mis-edit gets wrong: precedence, empty
+    values, and the bare default.
+    """
+    import subprocess
+    from pathlib import Path as P
+
+    from runner.env import weights_cache
+
+    repo = P(__file__).resolve().parents[3]
+    resolver = repo / "scripts" / "weights-cache.sh"
+    assert resolver.is_file(), f"{resolver} is missing; this test is vacuous"
+
+    matrix = [
+        {"TT_BIO_CACHE": str(tmp_path / "a"), "BOLTZ_CACHE": str(tmp_path / "b"),
+         "HOME": str(tmp_path)},
+        {"BOLTZ_CACHE": str(tmp_path / "b"), "HOME": str(tmp_path)},
+        {"HOME": str(tmp_path)},
+        {"TT_BIO_CACHE": "", "BOLTZ_CACHE": "", "HOME": str(tmp_path)},
+        {"TT_BIO_CACHE": "", "BOLTZ_CACHE": str(tmp_path / "b"), "HOME": str(tmp_path)},
+    ]
+    for env in matrix:
+        r = subprocess.run(
+            ["bash", "-c", f'. "{resolver}"; tt_bio_demo_weights_cache'],
+            capture_output=True, text=True, env=env)
+        assert r.returncode == 0, r.stderr
+        shell = r.stdout.strip()
+        python = str(weights_cache(env))
+        assert shell == python, (
+            f"for {env}:\n  shell  says {shell}\n  python says {python}")

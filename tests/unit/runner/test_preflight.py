@@ -5,10 +5,20 @@ import pytest
 from runner.preflight import not_ready_event, run_preflight
 
 
+def _rmtree(path):
+    import shutil
+    shutil.rmtree(path, ignore_errors=True)
+
+
 def _ready(tmp_path):
     weights = tmp_path / "weights"
     weights.mkdir()
     (weights / "protenix-v2.pt").write_bytes(b"x")
+    # The EXTRACTED molecule library, which is what a fold loads. A healthy
+    # cache has this directory; the mols.tar it came from may or may not still
+    # be there (tt-bio discards it, and `tt-bio weights --prune` removes it).
+    (weights / "mols").mkdir()
+    (weights / "mols" / "ALA.pkl").write_bytes(b"x")
     playlist = tmp_path / "playlist"
     playlist.mkdir()
     (playlist / "trpcage.yaml").write_text("version: 1\n")
@@ -130,3 +140,84 @@ def test_not_ready_event_carries_the_full_missing_list(tmp_path):
     event = not_ready_event(result)
     assert event["type"] == "not_ready"
     assert event["missing"] == result.missing
+
+
+# ---------------------------------------------------------------------------
+# The molecule library.
+#
+# REQUIRED_WEIGHTS was ("protenix-v2.pt",) -- the checkpoint only. But
+# protenix-v2 loads the CCD molecule library too (tt-bio's registry lists
+# `mols` under that model, and runner/folder.py calls download_mols
+# alongside the checkpoint fetch), so a cache holding the checkpoint and no
+# molecules passed preflight, printed "preflight: ok", and then died on the
+# first fold.
+#
+# This is the same defect the doctor had from the other direction, and it is
+# the one a user actually hit: nothing in any install path made the molecule
+# library a checked box.
+# ---------------------------------------------------------------------------
+
+def test_the_molecule_library_is_required_not_just_the_checkpoint(tmp_path):
+    """A cache with the checkpoint and no molecules must NOT report ok."""
+    weights, playlist = _ready(tmp_path)
+    _rmtree(weights / "mols")
+    result = run_preflight(weights, playlist, check_tap=False, card_count=4)
+    assert not result.ok
+    assert any("mols" in m for m in result.missing), result.missing
+
+
+def test_the_extracted_directory_satisfies_it_not_the_tar(tmp_path):
+    """`mols.tar` is DISCARDED once unpacked -- tt-bio's own status() calls the
+    archive being gone "harmless for mols once the library is unpacked", and
+    `tt-bio weights --prune` removes it. So the thing to require is the
+    extracted directory. Requiring the tar instead would fail a booth that is
+    perfectly able to fold, which is exactly the false alarm the doctor's
+    1 GB size floor on mols.tar produced."""
+    weights, playlist = _ready(tmp_path)
+    (weights / "mols.tar").unlink(missing_ok=True)
+    assert (weights / "mols").is_dir()
+    result = run_preflight(weights, playlist, check_tap=False, card_count=4)
+    assert result.ok, result.missing
+
+
+def test_a_tar_with_no_extracted_directory_does_not_satisfy_it(tmp_path):
+    """The converse, and the state an interrupted install actually leaves: the
+    archive downloaded, the extraction never finished. A fold loads the
+    directory, so the tar alone is not readiness."""
+    weights, playlist = _ready(tmp_path)
+    _rmtree(weights / "mols")
+    (weights / "mols.tar").write_bytes(b"x" * 1024)
+    result = run_preflight(weights, playlist, check_tap=False, card_count=4)
+    assert not result.ok
+    assert any("mols" in m for m in result.missing), result.missing
+
+
+def test_what_preflight_requires_is_what_the_pinned_tt_bio_says_it_needs():
+    """Derived from tt-bio's registry, not hand-listed, so a release that adds
+    a third artifact to protenix-v2 is picked up here instead of surfacing as
+    a fold that dies on a machine preflight called ready.
+
+    Hand-listing is what caused the bug this section exists for: `mols` was
+    added to the model's requirements upstream and REQUIRED_WEIGHTS never
+    moved with it."""
+    from tt_bio import weights as tt_weights
+
+    from runner.preflight import required_weights
+
+    want = {a.key for a in tt_weights.artifacts_for("protenix-v2")}
+    got = {label for label, _path in required_weights("/nonexistent")}
+    assert got == want, f"preflight requires {got}, tt-bio says protenix-v2 needs {want}"
+
+
+def test_a_missing_weight_reads_as_english_not_as_a_traceback(tmp_path):
+    """preflight's strings go on a conference screen -- they are what the UI's
+    `not_ready` "preparing" overlay shows a visitor (spec section 6: nothing
+    in the UI may ever display a stack trace). So the molecule-library line
+    has to be presentable, not a repr of an exception or a registry row."""
+    weights, playlist = _ready(tmp_path)
+    _rmtree(weights / "mols")
+    result = run_preflight(weights, playlist, check_tap=False, card_count=4)
+    line = next(m for m in result.missing if "mols" in m)
+    assert "Traceback" not in line and "Error" not in line
+    assert "Artifact(" not in line and "object at 0x" not in line
+    assert len(line) < 200, f"too long for the preparing screen: {line!r}"

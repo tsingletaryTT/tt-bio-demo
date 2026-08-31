@@ -39,6 +39,14 @@
 #   --force         Recreate both venvs from scratch even if they already
 #                    look valid. Without this flag, re-running is a cheap
 #                    no-op once both venvs are verified.
+#   --skip-weights  Do not fetch the model weights. The booth cannot fold
+#                    without them (~3.7 GB: the protenix-v2 checkpoint and the
+#                    CCD molecule library), so this is an opt-OUT, not an
+#                    opt-in — a source install that builds both venvs and
+#                    stops leaves a box that looks finished and cannot fold.
+#                    That is exactly what a user reported: "I had to discover
+#                    a model downloading command". Implied by --skip-runner,
+#                    since the fetch runs through venv-runner's own tt-bio.
 #   --skip-runner   Only build/verify venv-ui. venv-runner's `pip install
 #                    tt-bio` pulls torch + ttnn and can be multiple GB and
 #                    slow (see docs/venv-bootstrap-notes.md) — useful while
@@ -116,15 +124,21 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PREFIX="${REPO_ROOT}/.venvs"
 FORCE=0
 SKIP_RUNNER=0
+SKIP_WEIGHTS=0
 STRICT=0
 DEV=0
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [--prefix PATH] [--force] [--skip-runner] [--strict] [--dev]
+Usage: $(basename "$0") [--prefix PATH] [--force] [--skip-runner]
+       [--skip-weights] [--strict] [--dev]
 
 Creates <prefix>/venv-ui and <prefix>/venv-runner. Default prefix:
 ${REPO_ROOT}/.venvs
+
+--skip-weights skips the ~3.7 GB model-weight download. It is on by
+default because a booth without weights cannot fold; the download is
+resumable and re-running this script is a cheap no-op once they are present.
 
 --dev also installs pytest into venv-runner, for running this phase's own
 unit tests there (see the header comment) — off by default, since
@@ -154,6 +168,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --skip-runner)
       SKIP_RUNNER=1
+      shift
+      ;;
+    --skip-weights)
+      SKIP_WEIGHTS=1
       shift
       ;;
     --strict)
@@ -875,11 +893,112 @@ create_runner_venv() {
 }
 
 # ---------------------------------------------------------------------------
+# 4c. The model weights
+# ---------------------------------------------------------------------------
+
+WEIGHTS_STATUS="not attempted"
+
+# Where the weights live, derived exactly as tt-bio derives it: $TT_BIO_CACHE,
+# then $BOLTZ_CACHE, then ~/.boltz. Reported in the summary so an operator can
+# see WHICH directory was filled -- this project had four callers deriving
+# that path four different ways, and none of them read $TT_BIO_CACHE.
+# runner/env.py's weights_cache() and scripts/doctor.sh's
+# doctor_weights_cache() are the same rule; all three are pinned to tt-bio's
+# own cache_root() by tests.
+#
+# `:-` and not `-`: an EMPTY variable falls through, because `TT_BIO_CACHE=`
+# is what an exported-but-unset variable looks like in a unit file.
+# shellcheck source=weights-cache.sh
+. "${SCRIPT_DIR}/weights-cache.sh"
+
+weights_cache_dir() {
+  tt_bio_demo_weights_cache
+}
+
+# The 3.7 GB the booth cannot fold without: the protenix-v2 checkpoint and the
+# CCD molecule library it loads alongside.
+#
+# WHY THIS IS HERE AT ALL. Before it, a source install built both venvs and
+# stopped. The .deb had covered weights since Phase 3b (debian/
+# tt-bio-demo-weights.postinst, behind a debconf question); a git checkout had
+# nothing, so the first fold either pulled gigabytes silently or, at a venue,
+# failed. A user hit exactly that and reported it: "I had to discover a model
+# downloading command".
+#
+# WHY IT SHELLS OUT TO `tt-bio weights --download` rather than importing
+# tt_bio.weights and calling fetch(). It is the same command the docs,
+# scripts/doctor.sh and the README all tell an operator to run, so there is
+# one command to keep true instead of two things that can disagree about what
+# "fetch the weights" means. tt-bio resolves its own cache ($TT_BIO_CACHE,
+# then $BOLTZ_CACHE, then ~/.boltz — see runner/env.py's weights_cache), and
+# re-running is cheap: it verifies rather than re-downloading.
+#
+# WHY A FAILURE HERE IS NOT FATAL. The venvs above are the expensive,
+# hard-to-redo part and they are fine; what failed is a resumable download
+# over what may be a conference-hotel connection. Turning that into exit 1
+# would throw away a good bootstrap and tell the operator nothing they can
+# act on. So: warn, print the command, carry on.
+fetch_weights() {
+  local tt_bio="${VENV_RUNNER}/bin/tt-bio"
+  local cmd="${tt_bio} weights --download protenix-v2"
+
+  if [[ "$SKIP_RUNNER" -eq 1 ]]; then
+    # Nothing to fetch WITH: the fetch runs through venv-runner's own tt-bio.
+    log "weights: --skip-runner given, not fetching (needs venv-runner)"
+    WEIGHTS_STATUS="skipped (--skip-runner)"
+    return 0
+  fi
+  if [[ "$SKIP_WEIGHTS" -eq 1 ]]; then
+    log "weights: --skip-weights given, not fetching"
+    log "weights: the booth cannot fold until they are present:"
+    log "weights:     ${cmd}"
+    WEIGHTS_STATUS="skipped (--skip-weights) — the booth cannot fold yet"
+    return 0
+  fi
+  if [[ ! -x "$tt_bio" ]]; then
+    # venv-runner is absent or degraded (this script's own exit 2). Say what
+    # to run once it is fixed rather than dying on top of an existing fault.
+    warn "weights: no usable tt-bio at ${tt_bio}; not fetching"
+    warn "weights: once venv-runner works, fetch them with:"
+    warn "weights:     ${cmd}"
+    WEIGHTS_STATUS="not fetched (no usable venv-runner)"
+    return 0
+  fi
+
+  log "weights: fetching the protenix-v2 checkpoint and CCD molecule library"
+  log "weights: ~3.7 GB, resumable, verified — a no-op if already present"
+  if "$tt_bio" weights --download protenix-v2; then
+    WEIGHTS_STATUS="present and verified"
+    log "weights: present and verified — the booth can fold offline"
+  else
+    warn "weights: the download did not complete. The venvs above are fine;"
+    warn "weights: this is resumable. Re-run this script, or directly:"
+    warn "weights:     ${cmd}"
+    WEIGHTS_STATUS="INCOMPLETE — re-run; the booth cannot fold yet"
+  fi
+  return 0
+}
+
+# Sourced with SETUP_VENVS_LIB_ONLY=1 by tests/unit/test_setup_venvs_weights.py,
+# which calls the functions above directly — the same arrangement doctor.sh
+# uses with DOCTOR_LIB_ONLY.
+#
+# This guard is not a nicety. Without it, merely SOURCING this file builds both
+# venvs: the first draft of that test file did exactly that and pip-installed
+# torch into five pytest tmp directories — 30 GB — on a box already at 100%
+# disk. `return` when sourced, `exit` when somebody runs it with the variable
+# set by accident.
+if [[ -n "${SETUP_VENVS_LIB_ONLY:-}" ]]; then
+  return 0 2>/dev/null || exit 0
+fi
+
+# ---------------------------------------------------------------------------
 # 5. Run it
 # ---------------------------------------------------------------------------
 
 create_ui_venv
 create_runner_venv
+fetch_weights
 
 # ---------------------------------------------------------------------------
 # 6. Summary
@@ -906,6 +1025,10 @@ fi
 echo "  activate:    source ${VENV_RUNNER}/bin/activate"
 echo "  pinned:      tt-bio==${TT_BIO_VERSION}"
 echo "  test deps:   $TEST_DEPS_STATUS"
+echo
+echo "weights:       $(weights_cache_dir)"
+echo "  status:      $WEIGHTS_STATUS"
+echo "  fetch/check: ${VENV_RUNNER}/bin/tt-bio weights --download protenix-v2"
 if [[ "$DEV" -eq 1 ]]; then
   echo "  run tests:   ${VENV_RUNNER}/bin/python3 -m pytest tests/unit/test_runner_env.py -v"
 fi

@@ -951,6 +951,108 @@ Suite green at 1,479. Both changes confirmed in one photograph of the running
 booth: four cells with no flag, DNA drawn as a tube by the cartoon, DHFR as
 ribbons and arrows, FKBP12 with its SB3 ligand as sticks, albumin mid-collapse.
 
+### The weights were never a checked box (2026-08-31)
+
+Reported by a user who got the booth running: *"The docs were not quite right
+- I had to discover a model downloading command, the doctor.sh didn't know
+about -- but once I found that it works great!"* The ask that followed was
+that installing **from .deb or source** should leave every box ticked.
+
+Three separate defects were behind one report, and only the first was the one
+being complained about.
+
+**1. The source install never fetched weights at all.** `scripts/setup-venvs.sh`
+downloads torch, ttnn and a vendored SFPI toolchain and then stops; a grep for
+`weight|boltz|mols|protenix` across it returned nothing. The README's Quick
+start was `setup-venvs.sh` then `run-demo.sh`. So a checkout ended at a box
+that looked finished and could not fold -- the .deb had covered this since
+Phase 3b behind a debconf question, and a git clone had nothing. It fetches
+by default now (`--skip-weights` opts out, implied by `--skip-runner`), and a
+failed download is deliberately **not** fatal: the venvs are the expensive
+half and they are fine, so it warns and prints the command to resume with.
+
+**2. `doctor.sh` named no command.** In source mode the entire hint was "they
+download on the first fold, or fetch them ahead of time". That is the sentence
+that cost the user their afternoon. Both modes now print
+`tt-bio weights --download protenix-v2`; the packaged install still leads with
+`dpkg-reconfigure`, because that is where a .deb's consent lives.
+
+**3. The doctor FAILED a booth that could fold.** It required `mols.tar` at
+>= 1 GB. tt-bio discards that archive once unpacked -- its own `status()` calls
+the archive being gone "harmless for mols once the library is unpacked" -- and
+`tt-bio weights --prune` deletes it outright. A fold loads `<cache>/mols`. The
+check is layered now: filesystem presence and a size floor always (the only
+thing available before venv-runner exists, which is when the doctor matters
+most), plus tt-bio's own verifier when it can be asked, which is the only
+thing that can tell a complete 1.8 GB file from a truncated one.
+
+**A fourth, found while fixing them: `preflight` never checked `mols` at all.**
+`REQUIRED_WEIGHTS = ("protenix-v2.pt",)` -- the checkpoint only -- so a cache
+with the checkpoint and no molecules printed `preflight: ok` and then died on
+the first fold. It is derived from tt-bio's registry now
+(`weights.artifacts_for("protenix-v2")`), so a release adding a third artifact
+is picked up instead of surfacing as a fold on a machine preflight called
+ready.
+
+**Four callers, four different answers, and none of them right.** The cleanup
+Taylor asked for on top: `runner/folder.py` hardcoded `Path.home()/".boltz"`,
+`run-demo.sh` read `$TT_BIO_DEMO_WEIGHTS`, `doctor.sh` and the postinst read
+`$BOLTZ_CACHE` -- and **none read `$TT_BIO_CACHE`**, the variable tt-bio
+prefers and documents as relocating the whole cache. The postinst re-derived
+it a second time in its python half, so a host using `$TT_BIO_CACHE` would
+have downloaded 3.7 GB into a directory neither a fold nor the doctor would
+look in. There are two derivations now, one per language
+(`runner/env.py:weights_cache`, `scripts/weights-cache.sh`), pinned to each
+other behaviourally and both pinned to tt-bio's own `cache_root()`.
+`folder.py`'s own comment had said honouring `TT_BIO_CACHE` was "a deliberate,
+separate change" needing preflight and the doctor to move with it; they moved.
+
+**What actually prevents a recurrence** is not the fix, it is that printed
+commands are now checked against the tt-bio they are printed for.
+`test_the_weights_postinst_uses_the_tt_bio_api_that_actually_exists` has caught
+a real break twice by parsing the pinned tt-bio's own source; the same idea now
+covers every `tt-bio weights` invocation in the README, INSTALL.md, doctor.sh,
+setup-venvs.sh and the postinst -- real subcommand, real flags, real artifact
+key, and the same model the booth actually folds. Mutations confirm all three:
+a fake model, a fake flag, and a REAL model that is the wrong one (that last is
+caught only by the booth-agreement test). Plus a textual drift guard that lets
+exactly two files in the repo spell `.boltz` or read the cache variables.
+
+**Three instrument lessons, all paid for in this session.**
+
+- **Sourcing a script runs it.** The first draft of
+  `tests/unit/test_setup_venvs_weights.py` sourced `setup-venvs.sh` before the
+  `SETUP_VENVS_LIB_ONLY` guard existed, which pip-installed torch into five
+  pytest tmp directories -- **30 GB, on a box already at 100% disk**. The guard
+  is not a nicety and its comment says so.
+- **A fixture that needs a gigabyte is measuring the wrong thing.** The doctor
+  tests wrote real 1.1 GB and 1.9 GB files to clear the size floor: 15 GB of
+  /tmp across three runs, and 1.9 s per run. The check reads `stat -c %s`, so a
+  **sparse** file exercises it exactly -- 0.09 s and 376 K.
+- **`tail -3` on a mutation run hid a kill.** Reading a truncated mutation
+  summary said one mutation had survived when three tests had actually gone
+  red. This repo's own rule ("never conclude from a truncated view") applied to
+  the instrument checking the tests.
+
+One mutation genuinely survived and is worth keeping. Deleting the
+`--skip-weights` case from the argument parser left the whole file green: the
+flag then fell through to the `*)` catch-all, which exits 1, so the sourced
+shell died **before `fetch_weights` was defined** -- an empty download log for
+a reason with nothing to do with skipping. The test asserts the flag is
+*accepted* now, separately from what it does.
+
+Suite green at **1,512** with hardware skipped (1,161 UI + 351 runner), plus
+the 60 packaging tests including the real Docker container installs. The
+version was deliberately NOT bumped: `test_the_handout_pdf_was_rebuilt_for_
+this_version` couples a bump to re-rendering the booth handout, which is a
+release action and this repo cuts those as their own commits.
+
+**There is no Docker install path, and INSTALL.md now says so.**
+`scripts/deb-container.sh` is package-install testing only and refuses to pass
+`--device` under any circumstance, so nothing in a container can reach a chip.
+Better to state that than to let the question keep being asked.
+
+
 ## Conventions
 
 - **Keep the README's screenshots current.** The README claims every image on it is the

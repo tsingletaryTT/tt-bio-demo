@@ -144,6 +144,62 @@ LOG_ROOT_VAR = "TT_METAL_LOGS_PATH"
 # does not free it. Nothing in this codebase reads Inspector's output.
 INSPECTOR_VAR = "TT_METAL_INSPECTOR"
 
+# ---------------------------------------------------------------------------
+# Where the model weights live. ONE resolver, because there used to be four.
+#
+# tt-bio resolves its own cache as $TT_BIO_CACHE, then $BOLTZ_CACHE, then
+# ~/.boltz (tt_bio.weights.cache_root). This repo had four callers deriving
+# it independently -- runner/folder.py hardcoded `Path.home()/".boltz"`,
+# scripts/run-demo.sh and scripts/doctor.sh and the weights postinst each read
+# a different subset of the variables -- and NONE of them honoured
+# $TT_BIO_CACHE, the one knob tt-bio documents as relocating everything.
+#
+# They all agree on ~/.boltz when nothing is set, which is why this was
+# invisible: the disagreement only appears once an operator moves the cache,
+# and then it appears as the doctor pronouncing a booth healthy while a fold
+# loads from an empty directory. `test_it_resolves_exactly_where_the_pinned_
+# tt_bio_resolves` pins this against tt-bio's own function so an upstream
+# change to the precedence breaks the suite rather than a venue.
+#
+# The variables, in the order tt-bio itself checks them.
+# ---------------------------------------------------------------------------
+WEIGHTS_CACHE_VARS = ("TT_BIO_CACHE", "BOLTZ_CACHE")
+WEIGHTS_CACHE_DEFAULT = ".boltz"
+
+
+def weights_cache(env=None):
+    """The weights cache directory, derived exactly as tt-bio derives it.
+
+    `env` is a mapping to read instead of os.environ, which is what makes the
+    precedence testable without mutating the real environment.
+
+    An EMPTY variable is treated as unset rather than as a path. `Path("")`
+    is `Path(".")`, so honouring it would silently resolve the cache to the
+    process's working directory -- and `TT_BIO_CACHE=` is exactly what an
+    unset-but-still-exported variable in a systemd unit or a sourced env file
+    looks like.
+    """
+    env = os.environ if env is None else env
+    home = env.get("HOME") or str(Path.home())
+    for var in WEIGHTS_CACHE_VARS:
+        value = env.get(var)
+        if value:
+            return _expanduser(value, home)
+    return _expanduser(home, home) / WEIGHTS_CACHE_DEFAULT
+
+
+def _expanduser(value, home):
+    """`Path.expanduser()`, but against the HOME in the mapping we were handed
+    rather than the one this process happens to have.
+
+    Path.expanduser reads os.environ directly, so the plain version would
+    expand a tilde against the wrong home for any caller passing an explicit
+    environment -- the daemon's own subprocess environments included.
+    """
+    if value == "~" or value.startswith("~/"):
+        return Path(home + value[1:])
+    return Path(value)
+
 
 def runner_environ(log_root, base=None):
     """Return an environment mapping with tt-metal's log output pinned.

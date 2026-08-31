@@ -16,9 +16,13 @@ set -e
 . /usr/share/tt-bio-demo/helpers.sh
 
 PREFIX="$(tt_bio_demo_prefix)"
-# Derived exactly as tt_bio.main derives it, so the shell half and the
-# python half below can never disagree about where the files landed.
-CACHE="${BOLTZ_CACHE:-${HOME:-/root}/.boltz}"
+# ONE derivation, from the shared shell resolver ($TT_BIO_CACHE, then
+# $BOLTZ_CACHE, then ~/.boltz -- tt-bio's own order). This used to read only
+# $BOLTZ_CACHE, and the python block below re-derived it a SECOND time from
+# the same incomplete rule, so on a host using $TT_BIO_CACHE this downloaded
+# 3.7 GB into a directory neither a fold nor the doctor would ever look in.
+# The python half is now handed the answer rather than working it out again.
+CACHE="$(tt_bio_demo_weights_cache)" || exit 1
 
 # ---------------------------------------------------------------------------
 # THE ARTIFACT TABLE. One line per artifact: <filename> <sha256>.
@@ -95,8 +99,7 @@ case "$1" in
         # interrupted download continues where it stopped. 0.7.0 also
         # re-fetches a copy that is present but corrupt, which used to be
         # scripts/doctor.sh's job alone to notice.
-        "$runner_py" - <<'PYEOF'
-import os
+        "$runner_py" - "$CACHE" <<'PYEOF'
 import sys
 from pathlib import Path
 
@@ -115,8 +118,11 @@ except Exception as exc:                                  # noqa: BLE001
     print(f"cannot import tt_bio: {exc}", file=sys.stderr)
     raise SystemExit(1)
 
-# The same cache tt-bio itself uses, derived the same way it derives it.
-cache = Path(os.environ.get("BOLTZ_CACHE", str(Path("~/.boltz").expanduser())))
+# Handed in as argv, NOT re-derived here. The shell half above already asked
+# the one resolver; deriving it again from a different rule is what made the
+# download and the verification able to disagree about which directory they
+# meant.
+cache = Path(sys.argv[1])
 cache.mkdir(parents=True, exist_ok=True)
 
 weights.fetch("protenix-v2", root=cache)
