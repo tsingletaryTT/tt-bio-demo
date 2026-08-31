@@ -1041,11 +1041,38 @@ shell died **before `fetch_weights` was defined** -- an empty download log for
 a reason with nothing to do with skipping. The test asserts the flag is
 *accepted* now, separately from what it does.
 
-Suite green at **1,512** with hardware skipped (1,161 UI + 351 runner), plus
-the 60 packaging tests including the real Docker container installs. The
-version was deliberately NOT bumped: `test_the_handout_pdf_was_rebuilt_for_
-this_version` couples a bump to re-rendering the booth handout, which is a
-release action and this repo cuts those as their own commits.
+Suite green at **1,522** with hardware skipped (1,165 UI + 357 runner), plus
+the 60 packaging tests including the real Docker container installs, and one
+real Trp-cage fold on chip 0 under a gozer lease -- `folder.py`'s `load()`
+path has no unit coverage, so that fold is the only real proof the cache
+change works.
+
+**Cut as 0.5.5, and the bump found one more instance of the same bug.**
+`test_the_handout_pdf_was_rebuilt_for_this_version` couples a version bump to
+re-rendering the printed booth handout, so `docs/onepager/build.sh` ran -- and
+looking at the result (the build script says to, and this project's own rule
+is that an artifact nobody looked at is not verified) turned up page 2's
+BEFORE DOORS OPEN checklist:
+
+    Weights on disk. The venue is offline -- nothing downloads at the
+    booth.  dpkg -l tt-bio-demo-weights
+
+`dpkg -l` says a PACKAGE is installed. It does not say the weights are on
+disk, unpacked, or intact -- which is the exact distinction this whole change
+is about -- and it means nothing at all on a source install. On the one
+artefact that gets printed and handed to a stranger. It now points at
+`doctor.sh`, which answers the question actually being asked.
+
+**And the drift guard caught its own author.** The 0.5.5 changelog stanza
+describes the fix, so it contains the string `$TT_BIO_CACHE` -- and
+`test_nothing_outside_the_resolvers_reads_the_cache_variables` failed on it.
+Correct behaviour from a guard whose scope was wrong: `debian/changelog` has
+no file extension, so the prose filter never saw it. Debian metadata is
+excluded by EXACT PATH rather than by a `debian/` prefix, because the
+maintainer scripts in that directory are real code and one of them is a
+caller this test exists for -- with a further test pinning that the exclusion
+list can never grow to cover a maintainer script. Verified: adding the
+weights postinst to it turns that test red.
 
 **There is no Docker install path, and INSTALL.md now says so.**
 `scripts/deb-container.sh` is package-install testing only and refuses to pass

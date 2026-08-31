@@ -1,3 +1,34 @@
+tt-bio-demo (0.5.5) noble; urgency=medium
+
+  * The model weights are a checked box on every install path now. A source
+    install fetched none at all -- scripts/setup-venvs.sh built both venvs and
+    stopped -- so a checkout ended at a box that looked finished and could not
+    fold. It fetches by default; --skip-weights opts out and a failed download
+    is not fatal.
+  * scripts/doctor.sh names the command that fixes it. In source mode its
+    entire advice had been "they download on the first fold, or fetch them
+    ahead of time", which named nothing runnable; both modes now print
+    `tt-bio weights --download protenix-v2`.
+  * scripts/doctor.sh no longer FAILS a booth that can fold. It required
+    mols.tar at >=1GB, but tt-bio discards that archive once it is unpacked
+    and `tt-bio weights --prune` deletes it; a fold loads <cache>/mols. The
+    check is layered now, and asks tt-bio's own verifier when venv-runner is
+    built -- the only thing that can tell a complete 1.8GB file from a
+    truncated one.
+  * The daemon's preflight checks the CCD molecule library. It had checked the
+    checkpoint only, so a cache without the molecules reported ready and then
+    died on the first fold; the list is derived from tt-bio's registry now.
+  * One weights-cache resolver per language, replacing four callers that
+    disagreed and none of which read $TT_BIO_CACHE. The weights postinst had
+    derived the path a second time in its python half, so a host using that
+    variable would have downloaded 3.7GB into a directory neither a fold nor
+    the doctor would look in.
+  * README and INSTALL.md document the weights step for both install paths,
+    and every `tt-bio weights` command this project prints is now checked
+    against the pinned tt-bio at test time.
+
+ -- Taylor Singletary <tsingletary@tenstorrent.com>  Mon, 31 Aug 2026 09:20:00 -0700
+
 tt-bio-demo (0.5.0) noble; urgency=medium
 
   * Pinned tt-bio moves to 0.7.0. Every fold time on every card, the site and

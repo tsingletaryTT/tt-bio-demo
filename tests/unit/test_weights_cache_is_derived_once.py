@@ -40,6 +40,18 @@ _RESOLVERS = {
 # path, not deriving it. tests/ may write fixtures wherever they like.
 _PROSE_SUFFIXES = {".md", ".yaml", ".yml", ".txt", ".rst"}
 
+# Prose with no extension, which the suffix filter above cannot see. Debian's
+# metadata files are English, not code: debian/changelog in particular exists
+# to DESCRIBE changes, so the stanza announcing this very guard tripped it.
+# Excluded by exact path rather than by a `debian/` prefix, because the
+# maintainer scripts in that directory are real code and must stay in scope --
+# the postinst is one of the four callers this test was written for.
+_PROSE_FILES = {
+    "debian/changelog",
+    "debian/control",
+    "debian/copyright",
+}
+
 
 def _source_files():
     """TRACKED files only, via git.
@@ -60,7 +72,7 @@ def _source_files():
             continue
         if rel.startswith(("tests/", "docs/", "recordings/", "dist/")):
             continue
-        if path.suffix in _PROSE_SUFFIXES:
+        if path.suffix in _PROSE_SUFFIXES or rel in _PROSE_FILES:
             continue
         if path.suffix not in (".py", ".sh", "") and "postinst" not in rel:
             continue
@@ -119,3 +131,17 @@ def test_the_resolver_files_still_exist_so_this_test_cannot_pass_vacuously():
     finding nothing to check. Pin their existence."""
     for rel in _RESOLVERS:
         assert (REPO / rel).is_file(), f"{rel} is gone; the tests above are now vacuous"
+
+
+def test_the_prose_exclusions_do_not_cover_any_maintainer_script():
+    """The prose list is an escape hatch, and escape hatches widen.
+
+    debian/ holds both English (changelog, control, copyright) and real code
+    (the maintainer scripts, helpers.sh). Excluding the directory wholesale
+    would silently drop the weights postinst -- one of the four callers this
+    whole test file was written for -- out of scope.
+    """
+    for rel in _PROSE_FILES:
+        assert not rel.endswith((".sh", ".py")), f"{rel} is code, not prose"
+        for script in ("postinst", "prerm", "postrm", "preinst", "config"):
+            assert script not in rel, f"{rel} is a maintainer script, not prose"
