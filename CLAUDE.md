@@ -1155,6 +1155,71 @@ Trp-cage fold re-run on chip 0 under a lease after `folder.py` and
 remains the only proof.
 
 
+### A guard that protected the wrong noun (2026-08-31)
+
+Prompted with "tagging the v0.5.5 release from GH manually caused a release
+packaging issue with CI; can you look?"
+
+**CI found no packaging defect at all.** The `build` job passed in 5m52s --
+the .debs built and installed into throwaway containers exactly as on main.
+The `release` job failed in 5 seconds, on its own guard:
+
+    release v0.5.5 already exists; refusing to replace it.
+
+The tell was in the run list before any log was opened: **the same commit
+passed on `main` and failed on the tag.** Same tree, different ref, so the
+fault was in a tag-only path, not in packaging.
+
+**The guard's invariant was right and the thing it measured was a proxy.**
+
+    A published .deb is never replaced. Someone may already have installed
+    it, and package managers are built on the assumption that a fixed
+    version number means fixed contents.
+
+That is a statement about ASSETS. It was implemented as `if gh release view
+"$TAG"; then exit 1; fi` -- a statement about the release EXISTING. The two
+come apart in exactly one case, and it is the case a person reaches by taking
+the obvious path: creating a release in the GitHub UI makes the tag AND the
+release atomically, so the tag push then finds a release already there and
+exits **before the upload step**.
+
+**The damage was silent, which is the part worth remembering.** The run was
+red, but the release page looked completely normal -- and held zero assets,
+while `INSTALL.md` step 1 tells operators to
+`gh release download --pattern '*.deb'`. A red CI run is noticed; a published
+release that is merely EMPTY is not.
+
+The check now asks the question the invariant actually asks: does this release
+have assets somebody could have installed? A release with assets is still
+refused, unchanged. An empty one is filled. A release whose asset list cannot
+be READ is refused too -- the two assumptions are not symmetric, since
+assuming "empty" overwrites packages people may hold and assuming "occupied"
+costs a re-run.
+
+**The logic moved out of the YAML, and that is the durable half.** It lived
+inside a workflow step, where the only way to exercise it is to tag a release
+-- the most expensive possible place to find a bug, and where this one was
+found. It is `scripts/publish-release.sh` now, driven by
+`tests/unit/test_publish_release.py` with a stubbed `gh` (the same stub-binary
+approach the setup-venvs tests use for tt-bio), plus tests pinning that the
+workflow still goes THROUGH it and has not grown its own `gh release create`
+back.
+
+Five mutations. Four red immediately; the fifth -- treating an unreadable
+asset list as empty -- **survived**, because the fail-safe branch had no test.
+That branch is the one protecting published packages under uncertainty, so it
+was the worst one to leave as a claim. Covered now, and red.
+
+**v0.5.5 is deliberately left empty rather than back-filled.** Taylor's call,
+and it is the same rule the guard exists for: a published version number whose
+contents change is exactly what must not happen, including when the change is
+from nothing to something. 0.5.6 carries identical code and is the one to
+install. Worth knowing that v0.5.5 stays on the releases page as a version
+whose download command returns nothing.
+
+Suite green at **1,540**.
+
+
 ## Conventions
 
 - **Keep the README's screenshots current.** The README claims every image on it is the
