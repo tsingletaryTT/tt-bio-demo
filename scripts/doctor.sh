@@ -293,7 +293,7 @@ doctor_check_weights_from_the_filesystem() {
     fi
 
     _mols="$_c/mols"
-    if [ -d "$_mols" ] && [ -n "$(ls -A "$_mols" 2>/dev/null)" ]; then
+    if [ -d "$_mols" ] && [ -n "$(find "$_mols" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
         ok "mols/ (CCD molecule library, unpacked)"
     elif [ -f "$_c/mols.tar" ]; then
         fail "mols.tar is present but was never unpacked to $_mols"
