@@ -1293,7 +1293,10 @@ def main(argv=None):
     # `setdefault` against `base`, and an empty dict never has the operator's
     # real env var in it. Passing no `base` makes runner_environ copy the
     # *real* os.environ, so setdefault actually sees what the operator set.
-    os.environ.update(runner_environ(args.log_root))
+    # weights_dir pins --weights for the WORKERS too, not just preflight.
+    # Without it the flag was checked and then ignored by the thing that
+    # actually folds -- see runner_environ's docstring.
+    os.environ.update(runner_environ(args.log_root, weights_dir=args.weights))
 
     # The tap check is the most valuable one preflight does -- a broken tap means
     # folds succeed while nothing condenses on screen -- and it opens no device,

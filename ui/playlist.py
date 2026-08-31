@@ -72,7 +72,7 @@ from pathlib import Path
 
 import yaml
 
-# Matches runner/preflight.py's REQUIRED_WEIGHTS and this project's other
+# Matches runner/preflight.py's MODEL and this project's other
 # default-model references; kept as a module-level constant rather than a
 # literal so both stay in sync if it's ever repointed to protenix-v3.
 DEFAULT_MODEL = "protenix-v2"

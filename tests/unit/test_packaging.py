@@ -10,6 +10,8 @@ half"; it does not import gi or anything GTK-specific -- only subprocess and
 pathlib.
 """
 import re
+import os
+import shutil
 import subprocess
 import pathlib
 import pytest
@@ -943,3 +945,76 @@ def test_the_desktop_entry_files_under_exactly_one_main_category():
     assert not any(c.startswith("X-") for c in listed), (
         "a vendor X- category needs a .directory and .menu owned by a shared "
         "Tenstorrent package -- see docs/followups.md")
+
+
+# --- the weights cache, as the maintainer scripts see it ---------------------
+#
+# helpers.sh does not implement the rule; it sources it out of the base
+# package's scripts/ directory, because tt-bio-demo-weights Depends on
+# tt-bio-demo and a local copy would be a second implementation of the very
+# thing that used to have four. That indirection has its own failure modes,
+# which is what these cover.
+
+def test_helpers_resolves_the_weights_cache_through_the_shared_resolver(tmp_path):
+    """The happy path, end to end through the wrapper: a prefix whose
+    scripts/weights-cache.sh exists, and $TT_BIO_CACHE set.
+
+    $TT_BIO_CACHE specifically, because the postinst used to read only
+    $BOLTZ_CACHE -- so on a host using the variable tt-bio actually prefers it
+    downloaded 3.7 GB into a directory neither a fold nor the doctor would
+    ever look in."""
+    prefix = tmp_path / "opt"
+    (prefix / "scripts").mkdir(parents=True)
+    shutil.copy(REPO / "scripts" / "weights-cache.sh", prefix / "scripts")
+    moved = tmp_path / "big-disk"
+    r = _sh("tt_bio_demo_weights_cache",
+            TT_BIO_DEMO_PREFIX=str(prefix), TT_BIO_CACHE=str(moved))
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == str(moved), r.stdout
+
+
+def test_helpers_refuses_rather_than_guessing_when_the_resolver_is_absent(tmp_path):
+    """The base package somehow not unpacked. Guessing a path here would fill
+    a directory nothing reads and then report success -- the worst of the two
+    outcomes, because the failure would surface at the venue as an empty
+    cache rather than here as a message."""
+    prefix = tmp_path / "opt"
+    prefix.mkdir()
+    r = _sh("tt_bio_demo_weights_cache", TT_BIO_DEMO_PREFIX=str(prefix))
+    assert r.returncode != 0, f"guessed a path instead of failing: {r.stdout!r}"
+    assert ".boltz" not in r.stdout, f"leaked a guessed path: {r.stdout!r}"
+
+
+def test_the_postinst_does_not_re_derive_the_cache_in_its_python_half(tmp_path):
+    """The shell half asks the resolver; the python half must be HANDED that
+    answer, not work it out again from a different rule. Two derivations in
+    one script is how the download and the verification ended up able to
+    disagree about which directory they meant."""
+    postinst = _weights("postinst")
+    assert 'sys.argv[1]' in postinst, \
+        "the python half should take the cache as argv from the shell half"
+    assert 'os.environ.get("BOLTZ_CACHE"' not in postinst, \
+        "the python half is re-deriving the cache instead of being handed it"
+
+
+def test_helpers_does_not_recurse_when_the_resolver_defines_nothing(tmp_path):
+    """A readable-but-useless weights-cache.sh must not spin.
+
+    The wrapper works by sourcing a file that REDEFINES it, then calling the
+    replacement. If the sourced file defines nothing -- an empty or truncated
+    file from a partially unpacked base package, or a future rename of the
+    function -- the wrapper is still itself when it makes that call, and
+    re-enters. Measured before the guard: 1000 frames deep. That happens
+    inside a `configure` maintainer script, so it breaks a dpkg run rather
+    than failing one package cleanly.
+    """
+    prefix = tmp_path / "opt"
+    (prefix / "scripts").mkdir(parents=True)
+    (prefix / "scripts" / "weights-cache.sh").write_text("# defines nothing\n")
+    r = subprocess.run(
+        ["sh", "-c", f". {HELPERS}\ntt_bio_demo_weights_cache"],
+        capture_output=True, text=True, timeout=15,
+        env={**os.environ, "TT_BIO_DEMO_PREFIX": str(prefix)})
+    assert "recursion" not in (r.stdout + r.stderr).lower(), \
+        f"the wrapper recursed:\n{r.stdout}{r.stderr}"
+    assert r.returncode != 0, "a resolver that defines nothing must be an error"

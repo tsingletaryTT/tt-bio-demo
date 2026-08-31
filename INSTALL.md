@@ -100,7 +100,7 @@ the opposite of what this packaging is for.
 | Prompt | Default | What to answer on a post-`tt-installer` box |
 |---|---|---|
 | `Run "tt-bio install-deps" now?` | No | **No.** `tt-installer` has already installed the Tenstorrent system packages and kernel modules this would fetch. Saying yes re-runs a kernel-module installer you do not need. |
-| `Download the model weights now (3.7 GB)?` | No | **No here, yes in step 3.** The download is better run deliberately, where you can watch it, than under the dpkg lock. |
+| `Download the model weights now (3.7 GB)?` | No | **No here, yes in step 3.** The download is better run deliberately, where you can watch it, than under the dpkg lock. (A *source* install has no such lock, so `scripts/setup-venvs.sh` fetches them by default; `--skip-weights` opts out.) |
 
 The install finishes by printing `ONE STEP LEFT` and the exact command for step 2. That is
 expected — the postinst deliberately does not build the Python environments while apt holds
@@ -172,11 +172,42 @@ sudo dpkg-reconfigure tt-bio-demo-weights      # answer Yes this time
 That pulls two artifacts totalling ~3.7 GB through tt-bio's own Hugging Face client:
 
 - `protenix-v2.pt` — 1.86 GB
-- `mols.tar` — the CCD molecule library, 1.85 GB
+- `mols` — the CCD molecule library, 1.85 GB, unpacked into a directory beside it
 
 The download is **resumable**: an interrupted attempt continues rather than restarting. The
 postinst verifies what landed and prints `weights present and verified. The booth can fold
 offline.` — treat any other final line as a failure.
+
+### The same thing, without dpkg
+
+`dpkg-reconfigure` is the right route for a packaged install: it is where the package's
+own consent lives, and running the download outside it leaves the package's debconf state
+stale. But it is a wrapper. Underneath, it runs venv-runner's own tt-bio, and so can you —
+which is what to reach for when debconf is wedged, when you are installing **from source**
+rather than from the .deb, or when you just want to watch the transfer:
+
+```bash
+/opt/tt-bio-demo/.venvs/venv-runner/bin/tt-bio weights --download protenix-v2
+```
+
+From a source checkout the path is `.venvs/venv-runner/bin/tt-bio` instead — and
+`scripts/setup-venvs.sh` already runs it for you as its last step, so a source install
+normally needs no separate weights step at all. See the README's
+[Quick start](README.md#quick-start).
+
+To see what is on the machine without downloading anything, drop the flag:
+`tt-bio weights protenix-v2` prints one line per artifact with `present` / `missing` /
+`corrupt` and the path it checked.
+
+**Where they land**: `$TT_BIO_CACHE`, else `$BOLTZ_CACHE`, else `~/.boltz` — tt-bio's own
+order. Everything in this project that touches that path (the doctor, preflight, the
+launcher, this postinst) resolves it through one place, so relocating the cache with
+either variable moves all of them together.
+
+> **There is no Docker install path.** `scripts/deb-container.sh` runs a throwaway Ubuntu
+> container for *package-install testing* only, and it deliberately passes no `--device`
+> flag under any circumstance — so nothing in a container can reach a Tenstorrent chip or
+> fold anything. Install from the .deb or from source.
 
 ---
 

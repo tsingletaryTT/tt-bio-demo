@@ -35,19 +35,27 @@ from pathlib import Path
 
 from protocol.events import STAGE_BANDS, STAGE_ORDER
 from runner.dump_tap import install_trajectory_tap, remove_trajectory_tap
+from runner.env import weights_cache
 from runner.shaping import frame_event, plddt_to_percent, select_frame_steps
 
 log = logging.getLogger(__name__)
 
-# Where tt-bio's weights and the shared CCD mol library are already cached on
-# this box (the spike confirmed protenix-v2.pt and mols.tar are present here
-# already -- see tests/fixtures/streams/capture_real_fold.py, which reads
-# from and writes to this same path). Not configurable via Folder's own
-# constructor: Folder(device_id, model) is Task 9's fixed dependency surface,
-# and this is tt-bio's own artifact-cache convention (tt_bio.weights.fetch /
-# download_mols are used the same way by every tt-bio model), not something
-# this module's callers should need to know about.
-_WEIGHTS_CACHE = Path.home() / ".boltz"
+# Where tt-bio's weights and the shared CCD mol library are cached. Not
+# configurable via Folder's own constructor: Folder(device_id, model) is
+# Task 9's fixed dependency surface, and this is tt-bio's own artifact-cache
+# convention (tt_bio.weights.fetch / download_mols are used the same way by
+# every tt-bio model), not something this module's callers should need to
+# know about.
+#
+# Resolved through runner.env.weights_cache() -- $TT_BIO_CACHE, then
+# $BOLTZ_CACHE, then ~/.boltz, exactly as tt-bio resolves it. This line used
+# to be `Path.home() / ".boltz"` with a comment saying honouring TT_BIO_CACHE
+# was "a deliberate, separate change" because preflight.py and doctor.sh
+# checked the path too and would have to move with it. They have now all
+# moved together.
+#
+# Called in load(), not at import: the daemon's workers set up their own
+# environment before folding, and a value frozen at import time would miss it.
 
 # Every successful fold writes one uuid-named .cif here (see _run_fold below)
 # and nothing has ever deleted one -- flagged during Task 5b as a booth-
@@ -201,18 +209,25 @@ class Folder:
         # load() never succeeded" contract stay true after a *failed* load()
         # too, not just a load() that was never attempted.
         try:
-            _WEIGHTS_CACHE.mkdir(parents=True, exist_ok=True)
-            # root=_WEIGHTS_CACHE, not the registry's own default: today they
-            # are the same directory (weights.cache_root() is ~/.boltz absent
-            # TT_BIO_CACHE), and passing it explicitly keeps this call and the
-            # download_mols() below agreeing on ONE cache no matter what the
-            # environment says. Honouring TT_BIO_CACHE is a deliberate,
-            # separate change -- preflight.py and doctor.sh check this path too
-            # and would have to move with it.
-            ckpt_path = weights.fetch("protenix-v2", root=_WEIGHTS_CACHE)
+            cache = weights_cache()
+            cache.mkdir(parents=True, exist_ok=True)
+            # root=cache, not the registry's own default: passing it
+            # explicitly keeps this call and the download_mols() below
+            # agreeing on ONE cache.
+            #
+            # Agreement with what PREFLIGHT checked is not established here --
+            # it is established by the daemon, which pins its --weights into
+            # the environment this resolver reads (runner/env.py's
+            # runner_environ, weights_dir=). Said plainly because an earlier
+            # version of this comment claimed the agreement outright, and it
+            # was only true while --weights was left at its default: the flag
+            # reached preflight and nothing else, so a booth started with an
+            # explicit --weights preflighted one directory and folded from
+            # another.
+            ckpt_path = weights.fetch("protenix-v2", root=cache)
             self._model_obj = Protenix.load_from_checkpoint(
                 str(ckpt_path), device=self._device)
-            self._mol_dir = download_mols(_WEIGHTS_CACHE)
+            self._mol_dir = download_mols(cache)
         except Exception:
             from tt_bio.tenstorrent import cleanup
             try:

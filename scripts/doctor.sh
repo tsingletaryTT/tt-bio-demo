@@ -74,8 +74,28 @@ doctor_install_mode() {
     fi
 }
 
+# Where the weights live, derived exactly as tt-bio derives it:
+# $TT_BIO_CACHE, then $BOLTZ_CACHE, then ~/.boltz. This used to read only
+# $BOLTZ_CACHE, so on a booth whose cache had been relocated with the variable
+# tt-bio actually documents, the check that exists to find missing weights
+# looked in the directory the operator had moved away from -- reporting a
+# working booth as broken, or a broken one as fine, depending which way round
+# it was. runner/env.py's weights_cache() is the same rule in python; both
+# sides are pinned to tt-bio's own cache_root() by tests.
+#
+# `:-` and not `-`: an EMPTY variable falls through to the next one. That is
+# not pedantry -- `TT_BIO_CACHE=` is what an exported-but-unset variable looks
+# like in a systemd unit or a sourced env file, and treating it as a path
+# resolves the cache to whatever directory the doctor happened to run from.
+#
+# The rule itself lives in scripts/weights-cache.sh so the shell scripts and
+# the postinst cannot drift apart. Sourced relative to THIS script, which is
+# right for both a checkout and /opt/tt-bio-demo/scripts/.
+# shellcheck source=weights-cache.sh
+. "$(dirname "${BASH_SOURCE[0]:-$0}")/weights-cache.sh"
+
 doctor_weights_cache() {
-    printf '%s\n' "${BOLTZ_CACHE:-${HOME:-/root}/.boltz}"
+    tt_bio_demo_weights_cache
 }
 
 # ── reporting ───────────────────────────────────────────────────────────────
@@ -199,38 +219,140 @@ doctor_check_tt_bio_version() {
 
 # Weights: present, and NOT TRUNCATED.
 #
-# Size, not existence. The realistic failure is an interrupted download that
-# left a short or empty file, and an existence check reports that as healthy
-# -- which is how a booth gets to a venue and cannot fold.
+# TWO LAYERS, and which one runs is decided by whether tt-bio can be asked.
+#
+#   1. TT-BIO'S OWN VERIFIER, whenever venv-runner exists. AUTHORITATIVE, and
+#      the only layer that can be right about two things the filesystem cannot
+#      see: a file of the correct size that is nevertheless a corrupt archive,
+#      and a single artifact deliberately RELOCATED with tt-bio's per-artifact
+#      overrides ($PROTENIX_CKPT / $TT_BIO_PROTENIX_V2, $TT_BIO_MOLS). It
+#      reports where it actually found each one, so the doctor names the real
+#      path rather than the one it assumed.
+#      NO DEVICE IS OPENED and torch is never imported -- tt_bio.weights pulls
+#      in os/shutil/pathlib and nothing else, measured at 0.13 s -- so this
+#      stays safe to run while somebody else has the cards.
+#
+#   2. FILESYSTEM, as the fallback. The only thing available before
+#      venv-runner is built, which is exactly when an operator most needs this
+#      to say something useful. Size and not existence for the checkpoint,
+#      because the realistic failure is an interrupted download that left a
+#      short file and an existence check calls that healthy. For the molecule
+#      library it is the EXTRACTED directory that matters, not the mols.tar it
+#      came from -- tt-bio discards that archive once unpacked and `tt-bio
+#      weights --prune` deletes it, so requiring the tar failed booths that
+#      could fold perfectly well.
+#
+# Layer 1 REPLACES layer 2 rather than adding to it. An earlier version ran
+# both and let layer 2 only ever escalate, so a relocated artifact was
+# reported missing from a cache it had deliberately been moved out of -- the
+# same false alarm as the mols.tar one, one layer up.
+doctor_ask_tt_bio_about_weights() {
+    # Prints "<key> <state> <path>" per artifact, or nothing at all if it
+    # cannot ask. A failure to ask is swallowed on purpose: an unaskable
+    # tt-bio is not itself a weights fault, and the caller falls back.
+    _rn="$1"
+    _cache="$2"
+    [ -x "$_rn" ] || return 1
+    "$_rn" - "$_cache" <<'TT_BIO_STATUS_EOF' 2>/dev/null
+import sys
+try:
+    from tt_bio import weights
+except Exception:
+    raise SystemExit(1)
+root = sys.argv[1]
+for art in weights.artifacts_for("protenix-v2"):
+    st = weights.status(art.key, root)
+    # resolve() honours the per-artifact overrides that status()'s own path
+    # does not for a derived row, so an operator who moved just the molecule
+    # library still sees where it really is.
+    path = st.path or weights.resolve(art.key, root)
+    print(f"{art.key} {st.state} {path}")
+TT_BIO_STATUS_EOF
+}
+
+# The fallback. Split out so the two layers are separately readable and
+# separately testable, rather than one function with a mode flag.
+doctor_check_weights_from_the_filesystem() {
+    _c="$1"
+    _rc=0
+
+    # The real checkpoint is 1.86 GB; 1 GB is a floor no truncation this
+    # matters for would pass.
+    _ckpt="$_c/protenix-v2.pt"
+    if [ ! -f "$_ckpt" ]; then
+        fail "protenix-v2.pt is missing from $_c"
+        _rc=1
+    else
+        _sz=$(stat -c %s "$_ckpt" 2>/dev/null || echo 0)
+        if [ "$_sz" -lt 1000000000 ]; then
+            fail "protenix-v2.pt is only $_sz bytes -- truncated download"
+            _rc=1
+        else
+            ok "protenix-v2.pt ($((_sz / 1000000)) MB)"
+        fi
+    fi
+
+    _mols="$_c/mols"
+    if [ -d "$_mols" ] && [ -n "$(find "$_mols" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
+        ok "mols/ (CCD molecule library, unpacked)"
+    elif [ -f "$_c/mols.tar" ]; then
+        fail "mols.tar is present but was never unpacked to $_mols"
+        hint "the first fold would unpack it; the doctor says so here because"
+        hint "a venue is the wrong place to discover a 20-second delay"
+        _rc=1
+    else
+        fail "the CCD molecule library is missing from $_c"
+        _rc=1
+    fi
+    return $_rc
+}
+
 doctor_check_weights() {
+    _p="$(doctor_prefix)"
     _c="$(doctor_weights_cache)"
     _rc=0
-    # name:minimum-plausible-bytes. The real files are 1.86 GB and 1.85 GB;
-    # 1 GB is a floor that no truncation this matters for would pass.
-    for spec in "protenix-v2.pt:1000000000" "mols.tar:1000000000"; do
-        _name="${spec%%:*}"
-        _min="${spec##*:}"
-        _f="$_c/$_name"
-        if [ ! -f "$_f" ]; then
-            fail "$_name is missing from $_c"
-            _rc=1
-            continue
-        fi
-        _sz=$(stat -c %s "$_f" 2>/dev/null || echo 0)
-        if [ "$_sz" -lt "$_min" ]; then
-            fail "$_name is only $_sz bytes -- truncated download"
-            _rc=1
-        else
-            ok "$_name ($((_sz / 1000000)) MB)"
-        fi
-    done
+
+    _verdicts="$(doctor_ask_tt_bio_about_weights \
+                     "$_p/.venvs/venv-runner/bin/python3" "$_c")"
+
+    if [ -n "$_verdicts" ]; then
+        while read -r _key _state _path; do
+            [ -n "$_key" ] || continue
+            case "$_state" in
+                present)
+                    ok "$_key ($_path)"
+                    ;;
+                corrupt|partial)
+                    fail "$_key is $_state at $_path -- tt-bio cannot load it"
+                    hint "a file of the right size can still be a bad archive"
+                    _rc=1
+                    ;;
+                *)
+                    fail "$_key is missing ($_path)"
+                    _rc=1
+                    ;;
+            esac
+        done <<VERDICT_EOF
+$_verdicts
+VERDICT_EOF
+    else
+        doctor_check_weights_from_the_filesystem "$_c" || _rc=1
+    fi
+
     if [ "$_rc" != "0" ]; then
+        # THE COMMAND, always. This hint used to read "they download on the
+        # first fold, or fetch them ahead of time" and named nothing runnable,
+        # so a user had to go and discover `tt-bio weights --download` for
+        # themselves -- and reported it. A hint without a command is not a
+        # hint.
         if [ "$(doctor_install_mode)" = "package" ]; then
             hint "sudo dpkg-reconfigure tt-bio-demo-weights"
+            hint "or, directly:"
         else
-            hint "they download on the first fold, or fetch them ahead of time;"
-            hint "about 3.7 GB total, and THE VENUE IS OFFLINE"
+            hint "fetch them with:"
         fi
+        hint "$_p/.venvs/venv-runner/bin/tt-bio weights --download protenix-v2"
+        hint "about 3.7 GB, resumable, and THE VENUE IS OFFLINE -- do it first"
     fi
     return $_rc
 }

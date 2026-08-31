@@ -456,7 +456,8 @@ systemctl --user <b>restart</b> tt-bio-demo</pre>
     <div><span></span><b>Four chips present.</b> <code>tt-smi -s</code> lists four entries
          across two <code>board_id</code>s. Three means one did not come up.</div>
     <div><span></span><b>Weights on disk.</b> The venue is offline — nothing downloads at the
-         booth. <code>dpkg -l tt-bio-demo-weights</code>.</div>
+         booth. <code>doctor.sh</code> checks they are present <i>and</i> intact;
+         <code>dpkg -l</code> only says a package is installed.</div>
     <div><span></span><b>Fold each target once.</b> This is the one that gets skipped. It warms
          the kernel cache so no visitor watches a cold compile.</div>
     <div><span></span><b>Fullscreen.</b> <kbd style="font-size:8px;padding:1px 4px">Ctrl</kbd>+<kbd style="font-size:8px;padding:1px 4px">F</kbd>.

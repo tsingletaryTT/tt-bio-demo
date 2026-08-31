@@ -113,7 +113,11 @@
 #                                 anything with more than one chip.
 #
 #   --weights DIR                 tt-bio's weights cache. (TT_BIO_DEMO_WEIGHTS)
-#                                 Default: ~/.boltz
+#                                 Default: $TT_BIO_CACHE, else
+#                                 $BOLTZ_CACHE, else ~/.boltz --
+#                                 tt-bio's own order. Whatever is used
+#                                 is pinned for the folding workers
+#                                 too, not just the readiness check.
 #   --log-budget-gb N             Forwarded to the daemon's own
 #                                 --log-budget-gb (tt-metal log containment;
 #                                 see runner/env.py). Default: 2.0
@@ -142,7 +146,14 @@ RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}/tt-bio-demo"
 
 SOCKET="${TT_BIO_DEMO_SOCKET:-${RUNTIME_DIR}/runner.sock}"
 LOG_ROOT="${TT_BIO_DEMO_LOG_ROOT:-${RUNTIME_DIR}/logs}"
-WEIGHTS="${TT_BIO_DEMO_WEIGHTS:-${HOME}/.boltz}"
+# The DEFAULT comes from the shared resolver ($TT_BIO_CACHE, then
+# $BOLTZ_CACHE, then ~/.boltz -- tt-bio's own order). --weights and
+# TT_BIO_DEMO_WEIGHTS still win; this only fixes what they fall back to,
+# which used to ignore both variables and hand the daemon a directory the
+# operator had moved away from.
+# shellcheck source=weights-cache.sh
+. "${SCRIPT_DIR}/weights-cache.sh"
+WEIGHTS="${TT_BIO_DEMO_WEIGHTS:-$(tt_bio_demo_weights_cache)}"
 MANIFEST="${TT_BIO_DEMO_PLAYLIST:-${REPO_ROOT}/playlist/manifest.yaml}"
 TARGETS="${TT_BIO_DEMO_TARGETS-}"   # empty == every target in the manifest
 DEVICES="${TT_BIO_DEMO_DEVICES-}"   # empty == every chip the daemon detects

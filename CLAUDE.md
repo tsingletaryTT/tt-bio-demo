@@ -951,6 +951,210 @@ Suite green at 1,479. Both changes confirmed in one photograph of the running
 booth: four cells with no flag, DNA drawn as a tube by the cartoon, DHFR as
 ribbons and arrows, FKBP12 with its SB3 ligand as sticks, albumin mid-collapse.
 
+### The weights were never a checked box (2026-08-31)
+
+Reported by a user who got the booth running: *"The docs were not quite right
+- I had to discover a model downloading command, the doctor.sh didn't know
+about -- but once I found that it works great!"* The ask that followed was
+that installing **from .deb or source** should leave every box ticked.
+
+Three separate defects were behind one report, and only the first was the one
+being complained about.
+
+**1. The source install never fetched weights at all.** `scripts/setup-venvs.sh`
+downloads torch, ttnn and a vendored SFPI toolchain and then stops; a grep for
+`weight|boltz|mols|protenix` across it returned nothing. The README's Quick
+start was `setup-venvs.sh` then `run-demo.sh`. So a checkout ended at a box
+that looked finished and could not fold -- the .deb had covered this since
+Phase 3b behind a debconf question, and a git clone had nothing. It fetches
+by default now (`--skip-weights` opts out, implied by `--skip-runner`), and a
+failed download is deliberately **not** fatal: the venvs are the expensive
+half and they are fine, so it warns and prints the command to resume with.
+
+**2. `doctor.sh` named no command.** In source mode the entire hint was "they
+download on the first fold, or fetch them ahead of time". That is the sentence
+that cost the user their afternoon. Both modes now print
+`tt-bio weights --download protenix-v2`; the packaged install still leads with
+`dpkg-reconfigure`, because that is where a .deb's consent lives.
+
+**3. The doctor FAILED a booth that could fold.** It required `mols.tar` at
+>= 1 GB. tt-bio discards that archive once unpacked -- its own `status()` calls
+the archive being gone "harmless for mols once the library is unpacked" -- and
+`tt-bio weights --prune` deletes it outright. A fold loads `<cache>/mols`. The
+check is layered now: filesystem presence and a size floor always (the only
+thing available before venv-runner exists, which is when the doctor matters
+most), plus tt-bio's own verifier when it can be asked, which is the only
+thing that can tell a complete 1.8 GB file from a truncated one.
+
+**A fourth, found while fixing them: `preflight` never checked `mols` at all.**
+`REQUIRED_WEIGHTS = ("protenix-v2.pt",)` -- the checkpoint only -- so a cache
+with the checkpoint and no molecules printed `preflight: ok` and then died on
+the first fold. It is derived from tt-bio's registry now
+(`weights.artifacts_for("protenix-v2")`), so a release adding a third artifact
+is picked up instead of surfacing as a fold on a machine preflight called
+ready.
+
+**Four callers, four different answers, and none of them right.** The cleanup
+Taylor asked for on top: `runner/folder.py` hardcoded `Path.home()/".boltz"`,
+`run-demo.sh` read `$TT_BIO_DEMO_WEIGHTS`, `doctor.sh` and the postinst read
+`$BOLTZ_CACHE` -- and **none read `$TT_BIO_CACHE`**, the variable tt-bio
+prefers and documents as relocating the whole cache. The postinst re-derived
+it a second time in its python half, so a host using `$TT_BIO_CACHE` would
+have downloaded 3.7 GB into a directory neither a fold nor the doctor would
+look in. There are two derivations now, one per language
+(`runner/env.py:weights_cache`, `scripts/weights-cache.sh`), pinned to each
+other behaviourally and both pinned to tt-bio's own `cache_root()`.
+`folder.py`'s own comment had said honouring `TT_BIO_CACHE` was "a deliberate,
+separate change" needing preflight and the doctor to move with it; they moved.
+
+**What actually prevents a recurrence** is not the fix, it is that printed
+commands are now checked against the tt-bio they are printed for.
+`test_the_weights_postinst_uses_the_tt_bio_api_that_actually_exists` has caught
+a real break twice by parsing the pinned tt-bio's own source; the same idea now
+covers every `tt-bio weights` invocation in the README, INSTALL.md, doctor.sh,
+setup-venvs.sh and the postinst -- real subcommand, real flags, real artifact
+key, and the same model the booth actually folds. Mutations confirm all three:
+a fake model, a fake flag, and a REAL model that is the wrong one (that last is
+caught only by the booth-agreement test). Plus a textual drift guard that lets
+exactly two files in the repo spell `.boltz` or read the cache variables.
+
+**Three instrument lessons, all paid for in this session.**
+
+- **Sourcing a script runs it.** The first draft of
+  `tests/unit/test_setup_venvs_weights.py` sourced `setup-venvs.sh` before the
+  `SETUP_VENVS_LIB_ONLY` guard existed, which pip-installed torch into five
+  pytest tmp directories -- **30 GB, on a box already at 100% disk**. The guard
+  is not a nicety and its comment says so.
+- **A fixture that needs a gigabyte is measuring the wrong thing.** The doctor
+  tests wrote real 1.1 GB and 1.9 GB files to clear the size floor: 15 GB of
+  /tmp across three runs, and 1.9 s per run. The check reads `stat -c %s`, so a
+  **sparse** file exercises it exactly -- 0.09 s and 376 K.
+- **`tail -3` on a mutation run hid a kill.** Reading a truncated mutation
+  summary said one mutation had survived when three tests had actually gone
+  red. This repo's own rule ("never conclude from a truncated view") applied to
+  the instrument checking the tests.
+
+One mutation genuinely survived and is worth keeping. Deleting the
+`--skip-weights` case from the argument parser left the whole file green: the
+flag then fell through to the `*)` catch-all, which exits 1, so the sourced
+shell died **before `fetch_weights` was defined** -- an empty download log for
+a reason with nothing to do with skipping. The test asserts the flag is
+*accepted* now, separately from what it does.
+
+Suite green at **1,522** with hardware skipped (1,165 UI + 357 runner), plus
+the 60 packaging tests including the real Docker container installs, and one
+real Trp-cage fold on chip 0 under a gozer lease -- `folder.py`'s `load()`
+path has no unit coverage, so that fold is the only real proof the cache
+change works.
+
+**Cut as 0.5.5, and the bump found one more instance of the same bug.**
+`test_the_handout_pdf_was_rebuilt_for_this_version` couples a version bump to
+re-rendering the printed booth handout, so `docs/onepager/build.sh` ran -- and
+looking at the result (the build script says to, and this project's own rule
+is that an artifact nobody looked at is not verified) turned up page 2's
+BEFORE DOORS OPEN checklist:
+
+    Weights on disk. The venue is offline -- nothing downloads at the
+    booth.  dpkg -l tt-bio-demo-weights
+
+`dpkg -l` says a PACKAGE is installed. It does not say the weights are on
+disk, unpacked, or intact -- which is the exact distinction this whole change
+is about -- and it means nothing at all on a source install. On the one
+artefact that gets printed and handed to a stranger. It now points at
+`doctor.sh`, which answers the question actually being asked.
+
+**And the drift guard caught its own author.** The 0.5.5 changelog stanza
+describes the fix, so it contains the string `$TT_BIO_CACHE` -- and
+`test_nothing_outside_the_resolvers_reads_the_cache_variables` failed on it.
+Correct behaviour from a guard whose scope was wrong: `debian/changelog` has
+no file extension, so the prose filter never saw it. Debian metadata is
+excluded by EXACT PATH rather than by a `debian/` prefix, because the
+maintainer scripts in that directory are real code and one of them is a
+caller this test exists for -- with a further test pinning that the exclusion
+list can never grow to cover a maintainer script. Verified: adding the
+weights postinst to it turns that test red.
+
+**There is no Docker install path, and INSTALL.md now says so.**
+`scripts/deb-container.sh` is package-install testing only and refuses to pass
+`--device` under any circumstance, so nothing in a container can reach a chip.
+Better to state that than to let the question keep being asked.
+
+
+### What the review found, and the shape it kept finding it in (2026-08-31)
+
+`/code-review` on the branch above returned nine findings. All nine were real
+-- verified individually before anything was changed, which is the right order
+and also how the one piece of mis-framing surfaced.
+
+**Seven of them are one mistake wearing different clothes: a check that knows
+LESS than the thing it is checking.** That is the same mistake the branch was
+written to fix, reintroduced by the fix.
+
+* `preflight` and `doctor.sh` built paths from `Artifact.dest()`. tt-bio lets
+  an operator relocate ONE artifact (`$PROTENIX_CKPT` / `$TT_BIO_PROTENIX_V2`,
+  `$TT_BIO_MOLS`) and only `weights.resolve()` honours that. So a host where
+  every fold works was told its checkpoint was missing -- and since preflight
+  runs ONCE and the daemon never retries it, the booth sits on "preparing"
+  forever. Exactly the false-alarm class the branch removed, one layer down.
+* The doctor's layer 2 could only ESCALATE -- it set failures and cleared
+  none -- so the comment saying "its verdict wins where it has one" was false
+  in the only direction that matters. tt-bio's verdict is now authoritative
+  and the filesystem layer is the fallback, not a co-signer.
+* **A guard I added blocked a state the fold used to repair itself.**
+  Requiring the EXTRACTED `mols/` looked obviously right; `Folder.load()`
+  calls `download_mols(cache)`, which unpacks the archive on the spot. So a
+  cache holding `mols.tar` and no directory used to start and fix itself in
+  twenty seconds, and now the daemon never started. One of my own tests
+  asserted the wrong behaviour outright; it is replaced by the corrected
+  expectation with the reasoning left in place, because the wrong version was
+  plausible enough to write once. The doctor still reports that state -- a
+  pre-venue check and a start-or-refuse gate should not answer this the same
+  way.
+* `setup-venvs.sh` printed one cache and fetched into another: the summary
+  used the resolver, the fetch passed no `--cache` and let tt-bio re-derive.
+  They agree only while `$HOME` does, and the documented invocation is `sudo
+  scripts/setup-venvs.sh`. Two derivations again, in the change whose whole
+  point was to have one.
+* The shell resolver's `${HOME:-/root}` did not match `Path.home()`, which
+  consults passwd. **My own cross-language test could not see it, because
+  every row in its matrix set HOME.** A row that does not, now exists.
+* `debian/helpers.sh` recursed 1000 frames deep whenever the sourced resolver
+  was readable but defined nothing -- an empty file from a partially unpacked
+  package, or an upstream rename. Inside a `configure` script that breaks a
+  whole dpkg run. The sourced file defines a DIFFERENT name now
+  (`..._impl`), and its presence is what the wrapper checks before trusting
+  the file. My comment had called the self-redefinition "deliberate", which
+  it was; what it was not was safe.
+* And the new function was inserted between an existing comment and the
+  function that comment documents.
+
+**One finding was right about the defect and wrong about the cause, which is
+worth separating.** `--weights` reaches preflight and not the fold -- but
+`folder.py` hardcoded `Path.home()/".boltz"` BEFORE this branch too, so the
+flag never reached a fold in the first place. Not a regression; a pre-existing
+hole the branch made newly worth fixing, since there is now one place to fix
+it. What WAS new was my comment claiming the agreement outright. The daemon
+now pins `--weights` into the worker environment (`runner_environ(...,
+weights_dir=)`), using `BOLTZ_CACHE` rather than `TT_BIO_CACHE` because the
+flag means the flat artifact cache and does not claim to move the Hugging
+Face hub cache.
+
+**A mutation survived on the fix for that one, and the reason is the lesson.**
+`test_an_operators_own_cache_variable_is_not_overwritten` put `TT_BIO_CACHE`
+in the base and compared RESOLVED paths -- but the pin writes `BOLTZ_CACHE`,
+which `TT_BIO_CACHE` outranks, so making the pin overwrite unconditionally
+changed nothing the test looked at. **A test for "this value is preserved"
+has to read the variable that gets written, not the one that wins.** It
+asserts on the raw `BOLTZ_CACHE` now, plus that no lower-priority answer is
+smuggled in beside an operator's own.
+
+Six other mutations, six red, control green. Suite **1,530** with hardware
+skipped, 64 packaging tests including the real Docker installs, and the real
+Trp-cage fold re-run on chip 0 under a lease after `folder.py` and
+`daemon.py` changed -- the load path still has no unit coverage, so that fold
+remains the only proof.
+
+
 ## Conventions
 
 - **Keep the README's screenshots current.** The README claims every image on it is the
