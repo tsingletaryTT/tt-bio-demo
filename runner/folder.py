@@ -213,8 +213,17 @@ class Folder:
             cache.mkdir(parents=True, exist_ok=True)
             # root=cache, not the registry's own default: passing it
             # explicitly keeps this call and the download_mols() below
-            # agreeing on ONE cache, and keeps both agreeing with what
-            # preflight.py checked and what scripts/doctor.sh reported.
+            # agreeing on ONE cache.
+            #
+            # Agreement with what PREFLIGHT checked is not established here --
+            # it is established by the daemon, which pins its --weights into
+            # the environment this resolver reads (runner/env.py's
+            # runner_environ, weights_dir=). Said plainly because an earlier
+            # version of this comment claimed the agreement outright, and it
+            # was only true while --weights was left at its default: the flag
+            # reached preflight and nothing else, so a booth started with an
+            # explicit --weights preflighted one directory and folded from
+            # another.
             ckpt_path = weights.fetch("protenix-v2", root=cache)
             self._model_obj = Protenix.load_from_checkpoint(
                 str(ckpt_path), device=self._device)

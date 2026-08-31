@@ -142,3 +142,24 @@ def test_the_header_comment_documents_it_too():
     this project has had it go stale before (run-demo.sh shipped a flag
     invisibly for exactly this reason)."""
     assert "--skip-weights" in SETUP.read_text().split("set -euo pipefail")[0]
+
+
+def test_the_fetch_is_told_which_cache_to_use(tmp_path):
+    """FOUND IN REVIEW. The summary prints `weights: $(weights_cache_dir)` but
+    the fetch ran with no --cache, letting tt-bio re-derive the root from its
+    own environment. Two independent derivations again -- the exact defect
+    this branch exists to end.
+
+    They differ whenever HOME differs between the two evaluations, and the
+    documented way to run this is `sudo scripts/setup-venvs.sh` (doctor.sh
+    prints that; so does INSTALL.md). Under sudo the 3.7 GB can land in root's
+    home while the user-service booth loads from the operator's -- a download
+    that reports success and leaves the booth unable to fold.
+    """
+    prefix = _stub_prefix(tmp_path)
+    cache = tmp_path / "chosen-cache"
+    r = _run(tmp_path, "fetch_weights", "--prefix", str(prefix),
+             TT_BIO_CACHE=str(cache))
+    log = _argv_log(tmp_path)
+    assert "--cache" in log, f"the fetch did not pin the cache:\n{log}\n{r.stdout}"
+    assert str(cache) in log, f"the fetch used a different cache:\n{log}"

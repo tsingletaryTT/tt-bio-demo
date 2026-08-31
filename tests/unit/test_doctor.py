@@ -317,3 +317,36 @@ def test_an_empty_cache_variable_falls_through_rather_than_meaning_cwd(tmp_path)
     check at whatever directory the doctor was run from."""
     r = _sh("doctor_weights_cache", TT_BIO_CACHE="", BOLTZ_CACHE="", HOME="/home/somebody")
     assert r.stdout.strip() == "/home/somebody/.boltz", r.stdout
+
+
+def test_tt_bios_present_verdict_clears_a_path_the_doctor_cannot_see(tmp_path):
+    """FOUND IN REVIEW. Layer 2 could only ever ESCALATE: it set a failure but
+    nothing cleared one, so the comment claiming "its verdict wins where it
+    has one" was false in the direction that matters.
+
+    tt-bio lets an operator relocate a SINGLE artifact -- $PROTENIX_CKPT /
+    $TT_BIO_PROTENIX_V2 for the checkpoint, $TT_BIO_MOLS for the molecule
+    library -- and then `tt-bio weights` prints `present [$PROTENIX_CKPT]` and
+    every fold works. The doctor, looking only at `<cache>/protenix-v2.pt`,
+    reported it missing and exited 1. That is the same false alarm as the
+    mols.tar one this change set out to remove, one layer up.
+    """
+    prefix = tmp_path / "prefix"
+    (prefix / "ui").mkdir(parents=True)
+    (prefix / "tests").mkdir()
+    stub = prefix / ".venvs" / "venv-runner" / "bin"
+    stub.mkdir(parents=True)
+    py = stub / "python3"
+    py.write_text("#!/bin/sh\n"
+                  "echo 'protenix-v2 present /big-disk/protenix-v2.pt'\n"
+                  "echo 'mols present /big-disk/mols'\n")
+    py.chmod(0o755)
+
+    cache = tmp_path / ".boltz"       # deliberately EMPTY: nothing is here
+    cache.mkdir()
+    r = _sh("doctor_check_weights", BOLTZ_CACHE=str(cache), TT_BIO_CACHE="",
+            TT_BIO_DEMO_PREFIX=str(prefix))
+    out = r.stdout + r.stderr
+    assert r.returncode == 0, f"a relocated but present artifact failed:\n{out}"
+    assert "/big-disk/protenix-v2.pt" in out, \
+        f"the doctor should report where tt-bio actually found it:\n{out}"

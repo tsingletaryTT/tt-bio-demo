@@ -136,8 +136,8 @@ Usage: $(basename "$0") [--prefix PATH] [--force] [--skip-runner]
 Creates <prefix>/venv-ui and <prefix>/venv-runner. Default prefix:
 ${REPO_ROOT}/.venvs
 
---skip-weights skips the ~3.7 GB model-weight download. It is on by
-default because a booth without weights cannot fold; the download is
+The model weights are DOWNLOADED BY DEFAULT (~3.7 GB), because a booth
+without them cannot fold; pass --skip-weights to opt out. The download is
 resumable and re-running this script is a cheap no-op once they are present.
 
 --dev also installs pytest into venv-runner, for running this phase's own
@@ -940,7 +940,16 @@ weights_cache_dir() {
 # act on. So: warn, print the command, carry on.
 fetch_weights() {
   local tt_bio="${VENV_RUNNER}/bin/tt-bio"
-  local cmd="${tt_bio} weights --download protenix-v2"
+  # --cache is PINNED, not left to tt-bio's own derivation. The summary below
+  # prints this same value, and without --cache the two were independent
+  # derivations that agree only while $HOME does -- which `sudo
+  # scripts/setup-venvs.sh` (what doctor.sh and INSTALL.md both tell you to
+  # run) is precisely the case that breaks. The 3.7 GB would land in root's
+  # home while the user-service booth loads from the operator's, and the
+  # download would report success.
+  local cache
+  cache="$(weights_cache_dir)"
+  local cmd="${tt_bio} weights --download protenix-v2 --cache ${cache}"
 
   if [[ "$SKIP_RUNNER" -eq 1 ]]; then
     # Nothing to fetch WITH: the fetch runs through venv-runner's own tt-bio.
@@ -966,8 +975,9 @@ fetch_weights() {
   fi
 
   log "weights: fetching the protenix-v2 checkpoint and CCD molecule library"
+  log "weights: into ${cache}"
   log "weights: ~3.7 GB, resumable, verified — a no-op if already present"
-  if "$tt_bio" weights --download protenix-v2; then
+  if "$tt_bio" weights --download protenix-v2 --cache "$cache"; then
     WEIGHTS_STATUS="present and verified"
     log "weights: present and verified — the booth can fold offline"
   else

@@ -1080,6 +1080,81 @@ weights postinst to it turns that test red.
 Better to state that than to let the question keep being asked.
 
 
+### What the review found, and the shape it kept finding it in (2026-08-31)
+
+`/code-review` on the branch above returned nine findings. All nine were real
+-- verified individually before anything was changed, which is the right order
+and also how the one piece of mis-framing surfaced.
+
+**Seven of them are one mistake wearing different clothes: a check that knows
+LESS than the thing it is checking.** That is the same mistake the branch was
+written to fix, reintroduced by the fix.
+
+* `preflight` and `doctor.sh` built paths from `Artifact.dest()`. tt-bio lets
+  an operator relocate ONE artifact (`$PROTENIX_CKPT` / `$TT_BIO_PROTENIX_V2`,
+  `$TT_BIO_MOLS`) and only `weights.resolve()` honours that. So a host where
+  every fold works was told its checkpoint was missing -- and since preflight
+  runs ONCE and the daemon never retries it, the booth sits on "preparing"
+  forever. Exactly the false-alarm class the branch removed, one layer down.
+* The doctor's layer 2 could only ESCALATE -- it set failures and cleared
+  none -- so the comment saying "its verdict wins where it has one" was false
+  in the only direction that matters. tt-bio's verdict is now authoritative
+  and the filesystem layer is the fallback, not a co-signer.
+* **A guard I added blocked a state the fold used to repair itself.**
+  Requiring the EXTRACTED `mols/` looked obviously right; `Folder.load()`
+  calls `download_mols(cache)`, which unpacks the archive on the spot. So a
+  cache holding `mols.tar` and no directory used to start and fix itself in
+  twenty seconds, and now the daemon never started. One of my own tests
+  asserted the wrong behaviour outright; it is replaced by the corrected
+  expectation with the reasoning left in place, because the wrong version was
+  plausible enough to write once. The doctor still reports that state -- a
+  pre-venue check and a start-or-refuse gate should not answer this the same
+  way.
+* `setup-venvs.sh` printed one cache and fetched into another: the summary
+  used the resolver, the fetch passed no `--cache` and let tt-bio re-derive.
+  They agree only while `$HOME` does, and the documented invocation is `sudo
+  scripts/setup-venvs.sh`. Two derivations again, in the change whose whole
+  point was to have one.
+* The shell resolver's `${HOME:-/root}` did not match `Path.home()`, which
+  consults passwd. **My own cross-language test could not see it, because
+  every row in its matrix set HOME.** A row that does not, now exists.
+* `debian/helpers.sh` recursed 1000 frames deep whenever the sourced resolver
+  was readable but defined nothing -- an empty file from a partially unpacked
+  package, or an upstream rename. Inside a `configure` script that breaks a
+  whole dpkg run. The sourced file defines a DIFFERENT name now
+  (`..._impl`), and its presence is what the wrapper checks before trusting
+  the file. My comment had called the self-redefinition "deliberate", which
+  it was; what it was not was safe.
+* And the new function was inserted between an existing comment and the
+  function that comment documents.
+
+**One finding was right about the defect and wrong about the cause, which is
+worth separating.** `--weights` reaches preflight and not the fold -- but
+`folder.py` hardcoded `Path.home()/".boltz"` BEFORE this branch too, so the
+flag never reached a fold in the first place. Not a regression; a pre-existing
+hole the branch made newly worth fixing, since there is now one place to fix
+it. What WAS new was my comment claiming the agreement outright. The daemon
+now pins `--weights` into the worker environment (`runner_environ(...,
+weights_dir=)`), using `BOLTZ_CACHE` rather than `TT_BIO_CACHE` because the
+flag means the flat artifact cache and does not claim to move the Hugging
+Face hub cache.
+
+**A mutation survived on the fix for that one, and the reason is the lesson.**
+`test_an_operators_own_cache_variable_is_not_overwritten` put `TT_BIO_CACHE`
+in the base and compared RESOLVED paths -- but the pin writes `BOLTZ_CACHE`,
+which `TT_BIO_CACHE` outranks, so making the pin overwrite unconditionally
+changed nothing the test looked at. **A test for "this value is preserved"
+has to read the variable that gets written, not the one that wins.** It
+asserts on the raw `BOLTZ_CACHE` now, plus that no lower-priority answer is
+smuggled in beside an operator's own.
+
+Six other mutations, six red, control green. Suite **1,530** with hardware
+skipped, 64 packaging tests including the real Docker installs, and the real
+Trp-cage fold re-run on chip 0 under a lease after `folder.py` and
+`daemon.py` changed -- the load path still has no unit coverage, so that fold
+remains the only proof.
+
+
 ## Conventions
 
 - **Keep the README's screenshots current.** The README claims every image on it is the

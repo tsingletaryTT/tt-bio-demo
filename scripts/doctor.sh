@@ -219,30 +219,37 @@ doctor_check_tt_bio_version() {
 
 # Weights: present, and NOT TRUNCATED.
 #
-# Two layers, because the cheap one is the only one available at the moment an
-# operator most needs this -- before venv-runner is built.
+# TWO LAYERS, and which one runs is decided by whether tt-bio can be asked.
 #
-#   1. FILESYSTEM. Size, not existence, for the checkpoint: the realistic
-#      failure is an interrupted download that left a short or empty file, and
-#      an existence check reports that as healthy. For the molecule library it
-#      is the EXTRACTED directory that matters, not the mols.tar it came from
-#      -- tt-bio discards that archive once unpacked and `tt-bio weights
-#      --prune` deletes it, so requiring the tar failed booths that could fold
-#      perfectly well. A tar with no unpacked directory is the opposite case
-#      (an install interrupted between download and extraction) and is not
-#      ready.
-#
-#   2. TT-BIO'S OWN VERIFIER, when venv-runner exists. A file can be the right
-#      size and still be corrupt; only reading the archive settles it, and
-#      tt-bio already does exactly that (`weights.status`, which is also what
-#      decides whether a fold re-fetches). Its verdict wins where it has one.
+#   1. TT-BIO'S OWN VERIFIER, whenever venv-runner exists. AUTHORITATIVE, and
+#      the only layer that can be right about two things the filesystem cannot
+#      see: a file of the correct size that is nevertheless a corrupt archive,
+#      and a single artifact deliberately RELOCATED with tt-bio's per-artifact
+#      overrides ($PROTENIX_CKPT / $TT_BIO_PROTENIX_V2, $TT_BIO_MOLS). It
+#      reports where it actually found each one, so the doctor names the real
+#      path rather than the one it assumed.
 #      NO DEVICE IS OPENED and torch is never imported -- tt_bio.weights pulls
 #      in os/shutil/pathlib and nothing else, measured at 0.13 s -- so this
 #      stays safe to run while somebody else has the cards.
+#
+#   2. FILESYSTEM, as the fallback. The only thing available before
+#      venv-runner is built, which is exactly when an operator most needs this
+#      to say something useful. Size and not existence for the checkpoint,
+#      because the realistic failure is an interrupted download that left a
+#      short file and an existence check calls that healthy. For the molecule
+#      library it is the EXTRACTED directory that matters, not the mols.tar it
+#      came from -- tt-bio discards that archive once unpacked and `tt-bio
+#      weights --prune` deletes it, so requiring the tar failed booths that
+#      could fold perfectly well.
+#
+# Layer 1 REPLACES layer 2 rather than adding to it. An earlier version ran
+# both and let layer 2 only ever escalate, so a relocated artifact was
+# reported missing from a cache it had deliberately been moved out of -- the
+# same false alarm as the mols.tar one, one layer up.
 doctor_ask_tt_bio_about_weights() {
-    # Prints "<key> <state>" per artifact, or nothing at all if it cannot ask.
-    # A failure to ask is swallowed on purpose: an unaskable tt-bio is not
-    # itself a weights fault, and layer 1 has already reported anything real.
+    # Prints "<key> <state> <path>" per artifact, or nothing at all if it
+    # cannot ask. A failure to ask is swallowed on purpose: an unaskable
+    # tt-bio is not itself a weights fault, and the caller falls back.
     _rn="$1"
     _cache="$2"
     [ -x "$_rn" ] || return 1
@@ -254,18 +261,23 @@ except Exception:
     raise SystemExit(1)
 root = sys.argv[1]
 for art in weights.artifacts_for("protenix-v2"):
-    print(f"{art.key} {weights.status(art.key, root).state}")
+    st = weights.status(art.key, root)
+    # resolve() honours the per-artifact overrides that status()'s own path
+    # does not for a derived row, so an operator who moved just the molecule
+    # library still sees where it really is.
+    path = st.path or weights.resolve(art.key, root)
+    print(f"{art.key} {st.state} {path}")
 TT_BIO_STATUS_EOF
 }
 
-doctor_check_weights() {
-    _p="$(doctor_prefix)"
-    _c="$(doctor_weights_cache)"
+# The fallback. Split out so the two layers are separately readable and
+# separately testable, rather than one function with a mode flag.
+doctor_check_weights_from_the_filesystem() {
+    _c="$1"
     _rc=0
 
-    # -- layer 1: the checkpoint, by size ----------------------------------
-    # The real file is 1.86 GB; 1 GB is a floor no truncation this matters
-    # for would pass.
+    # The real checkpoint is 1.86 GB; 1 GB is a floor no truncation this
+    # matters for would pass.
     _ckpt="$_c/protenix-v2.pt"
     if [ ! -f "$_ckpt" ]; then
         fail "protenix-v2.pt is missing from $_c"
@@ -280,41 +292,51 @@ doctor_check_weights() {
         fi
     fi
 
-    # -- layer 1: the molecule library, as an unpacked directory -----------
     _mols="$_c/mols"
     if [ -d "$_mols" ] && [ -n "$(ls -A "$_mols" 2>/dev/null)" ]; then
         ok "mols/ (CCD molecule library, unpacked)"
     elif [ -f "$_c/mols.tar" ]; then
         fail "mols.tar is present but was never unpacked to $_mols"
-        hint "a fold loads the directory, not the archive"
+        hint "the first fold would unpack it; the doctor says so here because"
+        hint "a venue is the wrong place to discover a 20-second delay"
         _rc=1
     else
         fail "the CCD molecule library is missing from $_c"
         _rc=1
     fi
+    return $_rc
+}
 
-    # -- layer 2: what tt-bio itself says, when it can be asked ------------
+doctor_check_weights() {
+    _p="$(doctor_prefix)"
+    _c="$(doctor_weights_cache)"
+    _rc=0
+
     _verdicts="$(doctor_ask_tt_bio_about_weights \
                      "$_p/.venvs/venv-runner/bin/python3" "$_c")"
+
     if [ -n "$_verdicts" ]; then
-        while read -r _key _state; do
+        while read -r _key _state _path; do
             [ -n "$_key" ] || continue
             case "$_state" in
-                present) ;;
+                present)
+                    ok "$_key ($_path)"
+                    ;;
                 corrupt|partial)
-                    fail "$_key is $_state -- tt-bio cannot load it"
+                    fail "$_key is $_state at $_path -- tt-bio cannot load it"
                     hint "a file of the right size can still be a bad archive"
                     _rc=1
                     ;;
-                missing)
-                    # Layer 1 has already said so, and named the actual path
-                    # while doing it. Not repeated; only the status matters.
+                *)
+                    fail "$_key is missing ($_path)"
                     _rc=1
                     ;;
             esac
         done <<VERDICT_EOF
 $_verdicts
 VERDICT_EOF
+    else
+        doctor_check_weights_from_the_filesystem "$_c" || _rc=1
     fi
 
     if [ "$_rc" != "0" ]; then

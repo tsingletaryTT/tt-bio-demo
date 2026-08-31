@@ -54,7 +54,10 @@ _FALLBACK_WEIGHTS = (("protenix-v2", "protenix-v2.pt"), ("mols", "mols"))
 
 
 def required_weights(cache):
-    """(label, path) pairs the booth cannot fold without.
+    """(label, paths) pairs the booth cannot fold without.
+
+    `paths` is every location that would satisfy that artifact; the artifact
+    counts as present if ANY of them exists.
 
     Derived from `tt_bio.weights` so that a release adding a third artifact to
     protenix-v2 is picked up here instead of surfacing as a fold that dies on
@@ -64,8 +67,24 @@ def required_weights(cache):
     the whole time -- so a cache with the checkpoint and no molecules printed
     `preflight: ok` and then died on the first fold.
 
-    A derived artifact is judged on its OUTPUT (mols/, not mols.tar). This
-    reports presence only; whether a present artifact is INTACT is
+    TWO THINGS THIS GETS RIGHT that an obvious version does not, both found in
+    review, and both producing the same symptom -- a booth stuck on the
+    "preparing" screen while every fold would have worked, because preflight
+    runs ONCE and the daemon never retries it:
+
+    * `weights.resolve()`, not `Artifact.dest()`. tt-bio lets an operator
+      point a single artifact elsewhere ($PROTENIX_CKPT / $TT_BIO_PROTENIX_V2,
+      $TT_BIO_MOLS) and only resolve() honours that. dest() would report a
+      relocated checkpoint missing from a cache it was deliberately moved out
+      of.
+
+    * A derived artifact's ARCHIVE counts. `Folder.load()` calls
+      download_mols(cache), which unpacks mols.tar on the spot, so a cache
+      holding the archive and no directory repairs itself on the first fold.
+      Demanding the extracted directory turned a self-healing state into a
+      daemon that never starts.
+
+    This reports presence only; whether a present artifact is INTACT is
     scripts/doctor.sh's question, asked there with tt-bio's own verifier
     because it is too slow to pay at every daemon start (a full mols.tar
     integrity walk is 45 228 members).
@@ -74,17 +93,23 @@ def required_weights(cache):
     try:
         from tt_bio import weights as tt_weights
 
-        return [
-            (a.key, a.derived_dest(cache) if a.derived else a.dest(cache))
-            for a in tt_weights.artifacts_for(MODEL)
-        ]
+        out = []
+        for a in tt_weights.artifacts_for(MODEL):
+            paths = [Path(tt_weights.resolve(a.key, cache))]
+            if a.derived:
+                # The archive the fold would unpack, and the default output
+                # location in case an override names only one of them.
+                paths.append(a.dest(cache))
+                paths.append(a.derived_dest(cache))
+            out.append((a.key, paths))
+        return out
     except Exception:                                          # noqa: BLE001
         # Deliberately broad, and deliberately silent about the cause here:
         # a tt-bio too broken to describe its own artifacts is already going
         # to be reported by the trajectory-tap check below, which inspects
         # the same package and produces a far more useful message about it.
         # What must not happen is preflight raising -- it promises not to.
-        return [(label, cache / rel) for label, rel in _FALLBACK_WEIGHTS]
+        return [(label, [cache / rel]) for label, rel in _FALLBACK_WEIGHTS]
 
 
 @dataclass
@@ -98,18 +123,19 @@ def run_preflight(weights_dir, playlist_dir, *, check_tap=True, card_count=None)
     missing = []
 
     weights_dir = Path(weights_dir)
-    for label, path in required_weights(weights_dir):
+    for label, paths in required_weights(weights_dir):
         try:
             # exists(), not is_file(): `mols` is a directory. Judging it with
             # is_file() would report a perfectly unpacked molecule library as
-            # missing.
-            present = path.exists()
+            # missing. ANY of the candidate paths satisfies it -- see
+            # required_weights for what they are and why.
+            present = any(p.exists() for p in paths)
         except OSError as exc:
             # e.g. PermissionError on a directory with the wrong ownership.
-            missing.append(f"model weights: cannot check {path}: {exc}")
+            missing.append(f"model weights: cannot check {paths[0]}: {exc}")
             continue
         if not present:
-            missing.append(f"model weights: {label} ({path})")
+            missing.append(f"model weights: {label} ({paths[0]})")
 
     playlist_dir = Path(playlist_dir)
     targets = sorted(playlist_dir.glob("*.yaml")) if playlist_dir.is_dir() else []

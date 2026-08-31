@@ -481,6 +481,14 @@ def test_the_shell_resolver_answers_exactly_what_the_python_one_does(tmp_path):
         {"HOME": str(tmp_path)},
         {"TT_BIO_CACHE": "", "BOLTZ_CACHE": "", "HOME": str(tmp_path)},
         {"TT_BIO_CACHE": "", "BOLTZ_CACHE": str(tmp_path / "b"), "HOME": str(tmp_path)},
+        # HOME UNSET. Every row above sets it, so none of them can see a
+        # fallback that disagrees -- and the shell copy's did: it said
+        # `${HOME:-/root}` while tt-bio and runner/env.py both fall back to
+        # the passwd database via Path.home(). A systemd unit without HOME,
+        # `env -i`, or a cron context is exactly where that bites, and it
+        # splits the doctor from the fold in the one situation this file
+        # exists to prevent.
+        {},
     ]
     for env in matrix:
         r = subprocess.run(
@@ -491,3 +499,66 @@ def test_the_shell_resolver_answers_exactly_what_the_python_one_does(tmp_path):
         python = str(weights_cache(env))
         assert shell == python, (
             f"for {env}:\n  shell  says {shell}\n  python says {python}")
+
+
+def test_pinning_the_weights_dir_makes_the_resolver_agree_with_it(tmp_path):
+    """FOUND IN REVIEW: the daemon's --weights reached preflight and nothing
+    else.
+
+    `Folder.load()` resolves the cache from the environment, and the flag was
+    never put there -- so `run-demo.sh --weights /mnt/weights` on a box whose
+    ~/.boltz is empty passed preflight against /mnt/weights, started, and then
+    had the first fold resolve ~/.boltz, find nothing, and try to download
+    3.7 GB. At an offline venue it simply fails.
+
+    (The disagreement predates the resolver: folder.py hardcoded
+    `Path.home()/".boltz"` and ignored the flag just as completely. What is
+    new is that there is now one place to fix it.)
+
+    BOLTZ_CACHE and not TT_BIO_CACHE, deliberately: --weights means the flat
+    artifact cache, which is what BOLTZ_CACHE has always meant. TT_BIO_CACHE
+    additionally relocates the Hugging Face hub cache, which the flag does not
+    claim to do.
+    """
+    from runner.env import runner_environ, weights_cache
+
+    chosen = tmp_path / "mnt-weights"
+    env = runner_environ(tmp_path / "logs", base={}, weights_dir=chosen)
+    assert weights_cache(env) == chosen
+
+
+def test_an_operators_own_cache_variable_is_not_overwritten(tmp_path):
+    """Same setdefault contract the log-root and Inspector pins already keep:
+    somebody who has deliberately exported a cache keeps it.
+
+    Asserted on BOLTZ_CACHE -- the variable the pin actually WRITES -- and on
+    the raw value, not on what weights_cache() resolves to. The first version
+    of this test put TT_BIO_CACHE in the base and compared resolved paths,
+    which passed even when the pin was made to overwrite unconditionally:
+    TT_BIO_CACHE outranks BOLTZ_CACHE, so the clobbered value was never the
+    one being read. Verified as a real surviving mutation.
+    """
+    from runner.env import runner_environ
+
+    theirs = tmp_path / "theirs"
+    env = runner_environ(tmp_path / "logs",
+                         base={"BOLTZ_CACHE": str(theirs)},
+                         weights_dir=tmp_path / "ours")
+    assert env["BOLTZ_CACHE"] == str(theirs)
+
+    # And the other variable is equally a claim on the cache: pinning must not
+    # smuggle a second, lower-priority answer in beside it.
+    env2 = runner_environ(tmp_path / "logs",
+                          base={"TT_BIO_CACHE": str(theirs)},
+                          weights_dir=tmp_path / "ours")
+    assert "BOLTZ_CACHE" not in env2, \
+        "pinned a BOLTZ_CACHE beside an operator's TT_BIO_CACHE"
+
+
+def test_no_weights_dir_pins_nothing(tmp_path):
+    """The flag is optional; without it the environment is left alone so the
+    normal resolution order applies."""
+    from runner.env import runner_environ
+
+    env = runner_environ(tmp_path / "logs", base={})
+    assert "BOLTZ_CACHE" not in env and "TT_BIO_CACHE" not in env

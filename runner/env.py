@@ -201,17 +201,33 @@ def _expanduser(value, home):
     return Path(value)
 
 
-def runner_environ(log_root, base=None):
+def runner_environ(log_root, base=None, weights_dir=None):
     """Return an environment mapping with tt-metal's log output pinned.
 
     `log_root` may be relative; it is resolved against the current directory so
     the daemon's own CWD can never leak into where gigabytes get written. An
     operator who has already set LOG_ROOT_VAR (or INSPECTOR_VAR) keeps their
     choice -- both are filled in with setdefault, never overwritten.
+
+    `weights_dir` is the daemon's `--weights`, pinned so that the WORKERS --
+    which is where folding actually happens -- resolve the same cache
+    preflight was checked against. Without it the flag reached preflight and
+    nothing else: `run-demo.sh --weights /mnt/weights` on a box whose
+    ~/.boltz is empty passed preflight against /mnt/weights, started, and then
+    had the first fold resolve ~/.boltz, find nothing, and try to download
+    3.7 GB. At an offline venue that is simply a booth that does not work.
+
+    BOLTZ_CACHE and not TT_BIO_CACHE, deliberately: `--weights` means the flat
+    artifact cache, which is exactly what BOLTZ_CACHE has always meant.
+    TT_BIO_CACHE would additionally relocate the Hugging Face hub cache, which
+    the flag does not claim to do. Set with setdefault like the other two, so
+    an operator who exported a cache themselves keeps it.
     """
     env = dict(os.environ if base is None else base)
     env.setdefault(LOG_ROOT_VAR, str(Path(log_root).resolve()))
     env.setdefault(INSPECTOR_VAR, "0")
+    if weights_dir is not None and not any(env.get(v) for v in WEIGHTS_CACHE_VARS):
+        env["BOLTZ_CACHE"] = str(weights_dir)
     return env
 
 

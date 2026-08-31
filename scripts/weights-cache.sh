@@ -26,11 +26,41 @@
 # sides pin this against that function, so an upstream change to the
 # precedence breaks the suite rather than a venue.
 
+# The home directory, the way python's Path.home() finds it -- $HOME, and
+# failing that the PASSWD DATABASE.
+#
+# This said `${HOME:-/root}` and that was wrong: tt_bio.weights.cache_root()
+# and runner/env.py both end at Path.home(), which consults passwd when $HOME
+# is unset. A systemd unit without HOME, `env -i`, or a cron context would
+# therefore have had the doctor checking /root/.boltz while the fold loaded
+# the operator's own -- precisely the split this file exists to end, and
+# invisible to a test matrix that always sets HOME. One now does not.
+_tt_bio_demo_home() {
+    if [ -n "${HOME:-}" ]; then
+        printf '%s\n' "$HOME"
+        return 0
+    fi
+    _h="$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)"
+    printf '%s\n' "${_h:-/root}"
+}
+
 # `:-` and not `-` at every level: an EMPTY variable falls through to the next
 # one. Not pedantry -- `TT_BIO_CACHE=` is what an exported-but-unset variable
 # looks like in a systemd unit or a sourced env file, and treating it as a
 # path resolves the cache to whatever directory the caller happened to run
 # from.
+#
+# TWO NAMES, deliberately. `_impl` is what debian/helpers.sh calls, and its
+# presence is how that wrapper proves this file actually loaded before
+# trusting it -- an earlier arrangement relied on this file redefining the
+# wrapper's own name, which recursed 1000 frames deep inside a `configure`
+# script whenever the file was readable but empty.
+tt_bio_demo_weights_cache_impl() {
+    printf '%s\n' "${TT_BIO_CACHE:-${BOLTZ_CACHE:-$(_tt_bio_demo_home)/.boltz}}"
+}
+
+# The friendly name, for the scripts that source this file directly
+# (doctor.sh, setup-venvs.sh, run-demo.sh).
 tt_bio_demo_weights_cache() {
-    printf '%s\n' "${TT_BIO_CACHE:-${BOLTZ_CACHE:-${HOME:-/root}/.boltz}}"
+    tt_bio_demo_weights_cache_impl
 }

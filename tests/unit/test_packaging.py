@@ -10,6 +10,7 @@ half"; it does not import gi or anything GTK-specific -- only subprocess and
 pathlib.
 """
 import re
+import os
 import shutil
 import subprocess
 import pathlib
@@ -994,3 +995,26 @@ def test_the_postinst_does_not_re_derive_the_cache_in_its_python_half(tmp_path):
         "the python half should take the cache as argv from the shell half"
     assert 'os.environ.get("BOLTZ_CACHE"' not in postinst, \
         "the python half is re-deriving the cache instead of being handed it"
+
+
+def test_helpers_does_not_recurse_when_the_resolver_defines_nothing(tmp_path):
+    """A readable-but-useless weights-cache.sh must not spin.
+
+    The wrapper works by sourcing a file that REDEFINES it, then calling the
+    replacement. If the sourced file defines nothing -- an empty or truncated
+    file from a partially unpacked base package, or a future rename of the
+    function -- the wrapper is still itself when it makes that call, and
+    re-enters. Measured before the guard: 1000 frames deep. That happens
+    inside a `configure` maintainer script, so it breaks a dpkg run rather
+    than failing one package cleanly.
+    """
+    prefix = tmp_path / "opt"
+    (prefix / "scripts").mkdir(parents=True)
+    (prefix / "scripts" / "weights-cache.sh").write_text("# defines nothing\n")
+    r = subprocess.run(
+        ["sh", "-c", f". {HELPERS}\ntt_bio_demo_weights_cache"],
+        capture_output=True, text=True, timeout=15,
+        env={**os.environ, "TT_BIO_DEMO_PREFIX": str(prefix)})
+    assert "recursion" not in (r.stdout + r.stderr).lower(), \
+        f"the wrapper recursed:\n{r.stdout}{r.stderr}"
+    assert r.returncode != 0, "a resolver that defines nothing must be an error"

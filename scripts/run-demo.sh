@@ -113,7 +113,11 @@
 #                                 anything with more than one chip.
 #
 #   --weights DIR                 tt-bio's weights cache. (TT_BIO_DEMO_WEIGHTS)
-#                                 Default: ~/.boltz
+#                                 Default: $TT_BIO_CACHE, else
+#                                 $BOLTZ_CACHE, else ~/.boltz --
+#                                 tt-bio's own order. Whatever is used
+#                                 is pinned for the folding workers
+#                                 too, not just the readiness check.
 #   --log-budget-gb N             Forwarded to the daemon's own
 #                                 --log-budget-gb (tt-metal log containment;
 #                                 see runner/env.py). Default: 2.0
