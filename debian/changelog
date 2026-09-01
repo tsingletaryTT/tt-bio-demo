@@ -1,3 +1,25 @@
+tt-bio-demo (0.5.6) noble; urgency=medium
+
+  * Release publishing no longer refuses to fill an EMPTY release. The guard
+    protecting published packages asked whether a release existed, when what
+    it means to protect is the assets inside one. Creating a release in the
+    GitHub UI makes the tag and the release together, so the tag push then
+    found a release already there and exited before uploading anything --
+    publishing v0.5.5 with no .debs at all while INSTALL.md tells operators to
+    download them from exactly there. A release with assets is still refused,
+    unchanged; an empty one is now filled.
+  * The release job's logic moved out of the workflow YAML into
+    scripts/publish-release.sh, where the test suite can drive it with a
+    stubbed gh. Logic inside a workflow step can only be exercised by tagging
+    a release, which is the most expensive possible place to find a bug and is
+    where this one was found.
+  * v0.5.5 carries the same code as this version. It is left in place with no
+    packages attached rather than being back-filled, because a published
+    version number that changes contents is the thing the guard exists to
+    prevent -- including when the change is from nothing to something.
+
+ -- Taylor Singletary <tsingletary@tenstorrent.com>  Mon, 31 Aug 2026 16:30:00 -0700
+
 tt-bio-demo (0.5.5) noble; urgency=medium
 
   * The model weights are a checked box on every install path now. A source

@@ -186,25 +186,29 @@ jobs:
           # which is a silent failure of this step rather than of the release.
           test -s release-notes.md
 
-      # A published .deb is never replaced. Someone may already have installed
-      # it, and package managers are built on the assumption that a fixed
-      # version number means fixed contents.
-      - name: Refuse to replace an existing release
+      # Creating the release, and refusing to overwrite a published one, are
+      # ONE decision and they live in one script -- scripts/publish-release.sh,
+      # which tests/unit/test_publish_release.py drives with a stubbed `gh`.
+      #
+      # They used to be two steps here, and the logic inside a workflow step
+      # can only be observed by tagging a release: the most expensive place to
+      # discover a bug, and where this one was found. v0.5.5 was cut by
+      # creating the release in the GitHub UI, which makes the tag AND the
+      # release atomically. The tag push then started this job, the guard saw
+      # a release already there and exited 1 -- BEFORE the upload step. The
+      # result was a published release with zero assets, while INSTALL.md
+      # tells operators to `gh release download --pattern '*.deb'`. The run
+      # was red and the release page looked perfectly fine.
+      #
+      # The invariant is unchanged and is still the point: a published .deb is
+      # never replaced. What changed is that it is now tested by asking
+      # whether the release HAS ASSETS, rather than whether it exists -- an
+      # empty release has no .deb to protect, so it gets filled.
+      - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            echo "::error::release ${GITHUB_REF_NAME} already exists; refusing to replace it. Bump the version and tag again."
-            exit 1
-          fi
-
-      - name: Create the release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "${GITHUB_REF_NAME}" \
-            --title "tt-bio-demo ${GITHUB_REF_NAME}" \
-            --notes-file release-notes.md \
+          ./scripts/publish-release.sh "${GITHUB_REF_NAME}" release-notes.md \
             dist/*.deb \
             dist/*.buildinfo \
             dist/*.changes \
