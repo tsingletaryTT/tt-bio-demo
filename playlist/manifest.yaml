@@ -443,7 +443,7 @@
   #
   # tt-bio 0.7.3, chip 0 (see this file's header): first fold of this process
   # paid JIT compilation for the 223->224 token-bucket shape -- 36.0s,
-  # discarded -- then two warm folds at 17.5 / 17.4s, pLDDT 38.73 / 39.36,
+  # discarded -- then two warm folds at ~17.4s (17.5/17.4 rounded), pLDDT 38.73 / 39.36,
   # unchanged within this target's own 0.7.0 spread (38.36-39.73).
   expected_s: 17.4
   first_frame_s: 11.7
