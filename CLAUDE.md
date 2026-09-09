@@ -1154,7 +1154,6 @@ Trp-cage fold re-run on chip 0 under a lease after `folder.py` and
 `daemon.py` changed -- the load path still has no unit coverage, so that fold
 remains the only proof.
 
-
 ### A guard that protected the wrong noun (2026-08-31)
 
 Prompted with "tagging the v0.5.5 release from GH manually caused a release
@@ -1219,6 +1218,111 @@ whose download command returns nothing.
 
 Suite green at **1,540**.
 
+
+### American English, and tt-bio 0.7.3's ragged-token-padding fix (2026-09-09)
+
+Two requests, one session: *"correct our literature and one pager to use
+american english spelling"*, then, once the second question surfaced a real
+finding, *"yes let's go ahead and do that"* to upgrading and re-measuring.
+
+**The spelling pass** covered README.md, INSTALL.md, docs/index.html, the
+one-pager template, and the one visitor-facing blurb line in
+`playlist/manifest.yaml` that reaches the gallery UI -- colour/labelled/
+behaviour/licence/cancelled/centred/artefact/recognised/modelling/signalling
+and their kin, replaced throughout, including the site's own JS function name
+(`colourAt` -> `colorAt`). Deliberately NOT touched: `docs/superpowers/`
+specs and plans (explicit historical records by this file's own convention)
+and code/test comments, since the ask was literature and the one-pager, not a
+codebase-wide style change. PDF rebuilt and eyeballed; suite green.
+
+**Checking "anything in the latest tt-bio we should be using" found something
+real.** tt-bio had moved 0.7.0 -> 0.7.3 in the fifteen days since our pin.
+0.7.1/0.7.2's headline fix: Protenix-v2 and OpenDDE were padding the ATOM axis
+and not the TOKEN axis, so any residue count not a multiple of the bucket let
+the ragged tail reach triangle attention as real, unmasked key columns --
+upstream's own probe measured relative error **0.914 ragged against 0.038
+masked**. Every shipped model now buckets its token axis to a multiple of 32
+through one shared helper. The reason this mattered here specifically: **none
+of this playlist's seven residue counts (20/24/76/107/187/223/585) are
+multiples of 32**, so every published pLDDT and fold time on this booth's
+cards had been measured through the buggy path.
+
+**The upgrade itself was one variable, same as every prior one.** 0.7.3 ships
+the same `ttnn==0.68.0` and requires-python as 0.7.0, so the vendored SFPI
+machinery needed no thought. Every `tt_bio.*` symbol this project imports
+(`weights.fetch/resolve/artifacts_for/status`, `protenix.Protenix`,
+`protenix.edm_sample` -- the `dump_fn` tap this whole booth's live trajectory
+rides on still has the parameter -- `tenstorrent.get_device/cleanup`,
+`runtime.detect_tenstorrent_devices/build_local_workers`,
+`main._read_bio_chains/_build_worker_device_assignments`,
+`protenix_data.build_complex_features`) was checked by direct import before
+touching anything else. All resolved. `Protenix.fold` still has no public
+`dump_fn` -- the upstream patch in `docs/upstream/protenix-dump-fn/` remains
+unmerged and unrelated to this bump.
+
+**Re-measuring found the SAME cold/JIT-cache trap this file has now recorded
+three times.** The first hardware pass after the upgrade showed fold times
+2-3x the published numbers (tRNA 7.1s -> 24.1s, DHFR 15.5s -> 29.0s) --
+consistent with a version bump invalidating the persistent kernel cache for
+every NEW padded shape the bucketing fix introduces, not a regression. Two
+more passes on the same resident process, same chip, confirmed it: times
+settled back down and stayed flat across passes 2 and 3. **The instinct to
+publish pass-1 numbers was resisted on purpose** -- this project's own
+"Trust the subject, verify the instrument" habit applied to itself.
+
+**Method, stated honestly because it is narrower than the 0.7.0 pass it
+updates:** ONE chip (not two), one resident `Folder`, each target folded 3
+times back to back, first fold of every shape (JIT-cold) excluded from the
+warm numbers. Chip 1's thermal drift was NOT re-verified this round -- it is
+carried forward as a hardware property, not restated as fresh data.
+
+| target | 0.7.0 (chip 0) | 0.7.3 (chip 0, warm) | mean pLDDT: 0.7.0 -> 0.7.3 |
+|---|---|---|---|
+| Trp-cage | 4.2 s | **4.6 s** | 95.24-95.27 -> 95.32-95.35 |
+| DNA duplex | 4.4 s | **4.9 s** | 95.69-95.72 -> 95.94-95.95 |
+| tRNA | 7.1 s | **6.9 s** | 88.52-88.57 -> 88.77-88.80 |
+| FKBP12 | 9.8 s | **9.7 s** | 48.25-51.91 -> 50.38-52.84 |
+| DHFR | 15.5 s | **14.5 s** | 51.52-52.39 -> 53.22-53.81 |
+| Trypsin | 17.4 s | **17.4 s** | 38.36-39.73 -> 38.73-39.46 |
+| HSA | 97.5 s | **95.8 s** | 80.96-81.14 -> 79.24-79.37 |
+
+The shape of the table is the finding, not any single row: the two SHORTEST
+targets (Trp-cage 20->32 tokens, DNA 24->32) pay the largest proportional
+padding tax and are the only two that got slower; every longer target's own
+share of the correctness fix roughly cancels its smaller padding tax, landing
+flat to slightly faster. `playlist/manifest.yaml`'s header carries the full
+reasoning per target; `expected_s` was updated on every entry (even
+Trypsin's, which rounds to the same 17.4s, on the same "refresh to THIS run's
+number rather than let a coincidence stand in for a measurement" principle
+the 0.7.0 pass set). README.md's gallery-summary paragraph, `docs/index.html`'s
+seven card meta lines, and the one-pager's numbers table all moved with it;
+the one-pager PDF was rebuilt and eyeballed a second time.
+
+**The upgrade also falsified site copy again, in the by-now-expected way.**
+0.7.2 added Protenix-v1 (ByteDance's own cheaper checkpoint, half the pair
+width, no template stack) -- a 14th model family the site still said was
+Thirteen in two places and an absent row in the CLI table. Commits
+re-verified with the spec's own `-i` method against the v0.7.3 tag: **4,765
+total, 4,328 his** (was 4,314 / 3,877 at 0.7.0) -- every one of the 451 new
+commits confirmed his own before the number went on the page, same standard
+as every prior version bump.
+
+**One environmental false alarm, named rather than worked around.** The
+non-hardware suite showed one failure both before and after every change in
+this session: `test_the_pin_is_the_one_setup_venvs_actually_declares` reads
+`/opt/tt-bio-demo/scripts/setup-venvs.sh` in preference to the repo's own
+copy, because `tt_bio_demo_prefix()` defaults there and a REAL 0.5.5 package
+install from Aug 31 sits at that path on this dev box with its own stale
+0.7.0 pin. Confirmed with `TT_BIO_DEMO_PREFIX=/nonexistent`: the repo's own
+pin resolves to 0.7.3 correctly. Not fixed -- it is root-owned system state
+outside the repo, not a repo defect -- but worth knowing the next time this
+box's non-hardware suite shows exactly one red test for no apparent reason.
+
+Verified: full non-hardware suite (1,167 UI + 362 runner, the one
+known-environmental red set aside), 18 hardware sanity tests
+(`test_real_fold.py`, `test_egg_on_device.py`) and the 49-assertion
+`test_new_targets_timing.py` harness, all on real Blackhole silicon under a
+gozer lease.
 
 ## Conventions
 

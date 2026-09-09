@@ -53,7 +53,7 @@ ever fabricated: what you see was actually computed.
 
 ![The folded structure](docs/screenshots/01-folded-structure.png)
 
-Trp-cage, coloured by the model's own per-residue confidence.
+Trp-cage, colored by the model's own per-residue confidence.
 
 ### What it is actually doing
 
@@ -67,7 +67,7 @@ booth runs unattended all day.
 ![The quad view: four chips, four proteins](docs/screenshots/06-quad-four-chips.png)
 
 <kbd>Q</kbd> turns the single large protein into a 2×2 grid — one cell per chip, each
-labelled with the chip it runs on, the protein, and the stage it has reached. Four
+labeled with the chip it runs on, the protein, and the stage it has reached. Four
 independent folds at four independent points in their pipelines, on one screen.
 
 Each cell names its chip, what it is drawing, and what that chip has moved on to.
@@ -82,7 +82,7 @@ no secondary-structure records, so which residues are helix and which are sheet 
 out from the C-alpha geometry (`ui/secstruct.py`).
 
 Look at chips 0 and 1 and you can see a small molecule in the protein's pocket, drawn
-ball-and-stick in the usual element colours. Three of the seven targets fold a **bound
+ball-and-stick in the usual element colors. Three of the seven targets fold a **bound
 ligand** alongside the protein — FKBP12 with a binder, trypsin with benzamidine, and DHFR
 with methotrexate, the cancer drug its gallery card names.
 
@@ -99,11 +99,13 @@ silicon keeps visibly breathing even if the daemon wedges.
 
 **Four chips on two boards.** A p300c carries two chips, so `tt-smi`'s four entries are four
 chips — not four boards. The panel says so, because a visitor reading "4 cards" would
-picture the wrong machine. Folds are timed on this hardware, warm, on tt-bio 0.7.0: Trp-cage **4.2 s**,
-FKBP12 **9.8 s**, DHFR **15.5 s**, trypsin **17.4 s**, albumin **97 s** — p50s over three
-folds each, on chip 0. The second chip measured 0.5–1.4 s slower on every target in the same
-run, and that is the drift below rather than a second opinion: chips 1 and 3 settle to a lower
-clock about fifteen minutes into a session (they idle 3–4 °C hotter than 0 and 2, so it is
+picture the wrong machine. Folds are timed on this hardware, warm, on tt-bio 0.7.3: Trp-cage **4.6 s**,
+FKBP12 **9.7 s**, DHFR **14.5 s**, trypsin **17.4 s**, albumin **95.8 s** — mean of two folds
+each on chip 0, after discarding one cold-JIT-cache fold per target (a version bump recompiles
+kernels for the new shapes; see `playlist/manifest.yaml`'s header). Chip 1 was not re-measured
+this pass; the 0.5–1.4 s-slower drift measured on tt-bio 0.7.0 is a hardware/thermal property,
+not a software one, so it is carried forward rather than restated as fresh: chips 1 and 3 settle
+to a lower clock about fifteen minutes into a session (they idle 3–4 °C hotter than 0 and 2, so it is
 chassis position rather than workload), and chip 1 was measured second, about thirteen minutes
 in — its per-target *minima* match chip 0. A visitor's pick takes whichever chip is free, so a
 long session drifts slower than these fresh-chip numbers. See `playlist/manifest.yaml` for the
@@ -128,7 +130,7 @@ Everything above, printed — two sides of one sheet.
 
 | [<img src="docs/screenshots/onepager-front.jpg" width="100%">](docs/tt-bio-demo-onepager.pdf) | [<img src="docs/screenshots/onepager-back.jpg" width="100%">](docs/tt-bio-demo-onepager.pdf) |
 |:--|:--|
-| **Front — what you are watching**<br>For anyone who has just walked up to the booth: why a protein's shape matters, what the dots actually are, the confidence colours, and the six molecules with their measured fold times. | **Back — how to run it**<br>The operator's card: starting and stopping, every key binding, what each rail panel means, quick fixes, and a checklist for before the doors open. |
+| **Front — what you are watching**<br>For anyone who has just walked up to the booth: why a protein's shape matters, what the dots actually are, the confidence colors, and the six molecules with their measured fold times. | **Back — how to run it**<br>The operator's card: starting and stopping, every key binding, what each rail panel means, quick fixes, and a checklist for before the doors open. |
 
 Rebuild it after changing fold times, key bindings or `VERSION` with
 [`docs/onepager/build.sh`](docs/onepager/build.sh) — it re-renders from
@@ -298,8 +300,8 @@ no alignment for a different reason — base-pairing is chemistry, not evolution
 inference: a **DNA duplex** (the Dickerson–Drew dodecamer) and a **transfer RNA** (yeast
 tRNA-Phe, the first RNA structure ever solved), which between them make the playlist a
 walk from a gene to a protein. The duplex is also the target that shows what the
-ribbon's colours are worth. It comes back at mean pLDDT 95.7 where the three larger
-MSA-less proteins come back at 50.8, 52.9 and 39.5, and the confidence legend under the
+ribbon's colors are worth. It comes back at mean pLDDT 95.9 where the three larger
+MSA-less proteins come back at 51.7, 53.6 and 39.2, and the confidence legend under the
 render is what lets a visitor read that off the screen for themselves.
 
 > **`--all-targets` is not yet validated end to end.** The other three shipped targets
@@ -385,7 +387,7 @@ decorative panel.
 `ui/chipviz.py` renders one `WebKit.WebView` in the 430 px side rail, holding a vendored copy
 of [tensix-viz](ui/assets/tensix-viz/PROVENANCE.md) — the small animated Tensix core grids
 under the chip readouts. **The 3D protein is not a browser and never will be**: it is a
-`GtkGLArea` with this project's own shaders, and that — the part whose frame timing, colour
+`GtkGLArea` with this project's own shaders, and that — the part whose frame timing, color
 and provenance the booth is claiming to be real — is what "native GTK4" was always about.
 The exception is scoped accordingly: the panel hides itself if WebKit is missing, if there
 are no chips, or if the vendored assets cannot be read; it loads one inline `about:blank`
@@ -443,7 +445,7 @@ priority queue, and `ui/app.py`'s `_on_pick` is the last hop that connects the t
 
 **A pick never pre-empts a running fold.** It goes to the head of the queue and folds on the
 **next chip to come free** — bounded by the earliest-finishing of the four folds in flight,
-never by the longest. Nothing already running is cancelled to make room, because tearing a
+never by the longest. Nothing already running is canceled to make room, because tearing a
 fold down mid-device-operation is a documented instability source and pre-empting would blank
 a cell someone is watching. In practice that is seconds, not an instant, and the copy says
 so: "next", never "now". Measured on this box across two live sessions, pick to that
@@ -475,7 +477,7 @@ which is also why the other three cells keep moving while you wait.
 ```
 
 - **The hero slot** holds either the live fold — the diffusion point cloud cross-fading
-  into a pLDDT-coloured ribbon — or the gallery. The side rail stays put across both, so
+  into a pLDDT-colored ribbon — or the gallery. The side rail stays put across both, so
   the silicon keeps visibly breathing while someone is reading.
 - **Pipeline panel** — one row per fold stage (msa, prep, trunk, diffusion, confidence,
   saving); the bright row is the one running now. Clears itself if nothing reports progress
@@ -535,7 +537,7 @@ tests are opt-in; pass `--hw`.
 
 **The booth will not stop when you signal it by pid** — `kill -INT <pid>` on
 `run-demo.sh` does nothing visible: the launcher's `INT` trap cannot run until its
-foreground command (the UI) returns, and signalling only bash leaves the UI folding away.
+foreground command (the UI) returns, and signaling only bash leaves the UI folding away.
 A terminal Ctrl-C works because the tty signals the whole foreground process *group*, so
 that is what to send without a terminal:
 
