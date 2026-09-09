@@ -303,7 +303,7 @@ must go through `venv-ui` or `venv-runner`; never a system or personal interpret
 not import, or a chip is present and unusable. This is the failure mode that silently ships
 a dead booth.
 
-**The booth will not stop when signalled by pid** — `kill -INT <pid>` on `run-demo.sh` does
+**The booth will not stop when signaled by pid** — `kill -INT <pid>` on `run-demo.sh` does
 nothing visible: the launcher's trap cannot run until its foreground command returns. Signal
 the whole process *group*, which is what a terminal `Ctrl-C` does:
 
@@ -335,7 +335,7 @@ release, `apt install ./*.deb` succeeded, and all four packages reached
 `install ok installed`. CI re-proves the equivalent on every push, and a release cannot be
 published unless it passes.
 
-**Steps 2–5 are not.** The package contents, debconf templates, postinst behaviour, unit file
+**Steps 2–5 are not.** The package contents, debconf templates, postinst behavior, unit file
 and script flags were read from source and are individually tested, but **no full
 clean-machine install has been run against a freshly imaged QB2** — CI has no Tenstorrent
 hardware and never will. Expect step 2 (the venv build, which needs network and the SFPI

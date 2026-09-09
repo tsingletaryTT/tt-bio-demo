@@ -247,11 +247,11 @@
       </p>
       <p>
         Nothing here is an animation of a finished answer. When a fold has no coordinates yet,
-        the booth holds the <b>previous real structure</b>, dimmed and labelled, rather than
+        the booth holds the <b>previous real structure</b>, dimmed and labeled, rather than
         inventing something to show you.
       </p>
 
-      <h2>Colour = the model's confidence</h2>
+      <h2>Color = the model's confidence</h2>
       <div class="legend">
         <div style="background:#4b8bd6;color:#fff">very high</div>
         <div style="background:#74C5DF">confident</div>
@@ -259,7 +259,7 @@
         <div style="background:#FA512E;color:#fff">very low</div>
       </div>
       <p>
-        Each residue is coloured by <b>pLDDT</b> — the model scoring its own certainty. Blue
+        Each residue is colored by <b>pLDDT</b> — the model scoring its own certainty. Blue
         regions it is sure about; orange it is guessing. An honest model tells you where it is
         weak, and this one is shown doing exactly that.
       </p>
@@ -273,7 +273,7 @@
             coordinates</b> — so a big protein shows nothing new at first, and the booth keeps
             the previous structure up</td></tr>
         <tr><td>diffusion</td><td>the part you watch: noise becomes structure</td></tr>
-        <tr><td>confidence</td><td>the model scores itself — where the colours come from</td></tr>
+        <tr><td>confidence</td><td>the model scores itself — where the colors come from</td></tr>
         <tr><td>saving</td><td>writes the result out as mmCIF</td></tr>
       </table>
     </div>
@@ -285,13 +285,13 @@
           <tr><th>Molecule</th><th>Size</th><th style="text-align:right">Warm</th></tr>
         </thead>
         <tbody>
-          <tr><td>Trp-cage</td><td class="num">20 res</td><td class="t">4.2 s</td></tr>
-          <tr><td>DNA double helix</td><td class="num">—</td><td class="t">4.4 s</td></tr>
-          <tr><td>Transfer RNA</td><td class="num">—</td><td class="t">7.1 s</td></tr>
-          <tr><td>FKBP12 <span class="lig">+ binder</span></td><td class="num">107 res</td><td class="t">9.8 s</td></tr>
-          <tr><td>DHFR <span class="lig">+ methotrexate</span></td><td class="num">187 res</td><td class="t">15.5 s</td></tr>
+          <tr><td>Trp-cage</td><td class="num">20 res</td><td class="t">4.6 s</td></tr>
+          <tr><td>DNA double helix</td><td class="num">—</td><td class="t">4.9 s</td></tr>
+          <tr><td>Transfer RNA</td><td class="num">—</td><td class="t">6.9 s</td></tr>
+          <tr><td>FKBP12 <span class="lig">+ binder</span></td><td class="num">107 res</td><td class="t">9.7 s</td></tr>
+          <tr><td>DHFR <span class="lig">+ methotrexate</span></td><td class="num">187 res</td><td class="t">14.5 s</td></tr>
           <tr><td>Trypsin <span class="lig">+ benzamidine</span></td><td class="num">223 res</td><td class="t">17.4 s</td></tr>
-          <tr><td>Albumin <span class="lig">the long one</span></td><td class="num">585 res</td><td class="t">97 s</td></tr>
+          <tr><td>Albumin <span class="lig">the long one</span></td><td class="num">585 res</td><td class="t">95.8 s</td></tr>
         </tbody>
       </table>
       <p class="cap" style="margin-top:5px">
@@ -356,7 +356,7 @@
         clean stop.
       </p>
       <p>
-        Signalling by pid does nothing — the launcher's trap cannot run until the UI returns.
+        Signaling by pid does nothing — the launcher's trap cannot run until the UI returns.
         Signal the whole process group:
       </p>
       <pre>kill -INT -$(ps -o pgid= -p &lt;pid&gt; | tr -d ' ')</pre>
@@ -412,7 +412,7 @@ systemctl --user <b>restart</b> tt-bio-demo</pre>
       <h2>When a visitor taps a protein</h2>
       <p class="tight">
         It gets folded <b>next</b> — never "now". The tap goes to the head of the queue and
-        lands on the next chip to come free. Nothing already running is cancelled, because
+        lands on the next chip to come free. Nothing already running is canceled, because
         tearing a fold down mid-device-operation is a known instability source.
       </p>
       <p>

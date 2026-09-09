@@ -23,13 +23,13 @@
 <style>
 /* ── Design tokens ────────────────────────────────────────────────────────
    The palette is not invented for this page. `--c-*` IS the booth's
-   per-residue confidence ramp (ui/geometry.py), reused as the site's colour
+   per-residue confidence ramp (ui/geometry.py), reused as the site's color
    system so that a reader has been reading in that vocabulary for several
    screens before §2 explains what it means. Orange is doubt; blue is
    confidence. Nothing else on the page uses those four hues.
    ------------------------------------------------------------------------ */
 :root {
-  /* Confidence ramp — the one colour idea on this page. */
+  /* Confidence ramp — the one color idea on this page. */
   --c-low:     #FF7D45;   /* pLDDT < 50  — the model is guessing        */
   --c-mid:     #FFDB13;   /* 50–70                                       */
   --c-high:    #65CBF3;   /* 70–90                                       */
@@ -100,7 +100,7 @@ body {
 }
 
 .wrap { width: min(100% - 2.5rem, 68rem); margin-inline: auto; }
-/* Prose is CENTRED in the wrap, not left-aligned against it. Left-aligning a
+/* Prose is CENTERED in the wrap, not left-aligned against it. Left-aligning a
    34rem measure inside a 68rem container leaves half the screen empty on a
    wide display and reads as an unfinished layout -- there is no marginalia
    here to justify the gutter. Media (video, cards, the canvas) uses the full
@@ -133,7 +133,7 @@ section { padding-block: clamp(3.5rem, 8vw, 6.5rem); border-top: 1px solid var(-
 #hero { padding-block: clamp(3rem, 7vw, 5.5rem); border: 0; }
 #hero h1 { margin-bottom: 1rem; }
 /* Wider than the prose measure -- a display-size h1 in 34rem wraps to a
-   ragged stack -- but centred on the same axis, so the hero text, the caption
+   ragged stack -- but centered on the same axis, so the hero text, the caption
    and every section below it share one vertical spine. */
 .hero-col { max-width: 44rem; margin-inline: auto; }
 .hero-media { margin-top: 2.5rem; border: 1px solid var(--rule); border-radius: 10px; overflow: hidden; background: var(--base); }
@@ -162,12 +162,12 @@ figcaption { color: var(--ink-3); font-size: .88rem; margin-top: .7rem; line-hei
 
 /* ── The closing band — the mark, computed on the chips ───────────────── */
 /* The clip's own background samples to rgb(9,35,33), which IS --base. So the
-   band is painted that same colour and the video carries no border and no
+   band is painted that same color and the video carries no border and no
    radius: the points appear to condense directly out of the page rather than
    inside a window on it. That is the whole reason this section is inverted --
    not decoration, but the only way to hide the video's edges.
 
-   EVERY COLOUR IN THIS BLOCK IS A LITERAL, NOT A TOKEN, and that is the point.
+   EVERY COLOR IN THIS BLOCK IS A LITERAL, NOT A TOKEN, and that is the point.
    This band is painted --base in BOTH themes -- it is always dark, because it
    is always matching the clip. The tokens are not: --bg and --ink flip with
    `prefers-color-scheme`, so `color: var(--bg)` here rendered dark-on-dark and
@@ -207,7 +207,7 @@ figcaption { color: var(--ink-3); font-size: .88rem; margin-top: .7rem; line-hei
 }
 .ramp-note { font-size: .95rem; color: var(--ink-2); margin-top: .9rem; }
 
-/* Inline swatch, so prose can point at a colour without describing it. */
+/* Inline swatch, so prose can point at a color without describing it. */
 .sw {
   display: inline-block; width: .72em; height: .72em; border-radius: 2px;
   margin-right: .18em; vertical-align: baseline; position: relative; top: .02em;
@@ -222,7 +222,7 @@ figcaption { color: var(--ink-3); font-size: .88rem; margin-top: .7rem; line-hei
   border: 1px solid var(--rule); border-radius: 10px; overflow: hidden;
   background: var(--surface); display: flex; flex-direction: column;
 }
-/* The stripe is the card's confidence colour -- set per card, from the ramp,
+/* The stripe is the card's confidence color -- set per card, from the ramp,
    matching roughly how sure the model is about that molecule. It is the same
    vocabulary §2 taught, used to carry real information. */
 .card-stripe { height: 4px; }
@@ -293,7 +293,7 @@ tbody tr:last-child td { border-bottom: 0; }
   transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
 }
 /* The preview keeps its own white ground in dark mode -- it is a photograph of
-   paper, not a themed surface, and tinting it would misrepresent the artefact
+   paper, not a themed surface, and tinting it would misrepresent the artifact
    someone is about to print. */
 .sheet img { display: block; width: 100%; height: auto; border-bottom: 1px solid var(--rule); }
 .sheet .lbl   { display: block; padding: .85rem 1rem 1.05rem; }
@@ -397,7 +397,7 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
         laboratory work for a single structure, and some proteins never
         cooperate at all. Predicting the shape from the sequence alone was one
         of biology's long-standing open problems. The progress made on it with
-        deep learning was recognised with the 2024 Nobel Prize in Chemistry.
+        deep learning was recognized with the 2024 Nobel Prize in Chemistry.
       </p>
 
       <p>
@@ -411,7 +411,7 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
     <div class="condense">
       <figure>
         <canvas id="fold-canvas" width="800" height="600"
-                aria-label="An animation: a cloud of scattered points is pulled step by step into a folded protein backbone, its colour shifting from orange to blue as the structure resolves."></canvas>
+                aria-label="An animation: a cloud of scattered points is pulled step by step into a folded protein backbone, its color shifting from orange to blue as the structure resolves."></canvas>
       </figure>
       <div>
         <h3>What you are watching it do</h3>
@@ -431,7 +431,7 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
     </div>
 
     <div class="col">
-      <h3>The colours are the model telling you how sure it is</h3>
+      <h3>The colors are the model telling you how sure it is</h3>
 
       <div class="ramp" role="img" aria-label="Confidence ramp from orange, meaning less sure, through yellow and light blue to deep blue, meaning more sure.">
         <div class="ramp-bar">
@@ -444,7 +444,7 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
       </div>
 
       <p>
-        Every structure in the demo is coloured residue by residue, using a
+        Every structure in the demo is colored residue by residue, using a
         confidence score the model produces alongside the shape. Deep blue
         (<span class="sw" style="background:var(--c-certain)"></span>) is a part
         the model is confident about. Orange
@@ -470,13 +470,13 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
         repeating structure that does the same thing every rung. A working
         enzyme is a large, irregular object with floppy loops that genuinely
         move, and the model is right to be less certain about where they sit.
-        The colours are not decoration; they are the model declining to
+        The colors are not decoration; they are the model declining to
         overstate what it knows.
       </p>
 
       <p>
         Once you know the ramp, you can read every screenshot on this page. The
-        rest of the site uses the same four colours for the same reason.
+        rest of the site uses the same four colors for the same reason.
       </p>
     </div>
   </div>
@@ -503,51 +503,51 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
     </div>
 
     <div class="cards">
-      <!-- Stripe colours are this molecule's typical confidence, from §2's
+      <!-- Stripe colors are this molecule's typical confidence, from §2's
            ramp: the proteins resolve confidently, the DNA duplex does not. -->
       <article class="card">
         <div class="card-stripe" style="background:var(--c-certain)"></div>
-        <img src="thumbnails/trpcage.png" alt="Trp-cage, folded, coloured by confidence — almost entirely deep blue.">
+        <img src="thumbnails/trpcage.png" alt="Trp-cage, folded, colored by confidence — almost entirely deep blue.">
         <div class="card-body">
           <h3>Trp-cage</h3>
           <p>Twenty amino acids &mdash; one of the smallest proteins that folds itself, and it does it in microseconds.</p>
-          <p class="meta">20 residues &middot; 4.2 s</p>
+          <p class="meta">20 residues &middot; 4.6 s</p>
         </div>
       </article>
 
       <article class="card">
         <div class="card-stripe" style="background:var(--c-high)"></div>
-        <img src="thumbnails/hsa.png" alt="Human serum albumin, folded, coloured by confidence.">
+        <img src="thumbnails/hsa.png" alt="Human serum albumin, folded, colored by confidence.">
         <div class="card-body">
           <h3>Human serum albumin</h3>
           <p>The blood's delivery van — the most abundant protein in plasma, and how most drugs travel.</p>
-          <p class="meta">585 residues &middot; 97.5 s</p>
+          <p class="meta">585 residues &middot; 95.8 s</p>
         </div>
       </article>
 
       <article class="card">
         <div class="card-stripe" style="background:var(--c-low)"></div>
-        <img src="thumbnails/fkbp12.png" alt="FKBP12, folded, coloured by confidence.">
+        <img src="thumbnails/fkbp12.png" alt="FKBP12, folded, colored by confidence.">
         <div class="card-body">
           <h3>FKBP12</h3>
           <p>The molecular lock that anti-rejection drugs are shaped to pick, so a transplanted organ survives.</p>
-          <p class="meta">107 residues &middot; 9.8 s</p>
+          <p class="meta">107 residues &middot; 9.7 s</p>
         </div>
       </article>
 
       <article class="card">
         <div class="card-stripe" style="background:var(--c-low)"></div>
-        <img src="thumbnails/dhfr.png" alt="Dihydrofolate reductase, folded, coloured by confidence.">
+        <img src="thumbnails/dhfr.png" alt="Dihydrofolate reductase, folded, colored by confidence.">
         <div class="card-body">
           <h3>Dihydrofolate Reductase</h3>
           <p>Every dividing cell needs it to build new DNA &mdash; which is why a classic cancer drug jams it shut.</p>
-          <p class="meta">187 residues &middot; 15.5 s</p>
+          <p class="meta">187 residues &middot; 14.5 s</p>
         </div>
       </article>
 
       <article class="card">
         <div class="card-stripe" style="background:var(--c-low)"></div>
-        <img src="thumbnails/trypsin.png" alt="Trypsin, folded, coloured by confidence.">
+        <img src="thumbnails/trypsin.png" alt="Trypsin, folded, colored by confidence.">
         <div class="card-body">
           <h3>Trypsin</h3>
           <p>Built switched off by the pancreas, armed in the gut, where it cuts up the protein in your meal.</p>
@@ -557,21 +557,21 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
 
       <article class="card">
         <div class="card-stripe" style="background:var(--c-certain)"></div>
-        <img src="thumbnails/dna.png" alt="A twelve-base-pair DNA duplex, coloured by confidence — deep blue almost throughout.">
+        <img src="thumbnails/dna.png" alt="A twelve-base-pair DNA duplex, colored by confidence — deep blue almost throughout.">
         <div class="card-body">
           <h3>DNA double helix</h3>
           <p>The double helix, twelve rungs of it &mdash; one of the two things this booth folds that are not proteins.</p>
-          <p class="meta">12 base pairs &middot; 4.4 s</p>
+          <p class="meta">12 base pairs &middot; 4.9 s</p>
         </div>
       </article>
 
       <article class="card">
         <div class="card-stripe" style="background:var(--c-certain)"></div>
-        <img src="thumbnails/trna.png" alt="Yeast tRNA-Phe, folded, coloured by confidence — blue throughout, the chain doubling back on itself.">
+        <img src="thumbnails/trna.png" alt="Yeast tRNA-Phe, folded, colored by confidence — blue throughout, the chain doubling back on itself.">
         <div class="card-body">
           <h3>Transfer RNA</h3>
           <p>The go-between: it reads three letters of the genetic message and carries the matching amino acid.</p>
-          <p class="meta">76 nucleotides &middot; 7.1 s</p>
+          <p class="meta">76 nucleotides &middot; 6.9 s</p>
         </div>
       </article>
     </div>
@@ -601,7 +601,7 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
       <p>
         <strong>Look closely at FKBP12, DHFR and trypsin and there is a second
         molecule in the picture</strong>, drawn as balls and sticks in the usual
-        element colours. Three of these seven fold a bound <em>ligand</em> alongside the
+        element colors. Three of these seven fold a bound <em>ligand</em> alongside the
         protein &mdash; and DHFR's is methotrexate, the cancer drug its card
         describes. The booth is not folding the enzyme and then illustrating
         the drug: both are predicted together, in the same pass, because where
@@ -698,19 +698,19 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
         
   <div class="tl-item">
           <div class="tl-date">Through 2026</div>
-          <h3>Thirteen model families</h3>
+          <h3>Fourteen model families</h3>
           <p>
             Since joining Tenstorrent, Moritz has expanded tt-bio well past its
             starting point: BoltzGen, ESMFold2, Protenix-v2, OpenFold3, OpenDDE,
-            SaProt, RFD3, RoseTTAFold3, Nesso-1, OpenBind-0 and PXDesign all
-            land during 2026.
+            SaProt, RFD3, RoseTTAFold3, Nesso-1, OpenBind-0, PXDesign and
+            Protenix-v1 all land during 2026.
           </p>
         </div>
       </div>
 
       <p style="margin-top:2rem">
-        As of v0.7.0 the repository holds <span class="num">4,314</span> commits.
-        <span class="num">3,877</span> of them are his.
+        As of v0.7.3 the repository holds <span class="num">4,765</span> commits.
+        <span class="num">4,328</span> of them are his.
       </p>
     </div>
   </div>
@@ -772,9 +772,9 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
   <div class="wrap">
     <div class="col">
       <span class="eyebrow">What it runs today</span>
-      <h2>Thirteen model families, one command line</h2>
+      <h2>Fourteen model families, one command line</h2>
       <p>
-        tt-bio started as a Boltz-2 port. As of v0.7.0 it runs considerably
+        tt-bio started as a Boltz-2 port. As of v0.7.3 it runs considerably
         more than that, all through one CLI and all on Tenstorrent hardware.
       </p>
     </div>
@@ -787,6 +787,7 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
         <tbody>
           <tr><td>boltz2</td><td>Structures and binding affinity &mdash; proteins, nucleic acids, ligands, modified residues</td></tr>
           <tr><td>protenix-v2</td><td>AlphaFold3-family folder for protein / RNA / DNA / ligand complexes. <strong>This is what the booth folds with.</strong></td></tr>
+          <tr><td>protenix-v1</td><td>The cheaper sibling &mdash; ByteDance's own Protenix v0.5.0 checkpoint, half the pair width and fewer trunk recycles than protenix-v2</td></tr>
           <tr><td>openfold3</td><td>AlphaFold3-family folder for protein / RNA / DNA polymers, with optional templates</td></tr>
           <tr><td>rf3</td><td>RoseTTAFold3 &mdash; folds proteins, RNA, DNA and ligands, including non-canonical residues and cyclic chains</td></tr>
           <tr><td>openbind</td><td>OpenBind-0 &mdash; protein&ndash;ligand co-folding, ligands by SMILES or CCD code</td></tr>
@@ -796,7 +797,7 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
           <tr><td>rfd3</td><td>All-atom design: binders, motif scaffolding, nucleic-acid binders</td></tr>
           <tr><td>pxdesign</td><td>Binder backbone design from a target structure</td></tr>
           <tr><td>nesso1</td><td>Binding affinity only &mdash; no structure, and far cheaper than folding for that question</td></tr>
-          <tr><td>saprot</td><td>Structure-aware protein language modelling</td></tr>
+          <tr><td>saprot</td><td>Structure-aware protein language modeling</td></tr>
           <tr><td>esmc</td><td>Protein language-model embeddings &mdash; 300M, 600M and 6B</td></tr>
         </tbody>
       </table>
@@ -923,13 +924,13 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
 
     <div class="table-scroll">
       <table>
-        <thead><tr><th scope="col">The booth</th><th scope="col">Behaviour</th></tr></thead>
+        <thead><tr><th scope="col">The booth</th><th scope="col">Behavior</th></tr></thead>
         <tbody>
           <tr><td>It does</td><td>Stream the model's real denoising trajectory, one step at a time, straight from the sampler on the chip</td></tr>
           <tr><td></td><td>Draw the finished structure as a <strong>cartoon</strong> &mdash; helices as ribbons, sheets as arrows &mdash; the representation used in every paper. The model's output carries no secondary-structure records, so which residues are which is worked out from the geometry</td></tr>
-          <tr><td></td><td>Draw any bound ligand beside it, in element colours</td></tr>
+          <tr><td></td><td>Draw any bound ligand beside it, in element colors</td></tr>
           <tr><td></td><td>Demonstrate its own instruments. Left alone, it opens the diagnostics tap and the Tensix panel, holds each long enough to read, and puts them back &mdash; nobody has to be told a keyboard shortcut</td></tr>
-          <tr><td></td><td>Colour every residue by the model's own confidence, including where that is unflattering</td></tr>
+          <tr><td></td><td>Color every residue by the model's own confidence, including where that is unflattering</td></tr>
           <tr><td></td><td>Fold on four chips at once, one molecule per chip, and show all four if you press <kbd>Q</kbd></td></tr>
           <tr><td></td><td>Run unattended all day, and hold the last real structure rather than showing a blank screen</td></tr>
           <tr><td>It does not</td><td>Discover anything. Every structure it folds was solved in a laboratory first</td></tr>
@@ -979,7 +980,7 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
       strands spell <span class="num">CGCGAATTCGCG</span>, because each read
       backwards is the other. The six in the middle, <span class="num">GAATTC</span>,
       are the mark that EcoRI &mdash; one of the first gene-cutting enzymes ever
-      put to work &mdash; recognises and cuts.
+      put to work &mdash; recognizes and cuts.
     </p>
     <p>
       And a transfer RNA, which is the molecule that connects the other two:
@@ -1009,7 +1010,7 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
     <div class="sheets">
       <a class="sheet" href="tt-bio-demo-onepager.pdf">
         <img src="screenshots/onepager-front.jpg"
-             alt="Page one of the handout: a headline reading &ldquo;Watch a protein fold&rdquo;, the four-chip quad screenshot, the confidence colour ramp, and a table of the six molecules with their fold times.">
+             alt="Page one of the handout: a headline reading &ldquo;Watch a protein fold&rdquo;, the four-chip quad screenshot, the confidence color ramp, and a table of the six molecules with their fold times.">
         <span class="lbl">
           <b>Front &mdash; what you are watching</b>
           <span>Why a protein's shape matters, what the dots are, the six
@@ -1051,7 +1052,7 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
     <ul class="refs">
       <li>
         <a class="t" href="https://github.com/moritztng/tt-bio">moritztng/tt-bio</a>
-        <span class="m">the software &middot; MIT licence &middot; installation and the full model list</span>
+        <span class="m">the software &middot; MIT license &middot; installation and the full model list</span>
       </li>
       <li>
         <a class="t" href="https://fosdem.org/2026/schedule/event/AJLNVH-tt-boltz/">TT-Boltz: Drug Discovery on Tenstorrent Hardware</a>
@@ -1130,7 +1131,7 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
 <script>
 /* ── The condensation animation ────────────────────────────────────────────
    The page's single piece of motion, and it is making the section's argument
-   rather than decorating it: noise becomes shape, and the colour resolves
+   rather than decorating it: noise becomes shape, and the color resolves
    from doubt to confidence as it does.
 
    This is a HAND-DRAWN ILLUSTRATION of the process, not a fold. It draws a
@@ -1184,8 +1185,8 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
 
   var progress = 0, HOLD = 90, hold = 0;
 
-  function colourAt(p) {
-    // Colour follows convergence: far from home reads as doubt.
+  function colorAt(p) {
+    // Color follows convergence: far from home reads as doubt.
     var d = Math.hypot(p.x - p.tx, p.y - p.ty) / (W * 0.45);
     var k = Math.max(0, Math.min(1, 1 - d));
     var idx = Math.min(RAMP.length - 1, Math.floor(k * RAMP.length));
@@ -1200,7 +1201,7 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
       ctx.lineJoin = ctx.lineCap = 'round';
       ctx.globalAlpha = Math.min(1, (progress - 0.45) / 0.35);
       for (var i = 1; i < pts.length; i++) {
-        ctx.strokeStyle = colourAt(pts[i]);
+        ctx.strokeStyle = colorAt(pts[i]);
         ctx.beginPath();
         ctx.moveTo(pts[i - 1].x, pts[i - 1].y);
         ctx.lineTo(pts[i].x, pts[i].y);
@@ -1209,7 +1210,7 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
       ctx.globalAlpha = 1;
     }
     for (var j = 0; j < pts.length; j++) {
-      ctx.fillStyle = colourAt(pts[j]);
+      ctx.fillStyle = colorAt(pts[j]);
       ctx.globalAlpha = progress > 0.45 ? 0.55 : 1;
       ctx.beginPath();
       ctx.arc(pts[j].x, pts[j].y, 2.6, 0, Math.PI * 2);

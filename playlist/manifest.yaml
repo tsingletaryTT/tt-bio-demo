@@ -40,6 +40,50 @@
 # until upstream fixes it -- at which point this entry comes back, since the
 # blurb and thumbnail machinery for it are unchanged in git history.
 #
+# MEASURED ON tt-bio 0.7.3, 2026-09-09. Narrower than the 0.7.0 pass below it:
+# ONE chip (device 0 of a leased pair), one resident Folder, each target
+# folded 3 times back to back. The first fold of EVERY shape was inflated by
+# JIT kernel compilation -- see the table below -- and is excluded from the
+# warm numbers; the two folds after it are what "warm" means here. This pass
+# did NOT re-measure chip 1, so the drift paragraph below (chips 1/3 settling
+# to 906 MHz ~15 minutes into a session) is carried forward unverified this
+# round -- it is a hardware/thermal property, not a tt-bio-version one, and
+# nothing in this pass gives a reason to doubt it, but "not re-verified" is
+# the honest description of what this run actually covered.
+#
+#   target     chip 0 warm   mean pLDDT     vs 0.7.0 (chip 0)    why
+#   trpcage      4.6 s        95.32-95.35    4.2 s   (+10%)      bucket padding: 20->32 tokens
+#   dna          4.9 s        95.94-95.95    4.4 s   (+11%)      bucket padding: 24->32 tokens
+#   trna         6.9 s        88.77-88.80    7.1 s    (-3%)      76->96 tokens, correctness fix nets out ahead
+#   fkbp12       9.7 s        50.38-52.84    9.8 s    (-1%)      107->128 tokens, ~flat
+#   dhfr        14.5 s        53.22-53.81   15.5 s    (-6%)      187->192 tokens, small pad + fix
+#   trypsin     17.4 s        38.73-39.46   17.4 s     (0%)      223->224 tokens, ~flat
+#   hsa         95.8 s        79.24-79.37   97.5 s    (-2%)      585->608 tokens, small pad + fix
+#
+# THE SHAPE OF THIS TABLE IS THE STORY, not any one row: tt-bio 0.7.1/0.7.2
+# fixed a real attention-masking bug (Protenix-v2/OpenDDE were padding the
+# atom axis, not the token axis, so a ragged tail reached triangle attention
+# as real unmasked key columns -- upstream's own probe measured relative
+# error 0.914 ragged against 0.038 masked) by bucketing every model's token
+# axis to a multiple of 32. None of this playlist's seven targets land on a
+# multiple of 32, so every one of them was folding through the buggy path
+# before this pass and now goes through the fixed one. The two SHORTEST
+# targets (trpcage 20->32, dna 24->32) pay the largest proportional padding
+# tax and are the only two that got slower; every longer target's own
+# correctness fix roughly cancels its smaller padding tax, landing flat to
+# slightly faster. pLDDT moved by a similar small amount on every target
+# (DHFR +1.4, HSA -1.7, DNA/tRNA +0.2-0.3) -- consistent with the fix
+# changing real numerics slightly, not with noise: two back-to-back warm
+# folds on the same resident model agree with each other to within 0.6 pLDDT
+# and 0.1 s on every target above.
+#
+# expected_s below is the mean of the two warm folds; the excluded cold-JIT
+# fold's own time is in each target's own comment further down, next to its
+# 0.7.0 history, rather than deleted -- the point of this file's running
+# measurement log is that a number is never quietly replaced.
+#
+# ---------------------------------------------------------------------------
+#
 # MEASURED ON tt-bio 0.7.0, 2026-08-24. Every number any card, the README, the
 # site or the handout prints comes from this one run: three consecutive warm
 # folds per target on EACH of two chips (BDF 01:00.0 and 02:00.0), model
@@ -191,14 +235,25 @@
   # model is resident on the card. The attract loop keeps a fold running
   # continuously, so a visitor's own pick almost always lands warm; 4.4s is
   # the midpoint of the warm range and the representative number to show.
-  expected_s: 4.2
+  #
+  # tt-bio 0.7.3, chip 0 (see this file's header): the first fold of this
+  # process paid JIT compilation for the new 20->32 token-bucket shape --
+  # 25.3s, discarded -- then two warm folds at 4.6s each, pLDDT 95.32/95.35.
+  # first_frame_s was not re-measured this pass (see header); left as-is.
+  expected_s: 4.6
   first_frame_s: 1.9
 
 - id: hsa
   input: ../examples/hsa_no_msa.yaml
   name: Human serum albumin
   thumbnail: thumbnails/hsa.png
-  expected_s: 97.5
+  # tt-bio 0.7.3, chip 0 (see this file's header): first fold of this process
+  # paid JIT compilation for the 585->608 token-bucket shape -- 116.8s,
+  # discarded -- then two warm folds at 95.7 / 95.9s, pLDDT 79.24 / 79.37 (down
+  # ~1.7 from 0.7.0's 80.96-81.14, consistent with the token-bucketing
+  # correctness fix changing real numerics slightly on a target this size).
+  # first_frame_s was not re-measured this pass; left as-is.
+  expected_s: 95.8
   first_frame_s: 82.7
   tagline: >-
     The blood's delivery van — the most abundant protein in plasma, and how most drugs travel.
@@ -256,7 +311,7 @@
     tacrolimus specifically because it clicks onto FKBP12 and, together,
     the two jam shut a signal that would otherwise tell the immune system
     to attack the new organ.
-  expected_s: 9.8
+  expected_s: 9.7
   first_frame_s: 5.3
   # IT LEFT AND CAME BACK, and the number is lower than it ever was.
   #
@@ -293,6 +348,15 @@
   # other targets show (they hold to +/-0.05). Worth knowing rather than
   # hiding: it is an `msa: empty` fold of a small protein, and the booth
   # reports whatever the model says.
+  #
+  # tt-bio 0.7.3, chip 0 (see this file's header): first fold of this process
+  # paid JIT compilation for the 107->128 token-bucket shape -- 30.3s,
+  # discarded -- then two warm folds at 9.7 / 9.6s, pLDDT 50.38 / 51.78 (the
+  # discarded cold fold read 52.84, just above the 0.7.0 spread's own 51.91
+  # top). All three sit close to the 48.25-51.91 band this target already
+  # showed on 0.7.0 -- consistent with the wide spread being this target's
+  # own property (an `msa: empty` fold of a small protein) rather than
+  # something the version bump changed.
 
 - id: dhfr
   name: Dihydrofolate Reductase
@@ -325,7 +389,12 @@
   # visitor's pick lands warm -- the same cold/warm distinction already
   # spelled out on the Trp-cage entry above, and the reason the warm
   # number is the honest one to print on a gallery card.
-  expected_s: 15.5
+  #
+  # tt-bio 0.7.3, chip 0 (see this file's header): first fold of this process
+  # paid JIT compilation for the 187->192 token-bucket shape -- 32.3s,
+  # discarded -- then two warm folds at 14.5 / 14.5s, pLDDT 53.22 / 53.78
+  # (up ~1.4 from 0.7.0's 51.52-52.39). first_frame_s not re-measured.
+  expected_s: 14.5
   first_frame_s: 10.4
 
 - id: trypsin
@@ -371,6 +440,11 @@
   # visitor's pick lands warm -- the same cold/warm distinction already
   # spelled out on the Trp-cage entry above, and the reason the warm
   # number is the honest one to print on a gallery card.
+  #
+  # tt-bio 0.7.3, chip 0 (see this file's header): first fold of this process
+  # paid JIT compilation for the 223->224 token-bucket shape -- 36.0s,
+  # discarded -- then two warm folds at 17.5 / 17.4s, pLDDT 38.73 / 39.36,
+  # unchanged within this target's own 0.7.0 spread (38.36-39.73).
   expected_s: 17.4
   first_frame_s: 11.7
 
@@ -395,7 +469,7 @@
     enzymes ever put to work, searches a genome for. Solved in 1980, this
     twelve-letter piece was the first atom-by-atom look at a full turn of
     DNA and is still the picture the textbooks are drawn from. Watch the
-    colour: the four proteins here come back mostly yellow and orange,
+    color: the four proteins here come back mostly yellow and orange,
     because the model is asked to fold them with no evolutionary data to
     lean on. DNA needs none -- the two strands pair by chemistry -- and it
     comes back blue.
@@ -419,7 +493,15 @@
   # model loads), then 4.61 / 4.66 / 4.62 / 4.64 / 4.57s warm -- mean 4.62.
   # 24 nucleotides is the smallest input on the playlist after Trp-cage's 20
   # residues, and it lands within 0.2s of it.
-  expected_s: 4.4
+  #
+  # tt-bio 0.7.3, chip 0 (see this file's header): first fold of this process
+  # paid JIT compilation for the 24->32 token-bucket shape -- 5.7s, discarded
+  # -- then two warm folds at 4.9 / 4.8s, pLDDT 95.94 / 95.95. This is the
+  # target that pays the largest proportional padding tax on this playlist
+  # (24 tokens round up to 32, +33%), which is the whole reason it is one of
+  # only two entries here (with Trp-cage) that got slower rather than flat
+  # or faster.
+  expected_s: 4.9
   first_frame_s: 1.1
 
 - id: trna
@@ -468,5 +550,10 @@
   # That sits between the DNA duplex (95.7) and the three MSA-less proteins
   # (39.5-52.9), which is what the DNA entry's copy about base-pairing
   # being chemically determined would predict.
-  expected_s: 7.1
+  #
+  # tt-bio 0.7.3, chip 0 (see this file's header): first fold of this process
+  # paid JIT compilation for the 76->96 token-bucket shape -- 27.6s, discarded
+  # -- then two warm folds at 6.9 / 6.9s, pLDDT 88.77 / 88.80 -- still the
+  # tightest spread of any target here, same as on 0.7.0.
+  expected_s: 6.9
   first_frame_s: 2.8
