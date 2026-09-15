@@ -24,11 +24,11 @@ from protocol.events import (
 )
 
 
-def test_the_version_is_three_because_the_contract_changed_twice():
+def test_the_version_is_four_because_the_contract_changed_thrice():
     """Not decoration: ui/client.py refuses to interpret a daemon whose
     version differs from its own, so this number is the only thing standing
-    between a v3 UI and a v2 daemon that will never answer its eggs."""
-    assert PROTOCOL_VERSION == 3
+    between a v4 UI and a v3 daemon that will never answer affinity questions."""
+    assert PROTOCOL_VERSION == 4
 
 
 def test_a_pick_is_not_an_event():
@@ -53,9 +53,10 @@ def test_an_event_is_not_a_client_message():
             b'{"type":"job_done","job_id":"j1","cif_path":"/a.cif"}\n')
 
 
-def test_the_client_vocabulary_is_exactly_two_messages():
-    """A general RPC channel is not what this phase is for."""
-    assert CLIENT_MESSAGE_TYPES == frozenset({"pick", "egg"})
+def test_the_client_vocabulary_is_exactly_three_messages():
+    """Pick (a fold), egg (an easter egg), and question (an affinity question).
+    Each addition is a version bump and a deliberate decision."""
+    assert CLIENT_MESSAGE_TYPES == frozenset({"pick", "egg", "question"})
 
 
 def test_an_egg_is_not_an_event_either():

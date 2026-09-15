@@ -27,6 +27,14 @@ log = logging.getLogger(__name__)
 # not to do. And a v2 UI against a v3 daemon would be handed `egg_frame`
 # events it cannot decode.
 #
+# Bumped 3 -> 4 for affinity questions. Adds one client->server message
+# (`question`) and three events (`answer_start`, `answer_done`,
+# `answer_error`) -- same reasoning as every prior bump: a v4 UI against a
+# v3 daemon would send `question` lines the daemon logs and drops (see
+# Daemon.on_client_message's "anything not X or Y is logged and dropped"
+# guard), silently promising a capability that daemon does not have; a v3
+# UI against a v4 daemon would be handed answer_* events it cannot decode.
+#
 # This number is load-bearing, not decorative: `hello` carries it, and
 # ui/client.py refuses to interpret a daemon whose version differs from its
 # own -- it logs, sets state "incompatible", and deliberately never retries
@@ -36,7 +44,7 @@ log = logging.getLogger(__name__)
 # have; a v1 UI against a v2 daemon refuses on its own and cannot be taught
 # otherwise from here. Both halves ship in one Debian package, so a mismatch
 # means a half-finished upgrade -- a thing to notice, not to paper over.
-PROTOCOL_VERSION = 3
+PROTOCOL_VERSION = 4
 
 # --- server -> client ------------------------------------------------------
 # Unchanged by multi-chip: scheduling across four cards adds no event. The
@@ -52,7 +60,8 @@ PROTOCOL_VERSION = 3
 # these somewhere else by construction.
 EVENT_TYPES = frozenset(
     {"hello", "not_ready", "job_start", "stage", "frame",
-     "job_done", "job_error", "card_state", "egg_frame", "egg_refused"}
+     "job_done", "job_error", "card_state", "egg_frame", "egg_refused",
+     "answer_start", "answer_done", "answer_error"}
 )
 
 # --- client -> server ------------------------------------------------------
@@ -66,13 +75,13 @@ EVENT_TYPES = frozenset(
 # way -- at which point a client could inject a `job_done` and fake a fold
 # result. Two sets turn a direction error into a ProtocolError at the
 # boundary instead of a mystery three modules later.
-CLIENT_MESSAGE_TYPES = frozenset({"pick", "egg"})
+CLIENT_MESSAGE_TYPES = frozenset({"pick", "egg", "question"})
 
 # Which single string field each client message carries. Kept as a table
 # rather than as a chain of `if kind == ...` inside decode_client_message so
 # that adding a message cannot accidentally add a message with NO validation:
 # the decoder looks its field up here and refuses a type that is not in it.
-CLIENT_MESSAGE_FIELDS = {"pick": "target_id", "egg": "egg_id"}
+CLIENT_MESSAGE_FIELDS = {"pick": "target_id", "egg": "egg_id", "question": "target_id"}
 
 # The longest id a client may send, in either message. The daemon reads this
 # off a public socket in a room full of strangers' laptops: a megabyte
@@ -268,6 +277,15 @@ def egg_message(egg_id):
     `decode_client_message`, and a rule written twice is a rule that drifts.
     """
     return {"type": "egg", "version": PROTOCOL_VERSION, "egg_id": egg_id}
+
+
+def question_message(question_id, target_id):
+    """Build a `question` client->server message: "answer this question,
+    whose target is already a playlist entry." Mirrors pick_message/
+    egg_message exactly -- see their docstrings for the wire-format
+    reasoning this repeats."""
+    return {"type": "question", "version": PROTOCOL_VERSION,
+            "question_id": question_id, "target_id": target_id}
 
 
 def encode_client_message(message):
