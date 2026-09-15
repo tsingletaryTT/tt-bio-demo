@@ -500,8 +500,8 @@ docs/spike-nesso1-affinity.md section 4). Do not size timeouts or UI
 
 import logging
 
-from tt_bio.nesso1 import Nesso1
-from tt_bio.nesso1_input import CLI_PREDICT_ARGS, DEFAULT_SEED, prepare, collate
+from tt_bio.nesso1 import Nesso1, DEFAULT_SEED
+from tt_bio.nesso1_input import CLI_PREDICT_ARGS, prepare, collate
 import torch
 
 log = logging.getLogger(__name__)
