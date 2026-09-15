@@ -15,8 +15,12 @@ def test_the_protocol_version_is_three_on_this_side_too():
     the failure this pair of files exists to catch.
 
     2 -> 3 when the easter egg moved onto the chips: one new client message
-    and two new events, both directions changed, so both halves move."""
-    assert PROTOCOL_VERSION == 3
+    and two new events, both directions changed, so both halves move. 3 -> 4
+    when affinity questions added `question` plus `answer_start` /
+    `answer_done` / `answer_error`. This assertion is a mirror of the
+    authoritative one and must be kept in step with it by hand -- it went
+    stale exactly this way once already (see test_protocol_is_frozen.py)."""
+    assert PROTOCOL_VERSION == 4
 
 
 def test_the_event_vocabulary_is_exactly_these_ten():
@@ -28,7 +32,8 @@ def test_the_event_vocabulary_is_exactly_these_ten():
     assert EVENT_TYPES == frozenset(
         {"hello", "not_ready", "job_start", "stage", "frame",
          "job_done", "job_error", "card_state",
-         "egg_frame", "egg_refused"})
+         "egg_frame", "egg_refused",
+         "answer_start", "answer_done", "answer_error"})
 
 
 def test_an_egg_frame_is_not_a_fold_frame():
@@ -41,11 +46,12 @@ def test_an_egg_frame_is_not_a_fold_frame():
 
 
 def test_the_client_vocabulary_is_exactly_two_messages():
-    """The pick and the egg, and nothing else. Each addition here is a
+    """The pick, the egg, and the question. Each addition here is a
     version bump and a decision; the previous revision of this test said "a
     second client->server message is a third version, a decision, and a task
-    of its own", and that is exactly what the egg was."""
-    assert CLIENT_MESSAGE_TYPES == frozenset({"pick", "egg"})
+    of its own", and that is exactly what the egg was, and then affinity
+    questions added the third message."""
+    assert CLIENT_MESSAGE_TYPES == frozenset({"pick", "egg", "question"})
 
 
 def test_every_client_message_has_a_validation_rule():
