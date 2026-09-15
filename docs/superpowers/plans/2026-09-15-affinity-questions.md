@@ -371,7 +371,55 @@ git commit -m "feat: add playlist/questions.yaml and its loader"
 - Consumes: Task 1's confirmed real API call. Task 3's `Question`/`load_questions` only for the input-file path resolution convention — this module itself takes a raw path, same as `Folder.fold()` does.
 - Produces: `class AffinityScorer` with `.load(device_id)` (opens device, loads nesso1, mirrors `Folder.load()`) and `.score(question_id, target_id, input_path, emit)` which calls `emit({"type": "answer_start", ...})` then the real nesso1 call then `emit({"type": "answer_done"/"answer_error", ...})` — same emit-callback shape `Folder.fold()` already uses, so `runner/daemon.py` can wire it identically.
 
-**NOTE:** The code below is a draft built on the *research pass's* best guess at the API shape (a CLI-style `tt-bio affinity --model nesso1`). **Task 1 may have corrected this — reread Task 1's final note and `docs/spike-nesso1-affinity.md` before writing a single line here**, and adjust the call inside `_score_real` to match what was actually found, the same way `Folder`'s own module docstring records that its design was corrected against `spike-real-fold.md`.
+**CORRECTED by Task 1's spike (`docs/spike-nesso1-affinity.md`) — read it in full
+before touching this task.** The code below in this plan file is the ORIGINAL
+draft, built on the research pass's guess (a CLI-style
+`tt-bio affinity --model nesso1`), struck through and replaced with what the
+spike actually found. Do not implement the struck-through version.
+
+~~The code below is a draft built on the *research pass's* best guess at the
+API shape (a CLI-style `tt-bio affinity --model nesso1`). Task 1 may have
+corrected this — reread Task 1's final note and `docs/spike-nesso1-affinity.md`
+before writing a single line here, and adjust the call inside `_score_real` to
+match what was actually found, the same way `Folder`'s own module docstring
+records that its design was corrected against `spike-real-fold.md`.~~
+
+**What the spike actually found (§1–§2 of the spike doc):**
+
+- There IS a CLI (`tt-bio affinity --model nesso1 <data>`), confirmed by
+  `--help` output, but it is a thin wrapper around one in-process function:
+  **`tt_bio.nesso1.screen(data, out_dir, use_tenstorrent=True, ...)`**. This is
+  the entry point to call — no shelling out needed.
+- `screen()` takes a **file path** (not a directory) fine for one question at
+  a time; it also accepts a directory for a multi-target screen, which this
+  booth does not need.
+- Weights are not bundled and were `state='missing'` on this box before the
+  spike: `tt_bio.weights.fetch("nesso1")` and `.fetch("nesso1-ccd")` had to run
+  once. `AffinityScorer.load()` should not assume the weights are already on
+  disk — see the spike doc §2.1 for the exact calls, and flag the
+  provisioning gap (postinst / `doctor.sh` need this too, same as
+  `protenix-v2`) as a follow-up rather than solving it inside this task.
+- Return shape is `list[dict]` of **named scalar fields**, not a bare float —
+  `affinity_pred_value` (continuous, same log10(IC50 µM) scale as tt-bio's
+  Boltz-2 affinity head — see spike doc §3.3 for the evidence) and
+  `affinity_probability_binary` (a literal `[0, 1]` probability of being a
+  binder — the safer field to show a visitor verbatim, per spec §7's
+  no-invented-verdict rule). `AffinityScorer.score()`'s `answer_done` event
+  should carry both, e.g. `{"score": row["affinity_probability_binary"],
+  "affinity_pred_value": row["affinity_pred_value"]}` — exact key names for
+  the event are this task's own call, but do not collapse to a single number
+  without keeping the probability one, since that is the one spec §7's
+  content-honesty rule is easiest to satisfy with.
+- **Confirmed does NOT require a prior fold**: run in a fresh process with
+  `tt_bio.protenix`/`tt_bio.opendde` never imported, scored fine. Spec §2/§3's
+  architecture stands.
+- **Realistic per-question latency is ~8–12 s, not just the on-device
+  forward pass**, even with the `Nesso1` model held resident across calls —
+  `prepare()`'s host-side YAML/RDKit/feature-tensor cost (~6–8 s) is paid on
+  **every** call, repeat target or not (only the ESM-2 embedding sub-step
+  caches on a repeat). See spike doc §4. Size `AffinityScorer.score()`'s
+  docstring and the UI's in-flight state (Task 9) around this, not around an
+  assumption that a resident model makes every question near-instant.
 
 - [ ] **Step 1: Write the failing test with a fake scorer call**
 
@@ -424,6 +472,11 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'runner.affinity'`.
 
 - [ ] **Step 3: Implement**
 
+**CORRECTED by Task 1's spike.** The original draft here had two
+`NotImplementedError` stubs marking "fill in once Task 1 reports back." Task 1
+has reported back (`docs/spike-nesso1-affinity.md`); the real calls are below,
+not stubs.
+
 ```python
 """Answers affinity questions on a dedicated chip, resident, the same
 model-residency pattern runner/folder.py's Folder uses for protenix-v2 --
@@ -432,12 +485,24 @@ why this chip is never shared with folding.
 
 Deliberately does NOT depend on any fold having happened: nesso1 scores
 from the input file's sequence + ligand alone (confirmed in
-docs/spike-nesso1-affinity.md, Step 4) -- the pocket visualization that
-pairs with this score is computed entirely client-side, in ui/pocket.py,
-from a .cif this module never sees.
+docs/spike-nesso1-affinity.md section 3.4 -- run in a fresh process with
+tt_bio.protenix/tt_bio.opendde never imported) -- the pocket visualization
+that pairs with this score is computed entirely client-side, in
+ui/pocket.py, from a .cif this module never sees.
+
+Realistic per-question latency is ~8-12s even with the model held resident
+across calls -- tt_bio.nesso1_input.prepare()'s host-side YAML/RDKit/
+feature-tensor cost (~6-8s) is paid on EVERY call, repeat target or not (see
+docs/spike-nesso1-affinity.md section 4). Do not size timeouts or UI
+"in-flight" copy around an assumption that residency makes this near-instant
+-- it makes the on-device forward pass warm (~2-4s), not the host prep.
 """
 
 import logging
+
+from tt_bio.nesso1 import Nesso1
+from tt_bio.nesso1_input import CLI_PREDICT_ARGS, DEFAULT_SEED, prepare, collate
+import torch
 
 log = logging.getLogger(__name__)
 
@@ -445,15 +510,34 @@ log = logging.getLogger(__name__)
 class AffinityScorer:
     def __init__(self, device_id):
         self.device_id = device_id
-        self._model = None  # set by load(); see Task 1's findings for what
-                             # "the model" actually is on this tt-bio version.
+        self._model = None  # set by load(); a tt_bio.nesso1.Nesso1 instance.
 
     def load(self):
-        """Open the device and load nesso1, once, for this worker's lifetime.
-        Fill in from docs/spike-nesso1-affinity.md's Step 2 findings."""
-        raise NotImplementedError(
-            "fill in from docs/spike-nesso1-affinity.md Step 2's confirmed "
-            "load call before this task is considered done")
+        """Load nesso1, once, for this worker's lifetime. Opening the device
+        is Nesso1.from_pretrained's own job (through tt_bio.tenstorrent.
+        get_device(), which -- per this project's own 0.6.3 upgrade notes --
+        already calls ensure_p300_mesh_descriptor() internally); no separate
+        device-open step is needed here, mirroring how Folder.load() relies
+        on get_device() alone. self.device_id selects the chip via
+        TT_VISIBLE_DEVICES in this worker's own process environment (set by
+        whatever spawns it -- see runner/workers.py's split_for_qa), not a
+        constructor argument threaded into this call.
+
+        Weights are NOT bundled with tt-bio: confirmed missing on a fresh
+        cache in the spike (docs/spike-nesso1-affinity.md section 2.1). This
+        call does not fetch them -- provisioning (postinst / doctor.sh) is
+        where `tt_bio.weights.fetch("nesso1")` and `.fetch("nesso1-ccd")`
+        belong, the same place protenix-v2's weights are fetched. Calling
+        this before those exist raises whatever tt-bio itself raises for a
+        missing checkpoint; that is deliberately not swallowed here.
+        """
+        torch.set_grad_enabled(False)
+        self._model = Nesso1.from_pretrained(use_tenstorrent=True)
+        # screen()'s own override (see its module comment): routes triangle
+        # ops through tt-bio's fused kernels rather than the CPU-only
+        # cuEquivariance path the checkpoint's use_kernels: true would select.
+        self._model.use_kernels = False
+        self._model.predict_args.update(CLI_PREDICT_ARGS)
 
     def score(self, question_id, target_id, input_path, emit):
         """Score one question. Never raises -- same rule as Folder.fold():
@@ -473,16 +557,48 @@ class AffinityScorer:
               "target_id": target_id, **result})
 
     def _score_real(self, input_path):
-        """The actual nesso1 call. Fill in from
-        docs/spike-nesso1-affinity.md Step 3's confirmed signature and
-        return shape -- this stub is intentionally incomplete until that
-        spike's findings are transcribed here."""
-        raise NotImplementedError(
-            "fill in from docs/spike-nesso1-affinity.md Step 3's confirmed "
-            "call before this task is considered done")
+        """The actual nesso1 call, confirmed against real hardware in
+        docs/spike-nesso1-affinity.md sections 2.2 and 3.2. Uses the
+        lower-level prepare()/collate()/model.predict() path rather than
+        screen() so the model loaded in load() stays resident across
+        questions instead of being reloaded from the checkpoint every call
+        (screen() itself calls Nesso1.from_pretrained() internally, which
+        this module deliberately avoids repeating).
+
+        Returns the two fields spec section 7's content-honesty rule cares
+        about: affinity_probability_binary (a literal [0, 1] probability of
+        being a binder -- safe to show a visitor verbatim, no unit claim
+        needed) and affinity_pred_value (continuous; same log10(IC50 uM)
+        scale as tt-bio's Boltz-2 affinity head per the spike's evidence,
+        but NOT confirmed by an explicit tt-bio doc string -- so this is
+        secondary/supporting detail in the UI, never the headline number,
+        and its copy must hedge accordingly).
+        """
+        out_dir = _affinity_out_dir(input_path)  # a scratch dir this module
+        # owns -- see the real implementation for exactly where (mirrors
+        # wherever Folder already keeps its own scratch/output paths).
+        dataset, _manifest, failed = prepare(input_path, out_dir)
+        if failed:
+            raise ValueError(f"nesso1 could not parse {input_path!r}")
+        feats = collate(dataset[0])
+        torch.manual_seed(DEFAULT_SEED)  # pins RDKit's conformer draw --
+        # screen()'s own docstring: without this, upstream repeats differ by
+        # up to 0.058 in reported affinity.
+        with torch.no_grad():
+            pred = self._model.predict(feats)
+        return {
+            "score": float(pred["affinity_probability_binary"].reshape(-1)[0]),
+            "affinity_pred_value": float(pred["affinity_pred_value"].reshape(-1)[0]),
+        }
 ```
 
-The `NotImplementedError`s above are deliberate — they mark the two places Task 1's findings must land before this task can be marked complete; they are not a placeholder left for later, they are this task's actual remaining work once Task 1 is done. Replace both bodies with the real call and rerun the tests (which monkeypatch `_score_real` and so pass regardless, but add one more test below that exercises `load`/`_score_real` for real against hardware).
+`_affinity_out_dir` is a placeholder name for wherever this task decides to
+put nesso1's scratch output (parsed structures, conformers, ESM-2 embedding
+cache) — read `runner/folder.py` for the existing convention on scratch-space
+placement before inventing a new one; it does not need per-question
+uniqueness (`prepare()` is idempotent per target, and a shared scratch dir is
+what makes the ESM-2 embedding cache in section 4 of the spike doc actually
+help on a repeat question for the same target).
 
 - [ ] **Step 4: Add one real-hardware test, gated**
 
@@ -537,6 +653,15 @@ git commit -m "feat: add AffinityScorer, resident nesso1 on a dedicated chip"
 **Interfaces:**
 - Consumes: `worker_specs(device_ids=None, max_workers=MAX_WORKERS) -> list[WorkerSpec]` (existing, unchanged signature).
 - Produces: `split_for_qa(specs: list[WorkerSpec]) -> tuple[list[WorkerSpec], WorkerSpec | None]` — `(fold_specs, qa_spec)`. `qa_spec` is `None` when `len(specs) < 2` (the single-chip-box case — spec §5's documented degrade, not an error).
+
+**Checked against Task 1's spike (`docs/spike-nesso1-affinity.md`) — no
+correction needed here.** This task's code is a pure `WorkerSpec`-splitting
+function with no dependency on nesso1's call shape, return type, or timing;
+none of the spike's findings touch it. The one spike finding that *does* bear
+on this task is non-code: `AffinityScorer.load()` (Task 4) needs
+`tt_bio.weights.fetch("nesso1")`/`.fetch("nesso1-ccd")` to have already run
+for whichever chip `split_for_qa` reserves — a provisioning concern for
+Task 6/postinst, not a reason to change `split_for_qa` itself.
 
 - [ ] **Step 1: Write the failing test**
 
