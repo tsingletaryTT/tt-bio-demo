@@ -645,6 +645,125 @@ def test_an_egg_is_refused_by_a_card_that_is_not_ready(pool):
         pool.dispatch_egg("e1", card=0)
 
 
+def test_a_question_is_sent_as_its_own_command_not_as_a_fold(pool):
+    """Task 6: the worker on the other end of the daemon's reserved Q&A card
+    is running runner/affinity_worker.py, which branches on `cmd` exactly
+    like a fold worker does -- a question arriving as a `fold` would send it
+    looking for `n_residues` and never find `question_id` at all.
+    """
+    pool.start()
+    pool.workers[1].emit({"type": CONTROL_READY})
+    assert _wait(lambda: pool.ready_cards() == [1])
+    pool.dispatch_question("q1", "dhfr", "/p/dhfr.yaml", card=1)
+    assert pool.workers[1].commands == [
+        {"cmd": "question", "question_id": "q1", "target_id": "dhfr",
+         "input_path": "/p/dhfr.yaml"}]
+
+
+def test_a_question_reserves_its_card_exactly_as_a_fold_does(pool):
+    """For the ~8-12s a question takes (docs/spike-nesso1-affinity.md), the
+    chip really is occupied -- a second question (or a fold, if this were
+    ever mistakenly dispatched to this card) must not be sent into a process
+    already mid-call.
+    """
+    pool.start()
+    pool.workers[0].emit({"type": CONTROL_READY})
+    assert _wait(lambda: pool.ready_cards() == [0])
+    pool.dispatch_question("q1", "dhfr", "/p/dhfr.yaml", card=0)
+    assert pool.ready_cards() == []
+    assert pool.busy_job(0) == "q1"
+    with pytest.raises(ValueError):
+        pool.dispatch_question("q2", "trypsin", "/p/trypsin.yaml", card=0)
+    pool.workers[0].emit({"type": CONTROL_IDLE, "job_id": "q1"})
+    assert _wait(lambda: pool.ready_cards() == [0])
+
+
+def test_a_question_is_refused_by_a_card_that_is_not_ready(pool):
+    """The same exception every other dispatch method raises, so the daemon
+    has one thing to catch for 'that chip would not take it'."""
+    pool.start()
+    with pytest.raises(ValueError):
+        pool.dispatch_question("q1", "dhfr", "/p/dhfr.yaml", card=0)
+
+
+def test_a_question_lost_with_its_worker_names_its_target(tmp_path):
+    """Unlike an egg's reservation (target_id=None), a question's reservation
+    DOES carry a real target_id -- Daemon.on_qa_worker_lost reports an
+    answer_error naming it, so a visitor's 'checking whether it binds...'
+    spinner does not hang forever on a dead Q&A worker.
+    """
+    made, lost = {}, []
+
+    def spawn(spec, env):
+        made[spec.card] = _FakeWorker(spec, env)
+        return made[spec.card]
+
+    p = WorkerPool([_spec(3)], on_event=lambda c, e: None,
+                   log_root=str(tmp_path), spawn=spawn, restart_delay_s=30.0,
+                   on_worker_lost=lambda *a: lost.append(a))
+    try:
+        p.start()
+        made[3].emit({"type": CONTROL_READY})
+        assert _wait(lambda: p.ready_cards() == [3])
+        p.dispatch_question("q1", "dhfr", "/p/dhfr.yaml", card=3)
+        made[3].die()
+        assert _wait(lambda: bool(lost))
+        assert lost == [(3, "q1", "dhfr")]
+    finally:
+        p.stop()
+
+
+def test_the_production_spawn_can_run_a_different_worker_module(tmp_path):
+    """Task 6: the daemon's dedicated Q&A pool needs the exact same
+    Popen/pipe/log machinery `_spawn_subprocess` already gives fold workers,
+    just running `runner.affinity_worker` instead of `runner.worker` -- so
+    `module=` has to actually reach the child's argv, not just be accepted
+    and ignored.
+    """
+    from runner.pool import _spawn_subprocess
+
+    captured = {}
+
+    class _FakeHandle:
+        def __init__(self, spec, env, *, log_path, python=None,
+                     module="runner.worker"):
+            captured["module"] = module
+
+    import runner.pool as pool_mod
+    orig = pool_mod._SubprocessWorker
+    pool_mod._SubprocessWorker = _FakeHandle
+    try:
+        _spawn_subprocess(_spec(0), {}, log_root=str(tmp_path),
+                          module="runner.affinity_worker")
+    finally:
+        pool_mod._SubprocessWorker = orig
+    assert captured["module"] == "runner.affinity_worker"
+
+
+def test_the_production_spawns_default_module_is_still_the_fold_worker(tmp_path):
+    """Guard against the mutation this test's sibling exists to catch going
+    the other way -- every EXISTING fold-worker call site must keep getting
+    runner.worker with no changes to any of its call sites.
+    """
+    from runner.pool import _spawn_subprocess
+
+    captured = {}
+
+    class _FakeHandle:
+        def __init__(self, spec, env, *, log_path, python=None,
+                     module="runner.worker"):
+            captured["module"] = module
+
+    import runner.pool as pool_mod
+    orig = pool_mod._SubprocessWorker
+    pool_mod._SubprocessWorker = _FakeHandle
+    try:
+        _spawn_subprocess(_spec(0), {}, log_root=str(tmp_path))
+    finally:
+        pool_mod._SubprocessWorker = orig
+    assert captured["module"] == "runner.worker"
+
+
 def test_an_egg_lost_with_its_worker_names_no_target(tmp_path):
     """The reservation an egg makes carries `target_id=None` on purpose: the
     daemon counts a worker death against the TARGET that was folding, and an

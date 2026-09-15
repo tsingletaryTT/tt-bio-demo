@@ -479,6 +479,33 @@ class WorkerPool:
         command = {"cmd": "egg", "egg_id": egg_id, "seed": seed}
         self._send(command, reservation, card)
 
+    def dispatch_question(self, question_id, target_id, input_path, card):
+        """Send one affinity-question command to `card`'s worker
+        (`runner/affinity_worker.py`).
+
+        Same shape as `dispatch`/`dispatch_egg` -- same readiness gates, same
+        `_busy` reservation under `_send`, freed by the same `worker.idle` --
+        because this module has no idea (and does not need to know) that the
+        worker on the other end of this particular card is running nesso1
+        rather than protenix-v2. `runner/daemon.py` is the only thing that
+        decides which card this is ever called for (its own reserved Q&A
+        card, from `runner.workers.split_for_qa`), so this pool stays generic
+        over "one command, one reservation, one reader thread" the same way
+        it already is for a fold and an egg.
+
+        The reservation carries a real `target_id` (unlike `dispatch_egg`'s
+        `None`) because a question's failure IS attributable to a target --
+        `Daemon.on_qa_worker_lost` reports it as an `answer_error`, not a
+        `job_error`, so it never touches the fold failure counter or
+        `QUARANTINE_AFTER` either way; the field is carried here only so the
+        daemon's loss-handler knows which target's question died.
+        """
+        reservation = Job(job_id=question_id, target_id=target_id,
+                          input_path=input_path)
+        command = {"cmd": "question", "question_id": question_id,
+                   "target_id": target_id, "input_path": input_path}
+        self._send(command, reservation, card)
+
     def _send(self, command, job, card):
         """Reserve `card` for `job` and write `command` to its worker.
 
@@ -830,7 +857,8 @@ class _SubprocessWorker:
       than unlink them (Task 11).
     """
 
-    def __init__(self, spec, env, *, log_path, python=None):
+    def __init__(self, spec, env, *, log_path, python=None,
+                 module="runner.worker"):
         self.spec = spec
         self._log_path = Path(log_path)
         self._log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -839,7 +867,12 @@ class _SubprocessWorker:
         # makes truncating this file in place correct.
         self._log = open(self._log_path, "a", buffering=1)
         read_fd, write_fd = os.pipe()
-        argv = [python or sys.executable, "-m", "runner.worker",
+        # `module` defaults to the fold worker, and every fold-worker call
+        # site keeps relying on that default -- it exists so the daemon's
+        # dedicated Q&A pool (Task 6) can spawn `runner.affinity_worker`
+        # instead, over this exact same Popen/pipe/log machinery, without a
+        # second copy of it.
+        argv = [python or sys.executable, "-m", module,
                 "--card", str(spec.card), "--event-fd", str(write_fd)]
         try:
             self._proc = subprocess.Popen(
@@ -939,7 +972,14 @@ class _SubprocessWorker:
                         "stream ended", self.spec.card, self._proc.pid)
 
 
-def _spawn_subprocess(spec, env, *, log_root):
-    """The production `spawn`: one real worker process for one real chip."""
+def _spawn_subprocess(spec, env, *, log_root, module="runner.worker"):
+    """The production `spawn`: one real worker process for one real chip.
+
+    `module` lets a caller run a different worker entry point over this same
+    machinery -- the daemon's dedicated Q&A `WorkerPool` (Task 6) binds this
+    with `module="runner.affinity_worker"` via `functools.partial`, so the
+    fold pool's own default (and every existing caller) is unaffected.
+    """
     return _SubprocessWorker(spec, env,
-                             log_path=_worker_log_path(log_root, spec.card))
+                             log_path=_worker_log_path(log_root, spec.card),
+                             module=module)

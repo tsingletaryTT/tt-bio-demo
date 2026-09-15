@@ -12,7 +12,7 @@ the four things that must have exactly one owner for the whole booth:
 - the **failure/quarantine policy** for *targets*.
 
 It also owns **everything a UI can ask it for** (`on_client_message`), which
-is two requests with deliberately different claims on the hardware:
+is three requests with deliberately different claims on the hardware:
 
 - a **visitor's pick** (`_accept_pick`) becomes a real `Job` at
   `VISITOR_PRIORITY`, so the next chip to come free takes it ahead of the
@@ -26,12 +26,25 @@ is two requests with deliberately different claims on the hardware:
   available: the next chip that is *already* free, never a fold in flight,
   never a place in the queue at all, and a refusal after `EGG_WAIT_S` if the
   booth is busy. See `dispatch_once`.
+- an **affinity question** (`_accept_question`), whose claim is on hardware
+  this daemon's own fold `Job`/queue machinery never touches at all: one
+  chip, reserved permanently at startup (`runner.workers.split_for_qa`) for a
+  SECOND, entirely separate `WorkerPool` running `runner.affinity_worker`
+  instead of `runner.worker` (see `run()`). A question also folds its
+  target, exactly as a pick does (`_accept_question` calls `_accept_pick`
+  itself) -- the two are independent completions joined by `target_id` on
+  the UI side, and a question queued in `self._qa_queue` is drained onto the
+  reserved chip by `_dispatch_qa_once`, on the same cadence as
+  `dispatch_once` but with no fold-scheduling decision to make at all: one
+  chip, one worker, one question at a time.
 
-Both arrive on a client's reader thread, so `on_client_message` records and
-returns, and never raises: an exception there kills that client's reader and
-the visitor's UI goes deaf with nothing on screen saying so. Neither request
-is special-cased downstream -- once a pick is a `Job`, `dispatch_once` cannot
-tell it from an attract job, which is the entire point of the priority queue.
+All three arrive on a client's reader thread, so `on_client_message` records
+and returns, and never raises: an exception there kills that client's reader
+and the visitor's UI goes deaf with nothing on screen saying so. None of the
+three is special-cased downstream of its own queue -- once a pick is a
+`Job`, `dispatch_once` cannot tell it from an attract job, which is the
+entire point of the priority queue; a question is simpler still, since its
+own queue never holds anything but questions.
 
 A pick also **wakes the dispatch loop** (`_wake`) rather than waiting out
 `run()`'s idle backoff. The failure that guards against is concrete: a pick
@@ -74,6 +87,7 @@ this backwards.
 
 import argparse
 import collections
+import functools
 import logging
 import os
 import signal
@@ -93,11 +107,17 @@ from runner.env import log_root_size, prune_log_root, runner_environ
 # writes into that directory agree on where it is without copying the path
 # into two modules.
 from runner.folder import _structures_dir_for
-from runner.pool import WORKER_LOG_CAP_BYTES, WorkerPool
+# `_spawn_subprocess` (private, like `_structures_dir_for` above) is the
+# production `spawn` seam `WorkerPool` defaults to for a fold worker; the
+# dedicated Q&A pool below binds it to a different entry point
+# (`runner.affinity_worker`) via `functools.partial` rather than needing a
+# second copy of the Popen/pipe/log machinery. See runner/pool.py's `module=`
+# parameter and its own docstring for why this is safe to share.
+from runner.pool import WORKER_LOG_CAP_BYTES, WorkerPool, _spawn_subprocess
 from runner.preflight import not_ready_event, run_preflight
 from runner.queue import VISITOR_PRIORITY, Job, JobQueue
 from runner.server import EventServer
-from runner.workers import worker_specs
+from runner.workers import split_for_qa, worker_specs
 
 log = logging.getLogger("tt-bio-demod")
 
@@ -333,6 +353,24 @@ class Daemon:
         # per retry was a disk-space problem rather than a tidiness one.
         self._last_scan_failure = None
         self._scan_failures = 0
+        # Affinity questions (spec: docs/superpowers/specs/
+        # 2026-09-15-affinity-qa-design.md). `_qa_spec` is the one WorkerSpec
+        # `_build_pool` reserved via `split_for_qa` -- None until `_build_pool`
+        # has run, and permanently None on a one-chip box (no chip to
+        # reserve; see that function's own docstring). `_qa_pool` is a
+        # SECOND, entirely separate `WorkerPool` holding just that one spec,
+        # built and started in `run()` alongside the fold pool -- never
+        # merged into `self.pool`, because CardPool and `dispatch_once`'s
+        # scheduling loop are derived from `self.pool.cards` alone, and the
+        # reserved chip must never be schedulable for a fold (spec section 5:
+        # "dedicate one chip, don't time-share"). `_qa_queue` is a plain FIFO
+        # of `(question_id, target_id, input_path)` -- nesso1 answers one
+        # question at a time (runner/affinity.py's own module docstring), so
+        # a question that arrives while the reserved chip is still scoring
+        # the last one waits here rather than being dropped or double-sent.
+        self._qa_spec = None
+        self._qa_pool = None
+        self._qa_queue = []
 
     # -- inventory ---------------------------------------------------------
 
@@ -446,7 +484,16 @@ class Daemon:
                 # not vanish from the greeting just because it isn't free at
                 # this exact instant. See CardPool.all_indices()'s docstring.
                 "cards": self.cards.all_indices(),
-                "models": ["protenix-v2"], "preflight": "ok"}
+                "models": ["protenix-v2"], "preflight": "ok",
+                # True once `_build_pool` has reserved a chip for Q&A
+                # (`split_for_qa`); permanently False on a one-chip box. Not
+                # gated on the qa worker itself having announced ready --
+                # same reasoning as `cards` above, this describes the
+                # booth's configuration, not an instant's readiness. The UI
+                # hides the whole question feature when this is False
+                # (spec section 5) rather than showing a queue that could
+                # never answer.
+                "qa_capable": self._qa_spec is not None}
 
     def _emit(self, event):
         self.server.broadcast(event)
@@ -469,10 +516,10 @@ class Daemon:
         point the visitor's UI goes deaf with nothing on screen saying so. Same
         shape, and the same reason, as the UI's own GLib callbacks.
 
-        Anything that is not a `pick` or an `egg` is logged and dropped.
-        `decode_client_message` has already refused everything malformed and
-        everything of an unknown type; this is the second line of that, not the
-        first.
+        Anything that is not a `pick`, an `egg` or a `question` is logged and
+        dropped. `decode_client_message` has already refused everything
+        malformed and everything of an unknown type; this is the second line
+        of that, not the first.
         """
         try:
             kind = message.get("type")
@@ -480,9 +527,11 @@ class Daemon:
                 self._accept_pick(message)
             elif kind == "egg":
                 self._accept_egg(message, now)
+            elif kind == "question":
+                self._accept_question(message)
             else:
                 log.info("ignoring client message %r; this daemon acts on "
-                         "'pick' and 'egg' only", kind)
+                         "'pick', 'egg' and 'question' only", kind)
         except Exception:
             # Deliberately broad, and deliberately terminal: there is nothing
             # to report back (the client->server direction has no replies) and
@@ -572,6 +621,53 @@ class Daemon:
             self._egg_request = (egg_id, deadline)
         log.info("egg %s requested; waiting up to %.1fs for a free chip",
                  egg_id, EGG_WAIT_S)
+
+    def _accept_question(self, message):
+        """A visitor (or the attract-loop cadence) asked a question: queue an
+        affinity score for it on the reserved Q&A chip, and fold its target
+        too.
+
+        The design spec (section 4) is explicit that a `question` message
+        "[e]nqueues the underlying fold pick ... exactly as `pick` does, AND
+        enqueues an affinity job on the dedicated Q&A worker" -- the answer
+        is shown next to the structure it is about, and nothing upstream of
+        this method ever sends a separate `pick` alongside a `question` (the
+        UI's two trigger paths -- a visitor's tap, the attract-loop cadence
+        -- send only `question`). So this calls `_accept_pick` itself rather
+        than leaving the fold up to a message that never arrives; an earlier
+        draft of this method's own docstring said the opposite ("does NOT
+        touch self.queue at all"), which was this task's own brief
+        paraphrasing the spec loosely rather than the spec itself, and is
+        corrected here now that the real code has been read against it.
+
+        The two enqueues are independent on purpose. `_accept_pick` may
+        refuse the fold for reasons that have nothing to do with whether the
+        SCORE can still be computed -- an already-folding or quarantined
+        target both refuse the pick silently (see its own docstring) -- but
+        nesso1 needs no fold at all (runner/affinity.py's module docstring:
+        "does NOT depend on any fold having happened"), so the question is
+        still queued regardless of what the fold half decided.
+        """
+        question_id = message.get("question_id")
+        target_id = message.get("target_id")
+        target = self._playlist_target(target_id)
+        if target is None:
+            log.info("ignoring question %r: no such target %r in the "
+                     "playlist", question_id, target_id)
+            return
+        if self._qa_spec is None:
+            log.info("ignoring question %r: this booth has no chip "
+                     "reserved for Q&A", question_id)
+            return
+        # Exactly as a visitor's pick does -- see the docstring above. Its
+        # own refusals (unknown target, quarantined, already folding) are
+        # silent on the wire, same as a real pick's; nothing here needs to
+        # know which one happened.
+        self._accept_pick({"target_id": target_id})
+        self._qa_queue.append((question_id, target_id, str(target)))
+        self._wake.set()
+        log.info("question %s (target %s) queued for Q&A", question_id,
+                 target_id)
 
     def _playlist_target(self, target_id):
         """The playlist file whose stem is exactly `target_id`, or None.
@@ -705,6 +801,56 @@ class Daemon:
             # rather than idle, and stays out of schedulable() until a later
             # telemetry sample sees it cool.
             self._emit(idle)
+
+    def on_qa_event(self, card, event):
+        """One protocol event from the Q&A worker (`answer_start` /
+        `answer_done` / `answer_error`). Runs on the Q&A pool's own reader
+        thread, outside its lock -- same contract as `on_event`.
+
+        Forwarded to the UI unchanged, and nothing else: unlike a fold's
+        `job_start`/`job_done`, none of these events carry a `cif_path`
+        (`_emit_and_track`'s structure-protection bookkeeping does not
+        apply), and the reserved Q&A card is not part of `self.cards` at all
+        -- it is excluded from the fold pool entirely by `split_for_qa`, so
+        there is no `card_state` to update and no target failure count these
+        events could ever touch. A separate method rather than routing
+        through `on_event` itself, even though the latter would technically
+        no-op correctly for these event types: naming it makes that
+        "nothing else happens here" a fact this method states, not a fact
+        that happens to be true of `on_event`'s unrelated `job_start`/
+        `job_done` branches today.
+        """
+        self._emit(event)
+
+    def on_qa_worker_lost(self, card, job_id, target_id=None):
+        """The Q&A worker died with a question in flight. Runs on the Q&A
+        pool's own reader thread.
+
+        Reports an `answer_error` so a visitor's "checking whether it
+        binds..." spinner does not wait forever -- the same reason
+        `on_worker_lost` reports a `job_error` for a fold. `job_id` here is
+        the reservation `WorkerPool.dispatch_question` made, which is the
+        `question_id` (see that method's own docstring), so this names the
+        actual question on the wire.
+
+        Deliberately touches NONE of the fold bookkeeping: no target failure
+        count, no quarantine, no CardPool `mark_idle` -- a question's failure
+        is not a fold's failure, and the reserved chip is not a card
+        CardPool tracks at all. Guarded exactly like `on_worker_lost`: an
+        exception escaping this method would kill the Q&A pool's one reader
+        thread, and the reserved chip would stop reporting anything for the
+        rest of the session.
+        """
+        try:
+            log.warning("Q&A card %s: worker died with question %s (target "
+                        "%s) in flight", card, job_id, target_id)
+            self._emit({"type": "answer_error", "question_id": job_id,
+                        "target_id": target_id,
+                        "message": "the worker holding this chip exited "
+                                   "mid-question"})
+        except Exception:
+            log.exception("Q&A card %s: reporting the loss of question %s "
+                          "raised", card, job_id)
 
     def on_worker_lost(self, card, job_id, target_id=None):
         """A worker died with `job_id` in flight. Runs on a pool reader thread.
@@ -847,6 +993,40 @@ class Daemon:
                 self.queue.submit(job)
                 continue
             self._in_flight[card] = job.target_id
+
+    def _dispatch_qa_once(self):
+        """One pass: give the next queued question to the reserved Q&A chip,
+        if it is free.
+
+        The Q&A equivalent of `dispatch_once`, cut down to match a much
+        smaller problem: one chip, one worker, one question at a time, so
+        there is no `schedulable()`/`ready_cards()` intersection to compute
+        -- `self._qa_pool.ready_cards()` is either `[card]` or `[]`. A no-op,
+        never an exception, when there is nothing queued or no chip was ever
+        reserved (`_qa_pool` stays `None` on a one-chip box for the life of
+        the daemon) -- `run()` calls this every pass unconditionally, the
+        same way it calls `dispatch_once`.
+        """
+        if self._qa_pool is None or not self._qa_queue:
+            return
+        ready = self._qa_pool.ready_cards()
+        if not ready:
+            return                      # still scoring the previous question
+        card = ready[0]
+        question_id, target_id, input_path = self._qa_queue[0]
+        try:
+            self._qa_pool.dispatch_question(question_id, target_id,
+                                            input_path, card)
+        except ValueError:
+            # Same race `dispatch_once` guards for a fold: the Q&A worker
+            # died (or was otherwise refused) between `ready_cards()` above
+            # and the send. Left at the front of the queue rather than
+            # requeued at the back -- it was already next in line, and
+            # nothing about this failure changes that.
+            log.warning("Q&A card %s refused question %s (%s); it stays "
+                        "queued", card, question_id, target_id)
+            return
+        self._qa_queue.pop(0)
 
     # -- the easter egg's share of the hardware ----------------------------
 
@@ -1036,11 +1216,26 @@ class Daemon:
                                 summary, self._scan_failures)
                 self._stop.wait(DEVICE_SCAN_RETRY_S)
                 continue
-            self.pool = WorkerPool(specs, self.on_event,
+            # split_for_qa reserves the highest-card WorkerSpec for Q&A when
+            # 2+ chips are detected (deterministically -- a restart never
+            # silently reassigns which physical chip answers questions), and
+            # returns (specs, None) unchanged on one chip. self.pool is built
+            # from FOLD specs only: the reserved chip must never be
+            # schedulable for a fold (spec section 5, "dedicate one chip,
+            # don't time-share") and CardPool is derived from self.pool.cards
+            # alone (the `cards` property above), so keeping it out of this
+            # list is what keeps it out of dispatch_once's scheduling loop
+            # and out of the thermal guard's bookkeeping -- both by
+            # construction, not by a separate exclusion check anywhere else.
+            fold_specs, self._qa_spec = split_for_qa(specs)
+            self.pool = WorkerPool(fold_specs, self.on_event,
                                    log_root=self.config.log_root,
                                    on_worker_lost=self.on_worker_lost)
-            log.info("folding on %d chip(s): %s", len(specs),
-                     ", ".join(f"{s.card} ({s.label})" for s in specs))
+            log.info("folding on %d chip(s): %s", len(fold_specs),
+                     ", ".join(f"{s.card} ({s.label})" for s in fold_specs))
+            if self._qa_spec is not None:
+                log.info("card %s reserved for Q&A (%s)",
+                         self._qa_spec.card, self._qa_spec.label)
             return True
         return False
 
@@ -1077,6 +1272,32 @@ class Daemon:
             # thread below can be the first to touch the lazy property.
             self.cards
             self.pool.start()
+            if self._qa_spec is not None:
+                # A second, entirely separate WorkerPool holding just the one
+                # reserved spec -- never merged into self.pool (see
+                # _build_pool's comment on why). Built here rather than in
+                # _build_pool itself so a test can inject self._qa_pool
+                # exactly as it can inject self.pool, and so this follows
+                # that method's naming: `_build_pool` only ever decided WHICH
+                # chip is reserved, never spawned anything.
+                #
+                # `spawn=` binds runner/pool.py's own production seam to a
+                # DIFFERENT worker entry point (`runner.affinity_worker`
+                # instead of `runner.worker`) over the identical Popen/pipe/
+                # log machinery -- see that module's docstring for why this
+                # is the whole of the concurrency-model decision: a fold
+                # worker and a Q&A worker are both "one subprocess holding
+                # one device", and the ONLY thing that differs between them
+                # is which module `python -m` runs.
+                if self._qa_pool is None:
+                    self._qa_pool = WorkerPool(
+                        [self._qa_spec], self.on_qa_event,
+                        log_root=self.config.log_root,
+                        on_worker_lost=self.on_qa_worker_lost,
+                        spawn=functools.partial(
+                            _spawn_subprocess, log_root=self.config.log_root,
+                            module="runner.affinity_worker"))
+                self._qa_pool.start()
             # Stored (rather than fire-and-forget) so the finally below can
             # join it before tearing the workers and the socket out from under
             # it: without a handle, shutdown order was whatever the OS
@@ -1101,6 +1322,7 @@ class Daemon:
                         log.error("no playlist targets available; idling")
                         idle = True
                 self.dispatch_once()
+                self._dispatch_qa_once()
                 if time.monotonic() >= next_prune:
                     next_prune = time.monotonic() + JANITOR_PERIOD_S
                     self._prune_logs()
@@ -1127,6 +1349,11 @@ class Daemon:
                 # worker holding a device is a chip nobody can fold on until
                 # someone finds the process.
                 self.pool.stop()
+            if self._qa_pool is not None:
+                # The reserved chip's worker, same rule: a daemon that exits
+                # leaving it running is a chip nobody can fold OR answer
+                # questions on until someone finds the process.
+                self._qa_pool.stop()
             self.server.stop()
 
     def stop(self):
