@@ -81,10 +81,17 @@ def test_enqueue_playlist_populates_n_residues_from_the_target(tmp_path, monkeyp
     Job it submitted. The real count comes from tt_bio's own chain reader,
     summing every non-ligand chain's sequence length, matching
     tests/fixtures/streams/capture_real_fold.py's own formula.
+
+    tt-bio 0.8.0: _read_bio_chains grew a 5th tuple element
+    (`modifications`) -- this fixture used the pre-0.8.0 4-tuple shape,
+    which would have masked the same "too many values to unpack" regression
+    test_folder_events.py caught in _run_fold, just degraded to n_residues=0
+    via _residue_count's own try/except instead of crashing loudly. Kept at
+    the real current 5-tuple shape now.
     """
     _fake_tt_bio_main_read_bio_chains(monkeypatch, [
-        ("A", "NLYIQWLKDGGPSSGRPPPS", None, "protein"),   # 20 residues
-        ("B", "CCD_ATP", None, "ligand"),                  # excluded
+        ("A", "NLYIQWLKDGGPSSGRPPPS", None, "protein", None),   # 20 residues
+        ("B", "CCD_ATP", None, "ligand", None),                  # excluded
     ])
     playlist = tmp_path / "playlist"
     playlist.mkdir()

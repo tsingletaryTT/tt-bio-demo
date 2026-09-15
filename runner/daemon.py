@@ -969,7 +969,9 @@ class Daemon:
         try:
             from tt_bio.main import _read_bio_chains
             chains = _read_bio_chains(target)
-            return sum(len(seq) for _cid, seq, _msa, mol_type in chains
+            # tt-bio 0.8.0: _read_bio_chains grew a 5th tuple element
+            # (`modifications`); unused here, same as runner/folder.py.
+            return sum(len(seq) for _cid, seq, _msa, mol_type, _mods in chains
                        if mol_type != "ligand")
         except Exception:
             log.warning("could not determine residue count for %s; "

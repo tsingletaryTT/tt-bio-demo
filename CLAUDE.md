@@ -1324,6 +1324,119 @@ known-environmental red set aside), 18 hardware sanity tests
 `test_new_targets_timing.py` harness, all on real Blackhole silicon under a
 gozer lease.
 
+### tt-bio 0.8.0: a 4-tuple that should have been a 5-tuple, and every fold went dark (2026-09-15)
+
+Prompted with a bump-and-remeasure task for the single release cut since 0.7.3
+(2026-09-10, five days out). A research pass first confirmed: zero pin churn
+(`requires-python`, `ttnn==0.68.0` both unchanged, so the vendored SFPI
+toolchain needed no changes -- same as every prior bump); real Protenix-v2/
+OpenDDE fixes (`modifications:`/`templates:`/`--max_msa_seqs` now honoured
+instead of silently dropped; a hang above ~640 residues on Wormhole fixed by
+deriving the shape-split decision from L1 budget instead of token count,
+raising the ceiling 980->1024; `ttnn.close_device()` now actually releases
+the driver-level card claim); and a new `tt_bio/capabilities.py` +
+`docs/model-capabilities.md` capability matrix, upstream documentation this
+project does not consume as code. `dump_fn` was re-verified by direct
+import, the same habit every past bump has followed: still a parameter of
+`edm_sample` and of `OpenDDE.fold`, still absent from `Protenix.fold`.
+`tt_bio.weights` (`fetch`/`resolve`/`artifacts_for`/`status`) also
+re-verified unchanged by signature.
+
+**The bump itself was one variable. Getting a single fold to complete on it
+was not.** The first hardware measurement attempt FAILED EVERY TARGET, all
+seven, all three folds each, instantly, before any device work: `"fold
+failed for <target>: too many values to unpack (expected 4)"`. The cause:
+`tt_bio.main._read_bio_chains` grew a 5th tuple element in 0.8.0
+(`modifications`, parallel to the new `modifications:` YAML support) --
+`(chain_id, sequence, msa_spec, mol_type)` became `(chain_id, sequence,
+msa_spec, mol_type, modifications)`. Three call sites in this repo still
+unpacked 4: `runner/folder.py`'s `_run_fold` (the one that matters --
+every real fold goes through it), `runner/daemon.py`'s `_residue_count`
+(degrades to `n_residues=0` with a logged warning rather than crashing, so
+it would have shipped silently wrong rather than loudly broken), and two
+reference scripts (`docs/upstream/protenix-dump-fn/reproduce.py`,
+`tests/fixtures/streams/capture_real_fold.py`). Every one of them checked
+out clean under "does `tt_bio.main._read_bio_chains` still exist and import"
+-- the step this project's own convention calls for before touching version
+numbers -- because the function's NAME didn't change, only the SHAPE of what
+it returns. Checking an import resolves is not the same claim as checking
+its contract held.
+
+**No unit test caught it, and the reason is structural, not an oversight.**
+`test_folder_events.py`'s own module docstring already named `_run_fold` "the
+one seam this module controls without hardware" and every existing test
+either monkeypatches it away entirely or exercises `Folder.load()` only --
+nothing exercised the feature-building path _run_fold owns in between. Only
+a real hardware fold surfaced this. Fixed by widening every unpacking site to
+5 (daemon.py and the two reference scripts discard `modifications` --
+nothing on this playlist uses `modifications:`, so threading it through
+`build_complex_features` would be an untested code path exercised by nothing
+this booth runs); `test_folder_events.py` now has
+`test_run_fold_against_the_real_read_bio_chains_tuple_shape`, parametrized
+over the real 5-tuple (must pass) and the pre-0.8.0 4-tuple (must raise --
+kept specifically as the demonstration that this exact regression would have
+gone undetected before this fake existed), and `test_daemon.py`'s residue-
+count fixture was updated off the same stale 4-tuple shape it had been
+quietly carrying.
+
+**Once fixed, the finding is that nothing moved -- and that is exactly what
+the research pass predicted.** Same method as the 0.7.3 pass: one chip, one
+resident Folder, three folds per target, first fold of each shape discarded.
+
+| target | 0.7.3 (chip 0) | 0.8.0 (chip 0, warm) | mean pLDDT: 0.7.3 -> 0.8.0 |
+|---|---|---|---|
+| Trp-cage | 4.6 s | 4.6 s | 95.32-95.35 -> 95.33-95.34 |
+| DNA duplex | 4.9 s | 4.8 s | 95.94-95.95 -> 95.93-95.94 |
+| tRNA | 6.9 s | 6.9 s | 88.77-88.80 -> 88.80-88.82 |
+| FKBP12 | 9.7 s | 9.7 s | 50.38-52.84 -> 50.19-51.68 |
+| DHFR | 14.5 s | 14.5 s | 53.22-53.81 -> 53.23-54.19 |
+| Trypsin | 17.4 s | 17.4 s | 38.73-39.46 -> 39.03-39.32 |
+| HSA | 95.8 s | 95.5 s | 79.24-79.37 -> 79.48-79.51 |
+
+Flat everywhere, inside each target's own noise band. Consistent with what
+actually changed upstream: none of these seven targets use `modifications:`/
+`templates:`, none is within reach of the 640-residue hang threshold (HSA is
+largest at 585), and this measurement folds one target at a time in one
+process, so `close_device()`'s fix has nothing here to exercise either.
+`playlist/manifest.yaml`'s header carries the full table and reasoning;
+`expected_s` was refreshed on every entry regardless of whether the number
+moved, same "refresh to THIS run's number rather than let a coincidence
+stand in for a measurement" principle as every prior pass. Only DNA (4.9s ->
+4.8s) and HSA (95.8s -> 95.5s) actually changed the printed digit, so those
+are the only two numbers touched in README.md, `docs/index.html`'s card meta
+lines and the one-pager's table -- the PDF was rebuilt and eyeballed.
+
+**The cold-fold gap was much smaller this pass, and that is worth recording
+as its own small finding.** The 0.7.3 pass's first fold of each shape was
+inflated 4-5x by JIT compilation (trpcage: 25.3s cold against 4.6s warm)
+because 0.7.1/0.7.2's token-bucketing fix introduced padded shapes that had
+never been compiled before. 0.8.0 changes none of that bucketing, so the
+persistent kernel cache from the 0.7.3 pass covered the same shapes: trpcage's
+first fold this pass was 8.18s against a 4.64s warm mean (~1.8x, not ~5x),
+and HSA's first fold (95.93s) landed INSIDE its own warm band -- essentially
+no JIT tax at all for the largest target on the playlist. Still discarded as
+a matter of method, not because it moved the mean.
+
+**The full hardware suite hit the board-reset fault this file has already
+named twice** (2026-08-17, 2026-08-24): board `0000046131924055` (chips 2/3)
+threw `TT_THROW: Device 2: Timed out while waiting for active ethernet core
+(x=29,y=25) to become active again` mid-run, which took the whole pytest
+process down with a hard `Fatal Python error: Aborted` during device
+teardown in `test_new_targets_timing.py`'s fixture -- not a code regression;
+that board had sat unused (FREE) since before this session started. Isolated
+by rerunning `test_egg_on_device.py` alone (6 errors, same eth-core timeout),
+fixed by `gozer release` (which resets on release) and re-acquiring fresh --
+the isolated file then passed 6/6, and the full `--hw` suite passed clean on
+the retry. Worth restating since it keeps happening: a board that has sat
+idle needs a reset before it needs a bug report.
+
+Suite green: **1,608 total** (1,177 UI + 430 runner/integration + the
+four-chip pool test), the one known-environmental `test_the_pin_is_the_one_
+setup_venvs_actually_declares` false alarm set aside (confirmed again with
+`TT_BIO_DEMO_PREFIX=/nonexistent`: the repo's own pin resolves to 0.8.0
+correctly; the `/opt/tt-bio-demo` install this reads by default is still the
+same real Aug-31 package, now three versions stale).
+
 ## Conventions
 
 - **Keep the README's screenshots current.** The README claims every image on it is the

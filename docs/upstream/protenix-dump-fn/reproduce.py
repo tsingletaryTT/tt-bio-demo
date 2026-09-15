@@ -56,13 +56,15 @@ def main():
     cache.mkdir(parents=True, exist_ok=True)
     ckpt_path = weights.fetch("protenix-v2", root=cache)
 
+    # tt-bio 0.8.0: _read_bio_chains grew a 5th tuple element
+    # (`modifications`); unused here, same as runner/folder.py.
     chains = _read_bio_chains(EXAMPLE_YAML)
     bonds = _read_bio_constraints(EXAMPLE_YAML)
     chain_specs = [(cseq, _resolve_a3m_text(spec, cseq, None), mt)
-                   for _cid, cseq, spec, mt in chains]
+                   for _cid, cseq, spec, mt, _mods in chains]
     feats = build_complex_features(
         chain_specs, mol_dir=str(download_mols(cache)),
-        chain_ids=[cid for cid, _s, _sp, _mt in chains], bonds=bonds)
+        chain_ids=[cid for cid, _s, _sp, _mt, _mods in chains], bonds=bonds)
 
     print("Opening device, loading protenix-v2...", file=sys.stderr)
     model = Protenix.load_from_checkpoint(str(ckpt_path))

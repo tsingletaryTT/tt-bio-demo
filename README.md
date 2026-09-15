@@ -99,8 +99,8 @@ silicon keeps visibly breathing even if the daemon wedges.
 
 **Four chips on two boards.** A p300c carries two chips, so `tt-smi`'s four entries are four
 chips — not four boards. The panel says so, because a visitor reading "4 cards" would
-picture the wrong machine. Folds are timed on this hardware, warm, on tt-bio 0.7.3: Trp-cage **4.6 s**,
-FKBP12 **9.7 s**, DHFR **14.5 s**, trypsin **17.4 s**, albumin **95.8 s** — mean of two folds
+picture the wrong machine. Folds are timed on this hardware, warm, on tt-bio 0.8.0: Trp-cage **4.6 s**,
+FKBP12 **9.7 s**, DHFR **14.5 s**, trypsin **17.4 s**, albumin **95.5 s** — mean of two folds
 each on chip 0, after discarding one cold-JIT-cache fold per target (a version bump recompiles
 kernels for the new shapes; see `playlist/manifest.yaml`'s header). Chip 1 was not re-measured
 this pass; the 0.5–1.4 s-slower drift measured on tt-bio 0.7.0 is a hardware/thermal property,

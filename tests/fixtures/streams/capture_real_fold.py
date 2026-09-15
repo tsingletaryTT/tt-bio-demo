@@ -77,16 +77,18 @@ def main():
           file=sys.stderr)
 
     # ---- feature building (no MSA -- msa: empty in the yaml) ----
+    # tt-bio 0.8.0: _read_bio_chains grew a 5th tuple element
+    # (`modifications`); unused here, same as runner/folder.py.
     t0 = time.perf_counter()
     chains = _read_bio_chains(EXAMPLE_YAML)
     bonds = _read_bio_constraints(EXAMPLE_YAML)
     chain_specs = [(cseq, _resolve_a3m_text(spec, cseq, None), mt)
-                   for _cid, cseq, spec, mt in chains]
+                   for _cid, cseq, spec, mt, _mods in chains]
     feats = build_complex_features(
         chain_specs, mol_dir=str(download_mols(cache)),
-        chain_ids=[cid for cid, _s, _sp, _mt in chains], bonds=bonds)
+        chain_ids=[cid for cid, _s, _sp, _mt, _mods in chains], bonds=bonds)
     t_feat = time.perf_counter() - t0
-    n_residues = sum(len(cseq) for _c, cseq, _s, mt in chains if mt != "ligand")
+    n_residues = sum(len(cseq) for _c, cseq, _s, mt, _mods in chains if mt != "ligand")
     print(f"[timing] feature build: {t_feat:.2f}s ({n_residues} residues)",
           file=sys.stderr)
 

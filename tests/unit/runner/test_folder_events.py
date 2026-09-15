@@ -397,3 +397,98 @@ def test_a_failed_load_releases_the_device_it_already_opened(monkeypatch, fail_a
     # that load() has already released everything itself.
     folder.close()
     assert calls["cleanup"] == 1
+
+
+def _fake_tt_bio_run_fold_stack(monkeypatch, *, chain_tuple_arity=5):
+    """Install a fake tt_bio.main / tt_bio.protenix_data covering
+    `_run_fold`'s own feature-building call chain -- `_read_bio_chains`,
+    `_read_bio_constraints`, `_resolve_a3m_text`, `build_complex_features`,
+    `_write_protenix_structure` -- which _fake_tt_bio_load_stack above does
+    NOT touch (it only fakes Folder.load()'s three calls).
+
+    That gap is exactly how the tt-bio 0.8.0 upgrade broke every real fold
+    with zero unit-test failures: `_read_bio_chains` grew a 5th tuple
+    element (`modifications`) and `_run_fold`'s own unpacking still expected
+    4, so "too many values to unpack" fired on the very first fold -- caught
+    only on real hardware, because every existing test either monkeypatches
+    `_run_fold` itself away (test_folder_events.py's module docstring calls
+    this "the one seam this module controls without hardware") or only
+    exercises Folder.load(). This fake returns the REAL current 5-tuple
+    shape by default; `chain_tuple_arity=4` reproduces the pre-0.8.0 shape,
+    so the same test doubles as a demonstration that this exact regression
+    would have gone undetected before this fake existed.
+    """
+    main_mod = types.ModuleType("tt_bio.main")
+
+    def _read_bio_chains(path):
+        chain = ("A", "MKV", None, "protein")
+        if chain_tuple_arity == 5:
+            chain = chain + (None,)  # modifications=None
+        return [chain]
+
+    def _read_bio_constraints(path):
+        return None
+
+    def _resolve_a3m_text(spec, seq, msa_dir, max_seqs=None):
+        return None
+
+    def _write_protenix_structure(coords, feats, aatype, outpath, output_format,
+                                   b_factors=None):
+        pathlib.Path(outpath).write_text("fake cif")
+
+    main_mod._read_bio_chains = _read_bio_chains
+    main_mod._read_bio_constraints = _read_bio_constraints
+    main_mod._resolve_a3m_text = _resolve_a3m_text
+    main_mod._write_protenix_structure = _write_protenix_structure
+
+    protenix_data_mod = types.ModuleType("tt_bio.protenix_data")
+
+    def build_complex_features(chain_specs, mol_dir=None, chain_ids=None, bonds=None):
+        return {"chain_specs": chain_specs, "chain_ids": chain_ids}
+
+    protenix_data_mod.build_complex_features = build_complex_features
+
+    pkg = sys.modules.get("tt_bio") or types.ModuleType("tt_bio")
+    pkg.main = main_mod
+    pkg.protenix_data = protenix_data_mod
+
+    monkeypatch.setitem(sys.modules, "tt_bio", pkg)
+    monkeypatch.setitem(sys.modules, "tt_bio.main", main_mod)
+    monkeypatch.setitem(sys.modules, "tt_bio.protenix_data", protenix_data_mod)
+
+
+class _FakeModelObj:
+    """Stands in for the resident Protenix model `_run_fold` calls `.fold()`
+    on -- real enough to prove the feature dict built above actually reaches
+    it, without any device or torch dependency."""
+
+    def fold(self, feats, *, n_step, n_sample, progress_fn, return_confidence):
+        assert return_confidence is True
+        coords = [np.zeros((3, 3), dtype=np.float32)]
+        conf = {"plddt": 0.91, "plddt_atom": np.array([0.9, 0.91, 0.92])}
+        return coords, conf
+
+
+@pytest.mark.parametrize("chain_tuple_arity", [5, 4])
+def test_run_fold_against_the_real_read_bio_chains_tuple_shape(
+        monkeypatch, tmp_path, chain_tuple_arity):
+    """Exercises `_run_fold` directly -- not monkeypatched away -- against
+    both the real tt-bio 0.8.0 `_read_bio_chains` shape (5-tuple, arity=5,
+    must pass) and the pre-0.8.0 shape (4-tuple, arity=4, kept here as the
+    demonstration that this test would have caught the regression: it is
+    NOT asserted to pass, since `_run_fold` is only guaranteed to match
+    tt-bio's CURRENT signature, not every past one)."""
+    _fake_tt_bio_run_fold_stack(monkeypatch, chain_tuple_arity=chain_tuple_arity)
+    folder = Folder()
+    folder._loaded = True
+    folder._mol_dir = tmp_path
+    folder._model_obj = _FakeModelObj()
+
+    if chain_tuple_arity != 5:
+        with pytest.raises(ValueError):
+            folder._run_fold(str(tmp_path / "in.yaml"), lambda *a, **kw: None, 10)
+        return
+
+    result = folder._run_fold(str(tmp_path / "in.yaml"), lambda *a, **kw: None, 10)
+    assert pathlib.Path(result["cif_path"]).exists()
+    assert result["mean_plddt"] == pytest.approx(0.91)
