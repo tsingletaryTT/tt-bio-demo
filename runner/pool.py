@@ -226,6 +226,16 @@ class WorkerPool:
     and a test that collapsed the clock would silently turn the delay into a
     busy loop.
 
+    `total_workers` is how many CO-RESIDENT workers -- across every pool this
+    process runs, not just this one's own `specs` -- `worker_environ`'s host
+    thread cap is sized against. Defaults to `len(specs)`, which is correct
+    for a single pool covering the whole booth and WRONG the moment a second
+    pool exists on the same host (the daemon's dedicated Q&A pool): each
+    pool sizing its own cap from its own spec count claims the box once per
+    pool, not once for the box. See `_spawn_worker` and
+    `tt_bio.runtime.host_thread_cap`'s own docstring, which names this exact
+    failure mode.
+
     All bookkeeping is private (`_workers`, `_ready`, `_busy`, ...), matching
     `EventServer._clients` / `JobQueue._items` / `CardPool._busy`. Tests
     attach their own handles at `pool.workers` / `pool.spawns` / `pool.lost`,
@@ -235,11 +245,32 @@ class WorkerPool:
 
     def __init__(self, specs, on_event, *, log_root, spawn=None,
                  on_worker_lost=None, restart_delay_s=WORKER_RESTART_DELAY_S,
-                 clock=time.monotonic):
+                 clock=time.monotonic, total_workers=None):
         # Insertion-ordered, so `cards`, `start()` and every log line agree on
         # an order without re-sorting a dict view at each call site.
         self._specs = {spec.card: spec for spec in specs}
         self._on_event = on_event
+        # How many co-resident workers `worker_environ`'s host-thread cap is
+        # sized against -- NOT necessarily `len(self._specs)`. A single pool
+        # covering the whole booth is the one case where those agree, and it
+        # is the only case the daemon had until Task 6 of the
+        # affinity-questions plan gave it a SECOND pool (one reserved chip
+        # running `runner.affinity_worker`, split out of the fold pool by
+        # `runner.workers.split_for_qa`). From that point on, a pool that
+        # sizes its own cap from its own spec count is exactly the launcher
+        # `tt_bio.runtime.host_thread_cap`'s own docstring warns about: "an
+        # external launcher runs one single-card job per chip: each process
+        # then sees n_workers == 1 and claims all cores". The Q&A pool always
+        # has one spec, so it would always claim the WHOLE box for a single
+        # nesso1 worker while the three-worker fold pool correctly divided by
+        # three -- `cores + cores` claimed against `cores` available.
+        #
+        # Defaults to `len(specs)` so every existing single-pool caller (every
+        # test that does not pass this, and a one-chip booth where
+        # `split_for_qa` never reserves a second pool at all) keeps exactly
+        # today's behaviour.
+        self._total_workers = (total_workers if total_workers is not None
+                               else len(self._specs))
         # Optional so a caller that only reads events (and every Task 6 test)
         # keeps working. A pool with no `on_worker_lost` still frees, respawns
         # and retires -- it just has nobody to tell about the orphan, which is
@@ -302,6 +333,24 @@ class WorkerPool:
         return [str(_worker_log_path(self._log_root, card))
                 for card in self.cards]
 
+    def all_retired(self):
+        """True once every card this pool manages has been retired for the
+        session -- permanently gone from `ready_cards()`/`any_ready()`, not
+        merely busy, mid-restart, or still loading its model at startup.
+
+        Exists for `Daemon._dispatch_qa_once` (the Q&A pool is always exactly
+        one spec, so this collapses to "will that one chip ever answer
+        another question"), but is written against `self._specs` generally
+        rather than assuming a single-spec pool, so it means the same thing
+        for the fold pool if a caller ever needs it there.
+
+        `all()` of an empty pool is vacuously True, which cannot happen in
+        practice -- both of this daemon's pools are always built from at
+        least one spec.
+        """
+        with self._lock:
+            return all(self._retired.get(card) for card in self._specs)
+
     # -- lifecycle ---------------------------------------------------------
 
     def start(self):
@@ -334,7 +383,7 @@ class WorkerPool:
             return None
         try:
             env = worker_environ(spec, log_root=self._log_root,
-                                 n_workers=len(self._specs))
+                                 n_workers=self._total_workers)
             handle = self._spawn(spec, env)
         except Exception:
             # Deliberately swallowed, deliberately loud. See `start`.

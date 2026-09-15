@@ -253,6 +253,45 @@ def test_a_daemon_with_no_pool_yet_protects_nothing_and_does_not_raise(tmp_path)
     daemon._prune_logs()          # must not raise
 
 
+def test_the_qa_pools_worker_log_is_included_too(tmp_path):
+    """Finding 1 (task-6 review): the reserved Q&A chip's worker.log is held
+    open O_APPEND by `daemon._qa_pool` for that worker's whole life, exactly
+    like a fold worker's -- so it needs the identical protection from
+    `_prune_logs`' oldest-first sweep, and forgetting it here is the exact
+    "unlink frees nothing, the child keeps writing into the nameless inode"
+    failure this module's own docstring already documents for the fold side
+    (13-14 MB/s into a file the janitor had already deleted). A daemon whose
+    `worker_log_paths` only reads `self.pool` would protect three fold logs
+    and silently let the Q&A worker's get swept.
+    """
+    fold_pool = _PoolWithLogs(tmp_path / "elsewhere", cards=(0, 1, 2))
+    qa_pool = _PoolWithLogs(tmp_path / "elsewhere", cards=(3,))
+    daemon = _daemon(tmp_path, fold_pool)
+    daemon._qa_pool = qa_pool
+
+    assert set(daemon.worker_log_paths) == (set(fold_pool.worker_log_paths) |
+                                            set(qa_pool.worker_log_paths))
+
+
+def test_the_qa_pools_worker_log_survives_a_budget_sweep(tmp_path):
+    """The mechanism half of the test above: an actual _prune_logs() pass
+    with a budget too small to keep everything must still spare the Q&A
+    worker's log, not just list its path."""
+    fold_pool = _PoolWithLogs(tmp_path / "logs", cards=(0, 1, 2))
+    qa_pool = _PoolWithLogs(tmp_path / "logs", cards=(3,))
+    daemon = _daemon(tmp_path, fold_pool, log_budget_bytes=1)
+    daemon._qa_pool = qa_pool
+    live = [_write(p, 4096) for p in fold_pool.worker_log_paths]
+    live += [_write(p, 4096) for p in qa_pool.worker_log_paths]
+    junk = _write(tmp_path / "logs" / "card-0" / "kernels.yaml", 4096)
+
+    daemon._prune_logs()
+
+    assert all(p.exists() for p in live), (
+        "the qa worker's log must not be unlinked out from under it")
+    assert not junk.exists()
+
+
 # --- four structure trees --------------------------------------------------
 
 def test_structures_are_pruned_across_every_cards_directory(tmp_path):

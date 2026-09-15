@@ -141,6 +141,27 @@ TELEMETRY_PERIOD_S = 2.0
 # is a one-line change rather than a re-reading of `_accept_pick`.
 MAX_PENDING_PICKS = 1
 
+# How many affinity questions may be waiting for the reserved Q&A chip at
+# once. A new question replaces the pending one -- same policy, same reason,
+# as MAX_PENDING_PICKS above: nesso1 answers one question at a time
+# (runner/affinity.py's own module docstring), so a second question queued
+# behind an unanswered first is already stale by the time its turn would
+# come, and the newest question is the one the visitor who just asked it is
+# waiting for.
+#
+# Without this, the review that found it traced a concrete failure: nesso1's
+# weights are not provisioned anywhere yet (a separate, explicitly-deferred
+# follow-up), so `_qa_pool`'s worker fails `load()` at startup, CONTROL_FATAL
+# retires its one card permanently, and `_qa_queue` had no bound at all --
+# every question the attract-loop cadence ever mints (a fresh `question_id`
+# per cycle, no dedup) would pile up forever with no `answer_error` telling
+# the UI's pending-list to drain. Bounding the queue here and draining it
+# with `answer_error` in `_dispatch_qa_once` (see that method, and
+# `_enqueue_question`) is what stops that: the failure mode this constant
+# guards against is a booth silently advertising a feature (`hello`'s
+# `qa_capable`) it can never deliver.
+MAX_PENDING_QUESTIONS = 1
+
 # How long run()'s loop waits between dispatch passes. The loop body no longer
 # blocks for the length of a fold (that happens in a worker now), so it needs
 # a poll interval of its own. Short enough that a chip freeing up is put back
@@ -363,11 +384,15 @@ class Daemon:
         # merged into `self.pool`, because CardPool and `dispatch_once`'s
         # scheduling loop are derived from `self.pool.cards` alone, and the
         # reserved chip must never be schedulable for a fold (spec section 5:
-        # "dedicate one chip, don't time-share"). `_qa_queue` is a plain FIFO
-        # of `(question_id, target_id, input_path)` -- nesso1 answers one
+        # "dedicate one chip, don't time-share"). `_qa_queue` is a FIFO of
+        # `(question_id, target_id, input_path)`, bounded to
+        # MAX_PENDING_QUESTIONS by `_enqueue_question` -- nesso1 answers one
         # question at a time (runner/affinity.py's own module docstring), so
         # a question that arrives while the reserved chip is still scoring
-        # the last one waits here rather than being dropped or double-sent.
+        # the last one waits here rather than being dropped or double-sent,
+        # and one that arrives while the queue is already full, or while the
+        # reserved chip is permanently gone (`WorkerPool.all_retired()`),
+        # gets an `answer_error` instead of piling up silently forever.
         self._qa_spec = None
         self._qa_pool = None
         self._qa_queue = []
@@ -430,11 +455,22 @@ class Daemon:
     def worker_log_paths(self):
         """Every `<log-root>/card-<n>/worker.log` the parent holds open.
 
-        Read off the pool (`WorkerPool.worker_log_paths`) rather than rebuilt
-        here from `config.log_root`, because the pool is the thing that
-        actually opened these files -- two independently-computed lists is two
-        chances for the janitor to protect a path nobody is writing to while
-        unlinking the one that is.
+        Read off the pools (`WorkerPool.worker_log_paths`) rather than
+        rebuilt here from `config.log_root`, because the pools are the things
+        that actually opened these files -- two independently-computed lists
+        is two chances for the janitor to protect a path nobody is writing to
+        while unlinking the one that is.
+
+        **Both pools, unioned.** The reserved Q&A chip's `worker.log` is
+        opened O_APPEND and held open by `self._qa_pool` for the life of that
+        worker, exactly like a fold worker's -- so it needs the same
+        protection from `_prune_logs`' oldest-first sweep, and forgetting it
+        here is the identical failure `docs/followups.md` already documents
+        for the fold side: `unlink` removes a NAME while the child keeps
+        writing into the now-nameless inode, freeing nothing. A daemon with
+        no `_qa_pool` (a one-chip booth, or a test) contributes nothing extra
+        here -- `getattr(None, ...)` below is exactly the `[]` this already
+        returns for a `self.pool` that has not been built yet.
 
         `[]` when there is no pool yet, or a pool that does not report any
         (every fake in the tests). An empty protected set is the *safe*
@@ -445,7 +481,8 @@ class Daemon:
         """
         if self._worker_log_paths is not None:
             return list(self._worker_log_paths)
-        return list(getattr(self.pool, "worker_log_paths", None) or [])
+        return (list(getattr(self.pool, "worker_log_paths", None) or []) +
+                list(getattr(self._qa_pool, "worker_log_paths", None) or []))
 
     @worker_log_paths.setter
     def worker_log_paths(self, value):
@@ -664,10 +701,38 @@ class Daemon:
         # silent on the wire, same as a real pick's; nothing here needs to
         # know which one happened.
         self._accept_pick({"target_id": target_id})
-        self._qa_queue.append((question_id, target_id, str(target)))
+        self._enqueue_question(question_id, target_id, str(target))
         self._wake.set()
         log.info("question %s (target %s) queued for Q&A", question_id,
                  target_id)
+
+    def _enqueue_question(self, question_id, target_id, input_path):
+        """Queue one question for the reserved Q&A chip, bounded exactly the
+        way `_accept_pick` bounds a visitor's fold pick (`MAX_PENDING_
+        QUESTIONS`, the Q&A analogue of `MAX_PENDING_PICKS`): a new question
+        REPLACES whatever was waiting, because nesso1 answers one at a time
+        and anything queued behind the first is already stale before its
+        turn would come.
+
+        Unlike a pick's silent replacement, the question that gets bumped is
+        answered with `answer_error` rather than simply forgotten. A pick's
+        UI never waits on a reply (`_accept_pick`'s own docstring: "the UI
+        acknowledged the tap at tap time"); a question's UI does -- it is
+        tracking a pending answer per `question_id` -- so a pick can be
+        dropped silently and a question cannot: a dropped question with no
+        wire event is a pending state on the UI side that never resolves.
+        """
+        stale = self._qa_queue[:max(0, len(self._qa_queue) -
+                                     MAX_PENDING_QUESTIONS + 1)]
+        del self._qa_queue[:len(stale)]
+        for stale_id, stale_target, _ in stale:
+            log.info("question %s replaces %s, which never reached the Q&A "
+                     "chip", question_id, stale_id)
+            self._emit({"type": "answer_error", "question_id": stale_id,
+                        "target_id": stale_target,
+                        "message": "a newer question replaced this one "
+                                   "before the Q&A chip took it"})
+        self._qa_queue.append((question_id, target_id, input_path))
 
     def _playlist_target(self, target_id):
         """The playlist file whose stem is exactly `target_id`, or None.
@@ -1006,8 +1071,34 @@ class Daemon:
         reserved (`_qa_pool` stays `None` on a one-chip box for the life of
         the daemon) -- `run()` calls this every pass unconditionally, the
         same way it calls `dispatch_once`.
+
+        **`all_retired()` is checked before `ready_cards()`, and drains the
+        whole queue.** The two look similar (`ready_cards()` is also `[]`
+        when the pool is retired) but they answer different questions: an
+        empty `ready_cards()` while the worker is still loading its model, or
+        still scoring the previous question, is "wait, this will clear
+        itself" -- the existing early return below, unchanged. A retired pool
+        is "this will NEVER clear itself again" (nesso1's weights are not
+        provisioned yet, so this worker's `load()` fails at startup and
+        `CONTROL_FATAL` retires its one card permanently -- see
+        MAX_PENDING_QUESTIONS' comment). Leaving those questions parked
+        indefinitely is exactly the silent-pileup bug this method exists to
+        not have, so every question waiting -- not just the head of the
+        queue -- is failed with `answer_error` and the queue is emptied, once
+        per pass, at no cost once it is empty.
         """
         if self._qa_pool is None or not self._qa_queue:
+            return
+        if self._qa_pool.all_retired():
+            while self._qa_queue:
+                question_id, target_id, _ = self._qa_queue.pop(0)
+                log.warning("Q&A card retired for the session; failing "
+                            "question %s (target %s) rather than queueing "
+                            "it forever", question_id, target_id)
+                self._emit({"type": "answer_error", "question_id": question_id,
+                            "target_id": target_id,
+                            "message": "the Q&A chip is unavailable for "
+                                       "this session"})
             return
         ready = self._qa_pool.ready_cards()
         if not ready:
@@ -1228,9 +1319,19 @@ class Daemon:
             # and out of the thermal guard's bookkeeping -- both by
             # construction, not by a separate exclusion check anywhere else.
             fold_specs, self._qa_spec = split_for_qa(specs)
+            # `total_workers=len(specs)`, the count BEFORE split_for_qa moved
+            # one spec into `self._qa_spec` -- not `len(fold_specs)`. The two
+            # only agree on a one-chip box (no chip reserved at all); on
+            # every other box the Q&A worker is a real co-resident process on
+            # the same host, and `worker_environ`'s host-thread cap must be
+            # sized against the TRUE total or this pool's three workers (say)
+            # and the Q&A pool's one worker each claim the box as if the
+            # other did not exist -- `cores + cores` claimed against `cores`
+            # available. See WorkerPool's own docstring on `total_workers`.
             self.pool = WorkerPool(fold_specs, self.on_event,
                                    log_root=self.config.log_root,
-                                   on_worker_lost=self.on_worker_lost)
+                                   on_worker_lost=self.on_worker_lost,
+                                   total_workers=len(specs))
             log.info("folding on %d chip(s): %s", len(fold_specs),
                      ", ".join(f"{s.card} ({s.label})" for s in fold_specs))
             if self._qa_spec is not None:
@@ -1290,13 +1391,24 @@ class Daemon:
                 # one device", and the ONLY thing that differs between them
                 # is which module `python -m` runs.
                 if self._qa_pool is None:
+                    # `total_workers=len(self.pool.cards) + 1`: the fold
+                    # pool's own spec count (`WorkerPool.cards` reports every
+                    # spec it manages, retired ones included -- see that
+                    # property's docstring -- so this is stable regardless of
+                    # anything that has died) plus the one reserved chip this
+                    # pool is about to spawn a worker onto. Same total the
+                    # fold pool above was built with, computed the other
+                    # direction because `_build_pool` (where that one lives)
+                    # has no `self._qa_pool` to read a count off yet at the
+                    # point it runs.
                     self._qa_pool = WorkerPool(
                         [self._qa_spec], self.on_qa_event,
                         log_root=self.config.log_root,
                         on_worker_lost=self.on_qa_worker_lost,
                         spawn=functools.partial(
                             _spawn_subprocess, log_root=self.config.log_root,
-                            module="runner.affinity_worker"))
+                            module="runner.affinity_worker"),
+                        total_workers=len(self.pool.cards) + 1)
                 self._qa_pool.start()
             # Stored (rather than fire-and-forget) so the finally below can
             # join it before tearing the workers and the socket out from under

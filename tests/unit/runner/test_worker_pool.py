@@ -415,6 +415,64 @@ def test_each_worker_gets_the_whole_worker_environment(pool, monkeypatch):
         for card in (0, 1, 2, 3)]
 
 
+def test_total_workers_overrides_the_pools_own_spec_count(tmp_path, monkeypatch):
+    """Finding 3 (task-6 review): a pool's host-thread cap must be sized
+    against every CO-RESIDENT worker across every pool on this host, not
+    just its own spec count. The daemon's dedicated Q&A pool is always one
+    spec -- without `total_workers`, it would size its cap from
+    `n_workers=1` and claim the whole box for a single nesso1 worker while a
+    three-worker fold pool alongside it correctly divides by three, so the
+    two pools together claim `cores + cores` against `cores` actually
+    available. See `tt_bio.runtime.host_thread_cap`'s own docstring, which
+    names this exact failure mode ("an external launcher runs one
+    single-card job per chip").
+
+    Built as its own one-spec pool (not the four-card `pool` fixture) so
+    `total_workers` and `len(specs)` visibly disagree: a pool that ignored
+    the parameter and fell back to `len(self._specs)` would size this
+    worker's cap for ONE co-resident process, not four.
+    """
+    from tt_bio.runtime import host_thread_cap
+    solo, four_up = host_thread_cap(1), host_thread_cap(4)
+    assert solo != four_up, (
+        f"this box cannot tell n_workers=1 ({solo}) from n_workers=4 "
+        f"({four_up}); this test would pass vacuously here")
+    monkeypatch.delenv("OMP_NUM_THREADS", raising=False)
+
+    made = {}
+
+    def spawn(spec, env):
+        worker = _FakeWorker(spec, env)
+        made[spec.card] = worker
+        return worker
+
+    solo_pool = WorkerPool([_spec(3)], on_event=lambda c, e: None,
+                           log_root=str(tmp_path), spawn=spawn,
+                           total_workers=4)
+    try:
+        solo_pool.start()
+        assert made[3].env["OMP_NUM_THREADS"] == str(four_up), (
+            "total_workers=4 must win over this pool's own len(specs)==1")
+    finally:
+        solo_pool.stop()
+
+
+def test_total_workers_defaults_to_the_pools_own_spec_count(pool, monkeypatch):
+    """The other half of the same guard: every EXISTING caller that never
+    passes `total_workers` (every single-pool booth, and every other test in
+    this file) must keep exactly today's behaviour -- this is what makes the
+    parameter additive rather than a silent behaviour change for a pool that
+    is genuinely alone on the host.
+    """
+    from tt_bio.runtime import host_thread_cap
+    monkeypatch.delenv("OMP_NUM_THREADS", raising=False)
+    pool.start()
+    for card, worker in pool.workers.items():
+        assert worker.env["OMP_NUM_THREADS"] == str(host_thread_cap(4)), (
+            "the `pool` fixture has 4 specs and was given no total_workers; "
+            "it must still size against its own count")
+
+
 def test_each_chip_is_spawned_exactly_once(pool):
     """ADDED. The brief's test 1 reads a dict keyed by card, so a pool that
     spawned card 0 twice -- two processes contending for one chip, the exact

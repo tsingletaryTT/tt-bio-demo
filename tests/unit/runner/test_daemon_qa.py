@@ -194,6 +194,60 @@ def test_accept_question_wakes_the_dispatch_loop(tmp_path):
     assert daemon._wake.is_set()
 
 
+# ---------------------------------------------------------------------------
+# _enqueue_question: MAX_PENDING_QUESTIONS bounds the queue (Finding 2,
+# task-6 review). Mirrors MAX_PENDING_PICKS' own replacement test for
+# _accept_pick, with the one deliberate difference: a bumped QUESTION is
+# answered with `answer_error`, where a bumped PICK is silently dropped
+# (see _enqueue_question's own docstring for why the two must differ).
+# ---------------------------------------------------------------------------
+
+def test_a_second_question_replaces_the_first_still_waiting_one(tmp_path):
+    _playlist_with(tmp_path, "dhfr", "trypsin")
+    daemon = _daemon(tmp_path, _FakePool())
+    daemon._qa_spec = _qa_spec()
+    daemon._accept_question({"type": "question", "question_id": "q1",
+                             "target_id": "dhfr"})
+    daemon._accept_question({"type": "question", "question_id": "q2",
+                             "target_id": "trypsin"})
+    assert len(daemon._qa_queue) == 1, "MAX_PENDING_QUESTIONS == 1"
+    assert daemon._qa_queue[0][0] == "q2", "the newest question waits"
+
+
+def test_the_replaced_question_gets_an_answer_error(tmp_path):
+    """The bumped question must not vanish with no wire event -- Task 11's
+    UI tracks a pending answer per question_id, and a silently dropped one
+    is a pending state that never resolves."""
+    _playlist_with(tmp_path, "dhfr", "trypsin")
+    daemon = _daemon(tmp_path, _FakePool())
+    daemon._qa_spec = _qa_spec()
+    daemon._accept_question({"type": "question", "question_id": "q1",
+                             "target_id": "dhfr"})
+    daemon._accept_question({"type": "question", "question_id": "q2",
+                             "target_id": "trypsin"})
+    errors = [e for e in daemon.server.events if e["type"] == "answer_error"]
+    assert len(errors) == 1
+    assert errors[0]["question_id"] == "q1"
+    assert errors[0]["target_id"] == "dhfr"
+
+
+def test_a_third_question_does_not_resurrect_the_first_two(tmp_path):
+    """Bounding must hold under more than one eviction, not just the first
+    -- a mutation that only handled 2-in-a-row would still pass a test that
+    never tried a third."""
+    _playlist_with(tmp_path, "dhfr", "trypsin", "fkbp12")
+    daemon = _daemon(tmp_path, _FakePool())
+    daemon._qa_spec = _qa_spec()
+    for question_id, target_id in (("q1", "dhfr"), ("q2", "trypsin"),
+                                   ("q3", "fkbp12")):
+        daemon._accept_question({"type": "question", "question_id": question_id,
+                                 "target_id": target_id})
+    assert [q[0] for q in daemon._qa_queue] == ["q3"]
+    errored_ids = {e["question_id"] for e in daemon.server.events
+                  if e["type"] == "answer_error"}
+    assert errored_ids == {"q1", "q2"}
+
+
 def test_on_client_message_dispatches_a_question(tmp_path):
     """The real end-to-end path: on_client_message's kind dispatch, not
     _accept_question called directly."""
@@ -217,18 +271,29 @@ def test_on_client_message_never_raises_for_a_malformed_question(tmp_path):
 # ---------------------------------------------------------------------------
 
 class _FakeQaPool:
-    """Mirrors _FakePool's shape for the one method _dispatch_qa_once needs
-    beyond what a fold pool already has: dispatch_question.
+    """Mirrors _FakePool's shape for the two things _dispatch_qa_once needs
+    beyond what a fold pool already has: dispatch_question and all_retired.
     """
 
-    def __init__(self, cards=(3,), ready=None):
+    def __init__(self, cards=(3,), ready=None, retired=False):
         self.cards = list(cards)
         self._ready = list(cards if ready is None else ready)
         self._busy = {}
         self.dispatched = []
+        # Mirrors the real WorkerPool.all_retired(): permanently True once
+        # CONTROL_FATAL (or WORKER_RETIRE_AFTER deaths) has retired every
+        # card this pool manages -- which for the one-spec Q&A pool means
+        # its one card. A plain constructor flag rather than deriving it
+        # from `ready`/`cards`, because the real distinction is orthogonal
+        # to readiness: a pool can be simultaneously not-ready (still
+        # loading, or mid-question) and not retired at all.
+        self._retired = retired
 
     def ready_cards(self):
         return sorted(c for c in self._ready if c not in self._busy)
+
+    def all_retired(self):
+        return self._retired
 
     def dispatch_question(self, question_id, target_id, input_path, card):
         if card not in self.ready_cards():
@@ -284,6 +349,48 @@ def test_dispatch_qa_once_sends_only_one_question_per_pass(tmp_path):
     daemon._dispatch_qa_once()
     assert len(daemon._qa_pool.dispatched) == 1
     assert len(daemon._qa_queue) == 1
+
+
+def test_dispatch_qa_once_fails_every_queued_question_when_the_pool_is_retired(
+        tmp_path):
+    """Finding 2 (task-6 review): nesso1's weights are not provisioned
+    anywhere yet, so the Q&A worker's load() fails at startup, CONTROL_FATAL
+    retires its one card permanently, and ready_cards() for this pool is `[]`
+    forever -- not "still starting up", not "still scoring the last one".
+    Every question ever queued from that point on must be failed loudly, not
+    left to pile up silently: the attract-loop cadence (a later task) mints a
+    fresh question_id every cycle with no dedup, so an unbounded silent
+    pileup here is a booth advertising a feature (`qa_capable`) it can never
+    deliver.
+    """
+    daemon = _daemon(tmp_path, _FakePool())
+    daemon._qa_pool = _FakeQaPool(retired=True)
+    daemon._qa_queue.append(("q1", "dhfr", "/p/dhfr.yaml"))
+    daemon._qa_queue.append(("q2", "trypsin", "/p/trypsin.yaml"))
+
+    daemon._dispatch_qa_once()
+
+    assert daemon._qa_queue == [], "nothing left to pile up"
+    assert daemon._qa_pool.dispatched == [], "a retired card is never sent to"
+    errors = {e["question_id"]: e["target_id"] for e in daemon.server.events
+              if e["type"] == "answer_error"}
+    assert errors == {"q1": "dhfr", "q2": "trypsin"}
+
+
+def test_dispatch_qa_once_is_still_just_a_wait_when_merely_not_ready_yet(
+        tmp_path):
+    """GUARD, so the fix above cannot be a mutation that always drains the
+    queue: a pool that is temporarily not-ready (still loading its model, or
+    mid-question) is NOT `all_retired()`, and must still be left alone --
+    see test_dispatch_qa_once_waits_while_the_worker_is_busy for the existing
+    version of this without a retirement check in the picture at all."""
+    daemon = _daemon(tmp_path, _FakePool())
+    daemon._qa_pool = _FakeQaPool(ready=[], retired=False)
+    daemon._qa_queue.append(("q1", "dhfr", "/p/dhfr.yaml"))
+    daemon._dispatch_qa_once()
+    assert daemon._qa_queue == [("q1", "dhfr", "/p/dhfr.yaml")], (
+        "not retired -- just busy or still loading -- so it waits")
+    assert not [e for e in daemon.server.events if e["type"] == "answer_error"]
 
 
 def test_dispatch_qa_once_requeues_on_a_dispatch_race(tmp_path):
@@ -406,13 +513,17 @@ class _RecordingPoolNoStart(_FakePool):
     """
 
     def __init__(self, specs, on_event, *, log_root, on_worker_lost=None,
-                 spawn=None, **kwargs):
+                 spawn=None, total_workers=None, **kwargs):
         super().__init__(cards=[s.card for s in specs])
         self.specs = specs
         self.on_event = on_event
         self.on_worker_lost = on_worker_lost
         self.spawn = spawn
         self.log_root = log_root
+        # None here would be indistinguishable from "the daemon never passed
+        # it" -- recorded as-given (never defaulted to len(specs) the way the
+        # real WorkerPool does) so a test can tell the two apart.
+        self.total_workers = total_workers
 
 
 # ---------------------------------------------------------------------------
@@ -457,6 +568,14 @@ def test_run_builds_a_dedicated_qa_pool_when_a_chip_is_reserved(tmp_path, monkey
     assert qa_pool.on_worker_lost == daemon.on_qa_worker_lost
     assert daemon._qa_pool is qa_pool
     assert qa_pool.started == 1
+    # Finding 3 (task-6 review): each pool must be told the TRUE total
+    # worker count across BOTH pools -- 2 chips detected here (card 0 goes to
+    # the fold pool, card 1 is reserved for Q&A), so `worker_environ`'s host
+    # thread cap must be sized against 2 for each of them, not against each
+    # pool's own spec count (1 and 1), which would let each claim the whole
+    # box as though the other pool did not exist.
+    assert fold_pool.total_workers == 2
+    assert qa_pool.total_workers == 2
 
 
 def test_run_builds_no_qa_pool_on_a_single_chip_box(tmp_path, monkeypatch):
