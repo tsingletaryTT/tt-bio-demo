@@ -22,15 +22,20 @@ def test_protocol_version_is_the_one_this_build_speaks():
     # and its runner-half twin, which assert the number in BOTH venvs -- a
     # bump applied to one checkout and not the other is the failure that
     # actually happens, and this file only ever runs under venv-ui. 2 -> 3
-    # when the easter egg gained a client message and two events.
-    assert PROTOCOL_VERSION == 3
+    # when the easter egg gained a client message and two events; 3 -> 4
+    # when affinity questions added `question` plus `answer_start` /
+    # `answer_done` / `answer_error`. This assertion is a mirror of the
+    # authoritative one and must be kept in step with it by hand -- it went
+    # stale exactly this way once already (see test_protocol_is_frozen.py).
+    assert PROTOCOL_VERSION == 4
 
 
 def test_all_spec_event_types_present():
     assert EVENT_TYPES == frozenset(
         {"hello", "not_ready", "job_start", "stage", "frame",
          "job_done", "job_error", "card_state",
-         "egg_frame", "egg_refused"}
+         "egg_frame", "egg_refused",
+         "answer_start", "answer_done", "answer_error"}
     )
 
 
