@@ -1,0 +1,47 @@
+# Affinity questions this booth can ask and answer -- "does this ligand bind
+# this protein?" -- loaded by ui/playlist.py's `load_questions()`. See that
+# module's docstring for the loader contract and
+# docs/superpowers/specs/2026-09-15-affinity-qa-design.md section 7 for why
+# these three specifically: each `target_id` below is an existing
+# playlist/manifest.yaml entry whose fold input (examples/affinity_*.yaml)
+# already carries a protein+ligand pair -- this file is what finally asks a
+# question about the ligand rather than only folding the structure around it.
+#
+# This is a SEPARATE file from manifest.yaml on purpose (see the design
+# spec's section 3): a question is not a gallery-pickable fold target, and
+# answering one never re-folds anything -- docs/spike-nesso1-affinity.md
+# section 3.4 confirmed nesso1 needs no prior fold or coordinates at all, so
+# a question rides the existing pick pathway only for its reveal theatre,
+# never for the score itself.
+#
+# `expected_s` stays `null` for all three, and that is deliberate rather than
+# an oversight. The implementation's hardware spike
+# (docs/spike-nesso1-affinity.md, section 4) measured a realistic per-question
+# latency of roughly 8-12s (about 6-8s of host-side feature prep that does not
+# get cheaper on a repeat call, plus about 2-4s of on-device prediction with
+# the model resident) -- but that was one spike run, not this project's usual
+# repeated-measurement discipline (a mean of several back-to-back warm runs on
+# real hardware, the standard every `expected_s` in manifest.yaml is held to).
+# So it is not yet a citable number, and it stays null until a proper
+# measurement pass runs -- never a guess dressed up as a measurement. Absent
+# or explicit `null` both mean "not yet measured," the same convention
+# manifest.yaml's own `expected_s` uses; ui/questions.py renders a null
+# expected_s as "not yet timed," mirroring ui/gallery.py's existing handling
+# of an unmeasured fold target.
+- id: dhfr_mtx
+  target_id: dhfr
+  question: "Does methotrexate block dihydrofolate reductase?"
+  ligand_name: "Methotrexate"
+  expected_s: null
+
+- id: trypsin_bam
+  target_id: trypsin
+  question: "Does benzamidine block trypsin?"
+  ligand_name: "Benzamidine"
+  expected_s: null
+
+- id: fkbp12_sb3
+  target_id: fkbp12
+  question: "Does SB3 bind FKBP12?"
+  ligand_name: "SB3"
+  expected_s: null
