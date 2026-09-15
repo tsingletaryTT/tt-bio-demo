@@ -162,6 +162,23 @@ def _worker_device_assignments(devices):
     return _build_worker_device_assignments(devices)
 
 
+def split_for_qa(specs):
+    """Split worker_specs()'s output into (fold_specs, qa_spec).
+
+    Reserves the HIGHEST-numbered card deterministically -- not because
+    that chip is special, but because a fixed, order-independent rule
+    means a daemon restart never silently reassigns which physical chip
+    answers questions, which would be confusing to debug at a venue ("why
+    is chip 3 slow now"). See spec section 5: this is a permanent
+    reservation, not a fallback -- a 1-chip box gets qa_spec=None and the
+    UI hides the question feature entirely rather than time-sharing.
+    """
+    if len(specs) < 2:
+        return list(specs), None
+    ordered = sorted(specs, key=lambda s: s.card)
+    return ordered[:-1], ordered[-1]
+
+
 def worker_specs(device_ids=None, max_workers=MAX_WORKERS):
     """Build one WorkerSpec per chip this booth will fold on.
 
