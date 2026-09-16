@@ -1437,6 +1437,114 @@ setup_venvs_actually_declares` false alarm set aside (confirmed again with
 correctly; the `/opt/tt-bio-demo` install this reads by default is still the
 same real Aug-31 package, now three versions stale).
 
+### Affinity questions: the booth answers a question, not just reveals a shape (2026-09-15/16)
+
+Prompted with "how can we add the idea of 'asking questions' and 'getting
+answers' to the demo -- part of tt-bio's value is that it goes beyond just
+connecting dots and revealing." Asked which question TYPE to build first
+(binding/affinity, structural/property, or generative design) and got "1 and
+3" -- both affinity and design. Scoped down deliberately: affinity now,
+design written up as a named, deferred follow-up (spec section 8) -- the same
+"excluded, not forgotten" shape as HSA-before-0.6.3 and FKBP12-during-0.6.3,
+because no design-model checkpoint exists, no hardware timing exists for it,
+and the generic protocol/UI this phase builds is loose enough that a second
+question kind can ride the same queue later without redesigning it.
+
+**The reuse that made the architecture cheap.** Three playlist targets
+(DHFR, trypsin, FKBP12) are protein+ligand complexes in their *upstream*
+form, and each input file has carried a `properties: affinity:` block since
+Phase 3b that `runner/folder.py`'s `Folder.fold()` reads past and silently
+ignores -- confirmed in each file's own header comment at the time. This
+feature is what finally reads that block. No new molecules, no new vetting.
+
+**Why the daemon never calls nesso1 in its own process.** A hardware spike
+(Task 1, before any other task's code was written) confirmed nesso1 --
+`tt_bio.nesso1.screen()`, or the lower-level `Nesso1.from_pretrained()` /
+`prepare()` / `collate()` / `.predict()` path for model residency -- needs NO
+prior fold: verified in a fresh process with `tt_bio.protenix`/`tt_bio.
+opendde` never imported. That single fact is why the feature could be built
+as two independently-satisfiable halves: a real score from a dedicated,
+permanently-reserved chip (`runner/workers.py`'s `split_for_qa`, in a second,
+subprocess-isolated `WorkerPool` -- `runner/daemon.py` itself never imports
+`runner.affinity`/`tt_bio.nesso1`, the same deadlock-avoidance rule Phase 5
+Task 18 already paid for), and a pocket highlight computed entirely
+client-side from geometry the UI already has (`ui/pocket.py`, reusing
+`ui/ligand.py`'s existing ligand-classification rather than the unverified
+`het_flag` guess a research pass had suggested).
+
+**Built via subagent-driven-development in a worktree, 12 tasks plus a
+13-commit final-review fix wave.** The review loop earned its keep again:
+task-scoped reviews found and fixed a data race introduced by the FIX for
+an unbounded-queue bug (`_qa_queue`'s compound mutation wasn't atomic against
+real multi-client reader threads -- caught by a re-review, not the first
+pass), a host-thread-cap bug where two `WorkerPool` instances each sized
+themselves against their own spec count instead of the true combined total
+(`cores + cores` claimed against `cores` available), and a log-janitor blind
+spot that would have reintroduced the exact "unlink a file a worker still
+holds open" failure this project fixed once already for fold workers. All
+three were found in *fix rounds*, after the "obviously right" first pass --
+worth remembering next time a fix round feels like a formality.
+
+**The whole-branch review found the one bug no single task's reviewer could
+have seen, because it lived in the gap between two tasks.** The pocket
+highlight was applied only reactively on `answer_done`, only if the ribbon
+was *already* on screen -- and the one fixture that ever visually verified
+this feature (Task 12's mock stream) happened to order `job_done` before the
+answer, which is the one ordering that works. In production nesso1 (~8-12s)
+usually finishes before the fold+ribbon does, so the answer almost always
+arrived first and the highlight was silently lost, forever, on nearly every
+real question. Spec section 1's binding promise -- "a visual result, never a
+number alone" -- was not delivered in the ordering the daemon actually
+produces. Fixed by remembering the answered pocket and applying it whichever
+of ribbon-ready/answer-ready lands second, whatever order that turns out to
+be.
+
+**A "tool use rejected" message is not proof an agent never ran.** The
+dispatch for that whole fix wave came back with a rejection notice, and the
+next few minutes were spent explaining to the user that nothing had
+happened -- except it had: `git log` showed four real, committed fixes, and
+`gozer status` showed a live lease still held by that exact dispatch's
+reason string, because the agent had gotten as far as taking real hardware
+for the final verification step before the interrupt landed. The daemon it
+left running turned out to be genuinely **wedged** -- ten-plus hours hung
+mid-`to_torch` device readback, confirmed with `py-spy`, not merely idle --
+so the recovery was a real one: `SIGTERM` then `SIGKILL` escalation exactly
+as `pool.stop()` is designed to do, then a `gozer acquire`/`release` to force
+an actual silicon reset before standing up a fresh daemon on the same chips.
+The lesson generalizes past this one incident: check `git log`/`gozer
+status`/`ps` for what a tool's own status message claims happened, the same
+"verify the instrument" habit this file has recorded for tests and
+measurements, now once for a controller's own dispatch history.
+
+**Real-hardware verification, done twice.** Once early (Task 12), confirming
+the panel, score, and highlight render at all -- on a high-confidence
+fixture (Trp-cage), the one case that couldn't expose the ordering bug.
+Once at the very end, after the fix, on **trypsin** -- pLDDT ~38-39, one of
+the low-confidence, mostly-orange targets the highlight was never checked
+against. The pocket showed as a clear, unmistakable bright yellow-green
+patch against the orange/copper ribbon: legible at a glance, not the
+subtle-and-hoped-for boost the one high-confidence measurement had left
+untested. Score format confirmed three times in the same run: "score:
+0.94/0.92/0.98 -- nesso1's predicted probability the ligand binds."
+
+**A `--no-questions` flag, added on request, for free.** The single-chip
+degrade path (`qa_capable: false`, built in Task 6/11 for a dev box with no
+chip to spare) already hides every piece of Q&A UI with zero special-casing
+-- so a classic-mode flag is just teaching the daemon to skip
+`split_for_qa` and hand every chip to the fold pool, and the exact same
+degrade path does the rest. `scripts/run-demo.sh --no-questions` runs the
+pre-Q&A booth, byte-for-byte, on any chip count.
+
+Suite green: **1,314 UI + 440 runner** at final count, the same
+`/opt/tt-bio-demo`-pin false alarm set aside. Deliberately not fixed this
+round, carried into [`docs/followups.md`](docs/followups.md): nesso1's
+weights have no postinst/`doctor.sh` provisioning yet (same shape as every
+prior weights-gap in this project's history -- shipped capability before its
+provisioning story, flagged rather than silently absent); `runner/
+affinity.py` imports `torch`/`tt_bio.nesso1` at module scope rather than
+inside `load()`, against `runner/folder.py`'s own documented pattern; a
+handful of other Minor findings from the final review.
+
 ## Conventions
 
 - **Keep the README's screenshots current.** The README claims every image on it is the
