@@ -423,6 +423,97 @@ def test_missing_esm2_is_also_a_warning_not_a_failure(tmp_path):
     assert "[warn]" in out and "ESM-2" in out, out
 
 
+# ---------------------------------------------------------------------------
+# doctor_check_esm2_cache, in isolation, against a REAL venv-runner
+# interpreter and a real (fake-content) Hugging Face hub cache layout --
+# not the argument-count stub used above, which cannot exercise the actual
+# size-aware Python this function runs. THE BUG: the ESM-2 half used to be
+# `os.path.isdir(d)`, which reports a directory left by an interrupted
+# multi-GB download as "present" -- the exact false-healthy case this
+# project's own README warns about for the protenix-v2/mols check one layer
+# over ("checked by size, not existence -- a truncated download is the
+# realistic failure and looks healthy to an existence check").
+# ---------------------------------------------------------------------------
+
+def _real_runner_python():
+    py = REPO / ".venvs" / "venv-runner" / "bin" / "python3"
+    if not py.exists():
+        pytest.skip("venv-runner is not built; cannot run the real check")
+    return py
+
+
+def _fake_hf_snapshot(cache_dir, model, filename, size):
+    """A minimal but REAL Hugging Face hub cache layout -- just enough for
+    `huggingface_hub.try_to_load_from_cache` to resolve `filename` -- with
+    `filename` a SPARSE file that REPORTS `size` bytes without occupying
+    them. This project's own convention (see `_sized` above): the check
+    under test reads `stat -c %s`, so a sparse file exercises it exactly,
+    and the first version of doctor's size-floor tests wrote real
+    gigabyte-scale fixtures and put 15 GB into /tmp across three runs on a
+    box already at 100% disk."""
+    repo_dir = cache_dir / ("models--" + model.replace("/", "--"))
+    rev = "0" * 40
+    (repo_dir / "snapshots" / rev).mkdir(parents=True, exist_ok=True)
+    (repo_dir / "refs").mkdir(parents=True, exist_ok=True)
+    (repo_dir / "refs" / "main").write_text(rev)
+    (repo_dir / "blobs").mkdir(parents=True, exist_ok=True)
+    blob = repo_dir / "blobs" / "fakehash"
+    with open(blob, "wb") as fh:
+        fh.truncate(size)
+    (repo_dir / "snapshots" / rev / filename).symlink_to(blob)
+
+
+def test_a_truncated_esm2_download_is_flagged_not_reported_present(tmp_path):
+    """A directory (here: a snapshot tree) containing only a tiny/truncated
+    file must NOT be reported present -- an existence check would call this
+    healthy."""
+    py = _real_runner_python()
+    cache = tmp_path / "hf-cache"
+    _fake_hf_snapshot(cache, "facebook/esm2_t33_650M_UR50D",
+                       "model.safetensors", 100)  # sparse, tiny: truncated
+    r = _sh(f"doctor_check_esm2_cache '{py}'", HF_HUB_CACHE=str(cache))
+    out = r.stdout + r.stderr
+    assert r.returncode != 0, f"a truncated ESM-2 download passed as healthy:\n{out}"
+    assert "[warn]" in out and "truncat" in out.lower(), out
+
+
+def test_a_complete_esm2_download_is_reported_present(tmp_path):
+    """The matched pair: a file that clears the size floor must not be
+    flagged, or the check would be useless in the other direction."""
+    py = _real_runner_python()
+    cache = tmp_path / "hf-cache"
+    _fake_hf_snapshot(cache, "facebook/esm2_t33_650M_UR50D",
+                       "model.safetensors", 2_600_000_000)  # sparse, real-sized
+    r = _sh(f"doctor_check_esm2_cache '{py}'", HF_HUB_CACHE=str(cache))
+    out = r.stdout + r.stderr
+    assert r.returncode == 0, f"a complete ESM-2 download was flagged:\n{out}"
+    assert "[ ok ]" in out, out
+
+
+def test_a_missing_esm2_snapshot_is_flagged_via_the_real_check(tmp_path):
+    """No cache at all -- the ordinary missing case, run through the real
+    interpreter rather than the discriminated-by-argument-count stub."""
+    py = _real_runner_python()
+    cache = tmp_path / "hf-cache"  # deliberately not created
+    r = _sh(f"doctor_check_esm2_cache '{py}'", HF_HUB_CACHE=str(cache))
+    out = r.stdout + r.stderr
+    assert r.returncode != 0, f"a missing ESM-2 cache passed as healthy:\n{out}"
+    assert "[warn]" in out, out
+
+
+def test_esm2_cache_check_never_calls_fail_either():
+    """Same invariant as doctor_check_affinity_weights, one function down:
+    this is called from a warn-only check, so it must never escalate on its
+    own."""
+    src = DOCTOR.read_text()
+    start = src.index("doctor_check_esm2_cache() {")
+    end = src.index("\ndoctor_check_affinity_weights() {")
+    body = src[start:end]
+    assert "fail " not in _uncommented(body) and "fail\"" not in _uncommented(body), (
+        "doctor_check_esm2_cache must never call fail() -- it is used from "
+        "a warn-only check")
+
+
 def test_corrupt_nesso1_is_a_warning_not_a_failure(tmp_path):
     """Mirrors protenix-v2's corrupt-file case, one layer over -- but this
     check's whole point is that it must never escalate to FAIL."""

@@ -724,7 +724,7 @@ def test_the_postinst_pre_warms_the_esm2_encoder_through_the_real_constant():
     assert "from tt_bio.nesso1_input import ESM2_MODEL" in p, (
         "postinst should import the real ESM2_MODEL constant, not "
         "hardcode the model id")
-    assert "snapshot_download(ESM2_MODEL)" in p, (
+    assert "snapshot_download(ESM2_MODEL" in p, (
         "postinst does not pre-warm the ESM-2 encoder through huggingface_hub")
 
     venv = REPO / ".venvs" / "venv-runner"
@@ -737,6 +737,67 @@ def test_the_postinst_pre_warms_the_esm2_encoder_through_the_real_constant():
              and isinstance(n.targets[0], ast.Name)}
     assert "ESM2_MODEL" in names, (
         "tt_bio.nesso1_input no longer defines ESM2_MODEL; update the postinst")
+
+
+def test_the_postinst_esm2_prewarm_restricts_the_download_to_the_files_it_needs():
+    """THE BUG. Without allow_patterns/ignore_patterns, snapshot_download
+    fetches EVERY file in the HF repo -- measured on the dev box:
+    model.safetensors (2.6 GB) AND pytorch_model.bin (2.6 GB) AND
+    tf_model.h5 (2.6 GB), ~7.3 GB total, when the featurizer only ever
+    reads model.safetensors plus the small json/txt config/tokenizer
+    files. Every "~2.6 GB"/"~3.2 GB"/"~6.9 GB" figure this project states
+    (the debconf prompt, README, INSTALL.md, scripts/setup-venvs.sh) was
+    off by the ~4.7 GB the two unwanted formats cost without this.
+
+    Parses the ACTUAL heredoc the postinst ships, via `ast`, the same way
+    the mirror test in tests/unit/test_setup_venvs_weights.py checks the
+    source-install fetch step -- not a substring match, which would pass
+    for a call whose patterns exclude nothing real."""
+    import ast
+
+    p = _weights("postinst")
+    heredoc = p.split("<<'PYEOF'", 1)[1].split("\nPYEOF", 1)[0]
+    tree = ast.parse(heredoc)
+    call = None
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "snapshot_download"):
+            call = node
+            break
+    assert call is not None, f"no snapshot_download call found:\n{heredoc}"
+    kwargs = {kw.arg: kw.value for kw in call.keywords if kw.arg}
+    assert "ignore_patterns" in kwargs or "allow_patterns" in kwargs, (
+        f"postinst's snapshot_download has no allow_patterns/ignore_patterns "
+        f"-- it fetches every weight format in the repo (~7.3 GB instead of "
+        f"~2.6 GB):\n{heredoc}")
+    if "ignore_patterns" in kwargs:
+        patterns = [elt.value for elt in kwargs["ignore_patterns"].elts]
+        for unwanted in ("*.bin", "*.h5"):
+            assert unwanted in patterns, (
+                f"ignore_patterns does not exclude {unwanted}: {patterns}")
+    else:
+        patterns = [elt.value for elt in kwargs["allow_patterns"].elts]
+        assert any("safetensors" in p for p in patterns), patterns
+
+
+def test_the_postinst_python_block_is_single_quoted():
+    """FOUND IN REVIEW. The heredoc used to be `<<PYEOF` (unquoted), which
+    shell-interpolates every `$`/backtick in the block -- including inside
+    Python comments -- and was changed to that specifically to interpolate
+    `${CACHE}` into the marker-file path. That removed a whole class of
+    future-edit safety this file's own comment warns about: "deriving it
+    again from a different rule is what made the download and the
+    verification able to disagree". The cache path reaches the block as
+    `sys.argv[1]` instead (like everywhere else in it), so there is no
+    reason left for shell interpolation here at all."""
+    p = _weights("postinst")
+    assert "<<'PYEOF'" in p, (
+        "the postinst's python heredoc must be single-quoted ('PYEOF') so "
+        "$/backticks inside it are never shell-expanded")
+    assert "<<PYEOF\n" not in p, (
+        "an unquoted PYEOF heredoc marker is still present -- every $/backtick "
+        "inside it would be shell-expanded")
 
 
 def test_every_nesso1_artifact_the_package_fetches_is_checksum_verified():

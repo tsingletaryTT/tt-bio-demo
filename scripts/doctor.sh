@@ -372,6 +372,75 @@ VERDICT_EOF
 # the same guard scripts/setup-venvs.sh's copy of this string has.
 DOCTOR_ESM2_MODEL="facebook/esm2_t33_650M_UR50D"
 
+# The ESM-2 cache half of doctor_check_affinity_weights, split out so it can
+# be tested in isolation with a REAL interpreter (the affinity-weights stub
+# used elsewhere in test_doctor.py answers by argument COUNT and cannot run
+# real Python either heredoc actually contains).
+#
+# SIZE-AWARE, NOT EXISTENCE-ONLY. This used to be `os.path.isdir(d)` -- but a
+# directory left behind by an interrupted multi-GB download reports
+# "present" to an existence check, which is exactly the false-alarm-in-the-
+# other-direction this project's README warns about ("checked by size, not
+# existence -- a truncated download is the realistic failure and looks
+# healthy to an existence check"), and the neighbouring protenix-v2/mols
+# check already has a size floor for the same reason. `try_to_load_from_
+# cache` is huggingface_hub's own cache lookup (the same one
+# `tt_bio.weights.resolve` uses for hf-repo artifacts), so this asks the
+# real resolution rather than re-guessing the snapshot directory name, and
+# then applies a floor the way protenix-v2.pt's own check does.
+doctor_check_esm2_cache() {
+    _rn="$1"
+    [ -x "$_rn" ] || return 1
+    _esm_line="$("$_rn" - "$DOCTOR_ESM2_MODEL" <<'ESM2_CHECK_EOF' 2>/dev/null
+import os
+import sys
+try:
+    import tt_bio  # noqa: F401 -- side effect: configure_hf_cache()
+    from huggingface_hub import constants, try_to_load_from_cache
+except Exception:
+    raise SystemExit(1)
+model = sys.argv[1]
+snapshot_name = "models--" + model.replace("/", "--")
+fallback = os.path.join(constants.HF_HUB_CACHE, snapshot_name)
+path = try_to_load_from_cache(model, "model.safetensors", cache_dir=constants.HF_HUB_CACHE)
+if not isinstance(path, str):
+    print("missing", fallback)
+else:
+    try:
+        size = os.stat(path).st_size
+    except OSError:
+        size = 0
+    # The real file is ~2.6 GB; 1 GB is a floor no truncation this matters
+    # for would pass -- same reasoning, and the same margin, as
+    # protenix-v2.pt's own floor against its 1.86 GB real size.
+    if size < 1000000000:
+        print("truncated", f"{path} ({size} bytes)")
+    else:
+        print("present", path)
+ESM2_CHECK_EOF
+)"
+    if [ -z "$_esm_line" ]; then
+        warn "could not check the ESM-2 encoder cache"
+        return 1
+    fi
+    _esm_state="${_esm_line%% *}"
+    _esm_path="${_esm_line#* }"
+    case "$_esm_state" in
+        present)
+            ok "ESM-2 encoder ($_esm_path)"
+            return 0
+            ;;
+        truncated)
+            warn "ESM-2 encoder is truncated: $_esm_path -- affinity Q&A cannot featurize"
+            return 1
+            ;;
+        *)
+            warn "ESM-2 encoder is missing ($_esm_path) -- affinity Q&A cannot featurize"
+            return 1
+            ;;
+    esac
+}
+
 # nesso1 + nesso1-ccd + the ESM-2 encoder: what the affinity-Q&A feature
 # needs and neither install path provisions yet (docs/followups.md, "From
 # the affinity-questions feature"). Deliberately WARN-ONLY, never FAIL: a
@@ -420,36 +489,7 @@ VERDICT_EOF
         _nesso1_missing=1
     fi
 
-    # ESM-2 has no tt_bio.weights row at all (its own module comment says why
-    # -- see scripts/setup-venvs.sh's fetch_esm2_cache), so this asks
-    # huggingface_hub's own cache resolution directly rather than tt-bio's
-    # registry. Cheap and torch-free: huggingface_hub does not import torch
-    # (verified against this project's own venv-runner).
-    _esm_line="$("$_rn" - "$DOCTOR_ESM2_MODEL" <<'ESM2_CHECK_EOF' 2>/dev/null
-import os
-import sys
-try:
-    import tt_bio  # noqa: F401 -- side effect: configure_hf_cache()
-    from huggingface_hub import constants
-except Exception:
-    raise SystemExit(1)
-model = sys.argv[1]
-snapshot_name = "models--" + model.replace("/", "--")
-d = os.path.join(constants.HF_HUB_CACHE, snapshot_name)
-print(("present" if os.path.isdir(d) else "missing"), d)
-ESM2_CHECK_EOF
-)"
-    if [ -n "$_esm_line" ]; then
-        _esm_state="${_esm_line%% *}"
-        _esm_path="${_esm_line#* }"
-        if [ "$_esm_state" = "present" ]; then
-            ok "ESM-2 encoder ($_esm_path)"
-        else
-            warn "ESM-2 encoder is missing ($_esm_path) -- affinity Q&A cannot featurize"
-            _nesso1_missing=1
-        fi
-    else
-        warn "could not check the ESM-2 encoder cache"
+    if ! doctor_check_esm2_cache "$_rn"; then
         _nesso1_missing=1
     fi
 
@@ -550,10 +590,11 @@ doctor_check_space() {
         return 0
     fi
     _gb=$((_avail / 1000000))
-    # 3.7 GB of weights, plus tt-metal's own log churn (bounded by the
-    # daemon's budgets, but it still needs somewhere to churn).
-    if [ "$_gb" -lt 8 ]; then
-        warn "only ${_gb} GB free at $_dir (weights alone are 3.7 GB)"
+    # ~6.9 GB of weights (3.7 GB required to fold + 3.2 GB more for
+    # affinity Q&A), plus tt-metal's own log churn (bounded by the daemon's
+    # budgets, but it still needs somewhere to churn).
+    if [ "$_gb" -lt 12 ]; then
+        warn "only ${_gb} GB free at $_dir (weights alone are ~6.9 GB)"
     else
         ok "${_gb} GB free at $_dir"
     fi

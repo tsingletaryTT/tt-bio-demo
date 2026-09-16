@@ -102,7 +102,8 @@ case "$1" in
             tt_bio_demo_log ""
             tt_bio_demo_log "    sudo dpkg-reconfigure tt-bio-demo-weights"
             tt_bio_demo_log ""
-            tt_bio_demo_log "That is ~3.7 GB and must happen BEFORE the venue (it is offline)."
+            tt_bio_demo_log "That is ~6.9 GB (3.7 GB required to fold, 3.2 GB more for"
+            tt_bio_demo_log "affinity Q&A) and must happen BEFORE the venue (it is offline)."
             exit 0
         fi
 
@@ -139,19 +140,19 @@ case "$1" in
         # CLAUDE.md already records for `pip show | awk '{...; exit}'`)
         # carries the verdict back to the shell below.
         rm -f "${CACHE}/.affinity-weights-incomplete"
-        "$runner_py" - "$CACHE" <<PYEOF
+        "$runner_py" - "$CACHE" <<'PYEOF'
 import hashlib
 import sys
 from pathlib import Path
 
 try:
     # These names are the packaging<->tt-bio contract, and
-    # \`test_the_weights_postinst_uses_the_tt_bio_api_that_actually_exists\`
+    # `test_the_weights_postinst_uses_the_tt_bio_api_that_actually_exists`
     # checks them against the pinned tt-bio's own source so a rename upstream
     # breaks the test suite rather than an operator's install. It did exactly
     # that on the 0.7.0 upgrade: 0.6.6 moved the artifact machinery into
-    # tt_bio.weights and 0.7.0 shipped without \`tt_bio.main.hf_artifact\`, so
-    # this block imported a name that no longer existed. \`weights.fetch(key)\`
+    # tt_bio.weights and 0.7.0 shipped without `tt_bio.main.hf_artifact`, so
+    # this block imported a name that no longer existed. `weights.fetch(key)`
     # takes a registry key rather than a (repo, filename) pair.
     from tt_bio import weights
     from tt_bio.main import download_mols
@@ -162,7 +163,12 @@ except Exception as exc:                                  # noqa: BLE001
 # Handed in as argv, NOT re-derived here. The shell half above already asked
 # the one resolver; deriving it again from a different rule is what made the
 # download and the verification able to disagree about which directory they
-# meant.
+# meant. This heredoc is single-quoted ('PYEOF') for exactly this reason --
+# it is NOT shell-interpolated at all, so `$`/backtick anywhere in this block
+# (including in comments) is a literal Python character, never a shell
+# expansion silently swallowing (or mangling) part of the script. The cache
+# path below is threaded through as sys.argv[1], the same way it already
+# reaches this block -- never by interpolating it into the heredoc text.
 cache = Path(sys.argv[1])
 cache.mkdir(parents=True, exist_ok=True)
 
@@ -174,14 +180,14 @@ download_mols(cache)
 
 # --- nesso1 / nesso1-ccd: the affinity-Q&A model, non-fatal to this install.
 #
-# \`root=cache\` is passed for consistency with the calls above, but it is
+# `root=cache` is passed for consistency with the calls above, but it is
 # IGNORED for these two rows: both are "hf-repo" registry entries, and
-# \`weights.fetch\`/\`.resolve\`/\`.status\` only honour \`root\` for "hf-file"
+# `weights.fetch`/`.resolve`/`.status` only honour `root` for "hf-file"
 # and "url" sources. Confirmed empirically against this box's pinned
 # tt-bio: nesso1 lands under the standard Hugging Face hub cache
-# (\$TT_BIO_CACHE's own redirect of it, if the operator set that -- see
-# tt_bio.weights.configure_hf_cache -- or plain \$HF_HUB_CACHE/\$HF_HOME/
-# ~/.cache/huggingface, never under \${CACHE}). That is also why these two
+# ($TT_BIO_CACHE's own redirect of it, if the operator set that -- see
+# tt_bio.weights.configure_hf_cache -- or plain $HF_HUB_CACHE/$HF_HOME/
+# ~/.cache/huggingface, never under ${CACHE}). That is also why these two
 # are checksum-verified HERE rather than through the shell's flat-file
 # ARTIFACTS table above: only this block knows the real resolved path.
 def _sha256(path):
@@ -193,7 +199,7 @@ def _sha256(path):
 
 
 # Two explicit calls with literal string keys, not a loop over a dict -- so
-# that \`test_the_weights_postinst_uses_the_tt_bio_api_that_actually_exists\`'s
+# that `test_the_weights_postinst_uses_the_tt_bio_api_that_actually_exists`'s
 # regex, which looks for a quoted string as fetch's first argument, sees
 # both calls below and keeps checking them against the pinned tt-bio's real
 # registry rows, the same way it already checks protenix-v2 above. A
@@ -230,11 +236,16 @@ else:
 # transformers, not through this fetch path") -- so this pre-warms it
 # directly through huggingface_hub, the same library setup_esm_model uses,
 # so it lands in the SAME cache location the real featurizer will read from.
+#
+# ignore_patterns IS LOAD-BEARING -- see scripts/setup-venvs.sh's
+# fetch_esm2_cache for the measurement: without it snapshot_download fetches
+# model.safetensors AND pytorch_model.bin AND tf_model.h5 (~7.3 GB, not the
+# ~2.6 GB the featurizer actually reads).
 try:
     from tt_bio.nesso1_input import ESM2_MODEL
     from huggingface_hub import snapshot_download
 
-    snapshot_download(ESM2_MODEL)
+    snapshot_download(ESM2_MODEL, ignore_patterns=["*.bin", "*.h5", "*.msgpack"])
     print(f"verified ESM-2 encoder ({ESM2_MODEL})")
 except Exception as exc:                                  # noqa: BLE001
     print(f"AFFINITY-WEIGHTS-WARN: could not fetch the ESM-2 encoder: {exc}",
@@ -242,7 +253,7 @@ except Exception as exc:                                  # noqa: BLE001
     affinity_ok = False
 
 if not affinity_ok:
-    Path("${CACHE}/.affinity-weights-incomplete").write_text("incomplete\\n")
+    (cache / ".affinity-weights-incomplete").write_text("incomplete\n")
 PYEOF
 
         if tt_bio_demo_weights_verify_all; then

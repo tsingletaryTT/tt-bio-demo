@@ -58,9 +58,22 @@ def _stub_prefix(tmp_path, *, tt_bio_exit=0, python3_exit=0):
     tt_bio.write_text(
         "#!/bin/sh\n"
         f'printf "%s\\n" "$*" >> "{tmp_path}/argv.log"\n'
+        # One line per invocation, positionally matching argv.log -- lets a
+        # test check what the SUBPROCESS actually saw in its own
+        # environment, not just what was typed on its command line. This is
+        # what matters for nesso1/nesso1-ccd: --cache is a no-op for them
+        # (see test_the_nesso1_fetch_is_told_which_cache_to_use below), and
+        # what actually redirects them is whether $TT_BIO_CACHE is present
+        # in the environment tt-bio itself runs in.
+        f'printf "TT_BIO_CACHE=%s\\n" "${{TT_BIO_CACHE:-}}" >> "{tmp_path}/env.log"\n'
         f"exit {tt_bio_exit}\n")
     tt_bio.chmod(0o755)
     return prefix
+
+
+def _env_log(tmp_path):
+    log = tmp_path / "env.log"
+    return log.read_text() if log.exists() else ""
 
 
 def _run(tmp_path, script, *args, **env):
@@ -230,6 +243,81 @@ def test_it_also_pre_warms_the_esm2_cache(tmp_path):
         f"the ESM-2 pre-warm never ran python3:\n{r.stdout}{r.stderr}")
 
 
+def _stub_prefix_capturing_stdin(tmp_path):
+    """Like _stub_prefix, but python3 SAVES the heredoc it is fed to a file
+    instead of discarding it, so a test can inspect the exact code that
+    would run for real -- not just that python3 ran. Only the python3 half
+    is needed for the test below; tt-bio is stubbed out identically to
+    _stub_prefix for functions that call both."""
+    prefix = tmp_path / "prefix"
+    bin_ = prefix / "venv-runner" / "bin"
+    bin_.mkdir(parents=True)
+    py = bin_ / "python3"
+    py.write_text(
+        "#!/bin/sh\n"
+        f'cat > "{tmp_path}/stdin.py"\n'
+        "exit 0\n")
+    py.chmod(0o755)
+    tt_bio = bin_ / "tt-bio"
+    tt_bio.write_text("#!/bin/sh\nexit 0\n")
+    tt_bio.chmod(0o755)
+    return prefix
+
+
+def test_the_esm2_prewarm_restricts_the_download_to_the_files_it_needs(tmp_path):
+    """THE BUG. Without allow_patterns/ignore_patterns, snapshot_download
+    fetches EVERY file in the HF repo -- measured on the dev box:
+    model.safetensors (2.6 GB) AND pytorch_model.bin (2.6 GB) AND
+    tf_model.h5 (2.6 GB), ~7.3 GB total, when setup_esm_model's
+    AutoModelForMaskedLM.from_pretrained() prefers safetensors and never
+    touches the other two once it is present. Every "~2.6 GB" figure in
+    this script's own comments and the docs it is quoted into assumed the
+    restriction was already there; it was not.
+
+    This parses the ACTUAL heredoc fed to python3 -- not just that python3
+    ran -- via a stub that captures stdin instead of discarding it, so a
+    future edit that drops the restriction is caught even though the stub
+    never executes real Python."""
+    prefix = _stub_prefix_capturing_stdin(tmp_path)
+    _run(tmp_path, "fetch_esm2_cache", "--prefix", str(prefix))
+    src = (tmp_path / "stdin.py").read_text()
+    tree = ast.parse(src)
+    call = None
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "snapshot_download"):
+            call = node
+            break
+    assert call is not None, f"no snapshot_download call found:\n{src}"
+    kwargs = {kw.arg: kw.value for kw in call.keywords if kw.arg}
+    assert "ignore_patterns" in kwargs or "allow_patterns" in kwargs, (
+        f"snapshot_download has no allow_patterns/ignore_patterns -- it "
+        f"will fetch every weight format in the repo (~7.3 GB instead of "
+        f"~2.6 GB):\n{src}")
+    if "ignore_patterns" in kwargs:
+        assert isinstance(kwargs["ignore_patterns"], (ast.List, ast.Tuple)), (
+            f"ignore_patterns is not a literal list/tuple this test can "
+            f"check the contents of:\n{src}")
+        patterns = [elt.value for elt in kwargs["ignore_patterns"].elts]
+        for unwanted in ("*.bin", "*.h5"):
+            assert unwanted in patterns, (
+                f"ignore_patterns does not exclude {unwanted}, so it "
+                f"downloads anyway: {patterns}\n{src}")
+        for needed in ("*.safetensors", "model.safetensors", "*.json", "*.txt"):
+            assert needed not in patterns, (
+                f"ignore_patterns excludes {needed!r}, which the real "
+                f"featurizer needs: {patterns}\n{src}")
+    else:
+        assert isinstance(kwargs["allow_patterns"], (ast.List, ast.Tuple)), (
+            f"allow_patterns is not a literal list/tuple this test can "
+            f"check the contents of:\n{src}")
+        patterns = [elt.value for elt in kwargs["allow_patterns"].elts]
+        assert any("safetensors" in p for p in patterns), (
+            f"allow_patterns does not admit the safetensors weights at "
+            f"all: {patterns}\n{src}")
+
+
 def test_skip_weights_skips_nesso1_and_esm2_too(tmp_path):
     """ONE FLAG FOR ALL OF IT. A booth that opts out of downloading weights
     must not end up with protenix-v2 skipped and nesso1/ESM-2 fetched anyway
@@ -278,10 +366,18 @@ def test_a_failed_esm2_prewarm_is_reported_but_not_fatal(tmp_path):
 
 
 def test_the_nesso1_fetch_is_told_which_cache_to_use(tmp_path):
-    """Same defect class as the protenix-v2 version of this test: an
-    unpinned --cache lets tt-bio re-derive the root from its own
-    environment, which agrees with weights_cache_dir() only while $HOME
-    does."""
+    """UNLIKE the protenix-v2 version of this test, `--cache` here is NOT
+    what redirects nesso1/nesso1-ccd -- confirmed empirically against the
+    pinned tt-bio (see task-15-report.md): `weights.fetch`/`.resolve`/
+    `.status` IGNORE `root=` (the CLI's `--cache`) for "hf-repo" sourced
+    artifacts, which both of nesso1's registry rows are. `--cache` is still
+    passed here, for the same reason the postinst's Python block still
+    passes `root=cache` to `weights.fetch("nesso1", ...)` even though it is
+    a no-op there too: one invocation shape for every artifact, rather than
+    a special case an editor could accidentally drop. This only checks that
+    the flag is present and consistent with the protenix-v2 call, NOT that
+    it has any effect on where nesso1 lands -- see the test below for what
+    actually controls that."""
     prefix = _stub_prefix(tmp_path)
     cache = tmp_path / "chosen-cache"
     r = _run(tmp_path, "fetch_weights", "--prefix", str(prefix),
@@ -291,6 +387,30 @@ def test_the_nesso1_fetch_is_told_which_cache_to_use(tmp_path):
     assert nesso1_lines, f"no nesso1 invocation found:\n{log}"
     assert all("--cache" in l and str(cache) in l for l in nesso1_lines), (
         f"the nesso1 fetch did not use the pinned cache:\n{nesso1_lines}")
+
+
+def test_nesso1_actually_lands_under_the_operators_cache_via_the_environment(tmp_path):
+    """THE REAL LEVER. `tt_bio.weights.configure_hf_cache()` redirects the
+    Hugging Face hub cache (where nesso1/nesso1-ccd actually resolve) under
+    `$TT_BIO_CACHE` when that variable is present in the PROCESS environment
+    tt-bio itself runs in -- not from `--cache`, which it ignores for these
+    two rows (see the test above). Bash does not strip environment
+    variables from child processes, so as long as this script does not
+    unset or otherwise hide `$TT_BIO_CACHE` before invoking `tt-bio`, an
+    operator who sets it (the documented, preferred variable -- see
+    scripts/weights-cache.sh's own header comment) gets the redirect for
+    free, with no extra code needed here. This proves that property against
+    the real subprocess environment, not just against its command line."""
+    prefix = _stub_prefix(tmp_path)
+    cache = tmp_path / "chosen-cache"
+    _run(tmp_path, "fetch_weights", "--prefix", str(prefix),
+         TT_BIO_CACHE=str(cache))
+    env_log = _env_log(tmp_path)
+    assert env_log, f"tt-bio never ran:\n{env_log}"
+    assert all(line == f"TT_BIO_CACHE={cache}" for line in env_log.splitlines()), (
+        f"$TT_BIO_CACHE did not reach every tt-bio invocation unchanged -- "
+        f"nesso1 would silently land in a different cache than protenix-v2:"
+        f"\n{env_log}")
 
 
 def test_the_hardcoded_esm2_model_id_matches_the_real_constant():

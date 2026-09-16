@@ -1058,6 +1058,17 @@ fetch_weights() {
 # this pre-warms it directly through huggingface_hub, in venv-runner's own
 # interpreter so it resolves the SAME cache location the real featurizer will
 # read from later (see that comment for why).
+#
+# ignore_patterns IS LOAD-BEARING. Without it, snapshot_download fetches
+# EVERY file in the HF repo -- measured on the dev box: model.safetensors
+# (2.6 GB) AND pytorch_model.bin (2.6 GB) AND tf_model.h5 (2.6 GB), ~7.3 GB
+# total. setup_esm_model()'s AutoModelForMaskedLM.from_pretrained() prefers
+# safetensors and never touches the other two once it is present, and
+# AutoTokenizer.from_pretrained() only reads the small json/txt files this
+# does not exclude -- so this is the actual set the featurizer needs, not a
+# guess. Without the restriction every "~2.6 GB"/"~3.2 GB"/"~6.9 GB" figure
+# in this script's comments, --help text and the docs it is quoted into was
+# off by the ~4.7 GB the two unwanted formats cost.
 fetch_esm2_cache() {
   local py="${VENV_RUNNER}/bin/python3"
   log "weights: pre-warming the ESM-2 encoder (${ESM2_MODEL}, ~2.6 GB) nesso1's featurizer needs"
@@ -1073,7 +1084,14 @@ except Exception as exc:                                          # noqa: BLE001
     raise SystemExit(1)
 
 try:
-    snapshot_download(os.environ["ESM2_MODEL"])
+    # See the big comment above this heredoc: these are the two formats the
+    # real featurizer never reads. *.msgpack (Flax) is not in this repo
+    # today but is excluded on the same reasoning -- a third weight format
+    # transformers would also skip in favour of safetensors.
+    snapshot_download(
+        os.environ["ESM2_MODEL"],
+        ignore_patterns=["*.bin", "*.h5", "*.msgpack"],
+    )
 except Exception as exc:                                          # noqa: BLE001
     print(f"snapshot_download failed: {exc}", file=sys.stderr)
     raise SystemExit(1)
