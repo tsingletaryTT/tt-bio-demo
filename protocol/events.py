@@ -77,11 +77,29 @@ EVENT_TYPES = frozenset(
 # boundary instead of a mystery three modules later.
 CLIENT_MESSAGE_TYPES = frozenset({"pick", "egg", "question"})
 
-# Which single string field each client message carries. Kept as a table
-# rather than as a chain of `if kind == ...` inside decode_client_message so
-# that adding a message cannot accidentally add a message with NO validation:
-# the decoder looks its field up here and refuses a type that is not in it.
-CLIENT_MESSAGE_FIELDS = {"pick": "target_id", "egg": "egg_id", "question": "target_id"}
+# Which string field(s) each client message carries -- a TUPLE of field
+# names, even for a message with only one (Important 6, whole-branch
+# review). Kept as a table rather than as a chain of `if kind == ...` inside
+# decode_client_message so that adding a message cannot accidentally add a
+# message with NO validation: the decoder looks its field(s) up here and
+# refuses a type that is not in it.
+#
+# `question` is the reason this is a tuple and not, as it was originally, a
+# single string: a `question` message carries TWO meaningful fields
+# (`target_id` AND `question_id`), and the single-string design validated
+# only the first -- `question_id` was bounded by nothing but the overall
+# line-length cap (64 KiB, see EventServer/EventClient's own framing limit),
+# then got echoed verbatim into `answer_start`/`answer_error` broadcast to
+# EVERY connected UI client (amplification: one small `question` message
+# could cost every other client a large rebroadcast), written into a
+# worker's command pipe, and logged. Every field named here gets the exact
+# same validation `decode_client_message` already applies to `target_id`:
+# a non-empty `str` of at most `MAX_TARGET_ID_LEN` characters.
+CLIENT_MESSAGE_FIELDS = {
+    "pick": ("target_id",),
+    "egg": ("egg_id",),
+    "question": ("target_id", "question_id"),
+}
 
 # The longest id a client may send, in either message. The daemon reads this
 # off a public socket in a room full of strangers' laptops: a megabyte
@@ -327,11 +345,12 @@ def decode_client_message(line):
     not plan for -- a booth daemon that one bad line can kill is worse than
     one that cannot be picked from.
 
-    Validates `type`, `version`, and that this message type's one id field
-    (`CLIENT_MESSAGE_FIELDS`) is a non-empty `str` of at most
-    MAX_TARGET_ID_LEN characters. It validates NOTHING about what the id
-    means: whether it names a real playlist entry is the daemon's question,
-    answered against the playlist.
+    Validates `type`, `version`, and that EVERY one of this message type's
+    id fields (`CLIENT_MESSAGE_FIELDS` -- a tuple per kind, since `question`
+    carries two: `target_id` and `question_id`) is a non-empty `str` of at
+    most MAX_TARGET_ID_LEN characters. It validates NOTHING about what any
+    id means: whether it names a real playlist entry is the daemon's
+    question, answered against the playlist.
     """
     try:
         message = json.loads(line)
@@ -360,22 +379,25 @@ def decode_client_message(line):
         raise ProtocolError(
             f"client speaks protocol v{_brief(message['version'])}, "
             f"this build speaks v{PROTOCOL_VERSION}")
-    field = CLIENT_MESSAGE_FIELDS.get(kind)
-    if field is None:
+    fields = CLIENT_MESSAGE_FIELDS.get(kind)
+    if fields is None:
         # Only reachable if CLIENT_MESSAGE_TYPES gains a member and this table
         # does not. Refusing is the safe half of that mistake: the alternative
         # is a message reaching the daemon with nothing at all checked on it.
         raise ProtocolError(f"no validation rule for client message {kind!r}")
-    value = message.get(field)
-    if not isinstance(value, str):
-        raise ProtocolError(
-            f"{field!r} must be a string, got {type(value).__name__}")
-    if not value:
-        raise ProtocolError(f"{field!r} must not be empty")
-    if len(value) > MAX_TARGET_ID_LEN:
-        raise ProtocolError(
-            f"{field!r} is {len(value)} characters, "
-            f"limit is {MAX_TARGET_ID_LEN}")
+    # EVERY field this kind carries, not just the first -- see
+    # CLIENT_MESSAGE_FIELDS' own comment on why `question` needs two.
+    for field in fields:
+        value = message.get(field)
+        if not isinstance(value, str):
+            raise ProtocolError(
+                f"{field!r} must be a string, got {type(value).__name__}")
+        if not value:
+            raise ProtocolError(f"{field!r} must not be empty")
+        if len(value) > MAX_TARGET_ID_LEN:
+            raise ProtocolError(
+                f"{field!r} is {len(value)} characters, "
+                f"limit is {MAX_TARGET_ID_LEN}")
     return message
 
 

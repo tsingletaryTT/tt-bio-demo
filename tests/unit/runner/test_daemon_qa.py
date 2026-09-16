@@ -25,10 +25,13 @@ this task's own brief where the two differ:
   input_path, emit)` never raises; emits answer_start then
   answer_done/answer_error. No `.close()` -- device lifecycle is owned by
   process exit (Task 4).
-- `protocol.events.CLIENT_MESSAGE_FIELDS["question"] == "target_id"` -- a
-  `question` message carries only `{question_id, target_id}`, never the
-  question text itself (that lives in playlist/questions.yaml, loaded
-  UI-side).
+- `protocol.events.CLIENT_MESSAGE_FIELDS["question"] == ("target_id",
+  "question_id")` -- a `question` message carries only
+  `{question_id, target_id}`, never the question text itself (that lives in
+  playlist/questions.yaml, loaded UI-side). Updated (whole-branch review,
+  Important 6): both fields are validated at the protocol boundary now, not
+  just `target_id` -- see `protocol/events.py`'s own comment on why
+  `question_id` needed the same bound `target_id` always had.
 - The design spec (docs/superpowers/specs/2026-09-15-affinity-qa-design.md,
   section 4) states that a `question` message "Enqueues the underlying fold
   pick (if the target isn't already in flight/recent) exactly as `pick`

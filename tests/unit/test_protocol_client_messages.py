@@ -94,6 +94,59 @@ def test_an_egg_id_is_validated_exactly_as_a_target_id_is(bad):
         decode_client_message(bad)
 
 
+# ---------------------------------------------------------------------------
+# Important 6 (whole-branch review): a `question` message has TWO
+# meaningful fields (`target_id` AND `question_id`), and only `target_id`
+# used to be validated -- `question_id` was bounded by nothing but the
+# overall 64 KiB line-length cap (runner/server.py's CLIENT_LINE_MAX_BYTES),
+# then got echoed into answer_start/answer_error broadcast to every
+# connected UI client, written into a worker's command pipe, and logged.
+# ---------------------------------------------------------------------------
+
+def test_a_question_carries_both_fields_and_round_trips():
+    from protocol.events import question_message
+    message = question_message("q1", "dhfr")
+    assert decode_client_message(encode_client_message(message)) == message
+
+
+@pytest.mark.parametrize("bad", [
+    b'{"type":"question","version":%d,"target_id":"dhfr"}\n'
+    % PROTOCOL_VERSION,
+    b'{"type":"question","version":%d,"target_id":"dhfr","question_id":""}\n'
+    % PROTOCOL_VERSION,
+    b'{"type":"question","version":%d,"target_id":"dhfr","question_id":17}\n'
+    % PROTOCOL_VERSION,
+    b'{"type":"question","version":%d,"target_id":"dhfr","question_id":"%s"}\n'
+    % (PROTOCOL_VERSION, b"q" * (MAX_TARGET_ID_LEN + 1)),
+])
+def test_an_oversized_or_malformed_question_id_is_refused(bad):
+    """The same rejection `target_id`/`egg_id` already get, now applied to
+    `question_id` too -- an absent, empty, non-string, or over-limit
+    `question_id` must never reach the daemon just because `target_id`
+    alone happened to look fine."""
+    with pytest.raises(ProtocolError):
+        decode_client_message(bad)
+
+
+def test_a_question_id_at_the_limit_is_accepted():
+    """The same off-by-one check `target_id`'s own limit test makes."""
+    from protocol.events import question_message
+    ok = "q" * MAX_TARGET_ID_LEN
+    message = question_message(ok, "dhfr")
+    assert decode_client_message(
+        encode_client_message(message))["question_id"] == ok
+
+
+def test_a_question_with_a_fine_question_id_but_an_absurd_target_id_is_still_refused():
+    """The other half of "every field gets checked": a `question_id` that
+    passes must not let an oversized `target_id` slip through beside it."""
+    huge = "a" * (MAX_TARGET_ID_LEN + 1)
+    with pytest.raises(ProtocolError):
+        decode_client_message(encode_client_message(
+            {"type": "question", "version": PROTOCOL_VERSION,
+             "target_id": huge, "question_id": "q1"}))
+
+
 def test_a_pick_carries_the_version_it_was_written_against():
     message = pick_message("trpcage")
     assert message["type"] == "pick"
