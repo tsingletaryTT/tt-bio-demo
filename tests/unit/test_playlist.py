@@ -33,6 +33,14 @@ behaviors to pin down: absent stays None, explicit null ALSO stays None
 (the two spellings of "not yet measured" must not diverge), and a PRESENT
 but non-numeric value is still a loud PlaylistError -- the leniency is for
 "nothing was said," not for "something wrong was said."
+
+Also covers `load_questions()` / `Question` (the affinity-questions
+playlist, `playlist/questions.yaml`) -- a separate loader from
+`load_playlist`/`Target` above, but held to the same PlaylistError-never-
+raw-exception contract, plus the one thing unique to it: every question's
+`target_id` is validated against the REAL shipped fold manifest at load
+time, so a question naming a target the booth cannot fold is a loud
+config error here rather than a silent no-op later.
 """
 
 from pathlib import Path

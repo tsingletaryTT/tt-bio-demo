@@ -64,6 +64,19 @@ no input file for, so tapping "Trypsin - ~74.9s" got you a 20-residue
 Trp-cage in four seconds. Now the launcher builds the daemon's directory
 FROM this manifest, through this CLI, so the two cannot disagree: one
 parser, one validation pass, one answer to "what can this booth fold".
+
+This module also loads the affinity-questions playlist: `playlist/
+questions.yaml` (a separate file from manifest.yaml, deliberately -- see
+`load_questions`'s own docstring and the spec's design doc, section 3) is a
+YAML list of `Question` entries -- each naming a `target_id` that must
+already exist in the fold manifest, plus the visitor-facing `question` and
+`ligand_name` copy and an optional `expected_s` for pacing, the same
+"present-but-null vs. absent both mean not yet measured" convention
+`Target.expected_s` uses above. `load_questions()` is the loader, and it
+validates every `target_id` against the FULL fold manifest at load time --
+a config-correctness check, not a display filter -- so a question naming a
+target this booth cannot fold is caught loudly here rather than surfacing
+later as a silent no-op when a visitor asks it.
 """
 
 import sys
