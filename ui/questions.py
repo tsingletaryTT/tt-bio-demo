@@ -24,12 +24,14 @@ this booth has a hard-won, repeatedly-paid-for standard against fabricating
 claims a model's own output doesn't support (see this project's CLAUDE.md:
 the DNA/tRNA blurbs, the FKBP12 pLDDT-spread note, the "expected_s means the
 warm state a visitor actually meets" rule -- all the same discipline).
-`answered_text` renders literally `f"score: {score}"` and nothing else about
-the number -- no "binds tightly/weakly/strongly" tier this project invented,
-because tt-bio's own documentation defines no such tiers for nesso1's output.
-If a future tt-bio release documents real thresholds, that is a copy change
-to make deliberately, with a citation, not a stylistic flourish to slip in
-here.
+`answered_text` renders the score rounded to 2 decimal places (the same
+`.2f` convention `ui/diagnostics.py` already uses for this exact field) plus
+one short, fixed, factual gloss of what the number IS -- and nothing else
+about it: no "binds tightly/weakly/strongly" tier this project invented,
+because tt-bio's own documentation defines no such tiers for nesso1's
+output. If a future tt-bio release documents real thresholds, that is a
+copy change to make deliberately, with a citation, not a stylistic flourish
+to slip in here.
 
 **No fake progress bar for the in-flight state.** nesso1 is a single fast
 scalar call, not a multi-stage pipeline like a fold -- it emits no
@@ -42,6 +44,7 @@ project cannot subdivide.
 """
 
 import logging
+import math
 
 import gi
 
@@ -129,16 +132,67 @@ def in_flight_text(target_id, question_text=None):
     return f"Checking — {_question_label(question_text, target_id)}"
 
 
+# A short, fixed, factual gloss -- spec section 7's "a one-line factual
+# gloss, not a fabricated confidence category". States only what tt-bio's
+# nesso1 API is documented to return (docs/spike-nesso1-affinity.md section
+# 3.3: `affinity_probability_binary`, a literal [0, 1] probability of being
+# a binder), never a verdict word this project's content-honesty rule
+# forbids. One constant, used everywhere the score is shown, so the wording
+# cannot drift between call sites the way the manifest/site-copy drift this
+# project has paid for more than once (CLAUDE.md's "nine model families"
+# section, the DNA/tRNA blurbs) always starts as two hand-typed copies of
+# the same sentence.
+_SCORE_GLOSS = "nesso1's predicted probability the ligand binds"
+
+
+def _format_score(score):
+    """Round a raw nesso1 score to 2 decimal places for display, or `None`
+    if `score` isn't a real number at all.
+
+    Real captured values look like `0.9769678115844727`
+    (`AffinityScorer._score_real`'s own docstring) -- a 16-digit float is
+    not a "raw number, no invented claims" rendering, it is noise this
+    project's own content-honesty rule was never meant to license. Rounding
+    the DISPLAYED value is not fabricating a claim about precision nesso1
+    doesn't have; it is the same `.2f` convention `ui/diagnostics.py`
+    already uses for this exact field (and for `wall_s`), so the two
+    surfaces that show a score agree on how many digits it gets.
+
+    `None`-safe (and malformed-input-safe generally, the same "wire data is
+    never trusted" discipline `ui/diagnostics.py`'s own `_num` documents):
+    an `answer_done` with a missing/non-numeric `score` must render as an
+    honest "not available", never literally the word `None` or a
+    traceback.
+    """
+    try:
+        value = float(score)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(value):
+        return None
+    return format(value, ".2f")
+
+
 def answered_text(target_id, score, question_text=None):
     """The answered row's text: the content-honesty rule, as code.
 
-    `f"score: {score}"`, literally that plain -- the model's raw output
-    number and nothing else said about it. No invented verdict adjective
-    ("binds tightly", "weak binder", ...) that nesso1's own output does not
-    supply; see the module docstring for why this is load-bearing rather
-    than a style preference.
+    The model's own score, rounded for display (`_format_score`) and
+    followed by `_SCORE_GLOSS` -- a fixed, factual statement of what the
+    number IS (spec section 7) -- and nothing else said about it. No
+    invented verdict adjective ("binds tightly", "weak binder", ...) that
+    nesso1's own output does not supply; see the module docstring for why
+    this is load-bearing rather than a style preference.
+
+    A `score` that isn't a real number (see `_format_score`) renders as
+    "not available" rather than the literal string "None" -- the same
+    "never show wire-shaped data verbatim" rule this file already applies
+    to `answer_error`.
     """
-    return f"{_question_label(question_text, target_id)}\nscore: {score}"
+    label = _question_label(question_text, target_id)
+    formatted = _format_score(score)
+    if formatted is None:
+        return f"{label}\nscore: not available"
+    return f"{label}\nscore: {formatted} — {_SCORE_GLOSS}"
 
 
 def error_text(target_id, question_text=None):
@@ -225,16 +279,24 @@ class QuestionQueuePanel(Gtk.Box):
     functions above: this class owns layout, CSS classes, and calling them
     with the right arguments, and nothing about wording.
 
-    - **Pending**: questions not yet dispatched -- a plain label listing
-      each queued question's text and its `expected_s` (honestly "not yet
-      timed" when unmeasured).
+    - **Pending**: every question this panel knows about that is not
+      RIGHT NOW the one in flight or the one just answered -- see
+      `_pending_questions`. This booth's playlist of questions is small and
+      FIXED, and the attract loop cycles through it forever rather than
+      draining a one-shot queue, so "pending" is a live derivation
+      (recomputed on every render) rather than a list that only ever
+      shrinks -- Important 4, whole-branch review, replacing an earlier
+      design that started full, drained to permanently empty once every
+      question had been asked once, and never reflected a question bumped
+      straight to `answer_error` without ever going through
+      `on_answer_start`.
     - **In flight**: the one question currently being scored -- a
       `Gtk.Spinner` (indeterminate; no fake progress bar, see the module
       docstring) plus the question text.
-    - **Answered**: the most recent result -- the question text plus
-      `f"score: {score}"`, literally that, per the content-honesty rule.
-      An `on_answer_error` renders an honest "not answered" instead of a
-      score.
+    - **Answered**: the most recent result -- the question text plus the
+      score (rounded, with a one-line factual gloss -- see `answered_text`)
+      per the content-honesty rule. An `on_answer_error` renders an honest
+      "not answered" instead of a score.
 
     `set_qa_capable(False)` hides the whole panel (`self.set_visible`) --
     a booth whose daemon has no Q&A worker configured must never show an
@@ -256,7 +318,12 @@ class QuestionQueuePanel(Gtk.Box):
         # lookup then honestly falls through to `_question_label`'s target-
         # only fallback rather than raising.
         self._by_id = {question.id: question for question in (questions or [])}
-        self._pending = list(questions or [])
+        # The full, fixed set this booth knows how to ask -- in the order
+        # they were supplied. Kept once, at construction, and never mutated
+        # afterwards: see `_pending_questions` for why "pending" is DERIVED
+        # from this list every render rather than being a second, separately
+        # mutated list of its own (Important 4, whole-branch review).
+        self._questions = list(questions or [])
         self._in_flight = None  # dict: question_id, target_id, question_text
         self._answered = None   # dict: question_id, target_id, score, question_text, error
 
@@ -304,13 +371,63 @@ class QuestionQueuePanel(Gtk.Box):
         question rail implying a capability that isn't there."""
         self.set_visible(bool(capable))
 
+    def _pending_questions(self):
+        """The questions that read as "pending" right now: every question
+        this panel knows about, MINUS whichever one is currently in flight
+        and MINUS whichever one is the most recent answer -- recomputed on
+        every render, never a list that only ever drains.
+
+        Why a derivation and not a stored, mutated list (Important 4,
+        whole-branch review, replacing the original `self._pending = list
+        (questions)` / "remove on `on_answer_start`, never add back"
+        design): this booth has a small, FIXED set of questions
+        (`playlist/questions.yaml`'s three entries) that the attract loop
+        asks on repeat forever -- it is not a one-shot queue that starts
+        full and empties as each item is consumed. A list that only ever
+        shrinks gets three things wrong, all from the same root cause (it
+        answers "what have we not yet started, ever" instead of "what is
+        not the current activity"):
+
+        - At startup, before anything has ever been asked, it claimed all
+          three were "queued" -- true only in the sense that they will
+          eventually be asked, which is true of literally every question
+          this panel will ever show, forever, and is not what a visitor
+          reading "queued" understands by the word.
+        - Once every question has been asked once (~4.5 minutes at the
+          attract loop's cadence), it was permanently empty -- "No
+          questions queued" -- even though the loop keeps asking the same
+          three on repeat indefinitely. A drained list has no way to ever
+          refill itself.
+        - A question BUMPED out of the daemon's queue
+          (`runner.daemon.MAX_PENDING_QUESTIONS`) before ever reaching
+          `on_answer_start` -- it goes straight to `on_answer_error` -- was
+          never removed at all, so it stayed listed as "pending" forever,
+          even while its own row below correctly showed it as errored.
+
+        Deriving fixes all three at once: nothing is ever "pending" before
+        it has genuinely not started, nothing is ever incorrectly claimed
+        empty (there are always at least `len(self._questions) - 2`
+        pending, and with the shipped three questions and one in-flight/one
+        answered at a time, that is genuinely nearly always at least one),
+        and a bumped-and-errored question is excluded for exactly as long
+        as ITS error is the most recent result -- the same "not the current
+        activity" rule applied to the error case, not a special case bolted
+        on for it.
+        """
+        exclude = set()
+        if self._in_flight is not None:
+            exclude.add(self._in_flight["question_id"])
+        if self._answered is not None:
+            exclude.add(self._answered["question_id"])
+        return [q for q in self._questions if q.id not in exclude]
+
     def on_answer_start(self, question_id, target_id):
         """A question moved from pending to in-flight. Starts the
         indeterminate spinner (see the module docstring for why there is
-        no progress bar) and removes the question from the pending list if
-        it was there."""
+        no progress bar). Nothing to remove from a stored pending list any
+        more -- `_pending_questions` derives it fresh from `self._in_flight`
+        every render (see that method's docstring)."""
         question = self._by_id.get(question_id)
-        self._pending = [q for q in self._pending if q.id != question_id]
         self._in_flight = {
             "question_id": question_id,
             "target_id": target_id,
@@ -366,7 +483,7 @@ class QuestionQueuePanel(Gtk.Box):
             self._in_flight = None
 
     def _render(self):
-        self._pending_label.set_label(pending_text(self._pending))
+        self._pending_label.set_label(pending_text(self._pending_questions()))
 
         if self._in_flight is not None:
             self._in_flight_label.set_label(
