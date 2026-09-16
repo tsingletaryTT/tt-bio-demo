@@ -8,8 +8,11 @@ in the rail were reachable only by someone who already knew they were there.
 
 So when the booth has been left alone, it demonstrates them itself: opens the
 diagnostics tap for a while, closes it, opens the Tensix panel for a while,
-closes it, and goes quiet again. A passer-by sees the instruments; nobody has
-to be told a keyboard shortcut.
+closes it, shows the gallery briefly, and -- the fourth beat, added for the
+affinity-questions feature -- asks the daemon one of the playlist's affinity
+questions, then goes quiet again. A passer-by sees the instruments; nobody
+has to be told a keyboard shortcut, and nobody has to know a booth can be
+asked a question either.
 
 THE RULES THIS MUST NOT BREAK, and they are what most of the code below is
 for:
@@ -56,6 +59,15 @@ OPEN_DIAGNOSTICS = "open_diagnostics"
 CLOSE_DIAGNOSTICS = "close_diagnostics"
 OPEN_TENSIX = "open_tensix"
 CLOSE_TENSIX = "close_tensix"
+# The fourth cue (affinity-questions feature): ask the daemon one of the
+# playlist's questions, the same way the attract loop shows off the two
+# panels. Unlike every cue above it, this one has no matching close --
+# there is nothing on screen it OPENS, only a message it sends, so there is
+# nothing for rule 2 ("it never leaves the booth changed") to undo. It is
+# fire-and-forget by construction: `_apply_ownership` never records it as
+# owned, so `interrupted()` never has to close it and a visitor arriving
+# mid-cycle never sees it retracted.
+ASK_QUESTION = "ask_question"
 
 #: Seconds of no input at all before any of this begins. Deliberately longer
 #: than the state machine's own 45s idle timeout, so the booth has already
@@ -78,6 +90,13 @@ SCORE = (
     # and short enough not to interrupt a fold anybody is watching.
     (66.0, SHOW_GALLERY),
     (74.0, HIDE_GALLERY),
+    # A further rest after the gallery closes -- the same "most of the cycle
+    # shows the protein" reasoning as the gap before it -- and then one
+    # question, asked and forgotten. Placed last so it never competes with
+    # the panel/gallery cues for a visitor's attention, and far enough after
+    # HIDE_GALLERY (8s) that it reads as its own beat, not a tail end of the
+    # menu closing.
+    (82.0, ASK_QUESTION),
 )
 CYCLE_S = 90.0
 
@@ -186,6 +205,12 @@ class Choreography:
             if "gallery" not in self._owned:
                 return None
             self._owned.discard("gallery")
+            return action
+        if action == ASK_QUESTION:
+            # No ownership taken -- see ASK_QUESTION's own comment above.
+            # Spelled out explicitly (rather than left to the bare
+            # `return action` below) so a reader does not have to wonder
+            # whether this cue was simply forgotten here.
             return action
         return action
 
