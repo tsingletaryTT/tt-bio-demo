@@ -555,3 +555,66 @@ def test_no_highlight_residues_is_identical_to_the_old_call_signature():
     default_colors = cartoon_from_cif(path)[2]
     explicit_empty_colors = cartoon_from_cif(path, highlight_residues=set())[2]
     assert np.array_equal(default_colors, explicit_empty_colors)
+
+
+# ---------------------------------------------------------------------------
+# Item 14 of the deferred-nits batch: a committed regression test for the
+# mock-runner's own affinity-question fixture. Its non-empty pocket and
+# highlight were only ever confirmed manually, once, in the commit that
+# added the fixture (511974f, "test: mock runner replays a question/answer
+# pair end to end") -- nothing pinned it against a future change to either
+# the fixture or the pocket/cartoon geometry code. This uses the exact real,
+# non-mocked call path `ui/app.py`'s `_compute_pocket_residues` and
+# `_highlight_worker_main` chain together: `ui.pocket.pocket_residues` on a
+# real gemmi-parsed structure, then `ui.cartoon.cartoon_from_cif` with that
+# real result as `highlight_residues` -- no fakes, no monkeypatches.
+# ---------------------------------------------------------------------------
+
+_DHFR_WITH_LIGAND_FIXTURE = (
+    pathlib.Path(__file__).resolve().parents[1]
+    / "fixtures" / "structures" / "dhfr_with_ligand.cif")
+
+
+def test_the_mock_questions_fixture_produces_a_real_non_empty_pocket():
+    """tests/fixtures/structures/dhfr_with_ligand.cif (see its own header
+    comment, and item 2 of the deferred-nits batch, for what it actually
+    is: a real Trp-cage backbone plus six synthetic MTX ligand atoms,
+    labeled "dhfr" purely for tests/unit/runner/test_mock_questions.py's
+    end-to-end replay). This is the ONE property that fixture must keep for
+    that test to mean anything -- a synthetic ligand placed too far away, or
+    a future fixture edit that drops it, would make the mock replay's
+    "highlight fires" claim silently false again, exactly as it was before
+    this fixture existed."""
+    import gemmi
+
+    from ui.pocket import pocket_residues
+
+    structure = gemmi.read_structure(str(_DHFR_WITH_LIGAND_FIXTURE))
+    structure.setup_entities()
+    pocket = pocket_residues(structure)
+    assert pocket, "the fixture's synthetic ligand must yield a real pocket"
+
+
+def test_the_mock_questions_fixture_produces_a_real_cartoon_highlight():
+    """The other half of the same claim: feeding that real pocket into
+    `cartoon_from_cif` must actually brighten some vertex's colour (see
+    `POCKET_HIGHLIGHT_BOOST`), never move geometry, and never do nothing.
+    This is what `ui.app._highlight_worker_main` really calls, end to end,
+    against a fixture this project's own mock runner ships and replays."""
+    import gemmi
+
+    from ui.pocket import pocket_residues
+
+    structure = gemmi.read_structure(str(_DHFR_WITH_LIGAND_FIXTURE))
+    structure.setup_entities()
+    pocket = pocket_residues(structure)
+    assert pocket, "guard: the other test in this pair already pins this"
+
+    plain_verts, _, plain_colors, _ = cartoon_from_cif(_DHFR_WITH_LIGAND_FIXTURE)
+    hl_verts, _, hl_colors, _ = cartoon_from_cif(
+        _DHFR_WITH_LIGAND_FIXTURE, highlight_residues=pocket)
+
+    assert np.allclose(plain_verts, hl_verts), \
+        "a highlight must never move geometry"
+    assert not np.allclose(plain_colors, hl_colors), \
+        "the highlight must actually brighten some vertex's colour"
