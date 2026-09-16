@@ -9,7 +9,7 @@ parent<->worker control line is also a wire type in either direction.
 from protocol.events import CLIENT_MESSAGE_TYPES, EVENT_TYPES, PROTOCOL_VERSION
 
 
-def test_the_protocol_version_is_three_on_this_side_too():
+def test_the_protocol_version_is_four_on_this_side_too():
     """Both halves must agree on this number or the UI refuses the daemon at
     `hello`. A bump made in one venv's checkout and not the other is exactly
     the failure this pair of files exists to catch.

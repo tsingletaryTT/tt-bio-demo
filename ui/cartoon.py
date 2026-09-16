@@ -32,7 +32,12 @@ predecessor is negative is negated. Without that a beta-sheet renders as a
 twisted mess, which is exactly how you can tell a cartoon renderer was never
 tested on one.
 
-Pure: numpy in, arrays out. No gemmi, no GL.
+Pure: numpy in, arrays out. No GL. `resample_scalar` (from `ui.geometry`) is
+imported at module scope, which pulls in `ui.geometry`'s own `gemmi`
+dependency transitively -- every caller of `cartoon_from_cif` needs gemmi
+anyway, so this costs nothing in practice, but it means the historical claim
+above ("no gemmi") stopped being literally true the day this import moved
+from local to module scope.
 """
 
 import logging
