@@ -2485,6 +2485,22 @@ class DemoApp(Gtk.Application):
                           "run without a gallery", path)
             self.targets = []
             return
+        # `self.questions` (set by `_load_questions()`, above) was validated
+        # against the FULL fold manifest -- ui/playlist.py's load_questions()
+        # deliberately does that regardless of any --targets narrowing (a
+        # config-correctness check, not a display filter; see its own
+        # docstring). `self.targets` just above may be a narrower subset when
+        # an operator passed --targets, so narrow what a visitor is actually
+        # OFFERED to match: without this, a one-card gallery (e.g.
+        # `--targets trpcage`) would sit next to an ask strip / rail panel
+        # still advertising questions about targets that were never loaded --
+        # each degrades gracefully on its own (an unknown-target caption, not
+        # a crash), but the two surfaces would visibly disagree. Both
+        # `Gallery` below and `_build_side_rail`'s `QuestionQueuePanel` read
+        # `self.questions` after this point.
+        loaded_target_ids = {target.id for target in self.targets}
+        self.questions = [question for question in self.questions
+                           if question.target_id in loaded_target_ids]
         # The dwell caps come from the playlist, so they can only be known
         # here -- StateMachine is built in __init__, long before any manifest
         # is read. Assigned rather than passed for exactly that reason; the
@@ -4741,8 +4757,14 @@ class DemoApp(Gtk.Application):
         is: an exploding panel update, or a highlight rebuild that never
         gets the chance to start, must not turn a real answer into a
         "dropping malformed event" log line for the WHOLE event -- the
-        panel forward and the highlight rebuild are two independent
-        opportunities to fail, not one.
+        panel forward (`_call_question_panel`, its own try/except) and the
+        highlight-rebuild bookkeeping just below (its own try/except too,
+        added for exactly this reason -- a prior version had none, and an
+        exception there would have propagated out of this method and been
+        caught only by `_handle_event`'s OUTER handler, which logs the
+        already-successfully-shown answer as a "dropping malformed
+        answer_done event") are genuinely two independent opportunities to
+        fail, not one that merely looks like two.
         """
         question_id = event.get("question_id")
         target_id = event.get("target_id")
@@ -4752,15 +4774,19 @@ class DemoApp(Gtk.Application):
             self._call_question_panel(
                 "on_answer_done", question_id, target_id, event.get("score"))
             if target_id is not None:
-                # Remembered BEFORE the reactive check below, not after: this
-                # is what lets a ribbon that has not been built yet (the
-                # Critical ordering bug -- see `_answered_pockets`'
-                # docstring in __init__) pick this answer up later, at
-                # `_spawn_ribbon_worker`, instead of it only ever being
-                # tried once, right here, against whatever this cell
-                # happens to be showing at this exact instant.
-                self._answered_pockets[target_id] = dict(event)
-                self._maybe_highlight_pocket(target_id)
+                try:
+                    # Remembered BEFORE the reactive check below, not after:
+                    # this is what lets a ribbon that has not been built yet
+                    # (the Critical ordering bug -- see `_answered_pockets`'
+                    # docstring in __init__) pick this answer up later, at
+                    # `_spawn_ribbon_worker`, instead of it only ever being
+                    # tried once, right here, against whatever this cell
+                    # happens to be showing at this exact instant.
+                    self._answered_pockets[target_id] = dict(event)
+                    self._maybe_highlight_pocket(target_id)
+                except Exception:
+                    log.exception("pocket highlight rebuild for %r dropped",
+                                  target_id)
         elif kind == "answer_error":
             self._call_question_panel("on_answer_error", question_id, target_id)
 
