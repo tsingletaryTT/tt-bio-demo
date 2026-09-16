@@ -269,6 +269,158 @@ def test_answer_done_for_the_shown_target_rebuilds_with_a_highlight(monkeypatch)
     assert viewer.shown == ("ribbon", ["mesh:highlighted"])
 
 
+def test_answer_done_arriving_before_the_ribbon_still_gets_highlighted(monkeypatch):
+    """The CRITICAL defect (final whole-branch review): in production,
+    nesso1 (~8-12s, on its own dedicated, idle chip) usually finishes
+    scoring BEFORE the fold itself does -- a question's fold pick queues
+    behind whatever chip is already folding at VISITOR_PRIORITY, and the
+    fold itself then takes 9.7-17.4s for the two slower question targets
+    (DHFR/trypsin). So `answer_done` routinely arrives while this cell has
+    no ribbon of its own AT ALL yet -- `view.shown_cif_path` is still None
+    -- which is exactly the ordering Task 12's mock-stream fixture never
+    produced (it happened to order `job_done` before the answer, the one
+    ordering that happens to work with the old, purely reactive code).
+
+    Before the fix, `_maybe_highlight_pocket`'s guard
+    (`view.shown_cif_path` truthy) fails here, the answer is dropped, and
+    nothing ever re-checks once the ribbon actually does arrive -- so the
+    highlight silently never appears, on essentially every question asked
+    about those two targets.
+    """
+    import ui.app as mod
+    monkeypatch.setattr(mod, "_compute_pocket_residues",
+                        lambda cif_path: {("A", 1)})
+    mesh = _SlowMesh(delay=0.0)
+    monkeypatch.setattr(mod, "structure_mesh", mesh)
+
+    app = _questions_app()
+    app._handle_event(_start("j1", card=0, target_id="dhfr"))
+    app._on_event(_frame("j1", n_atoms=4, spread=1.0))
+    app._drain_frames()
+
+    # The answer lands well before this fold's own job_done/ribbon -- there
+    # is no ribbon on this cell at all yet (shown_cif_path is None).
+    view = app._slot_view(0)
+    assert view.shown_cif_path is None
+    app._handle_event({"type": "answer_done", "question_id": "q1",
+                       "target_id": "dhfr", "score": 0.9})
+    app._drain_pending_highlight()  # nothing to apply yet -- must not raise
+    assert mesh.calls == [], "no ribbon exists yet; nothing should be built"
+
+    app._handle_event({"type": "job_done", "job_id": "j1",
+                       "cif_path": "/fold1/dhfr.cif", "wall_s": 1.0,
+                       "mean_plddt": 90.0})
+    assert app._join_ribbon_workers(timeout=5.0)
+    app._drain_pending_ribbon()
+
+    viewer = app.quad.viewer_for_slot(0)
+    assert mesh.calls == [{("A", 1)}], (
+        "the ribbon build never received highlight_residues even though "
+        "an answer for this exact target had already arrived")
+    assert viewer.shown == ("ribbon", ["mesh:highlighted"]), (
+        "an answer that beat its own fold's ribbon to arrive was never "
+        "applied once the ribbon was actually built")
+
+
+def test_a_ribbon_built_plain_still_picks_up_a_late_arriving_answer(monkeypatch):
+    """The narrower race the spawn-time snapshot alone cannot close: an
+    answer lands for this cell's target AFTER `_spawn_ribbon_worker` already
+    snapshotted `_answered_pockets` (finding nothing, so this build goes out
+    plain) but BEFORE that build is actually applied
+    (`_drain_pending_ribbon`/`_apply_ribbon`). The fix's safety net --
+    `_apply_ribbon` calling `_maybe_highlight_pocket` again once
+    `shown_cif_path` is genuinely set to this ribbon's own file -- is what
+    catches this; without it the answer would be silently dropped exactly
+    like the Critical bug, just in a narrower window.
+    """
+    import ui.app as mod
+    monkeypatch.setattr(mod, "_compute_pocket_residues",
+                        lambda cif_path: {("A", 1)})
+    mesh = _SlowMesh(delay=0.0)
+    monkeypatch.setattr(mod, "structure_mesh", mesh)
+
+    app = _questions_app()
+    app._handle_event(_start("j1", card=0, target_id="dhfr"))
+    app._on_event(_frame("j1", n_atoms=4, spread=1.0))
+    app._drain_frames()
+
+    # No answer yet at job_done/spawn time -- the ordinary ribbon build goes
+    # out plain, exactly like every non-question fold.
+    app._handle_event({"type": "job_done", "job_id": "j1",
+                       "cif_path": "/fold1/dhfr.cif", "wall_s": 1.0,
+                       "mean_plddt": 90.0})
+    assert app._join_ribbon_workers(timeout=5.0)
+    assert mesh.calls == [None]
+
+    # The answer lands in the gap: the plain build has already FINISHED
+    # (joined above) but has not been DRAINED/APPLIED yet -- the exact
+    # window between a worker finishing and the main loop's idle callback
+    # actually running.
+    app._handle_event({"type": "answer_done", "question_id": "q1",
+                       "target_id": "dhfr", "score": 0.9})
+    app._drain_pending_ribbon()
+    viewer = app.quad.viewer_for_slot(0)
+    assert viewer.shown[0] == "ribbon"
+
+    # The safety net inside _apply_ribbon should have spawned a highlight
+    # rebuild the instant the plain ribbon landed and shown_cif_path became
+    # genuinely valid for this fold.
+    assert app._join_ribbon_workers(timeout=5.0)
+    app._drain_pending_highlight()
+
+    assert mesh.calls[-1] == {("A", 1)}, (
+        "the safety-net rebuild never fired for the late-arriving answer")
+    assert viewer.shown == ("ribbon", ["mesh:highlighted"])
+
+
+def test_a_later_unrelated_refold_of_the_same_target_does_not_reuse_a_consumed_answer(
+        monkeypatch):
+    """Once an answer has been visually applied to one ribbon, a LATER,
+    unrelated re-fold of the same target (the attract loop rotating back to
+    it, with no new question asked) must not resurrect the old highlight --
+    see `_answered_pockets`' docstring in `DemoApp.__init__` for the full
+    reasoning."""
+    import ui.app as mod
+    monkeypatch.setattr(mod, "_compute_pocket_residues",
+                        lambda cif_path: {("A", 1)})
+    mesh = _SlowMesh(delay=0.0)
+    monkeypatch.setattr(mod, "structure_mesh", mesh)
+
+    app = _questions_app()
+    app._handle_event(_start("j1", card=0, target_id="dhfr"))
+    app._on_event(_frame("j1", n_atoms=4, spread=1.0))
+    app._drain_frames()
+    app._handle_event({"type": "answer_done", "question_id": "q1",
+                       "target_id": "dhfr", "score": 0.9})
+    app._handle_event({"type": "job_done", "job_id": "j1",
+                       "cif_path": "/fold1/dhfr.cif", "wall_s": 1.0,
+                       "mean_plddt": 90.0})
+    assert app._join_ribbon_workers(timeout=5.0)
+    app._drain_pending_ribbon()
+    viewer = app.quad.viewer_for_slot(0)
+    assert viewer.shown == ("ribbon", ["mesh:highlighted"])
+    assert "dhfr" not in app._answered_pockets, (
+        "the answer should be consumed once visually applied")
+
+    # Let the dwell expire and re-fold the SAME target, with no new
+    # question asked.
+    app._tick_state_at(0.0)
+    app._tick_state_at(99.0)
+    app._handle_event(_start("j2", card=0, target_id="dhfr"))
+    app._on_event(_frame("j2", n_atoms=4, spread=90.0))
+    app._drain_frames()
+    app._handle_event({"type": "job_done", "job_id": "j2",
+                       "cif_path": "/fold2/dhfr.cif", "wall_s": 1.0,
+                       "mean_plddt": 91.0})
+    assert app._join_ribbon_workers(timeout=5.0)
+    app._drain_pending_ribbon()
+
+    assert mesh.calls[-1] is None, (
+        "a later, unrelated re-fold of the same target reused a consumed "
+        "answer's highlight")
+    assert viewer.shown == ("ribbon", ["mesh:plain"])
+
+
 def test_answer_done_for_a_different_target_touches_nothing(monkeypatch):
     import ui.app as mod
     monkeypatch.setattr(mod, "_compute_pocket_residues",
@@ -416,7 +568,19 @@ def test_a_highlight_for_an_older_ribbon_of_the_same_target_is_dropped(monkeypat
     lands on the same cell. `shown_target_id` alone cannot see this race --
     it reads the same target the whole time -- so the fix also re-checks
     `shown_cif_path` against the exact path the in-flight rebuild was built
-    from."""
+    from.
+
+    Updated by the Critical fix (whole-branch review): the answer for
+    `dhfr` is still UNCONSUMED when fold 2's ribbon is spawned (fold 1's
+    highlight rebuild -- built from fold 1's now-stale `.cif` -- has not
+    applied yet), so `_spawn_ribbon_worker`'s own snapshot now finds it and
+    bakes the highlight directly into fold 2's build. That is the correct,
+    intended outcome of the fix (the answer is not orphaned; it lands on
+    whichever ribbon of `dhfr` is actually current), not a regression of
+    this test's ORIGINAL guarantee -- which is narrower and still holds:
+    the STALE highlight rebuilt from fold 1's `.cif` must never overwrite
+    fold 2's ribbon once fold 2 is showing, highlighted or not.
+    """
     import ui.app as mod
     monkeypatch.setattr(mod, "_compute_pocket_residues",
                         lambda cif_path: {("A", 1)})
@@ -431,7 +595,8 @@ def test_a_highlight_for_an_older_ribbon_of_the_same_target_is_dropped(monkeypat
                        "target_id": "dhfr", "score": 0.9})
     # While that rebuild is still sleeping, a SECOND fold of the same
     # target lands a NEWER ribbon on this cell -- same target id, different
-    # .cif.
+    # .cif. The answer is still unconsumed, so this build's own spawn-time
+    # snapshot picks it up and bakes the highlight in directly.
     app._handle_event(_start("j2", card=0, target_id="dhfr"))
     app._on_event(_frame("j2", n_atoms=4, spread=1.0))
     app._drain_frames()
@@ -441,9 +606,14 @@ def test_a_highlight_for_an_older_ribbon_of_the_same_target_is_dropped(monkeypat
     assert app._join_ribbon_workers(timeout=5.0)
     app._drain_pending_ribbon()
     after_second_fold = viewer.shown
-    assert after_second_fold == ("ribbon", ["mesh:plain"])
+    assert after_second_fold == ("ribbon", ["mesh:highlighted"]), (
+        "fold 2's own build should have baked in the still-unconsumed "
+        "answer for dhfr")
 
-    # Now the first (stale) highlight rebuild lands.
+    # Now the first (stale) highlight rebuild -- built from fold 1's .cif,
+    # which this cell no longer shows -- lands. It must not touch the
+    # screen: `_apply_highlight`'s own `shown_cif_path` re-check is what
+    # drops it.
     app._drain_pending_highlight()
 
     assert viewer.shown == after_second_fold, (

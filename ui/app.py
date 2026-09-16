@@ -1547,6 +1547,39 @@ class DemoApp(Gtk.Application):
         # ASK_QUESTION cue (`_ask_next_question`) -- a plain int, not read
         # back off anything, so a headless test can drive it directly.
         self._ask_question_index = 0
+        # target_id -> the most recent, not-yet-VISUALLY-APPLIED `answer_done`
+        # event for that target (Critical fix, whole-branch review). See
+        # `_handle_answer_event`/`_spawn_ribbon_worker`/`_apply_ribbon`'s own
+        # comments for the full reasoning; the short version: an answer's
+        # arrival and its target's ribbon becoming showable are two
+        # independent events that can land in either order (in production,
+        # nesso1 usually finishes FIRST -- the dedicated Q&A chip is idle and
+        # ~8-12s, while the fold itself queues behind whatever is already
+        # running and then takes 9.7-17.4s for the three question targets).
+        # Recording the answer here is what lets whichever of the two events
+        # happens SECOND be the one that actually paints the highlight,
+        # instead of only ever reacting to `answer_done` against a ribbon
+        # that may not exist yet.
+        #
+        # Consumed (popped) the moment it is used to produce a highlighted
+        # ribbon that is actually applied to a cell -- never reapplied to a
+        # LATER, unrelated fold of the same target that was not paired with
+        # a new answer. That is a deliberate choice, not an oversight: a
+        # question's pick is enqueued (or deduped against an in-flight one)
+        # the instant the question is accepted, so the very next ribbon this
+        # target produces is, for all practical purposes, the one the
+        # question was about. Once that ribbon has consumed the answer, the
+        # record is gone, so an ordinary later re-fold of the same target in
+        # the attract loop -- with no new question asked -- never resurrects
+        # a stale highlight. (The one gap this leaves: if that specific fold
+        # errors instead of completing, the answer survives to pair with
+        # whatever THIS target next folds successfully, rather than being
+        # dropped outright -- deliberately, since the score is still an
+        # honest answer about this target and pocket residues for a given
+        # target+ligand are a property of the molecule, not of one
+        # particular diffusion run, so pairing it with a later successful
+        # fold of the same target is not a false claim.)
+        self._answered_pockets = {}
         self._preparing_box = None
         self._preparing_message_label = None
         self._window = None
@@ -4381,7 +4414,17 @@ class DemoApp(Gtk.Application):
                     # ribbon_from_cif's cost moved off this thread -- see
                     # _spawn_ribbon_worker. The result comes back later, via
                     # _drain_pending_ribbon on the main loop, not here.
-                    self._spawn_ribbon_worker(slot, cif_path)
+                    #
+                    # `view.current_target_id`, not `event.get("target_id")`:
+                    # `job_done` carries no `target_id` on the wire (only
+                    # `job_start` does), and this is what `_spawn_ribbon_worker`
+                    # needs to check whether an affinity answer for THIS
+                    # target is already sitting in `_answered_pockets`,
+                    # waiting for a ribbon to apply itself to (Critical fix,
+                    # whole-branch review).
+                    view = self._slot_view(slot)
+                    target_id = view.current_target_id if view else None
+                    self._spawn_ribbon_worker(slot, cif_path, target_id)
                 elif cif_path:
                     log.warning("job_done for %s belongs to no cell; nothing "
                                 "to render", event.get("job_id"))
@@ -4548,6 +4591,14 @@ class DemoApp(Gtk.Application):
             self._call_question_panel(
                 "on_answer_done", question_id, target_id, event.get("score"))
             if target_id is not None:
+                # Remembered BEFORE the reactive check below, not after: this
+                # is what lets a ribbon that has not been built yet (the
+                # Critical ordering bug -- see `_answered_pockets`'
+                # docstring in __init__) pick this answer up later, at
+                # `_spawn_ribbon_worker`, instead of it only ever being
+                # tried once, right here, against whatever this cell
+                # happens to be showing at this exact instant.
+                self._answered_pockets[target_id] = dict(event)
                 self._maybe_highlight_pocket(target_id)
         elif kind == "answer_error":
             self._call_question_panel("on_answer_error", question_id, target_id)
@@ -4573,6 +4624,16 @@ class DemoApp(Gtk.Application):
         geometry `_frame_camera` frames against does not change, so nothing
         here asks the camera to move.
         """
+        # Nothing to do if this target's answer has already been consumed
+        # (applied to some ribbon already) -- this method is also called as
+        # a safety net right after an ordinary ribbon build applies (see
+        # `_apply_ribbon`), specifically to catch an answer that landed
+        # *during* that build, after `_spawn_ribbon_worker`'s own snapshot
+        # was taken. Without this check it would unconditionally re-spawn a
+        # highlight rebuild every single time ANY ribbon lands for a target
+        # that was ever answered, forever.
+        if target_id not in self._answered_pockets:
+            return
         for slot, view in enumerate(self._slots):
             if (view.shown_target_id == target_id and view.has_structure
                     and view.shown_cif_path):
@@ -4725,6 +4786,15 @@ class DemoApp(Gtk.Application):
             # in (blend already at 1.0 by the time an answer can arrive),
             # so there is nothing to fade FROM.
             viewer.set_ribbon(verts, norms, colors, idx)
+            # Consumed: this answer has now been visually applied, so it
+            # must not be picked up again by some LATER, unrelated re-fold
+            # of this same target -- see `_answered_pockets`' docstring in
+            # __init__. Only pops the record if it is still the SAME one
+            # that drove this rebuild (a newer answer for the same target
+            # could in principle have landed while this rebuild was in
+            # flight); an unrelated newer answer must survive to get its
+            # own highlight later.
+            self._answered_pockets.pop(target_id, None)
         except Exception:
             log.exception("dropping pocket highlight for %s", target_id)
 
@@ -4893,7 +4963,7 @@ class DemoApp(Gtk.Application):
     # actually promise), and no queue that could let a superseded ribbon
     # sit and apply later.
 
-    def _spawn_ribbon_worker(self, slot, cif_path):
+    def _spawn_ribbon_worker(self, slot, cif_path, target_id=None):
         """Move ribbon_from_cif's cost onto a background thread, for one cell.
 
         Threads, not e.g. a process pool: the payload (a cif_path string
@@ -4912,6 +4982,17 @@ class DemoApp(Gtk.Application):
         generation and chip 0's in-flight ribbon build is dropped as stale --
         silently, every cycle, forever, and with four chips folding that is
         most ribbons the booth ever builds.
+
+        `target_id` (Critical fix, whole-branch review): if an affinity
+        answer for this exact target is already sitting in
+        `_answered_pockets` -- the common case in production, where nesso1
+        (~8-12s, dedicated idle chip) usually finishes before this fold does
+        -- the highlight is baked into THIS build directly, rather than
+        built plain here and rebuilt a second time later by the reactive
+        path. Snapshotted here, on the MAIN thread, and handed to the worker
+        as a plain value: `_answered_pockets` is mutated only from the main
+        loop (`_handle_answer_event`), so reading it here and never again
+        inside the worker thread avoids needing a lock around it.
         """
         view = self._slot_view(slot)
         if view is None:
@@ -4921,6 +5002,9 @@ class DemoApp(Gtk.Application):
             view.ribbon_generation += 1
             generation = view.ribbon_generation
 
+        pocket_event = (self._answered_pockets.get(target_id)
+                        if target_id is not None else None)
+
         # Bookkeeping only (test joins + a bound on how many dead Thread
         # objects accumulate across a long attract-loop session) -- prune
         # finished workers before adding the new one rather than letting
@@ -4929,7 +5013,7 @@ class DemoApp(Gtk.Application):
 
         worker = threading.Thread(
             target=self._ribbon_worker_main,
-            args=(slot, generation, cif_path),
+            args=(slot, generation, cif_path, target_id, pocket_event),
             name=f"ribbon-worker-{slot}-{generation}",
             daemon=True,
         )
@@ -4959,7 +5043,8 @@ class DemoApp(Gtk.Application):
                         alive, timeout)
         return not alive
 
-    def _ribbon_worker_main(self, slot, generation, cif_path):
+    def _ribbon_worker_main(self, slot, generation, cif_path, target_id=None,
+                            pocket_event=None):
         """Runs entirely off the main loop -- must never raise out of this
         method. A plain threading.Thread whose target raises doesn't freeze
         anything the way an uncaught exception in a GLib source would (see
@@ -4969,12 +5054,22 @@ class DemoApp(Gtk.Application):
         Catch broadly -- deliberately not just GeometryError, since
         anything ribbon_from_cif raises must produce the same "log it,
         leave the screen alone" outcome, not a silent thread death.
+
+        `pocket_event` (Critical fix, whole-branch review): non-None means
+        `_spawn_ribbon_worker` found an answer already waiting for this
+        target at spawn time, so this build bakes the highlight in directly
+        -- one rebuild instead of a plain one followed immediately by a
+        second, highlighted one.
         """
         try:
-            # The cartoon, with any bound ligand drawn beside it. Falls
-            # back to the plain backbone tube if either raises -- see
-            # ui/structure_view.py. Same four arrays either way.
-            result = structure_mesh(cif_path)
+            if pocket_event is not None:
+                residues = _compute_pocket_residues(cif_path)
+                result = structure_mesh(cif_path, highlight_residues=residues)
+            else:
+                # The cartoon, with any bound ligand drawn beside it. Falls
+                # back to the plain backbone tube if either raises -- see
+                # ui/structure_view.py. Same four arrays either way.
+                result = structure_mesh(cif_path)
         except Exception as exc:
             outcome = ("error", exc)
         else:
@@ -5003,7 +5098,8 @@ class DemoApp(Gtk.Application):
                 and generation < view.pending_ribbon[0]
             )
             if not stale and not superseded_in_slot:
-                view.pending_ribbon = (generation, cif_path, outcome)
+                view.pending_ribbon = (generation, cif_path, outcome,
+                                       target_id, pocket_event)
 
         # Wake the main loop regardless of whether this worker's result was
         # the one actually stored -- GLib.idle_add is safe to call from any
@@ -5043,13 +5139,14 @@ class DemoApp(Gtk.Application):
                                     view.ribbon_generation))
                     view.pending_ribbon = None
 
-        for slot, (generation, cif_path, outcome), current_generation in pending:
+        for slot, entry, current_generation in pending:
+            generation, cif_path, outcome, target_id, pocket_event = entry
             self._apply_ribbon(slot, generation, current_generation,
-                               cif_path, outcome)
+                               cif_path, outcome, target_id, pocket_event)
         return False
 
     def _apply_ribbon(self, slot, generation, current_generation, cif_path,
-                      outcome):
+                      outcome, target_id=None, pocket_event=None):
         """Put one cell's finished structure on screen, or decide not to."""
         if generation != current_generation:
             # A newer fold started ON THIS CELL after this result was
@@ -5110,6 +5207,30 @@ class DemoApp(Gtk.Application):
                 # `_maybe_highlight_pocket` rebuilds from exactly this file
                 # rather than needing a second place that remembers it.
                 view.shown_cif_path = cif_path
+            # Critical fix (whole-branch review): reconcile this ribbon
+            # against `_answered_pockets` now that `shown_cif_path` is set.
+            if pocket_event is not None:
+                # This build already baked the highlight in at spawn time
+                # (`_spawn_ribbon_worker`'s snapshot found the answer
+                # waiting) -- consume the record so a LATER, unrelated
+                # re-fold of the same target never resurrects it. Only pops
+                # it if it is still the SAME record: an answer that arrived
+                # for the same target *after* the snapshot (superseding
+                # this one) must survive to get its own highlight, handled
+                # by the safety net below on ITS OWN ribbon.
+                if self._answered_pockets.get(target_id) is pocket_event:
+                    del self._answered_pockets[target_id]
+            elif target_id is not None:
+                # Safety net for the one race the spawn-time snapshot cannot
+                # close: an answer for this target landed AFTER the
+                # snapshot was taken (so this build went out plain) but
+                # before this apply -- or is landing concurrently. Now that
+                # `shown_cif_path`/`shown_target_id` genuinely describe this
+                # ribbon, `_maybe_highlight_pocket`'s reactive path (the one
+                # `answer_done` already drives) is the correct, already-
+                # tested way to pick it up; it is a no-op if there is
+                # nothing unconsumed to find.
+                self._maybe_highlight_pocket(target_id)
             # The structure is only NOW something a visitor can see, so
             # this is when its dwell starts -- not back at job_done,
             # which is separated from this instant by the build above
