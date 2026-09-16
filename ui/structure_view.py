@@ -21,14 +21,28 @@ import numpy as np
 log = logging.getLogger(__name__)
 
 
-def structure_mesh(cif_path):
-    """(vertices, normals, colors, indices) for everything in `cif_path`."""
+def structure_mesh(cif_path, highlight_residues=None):
+    """(vertices, normals, colors, indices) for everything in `cif_path`.
+
+    `highlight_residues`, when given, is a set of `(chain_id, residue_seqid)`
+    pairs (`ui.pocket.pocket_residues`'s own return shape) threaded straight
+    through to `cartoon_from_cif` -- see that function's docstring for what
+    it does (an additive brightness boost, not a recolour). Affinity-
+    questions feature only: every caller before Task 11 passes nothing, and
+    every existing call site keeps working unchanged (`None` is the same as
+    not asking for a highlight at all).
+
+    Deliberately NOT threaded into the backbone-tube fallback below: a
+    structure whose cartoon build failed is already the degraded path (see
+    the module docstring, "falling back is the point"), and the plain tube
+    has no per-residue colour channel to brighten in the first place.
+    """
     from ui.geometry import ribbon_from_cif
 
     parts = []
     try:
         from ui.cartoon import cartoon_from_cif
-        parts.append(cartoon_from_cif(cif_path))
+        parts.append(cartoon_from_cif(cif_path, highlight_residues=highlight_residues))
     except Exception:
         # Not fatal and not silent: the tube still draws the structure.
         log.exception("cartoon failed for %s; falling back to the backbone tube",
