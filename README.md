@@ -472,6 +472,55 @@ Nothing a visitor reads over-promises this. The gallery, the `?` card and that n
 say a tap puts the protein next and that the folds already running are left to finish —
 which is also why the other three cells keep moving while you wait.
 
+## Asking the booth a question
+
+Folding is not the only thing tt-bio can do: it can also answer a question about two
+molecules together — does this ligand bind this protein — and the booth now asks three of
+them. `playlist/questions.yaml` names the three, each reusing an existing playlist target's
+fold input (`examples/affinity_*.yaml`) that has carried a `properties: affinity:` block
+since Phase 3b with nothing ever reading it:
+
+- **`dhfr_mtx`** — "Does methotrexate block dihydrofolate reductase?"
+- **`trypsin_bam`** — "Does benzamidine block trypsin?"
+- **`fkbp12_sb3`** — "Does SB3 bind FKBP12?"
+
+No new molecules and no new vetting: these are the same three complexes the gallery already
+folds, asked as a question instead of only shown as a shape.
+
+**A visitor meets this two ways.** The attract loop cycles through the three questions on
+its own cadence, the same way it already demonstrates the diagnostics tap and the Tensix
+panel, so an unattended booth asks and answers them without anyone touching it. Or a visitor
+taps a question directly from the gallery's ask strip, which enqueues that question's fold
+(if it isn't already running) exactly the way a protein tap does, plus the question itself.
+
+**The answer is a real score, computed by a different model, plus a highlight — never a
+number alone.** `runner/affinity.py` runs tt-bio's nesso1 on a dedicated chip, resident, and
+needs no prior fold: it scores straight from the input file's sequence and ligand. The
+`QuestionQueuePanel` rail panel shows the question, then an indeterminate spinner while
+nesso1 is running — no fake progress bar, because a single fast scalar call has no stages
+to subdivide — and, once answered, the rounded score with a one-line factual gloss —
+"score: 0.94 — nesso1's predicted probability the ligand binds," never an invented
+"binds tightly/weakly" verdict tt-bio's own docs don't define. On the ribbon, the residues
+within `POCKET_CUTOFF_ANGSTROM` (5.0 Å) of the ligand get an outline — additive to the
+pLDDT confidence ramp, not a replacement for it — computed client-side from the same `.cif`
+already parsed for the cartoon, and captioned as "the residues nearest the ligand," never
+"the binding site," which a distance cutoff alone cannot establish. Verified on real
+hardware twice, including once on trypsin — pLDDT ~38–39, a mostly-orange, low-confidence
+target — where the highlight showed as a clear bright patch against the ribbon, legible at
+a glance rather than the subtle case a high-confidence target alone would have left
+untested.
+
+**The cost is real and it is paid whether or not anyone asks.** Whenever 2+ chips are
+detected, one chip is permanently reserved for Q&A rather than folding — 25% less fold
+throughput on a 4-chip box, always, the same way this project states the RSS cost of four
+resident fold workers rather than leaving it implicit. `--no-questions` (see
+[Usage](#usage)) opts a booth entirely out: no chip is reserved, every detected
+chip folds, and the question queue, the gallery's ask strip and the attract loop's question
+cue all stay hidden — byte-for-byte the pre-Q&A booth.
+
+**Known gap:** nesso1's weights are not fetched by either install path yet — see
+[Not yet built](#not-yet-built).
+
 ## What is on screen
 
 ```
@@ -524,6 +573,21 @@ Pre-cached MSAs — every shipped target is `msa: empty` today, which is why thr
 proteins come back yellow and orange. And a **kernel-cache pre-warm**, which the weights
 package already advertises but does not do — see
 [Installing a booth machine](#installing-a-booth-machine).
+
+**nesso1's weights have no provisioning step.** Neither `setup-venvs.sh`'s weight fetch nor
+the `.deb`'s postinst/`doctor.sh` know about `nesso1` — both only fetch and check
+`protenix-v2`. A fresh install (source or packaged) needs this run by hand before
+[asking the booth a question](#asking-the-booth-a-question) can answer anything (one command
+fetches both of the model's artifacts — the affinity head and the CCD molecule dict its
+featurizer reads):
+
+```bash
+.venvs/venv-runner/bin/tt-bio weights --download nesso1
+```
+
+This is the same shape as every prior weights gap this project has shipped and then closed —
+see [`CLAUDE.md`](CLAUDE.md)'s "The weights were never a checked box" — flagged here rather
+than left for someone to discover at a venue.
 
 Debian packaging itself has landed (four packages, via `scripts/build-deb.sh`), as did the 2×2 quad
 view and the visitor's pick in Phase 5 — none of the three are on this list any more: four

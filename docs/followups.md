@@ -501,6 +501,49 @@ against — the UI can be more than a second behind the socket in reading a
   smaller on a display much denser than the 1280×800 dev default. Scale by
   `get_scale_factor()` in Phase 3, when the booth display is known.
 
+## From the affinity-questions feature (2026-09-15/16) — carried, not fixed
+
+Both named explicitly in CLAUDE.md's entry for this feature as deferred rather
+than fixed in the branch that shipped it; a "handful of other Minor findings
+from the final review" were mentioned but not itemized there, so only these
+two have enough detail to record here.
+
+- **nesso1's weights have no provisioning step.** Neither
+  `scripts/setup-venvs.sh`'s weight fetch nor the `.deb`'s
+  postinst/`scripts/doctor.sh` know about `nesso1` — both only fetch and check
+  `protenix-v2`. Same shape as every prior weights gap this project's history
+  records ("The weights were never a checked box", CLAUDE.md, 2026-08-31):
+  a real capability shipped ahead of its provisioning story, flagged rather
+  than silently absent, rather than something a fresh install will merely
+  fail to notice until it fails at a venue. Worth doing looks like
+  `runner/daemon.py`'s `MAX_PENDING_QUESTIONS` comment's own shape for a
+  "silently advertising a feature it can never deliver" failure, one layer up
+  the stack: extend `setup-venvs.sh`'s fetch and `doctor.sh`'s size-floor/
+  verifier checks to cover `nesso1` alongside `protenix-v2`, and extend
+  `test_documented_weights_commands.py`'s command-pinning discipline to
+  whichever doc ends up naming it. Until then the one command that works is
+  documented in the README's "Not yet built" section
+  (`tt-bio weights --download nesso1`).
+- **`runner/affinity.py` imports `torch` and `tt_bio.nesso1` at module scope**,
+  against `runner/folder.py`'s own documented pattern of deferring those
+  imports into `load()` so unit test collection does not need torch
+  installed at all — `runner/folder.py`'s `load()` docstring and its own
+  comment right above the import ("Imported here rather than at module
+  scope: importing tt_bio pulls in torch and ttnn, which the unit tests
+  must not need") state the reasoning directly. A Minor finding from the
+  final whole-branch review: real, and
+  it means any test file that merely imports `runner.affinity` — even one
+  that never calls `AffinityScorer.load()` — now needs torch on `sys.path`
+  to collect, which is exactly the cost `folder.py` was written to avoid.
+  Worth doing: move the two imports inside `AffinityScorer.load()`, mirroring
+  `Folder.load()`'s own comment, and confirm collection-time behavior with a
+  test that imports the module under a torch-less interpreter (the same
+  discipline `test_setup_venvs_weights.py`'s `SETUP_VENVS_LIB_ONLY` guard
+  uses to prove a script doesn't reach further than it should). Not urgent —
+  every environment that runs this module also runs `venv-runner`, which
+  always has torch — but it is a real crack in a pattern this project has
+  otherwise kept consistent.
+
 ## Deliberately not doing
 
 - **`plddt_colors` uses `>=` at every stop**, so exactly 90.0 lands in the
