@@ -128,6 +128,51 @@ def test_client_receives_all_non_frame_events(tmp_path):
     assert kinds.count("stage") == 2
 
 
+def test_client_forwards_answer_events(tmp_path):
+    """`answer_start`/`answer_done`/`answer_error` are new in protocol v4
+    (added alongside the `question` client message for affinity questions).
+
+    `EventClient._read_events` special-cases exactly one type -- `hello`,
+    to check the protocol version -- and forwards every other decoded event
+    to `on_event` unconditionally, with no per-type dispatch table. So the
+    three new types need no branch added for them; this is a regression
+    guard proving that generic forwarding still covers them, matching the
+    shape of `test_client_receives_all_non_frame_events` above.
+    """
+    sock_path = str(tmp_path / "runner.sock")
+    events = [
+        {"type": "hello", "version": PROTOCOL_VERSION, "cards": [],
+         "models": [], "preflight": "ok"},
+        {"type": "answer_start", "question_id": "q1", "target_id": "dhfr"},
+        {"type": "answer_done", "question_id": "q1", "target_id": "dhfr",
+         "score": 0.5},
+        {"type": "answer_error", "question_id": "q1", "target_id": "dhfr",
+         "message": "boom"},
+    ]
+    runner = MockRunner(sock_path, events, speed=100.0)
+    runner.start()
+
+    received = []
+    done = threading.Event()
+
+    def on_event(event):
+        received.append(event)
+        if event["type"] == "answer_error":
+            done.set()
+
+    client = EventClient(sock_path, on_event)
+    client.start()
+    try:
+        assert done.wait(timeout=10.0), "answer_error never arrived"
+    finally:
+        client.stop()
+        runner.stop()
+
+    kinds = [e["type"] for e in received]
+    assert kinds == ["hello", "answer_start", "answer_done", "answer_error"]
+    assert received[2]["score"] == 0.5
+
+
 def test_client_reports_connected_state(tmp_path):
     sock_path, runner = _start_fixture_runner(tmp_path)
 
