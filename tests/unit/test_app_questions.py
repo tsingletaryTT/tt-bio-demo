@@ -231,6 +231,40 @@ def test_an_exploding_question_panel_does_not_break_handle_event():
                        "target_id": "fkbp12"})  # must not raise
 
 
+def test_an_exploding_highlight_rebuild_does_not_cost_the_panel_update(
+        monkeypatch, caplog):
+    """Item 13 of the deferred-nits batch: `_handle_answer_event`'s
+    docstring claims the panel forward and the highlight rebuild are two
+    INDEPENDENT opportunities to fail. Before this fix that was only true
+    of the panel forward -- an exception from `_maybe_highlight_pocket`
+    (called bare, no try/except of its own) propagated out of
+    `_handle_answer_event` and was caught only by `_handle_event`'s outer
+    handler, which logs the whole event as "dropping malformed", even
+    though the panel update just above it had already genuinely succeeded.
+
+    This pins the now-true claim: the panel update lands AND no exception
+    escapes AND the outer "dropping malformed" line never fires -- an
+    exploding highlight rebuild is invisible to everything except its own
+    log line.
+    """
+    import logging
+
+    app = _questions_app()
+    monkeypatch.setattr(app, "_maybe_highlight_pocket",
+                        lambda target_id: (_ for _ in ()).throw(
+                            RuntimeError("boom")))
+
+    with caplog.at_level(logging.WARNING, logger="ui.app"):
+        app._handle_event({"type": "answer_done", "question_id": "q1",
+                           "target_id": "fkbp12", "score": 0.87})  # must not raise
+
+    assert app.question_panel.dones == [("q1", "fkbp12", 0.87)], \
+        "the panel update must have landed despite the highlight exploding"
+    assert not any("dropping malformed" in r.message for r in caplog.records), \
+        "a failure isolated to the highlight rebuild must not read as the " \
+        "whole event being malformed"
+
+
 def test_answer_events_do_not_land_in_the_unhandled_branch(caplog):
     """A regression this whole branch would otherwise reintroduce quietly:
     answer_start/_done/_error falling through `_handle_event`'s final
