@@ -94,8 +94,56 @@ doctor_install_mode() {
 # shellcheck source=weights-cache.sh
 . "$(dirname "${BASH_SOURCE[0]:-$0}")/weights-cache.sh"
 
+# A PACKAGED install diagnosed here must see the SAME fixed, non-home-
+# relative cache path debian/tt-bio-demo-weights.postinst and
+# debian/tt-bio-demo.user.service's `Environment=` line pin -- see docs/
+# followups.md's "root's postinst-time HOME vs desktop-user's
+# systemd-service-time HOME" entry (FIXED) for the full history. An
+# INTERACTIVE operator running this script has neither the postinst's
+# environment (root, at `dpkg`/`apt install` time) nor the unit's (the
+# desktop user, at service-start time), so without this, checking a
+# packaged install here would report a $HOME-relative path the real daemon
+# never reads from -- pronouncing a working booth broken, or a broken one
+# healthy, depending on what happens to live in the operator's own $HOME.
+#
+# `tt_bio_demo_weights_cache_packaged` (scripts/weights-cache.sh, sourced
+# above) is the SAME function the postinst calls, via debian/helpers.sh's
+# wrapper of the same name -- one place decides the fixed path and pins the
+# variable the resolver checks first, not a second copy of that decision
+# here. It also keeps $TT_BIO_CACHE/$BOLTZ_CACHE read in exactly the files
+# tests/unit/test_weights_cache_is_derived_once.py already treats as the
+# sole resolvers.
+#
+# Scoped to a PACKAGED install only, via doctor_install_mode's existing
+# source-vs-package split: a source checkout keeps today's home-relative
+# default unconditionally -- that gap is tracked separately in
+# docs/followups.md as lower priority and is deliberately NOT touched here.
 doctor_weights_cache() {
-    tt_bio_demo_weights_cache
+    if [ "$(doctor_install_mode)" = "package" ]; then
+        tt_bio_demo_weights_cache_packaged
+    else
+        tt_bio_demo_weights_cache
+    fi
+}
+
+# Primes the packaged pin, once, at the TOP LEVEL of doctor_main -- never
+# inside a `$(...)` command substitution, whose exports evaporate the
+# moment the subshell exits. Without this, doctor_weights_cache's own pin
+# (done inside tt_bio_demo_weights_cache_packaged, when called from inside a
+# `_c="$(doctor_weights_cache)"` elsewhere in this file) would be scoped to
+# THAT one subshell and invisible to the python subprocesses
+# doctor_ask_tt_bio_about_weights spawns afterwards -- which matters
+# specifically for doctor_check_affinity_weights' nesso1 check, since nesso1
+# is an "hf-repo" artifact whose real location is decided by
+# `tt_bio.weights.configure_hf_cache` reading the SAME pinned variable at
+# `import tt_bio` time in THAT subprocess, not by the cache path argv
+# doctor.sh passes it. Calling doctor_weights_cache directly (as this
+# project's own tests do) works correctly without this, since there is no
+# outer subshell in that path for the export to be scoped to.
+doctor_prime_weights_cache() {
+    if [ "$(doctor_install_mode)" = "package" ]; then
+        tt_bio_demo_weights_cache_packaged >/dev/null
+    fi
 }
 
 # ── reporting ───────────────────────────────────────────────────────────────
@@ -650,6 +698,10 @@ doctor_main() {
 
     _p="$(doctor_prefix)"
     _mode="$(doctor_install_mode)"
+    # Top-level, not inside a `$(...)`: see doctor_prime_weights_cache's own
+    # comment for why this has to run here, before any check, for its
+    # `export` to reach the subprocesses those checks spawn.
+    doctor_prime_weights_cache
     head_ "tt-bio-demo doctor"
     say "  prefix:  $_p"
     say "  mode:    $_mode install"

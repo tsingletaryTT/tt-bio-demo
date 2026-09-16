@@ -47,6 +47,33 @@ tt_bio_demo_weights_cache() {
     tt_bio_demo_weights_cache_impl
 }
 
+# The PACKAGED variant, for the weights postinst specifically -- see
+# scripts/weights-cache.sh's own big comment on
+# tt_bio_demo_weights_cache_impl_packaged for the full history (docs/
+# followups.md's "root's postinst-time HOME vs desktop-user's
+# systemd-service-time HOME" entry, FIXED). Mirrors
+# tt_bio_demo_weights_cache above exactly -- same sourcing, same
+# recursion-guard reasoning -- but calls the packaged variant, which pins
+# $TT_BIO_CACHE to one fixed, non-home-relative path when neither it nor
+# $BOLTZ_CACHE is already set. A maintainer script reaching this function at
+# all is, by construction, running against a real `dpkg`/`apt install`
+# (postinst scripts have no other context to run in), so there is no
+# "packaged or not" question to ask here the way scripts/doctor.sh has to.
+tt_bio_demo_weights_cache_packaged() {
+    _wc="$(tt_bio_demo_prefix)/scripts/weights-cache.sh"
+    if [ ! -r "$_wc" ]; then
+        tt_bio_demo_log "cannot find ${_wc}; is tt-bio-demo installed?"
+        return 1
+    fi
+    # shellcheck source=/dev/null
+    . "$_wc"
+    if ! command -v tt_bio_demo_weights_cache_impl_packaged >/dev/null 2>&1; then
+        tt_bio_demo_log "${_wc} did not define tt_bio_demo_weights_cache_impl_packaged"
+        return 1
+    fi
+    tt_bio_demo_weights_cache_impl_packaged
+}
+
 # Where the application tree is installed. Must agree with
 # debian/tt-bio-demo.install -- if the two drift, the maintainer scripts
 # operate confidently on an empty directory, so a test pins them together.

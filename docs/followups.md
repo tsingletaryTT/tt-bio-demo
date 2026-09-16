@@ -501,14 +501,15 @@ against — the UI can be more than a second behind the socket in reading a
   smaller on a display much denser than the 1280×800 dev default. Scale by
   `get_scale_factor()` in Phase 3, when the booth display is known.
 
-## From the affinity-questions feature (2026-09-15/16) — two fixed, one open
+## From the affinity-questions feature (2026-09-15/16) — all three fixed
 
 The first two were named explicitly in CLAUDE.md's entry for this feature as
 deferred rather than fixed in the branch that shipped it (a "handful of other
 Minor findings from the final review" were mentioned but not itemized there,
 so only these had enough detail to record here); both are now closed. The
-third was found afterward, in PR review, and is deliberately left open rather
-than patched quickly — see its own entry for why.
+third was found afterward, in PR review, and was initially left open rather
+than patched quickly — see its own entry, now itself marked FIXED
+(2026-09-16), for why.
 
 - **FIXED (2026-09-16). nesso1's weights had no provisioning step.** Neither
   `scripts/setup-venvs.sh`'s weight fetch nor the `.deb`'s
@@ -558,7 +559,7 @@ than patched quickly — see its own entry for why.
   `_score_real()`, mirroring `Folder.load()`'s own comment exactly, with a
   test proving `tests/unit/runner/test_affinity.py` collects under a
   torch-blocked interpreter.
-- **A real, still-open gap, found in PR review: nesso1/nesso1-ccd/ESM-2 can
+- **FIXED (2026-09-16). Found in PR review: nesso1/nesso1-ccd/ESM-2 can
   be fetched successfully during install and still be unreachable by the
   booth at runtime.** `weights.fetch`/the ESM-2 pre-warm silently ignore
   `root=`/`--cache` for these "hf-repo" rows (see the bullet above this
@@ -600,6 +601,103 @@ than patched quickly — see its own entry for why.
   feature existed and were never caught by the "real Docker container
   installs" packaging tests (those run everything as one user throughout,
   which cannot see a root-vs-desktop-user split at all).
+
+  **Resolution: option (a), pinned to `/opt/tt-bio-demo/weights`.** Chosen
+  over identifying the real booth operator account (option (b)) precisely
+  because this codebase has no `SUDO_USER`/`runuser`/logind-based detection
+  today and inventing one for this alone would be new, untested fragility in
+  exchange for avoiding one fixed path. `/opt/tt-bio-demo/weights` sits
+  alongside `.venvs`, `playlist`, `examples` and `scripts` — everything else
+  `debian/tt-bio-demo.install`'s own header comment says goes under
+  `/opt/tt-bio-demo` — and nothing else in the tree used that exact path
+  before this change.
+
+  The literal path is declared in exactly ONE place:
+  `scripts/weights-cache.sh`'s new `TT_BIO_DEMO_PACKAGED_WEIGHTS_CACHE`,
+  right beside the existing home-relative resolver it is a variant of. That
+  file is one of the two `tests/unit/test_weights_cache_is_derived_once.py`
+  already treats as the sole places allowed to read `$TT_BIO_CACHE`/
+  `$BOLTZ_CACHE` directly — an early draft of this fix put the pin-and-export
+  logic straight into the postinst and into `scripts/doctor.sh` themselves,
+  and that guard test caught it immediately: two more files reading those
+  variables directly is the exact shape of bug this project had already
+  fixed once (the doctor reading `$BOLTZ_CACHE` alone while tt-bio itself
+  preferred `$TT_BIO_CACHE`). The corrected shape is a new function pair —
+  `tt_bio_demo_weights_cache_impl_packaged`/`tt_bio_demo_weights_cache_packaged`
+  — that the postinst and `scripts/doctor.sh` both *call* rather than
+  reimplement: guarded (only when the operator has not already set
+  `TT_BIO_CACHE` or `BOLTZ_CACHE` themselves), and `export`ing rather than
+  merely returning, so a child process — the postinst's own inline Python
+  fetch block, or the status-check subprocesses `scripts/doctor.sh` spawns —
+  inherits it too.
+
+  `debian/tt-bio-demo-weights.postinst` calls the packaged resolver (via
+  `debian/helpers.sh`'s wrapper of the same name, which sources
+  `scripts/weights-cache.sh` off the installed prefix) TWICE: once as a bare
+  top-level statement, purely for its exporting side effect to land in the
+  postinst's own shell rather than in a subshell that evaporates on exit,
+  and again inside the `CACHE="$(...)"` command substitution that captures
+  the resolved path — by the second call the pin is already a no-op, so the
+  two cannot disagree. The directory is created with `install -d -m 0755`
+  (not left to the Python block's own `mkdir(parents=True, exist_ok=True)`,
+  which merely *should* land at 0755 under root's default umask) so the
+  desktop user can read it back later regardless of umask, and only inside
+  the `configure)` branch that actually runs a fetch, not unconditionally
+  for every maintainer-script invocation.
+
+  `debian/tt-bio-demo.user.service` pins the identical literal path via
+  `Environment=TT_BIO_CACHE=/opt/tt-bio-demo/weights` — the one place that
+  genuinely has to repeat the literal value, since a static systemd unit
+  cannot call a shell function — so `AffinityScorer.load()`'s own
+  `import tt_bio` resolves the Hugging Face hub cache (via
+  `configure_hf_cache`, which this variable specifically redirects — not
+  `BOLTZ_CACHE`) to the exact directory the postinst populated. This closes
+  the gap for nesso1/nesso1-ccd/the ESM-2 encoder, not only for the flat
+  protenix-v2.pt/mols.tar artifacts this bullet's own analysis above already
+  said would benefit incidentally.
+
+  `scripts/doctor.sh` was extended too, though it was not one of the two
+  files named in option (a) above: an operator running the doctor
+  interactively, diagnosing a packaged install, has neither the postinst's
+  environment (root, install time) nor the unit's (the desktop user, service
+  time), so without a matching pin the doctor would check a `$HOME`-relative
+  path the real daemon never reads from. `doctor_weights_cache` now calls the
+  same shared packaged resolver whenever `doctor_install_mode` reports
+  `"package"` (a source checkout keeps calling the plain, home-relative one,
+  unconditionally, so that separate lower-priority gap is untouched); a
+  sibling `doctor_prime_weights_cache` calls it once more, at the very top of
+  `doctor_main`, as a bare top-level statement rather than inside a `$(...)`
+  — the same "call it once for the export, capture its value separately"
+  shape the postinst uses — so the pin also reaches the Python subprocesses
+  `doctor_ask_tt_bio_about_weights` spawns for the nesso1 check specifically.
+
+  The dev/source workflow (`scripts/setup-venvs.sh`, `scripts/run-demo.sh`'s
+  own defaults) was deliberately left untouched — that is a separate,
+  lower-priority instance of the same class of bug, tracked on its own.
+  `tt-bio-demo-runtime.postinst` was checked and does not need the same
+  treatment: it never invokes `setup-venvs.sh` itself (a deliberate design
+  choice recorded in its own header comment — building venv-runner inside
+  postinst would hold the dpkg lock for a multi-gigabyte, network-dependent
+  build), it only prints the command for an operator to run by hand, so
+  there is no packaged-install code path there to pin.
+
+  An operator's own explicit `TT_BIO_CACHE` or `BOLTZ_CACHE` still wins
+  everywhere: the ONE pin function (`tt_bio_demo_weights_cache_impl_packaged`
+  in `scripts/weights-cache.sh`) is guarded on both variables being unset
+  before assigning, the same "explicit always wins over the pin" rule its
+  home-relative sibling already applies. Verified by test (all in
+  `tests/unit/test_doctor.py` and `tests/unit/test_packaging.py`): the
+  resolver declares a fixed, non-home-relative path; that path is only ever
+  pinned when neither cache variable is already set; the postinst calls the
+  shared packaged resolver (rather than deriving the path itself) before
+  `CACHE` is computed; the systemd unit's `Environment=` line names the
+  IDENTICAL literal path the resolver declares; `scripts/doctor.sh` calls the
+  same shared resolver rather than keeping its own copy of the path, and only
+  for a packaged install, never a source checkout; and — restated as its own
+  test, the same way `test_weights_cache_is_derived_once.py` already checks
+  it project-wide — none of the postinst, `scripts/doctor.sh`, or
+  `debian/helpers.sh` reads `$TT_BIO_CACHE`/`$BOLTZ_CACHE` directly any more;
+  only `scripts/weights-cache.sh` and `runner/env.py` do.
 
 ## Deliberately not doing
 

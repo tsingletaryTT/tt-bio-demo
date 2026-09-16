@@ -1197,3 +1197,140 @@ def test_helpers_does_not_recurse_when_the_resolver_defines_nothing(tmp_path):
     assert "recursion" not in (r.stdout + r.stderr).lower(), \
         f"the wrapper recursed:\n{r.stdout}{r.stderr}"
     assert r.returncode != 0, "a resolver that defines nothing must be an error"
+
+
+# ── The root-postinst-time HOME vs desktop-user's systemd-service-time HOME
+#    fix: a packaged install pins $TT_BIO_CACHE to ONE fixed, non-home-
+#    relative path. See docs/followups.md's "root's postinst-time HOME vs
+#    desktop-user's systemd-service-time HOME" entry (FIXED) for the full
+#    history: the postinst runs as root during dpkg/apt (HOME=/root) while
+#    the daemon runs as a systemd --user service under the desktop user's
+#    own HOME, so the two would otherwise derive two different ~/.boltz
+#    directories and a package could report every weight fetched
+#    successfully while the booth finds none of it.
+#
+#    The literal fixed path is declared in exactly ONE place --
+#    scripts/weights-cache.sh's `TT_BIO_DEMO_PACKAGED_WEIGHTS_CACHE` -- the
+#    same file tests/unit/test_weights_cache_is_derived_once.py already
+#    treats as one of the two allowed resolvers. The postinst and
+#    scripts/doctor.sh both reach it by CALLING that resolver
+#    (`tt_bio_demo_weights_cache_packaged`, exposed to the postinst through
+#    debian/helpers.sh's wrapper of the same name) rather than repeating the
+#    literal path themselves, so there is only one thing that could drift.
+#    The systemd unit is the one place that HAS to repeat the literal value
+#    -- a static `Environment=` line cannot call a shell function -- so that
+#    is the one drift this section still has to guard against directly.
+#    ──────────────────────────────────────────────────────────────────────
+
+def _fixed_weights_cache_path():
+    """The literal path scripts/weights-cache.sh declares as
+    TT_BIO_DEMO_PACKAGED_WEIGHTS_CACHE, or None if it is not found."""
+    wc = (REPO / "scripts" / "weights-cache.sh").read_text()
+    m = re.search(r'TT_BIO_DEMO_PACKAGED_WEIGHTS_CACHE="(/[^"]+)"', wc)
+    return m.group(1) if m else None
+
+
+def test_the_resolver_declares_a_fixed_non_home_relative_packaged_path():
+    """The ONE place the literal path lives. Non-home-relative, because the
+    whole point is to sidestep whichever $HOME a postinst-as-root or a
+    unit-as-desktop-user happens to have."""
+    path = _fixed_weights_cache_path()
+    assert path is not None, \
+        "scripts/weights-cache.sh does not declare TT_BIO_DEMO_PACKAGED_WEIGHTS_CACHE"
+    assert "$HOME" not in path and "~" not in path, \
+        f"the pinned path is home-relative: {path}"
+
+
+def test_the_resolver_only_pins_when_neither_cache_variable_is_already_set():
+    """This project's standing rule: an operator who set a cache variable
+    deliberately keeps their choice. The packaged resolver must check BOTH
+    $TT_BIO_CACHE and $BOLTZ_CACHE are unset before ever assigning."""
+    wc = (REPO / "scripts" / "weights-cache.sh").read_text()
+    fn = wc.split("tt_bio_demo_weights_cache_impl_packaged() {")[1]
+    fn = fn.split("\n}\n", 1)[0]
+    assert '-z "${TT_BIO_CACHE:-}"' in fn
+    assert '-z "${BOLTZ_CACHE:-}"' in fn
+
+
+def test_the_postinst_calls_the_packaged_resolver_before_computing_cache():
+    """The postinst must ask the shared PACKAGED resolver -- not derive or
+    hardcode the fixed path itself -- and must do so BEFORE `CACHE` is
+    computed, so the pin (and, via the exported environment it sets, the
+    python block's `import tt_bio`) is in place first."""
+    p = _weights("postinst")
+    assert "tt_bio_demo_weights_cache_packaged" in p, \
+        "the postinst must call the shared packaged resolver, not derive the path itself"
+    first_call_at = p.index("tt_bio_demo_weights_cache_packaged")
+    cache_computed_at = p.index('CACHE="$(tt_bio_demo_weights_cache_packaged)"')
+    assert first_call_at < cache_computed_at, \
+        "the packaged resolver must be called (for its pinning side effect) " \
+        "before CACHE is computed from it"
+
+
+def test_the_unit_pins_the_same_weights_cache_the_resolver_declares():
+    """The guard itself: the systemd unit's `Environment=` line must name the
+    IDENTICAL literal path scripts/weights-cache.sh declares. A drift here
+    is invisible to every other test -- each file parses and behaves
+    correctly in isolation -- and only shows up as a booth whose weights
+    postinst reports success while the daemon that is supposed to use them
+    looks in a different directory entirely."""
+    resolver_path = _fixed_weights_cache_path()
+    unit = (REPO / "debian" / "tt-bio-demo.user.service").read_text()
+    m = re.search(r'Environment=TT_BIO_CACHE=(/\S+)', unit)
+    assert m, "debian/tt-bio-demo.user.service does not pin TT_BIO_CACHE"
+    assert m.group(1) == resolver_path, (
+        f"scripts/weights-cache.sh pins {resolver_path!r} but the systemd "
+        f"unit pins {m.group(1)!r} -- these must be identical")
+
+
+def test_the_unit_environment_line_is_well_formed():
+    """`Environment=NAME=value` -- not `Environment="NAME=value"` or a typo
+    that silently leaves the daemon without the pin at all."""
+    unit = (REPO / "debian" / "tt-bio-demo.user.service").read_text()
+    lines = [l for l in unit.splitlines() if l.startswith("Environment=TT_BIO_CACHE=")]
+    assert len(lines) == 1, \
+        f"expected exactly one Environment=TT_BIO_CACHE= line, found {len(lines)}"
+
+
+def test_doctor_uses_the_same_packaged_resolver_the_postinst_does():
+    """The third leg: scripts/doctor.sh must diagnose a packaged install by
+    calling the SAME shared resolver the postinst calls, not a second copy
+    of the fixed path -- or it could report a healthy booth as broken (or a
+    broken one as healthy) the moment the two drift."""
+    doctor = (REPO / "scripts" / "doctor.sh").read_text()
+    assert "tt_bio_demo_weights_cache_packaged" in doctor, \
+        "scripts/doctor.sh must call the shared packaged resolver"
+    # And it must not have re-declared its own copy of the fixed path.
+    assert "DOCTOR_PACKAGED_WEIGHTS_CACHE" not in doctor, \
+        "doctor.sh should not keep its own copy of the fixed path any more"
+
+
+def test_doctor_only_uses_the_packaged_resolver_for_a_packaged_install():
+    """The fix is scoped to the packaged deployment path. A source checkout
+    must keep behaving exactly as it did before this change -- that gap is
+    tracked separately (docs/followups.md) as lower priority."""
+    doctor = (REPO / "scripts" / "doctor.sh").read_text()
+    for fn_name in ("doctor_weights_cache", "doctor_prime_weights_cache"):
+        fn = doctor.split(f"{fn_name}() {{")[1]
+        fn = fn.split("\n}\n", 1)[0]
+        assert 'doctor_install_mode)" = "package"' in fn, (
+            f"{fn_name} must condition the packaged resolver call on "
+            'doctor_install_mode reporting "package"')
+
+
+def test_nothing_outside_the_shared_resolver_reads_the_cache_variables_either():
+    """The same invariant tests/unit/test_weights_cache_is_derived_once.py
+    already enforces for $TT_BIO_CACHE/$BOLTZ_CACHE, restated here for the
+    three files this fix specifically touched -- so a regression in any one
+    of them is caught by two tests describing it from different angles."""
+    for rel in ("debian/tt-bio-demo-weights.postinst", "scripts/doctor.sh",
+                "debian/helpers.sh"):
+        text = (REPO / rel).read_text()
+        for n, line in enumerate(text.splitlines(), 1):
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            assert "TT_BIO_CACHE" not in line and "BOLTZ_CACHE" not in line, (
+                f"{rel}:{n} reads a cache variable directly -- it should call "
+                f"the shared resolver in scripts/weights-cache.sh instead: "
+                f"{stripped!r}")

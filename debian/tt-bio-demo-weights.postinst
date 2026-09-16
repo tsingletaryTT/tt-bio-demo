@@ -16,13 +16,50 @@ set -e
 . /usr/share/tt-bio-demo/helpers.sh
 
 PREFIX="$(tt_bio_demo_prefix)"
+
+# THE FIXED CACHE PATH FOR A PACKAGED INSTALL. See docs/followups.md's "root's
+# postinst-time HOME vs desktop-user's systemd-service-time HOME" entry
+# (FIXED here) for the full history: THIS script runs as root during
+# `dpkg`/`apt install` (HOME=/root), while the booth's compute daemon runs
+# later as a `systemd --user` service under the DESKTOP USER's own HOME --
+# two different, HOME-relative defaults that do not agree.
+# `tt_bio_demo_weights_cache_packaged` (debian/helpers.sh, sourced above --
+# which itself just hands off to scripts/weights-cache.sh's own
+# `tt_bio_demo_weights_cache_impl_packaged`) pins the cache variable the
+# shared resolver checks first to one fixed, non-home-relative path -- the
+# IDENTICAL literal path debian/tt-bio-demo.user.service's `Environment=`
+# line sets (tests/unit/test_packaging.py checks the two never drift apart)
+# -- unless an operator has already set it themselves. This removes HOME
+# from the equation entirely for every weight this postinst fetches: not
+# just the flat protenix-v2.pt/mols.tar artifacts (whose `root=`/`--cache`
+# argument already redirects them per-call), but also nesso1/nesso1-ccd/the
+# ESM-2 encoder, which are "hf-repo" sources that SILENTLY IGNORE `root=`
+# (see the big comment on NESSO1_ARTIFACTS below) and fall back to whatever
+# Hugging Face hub cache the fetching PROCESS resolves -- which is exactly
+# the gap this closes: `tt_bio.weights.configure_hf_cache` (run at
+# `import tt_bio` time, in every process, including this postinst's own
+# python block below) redirects the hub cache under the pinned path,
+# specifically because it is exported under the variable name that function
+# reads, so nesso1 lands in the same fixed place too.
+#
+# Called TWICE, deliberately. The first call runs as a plain top-level
+# statement (never inside THIS script's own `$(...)`) purely for its
+# exporting side effect -- so it lands in THIS shell's real environment, not
+# a subshell that evaporates on exit, and is inherited by the python child
+# process near the end of this script (a plain subprocess spawn, no `env -i`
+# anywhere here, inherits the full exported environment). Its own printed
+# output is discarded; the SECOND call, in the command substitution below,
+# captures the resolved path for `$CACHE` -- by then the pin is already a
+# no-op (the variable is set), so the two calls cannot disagree.
+tt_bio_demo_weights_cache_packaged >/dev/null
+
 # ONE derivation, from the shared shell resolver ($TT_BIO_CACHE, then
 # $BOLTZ_CACHE, then ~/.boltz -- tt-bio's own order). This used to read only
 # $BOLTZ_CACHE, and the python block below re-derived it a SECOND time from
 # the same incomplete rule, so on a host using $TT_BIO_CACHE this downloaded
 # 3.7 GB into a directory neither a fold nor the doctor would ever look in.
 # The python half is now handed the answer rather than working it out again.
-CACHE="$(tt_bio_demo_weights_cache)" || exit 1
+CACHE="$(tt_bio_demo_weights_cache_packaged)" || exit 1
 
 # ---------------------------------------------------------------------------
 # THE ARTIFACT TABLE. One line per artifact: <filename> <sha256>.
@@ -115,6 +152,20 @@ case "$1" in
             tt_bio_demo_log "then:  sudo dpkg-reconfigure tt-bio-demo-weights"
             exit 0
         fi
+
+        # Created here, with an EXPLICIT mode, rather than left to the python
+        # block's own `cache.mkdir(parents=True, exist_ok=True)` (which
+        # relies on root's default umask -- 022 -- leaving it at 0755).
+        # "Should already be 0755" is not the same claim as "is 0755"; a
+        # changed umask, or a distro default this project has not seen, would
+        # silently leave the desktop user -- who has to READ this directory
+        # back later, as an entirely different user -- unable to see into it.
+        # `install -d` sets the mode atomically at creation time rather than
+        # creating-then-chmodding, which matters if a stricter umask is ever
+        # in effect here. Done only in this branch (not unconditionally above
+        # the `case`), so an abort-upgrade/abort-remove/abort-deconfigure
+        # call never creates a directory for a fetch that is not happening.
+        install -d -m 0755 "$CACHE"
 
         tt_bio_demo_log "fetching weights via tt-bio's own resolver (resumable)..."
         # Resolution, not a copy: weights.fetch returns the cached path and

@@ -592,3 +592,81 @@ def test_the_hardcoded_esm2_model_id_matches_the_real_constant():
     assert hardcoded == real_value, (
         f"doctor.sh hardcodes DOCTOR_ESM2_MODEL={hardcoded!r}, but the pinned "
         f"tt-bio's tt_bio.nesso1_input.ESM2_MODEL is {real_value!r}")
+
+
+# ---------------------------------------------------------------------------
+# The packaged-install cache pin: docs/followups.md's "root's postinst-time
+# HOME vs desktop-user's systemd-service-time HOME" entry (FIXED).
+#
+# The weights postinst runs as root during dpkg/apt (HOME=/root) and the
+# systemd --user unit runs the daemon as the desktop user (a different HOME
+# entirely); both pin $TT_BIO_CACHE to one fixed, non-home-relative path so
+# neither ever derives ~/.boltz. An operator running doctor.sh interactively
+# has NEITHER of those two processes' environments, so without a matching
+# pin here the doctor would check a directory the real daemon never reads
+# from -- reporting a working booth broken, or a broken one healthy.
+# ---------------------------------------------------------------------------
+
+def _fake_package_prefix(tmp_path):
+    """A prefix doctor_install_mode reports as "package": no .git, no
+    tests/, just enough of the layout to be found at all."""
+    prefix = tmp_path / "opt" / "tt-bio-demo"
+    (prefix / "ui").mkdir(parents=True)
+    return prefix
+
+
+def test_a_packaged_install_reports_the_fixed_cache_when_nothing_is_set(tmp_path):
+    """The core fix: with neither $TT_BIO_CACHE nor $BOLTZ_CACHE set, a
+    PACKAGED install must report the SAME fixed path the postinst and the
+    systemd unit pin, not a $HOME-relative guess that belongs to whoever
+    happens to run this script."""
+    prefix = _fake_package_prefix(tmp_path)
+    r = _sh("doctor_weights_cache", TT_BIO_DEMO_PREFIX=str(prefix),
+            TT_BIO_CACHE="", BOLTZ_CACHE="")
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == "/opt/tt-bio-demo/weights", r.stdout
+
+
+def test_a_source_checkout_keeps_the_home_relative_default(tmp_path):
+    """The fix is scoped to the PACKAGED path on purpose -- a source checkout
+    (this repo, or any prefix doctor_install_mode calls "source") must keep
+    today's $HOME-relative behaviour unconditionally, because that gap is a
+    separate, lower-priority item in docs/followups.md."""
+    r = _sh("doctor_weights_cache", TT_BIO_CACHE="", BOLTZ_CACHE="",
+            HOME=str(tmp_path / "somebody"))
+    assert r.stdout.strip() == str(tmp_path / "somebody" / ".boltz"), r.stdout
+
+
+def test_a_packaged_installs_own_tt_bio_cache_override_still_wins(tmp_path):
+    """This project's standing rule: an operator who set a cache variable
+    deliberately keeps their choice. The pin must only fill the gap when
+    NEITHER variable is set, never overwrite an explicit one."""
+    prefix = _fake_package_prefix(tmp_path)
+    moved = tmp_path / "operators-own-disk"
+    r = _sh("doctor_weights_cache", TT_BIO_DEMO_PREFIX=str(prefix),
+            TT_BIO_CACHE=str(moved), BOLTZ_CACHE="")
+    assert r.stdout.strip() == str(moved), r.stdout
+
+
+def test_a_packaged_installs_own_boltz_cache_override_still_wins(tmp_path):
+    """Same rule, for the older variable: $BOLTZ_CACHE alone is enough to
+    mean "the operator already decided", even without $TT_BIO_CACHE."""
+    prefix = _fake_package_prefix(tmp_path)
+    moved = tmp_path / "an-older-override"
+    r = _sh("doctor_weights_cache", TT_BIO_DEMO_PREFIX=str(prefix),
+            TT_BIO_CACHE="", BOLTZ_CACHE=str(moved))
+    assert r.stdout.strip() == str(moved), r.stdout
+
+
+def test_the_summary_line_reports_the_pinned_path_for_a_packaged_install(tmp_path):
+    """doctor_main's own "weights: ..." summary line is built from
+    doctor_prime_weights_cache + doctor_weights_cache, in that order, at the
+    top level (not inside a `$(...)`) -- the exact sequence doctor_main
+    itself runs before printing it. Exercised directly rather than through
+    the whole doctor_main (which would also shell out to tt-smi, df, etc.)
+    so this stays a fast, deterministic unit test."""
+    prefix = _fake_package_prefix(tmp_path)
+    r = _sh('doctor_prime_weights_cache\n'
+            'say "  weights: $(doctor_weights_cache)"',
+            TT_BIO_DEMO_PREFIX=str(prefix), TT_BIO_CACHE="", BOLTZ_CACHE="")
+    assert "/opt/tt-bio-demo/weights" in r.stdout, r.stdout + r.stderr

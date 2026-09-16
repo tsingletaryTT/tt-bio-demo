@@ -64,3 +64,61 @@ tt_bio_demo_weights_cache_impl() {
 tt_bio_demo_weights_cache() {
     tt_bio_demo_weights_cache_impl
 }
+
+# ---------------------------------------------------------------------------
+# THE PACKAGED VARIANT. See docs/followups.md's "root's postinst-time HOME vs
+# desktop-user's systemd-service-time HOME" entry (FIXED) for the full
+# history: debian/tt-bio-demo-weights.postinst runs as ROOT during
+# `dpkg`/`apt install` ($HOME=/root); the booth's compute daemon runs later
+# as a `systemd --user` service under the DESKTOP USER's own $HOME. Those are
+# two different $HOME-relative defaults that do not agree, so a `.deb`
+# install could report every weight fetched successfully while the daemon
+# that is supposed to use them looked in an empty directory.
+#
+# The fix is to sidestep $HOME entirely for a packaged deployment: pin
+# $TT_BIO_CACHE to one fixed, non-home-relative path, identically, in THREE
+# places -- the postinst (below, via this function), the systemd unit's own
+# `Environment=TT_BIO_CACHE=...` line (a static file, not shell, so it
+# repeats the literal value rather than calling this), and
+# scripts/doctor.sh's diagnosis of an installed booth (also via this
+# function, called directly since doctor.sh sources this file itself).
+# tests/unit/test_packaging.py checks the three literal values never drift
+# apart.
+#
+# This lives HERE, in the resolver, rather than in the postinst or doctor.sh
+# themselves, so that $TT_BIO_CACHE/$BOLTZ_CACHE are read in exactly the two
+# files tests/unit/test_weights_cache_is_derived_once.py already treats as
+# the sole resolvers -- reading either variable directly anywhere else is
+# the exact shape of the bug this project has already fixed once (the doctor
+# reading $BOLTZ_CACHE alone while tt-bio itself preferred $TT_BIO_CACHE).
+TT_BIO_DEMO_PACKAGED_WEIGHTS_CACHE="/opt/tt-bio-demo/weights"
+
+# An operator who has ALREADY set $TT_BIO_CACHE or $BOLTZ_CACHE themselves
+# keeps that choice -- this only fills the gap when NEITHER is set, the same
+# "explicit always wins over the pin" rule `tt_bio_demo_weights_cache_impl`
+# above already applies at every level of its own fallback chain.
+#
+# `export`, not a plain assignment: every caller of this function (the
+# postinst's own shell before it spawns the python fetch block; doctor.sh's
+# process before it spawns tt-bio's status-check subprocesses) needs a CHILD
+# PROCESS to see this too, and only an exported variable crosses that
+# boundary. Called as a plain top-level statement (never wrapped in the
+# caller's own `$(...)`), the export lands in the CALLING shell, not merely
+# in a subshell that evaporates on exit -- see the callers' own comments for
+# why that distinction matters here.
+tt_bio_demo_weights_cache_impl_packaged() {
+    if [ -z "${TT_BIO_CACHE:-}" ] && [ -z "${BOLTZ_CACHE:-}" ]; then
+        TT_BIO_CACHE="$TT_BIO_DEMO_PACKAGED_WEIGHTS_CACHE"
+        export TT_BIO_CACHE
+    fi
+    tt_bio_demo_weights_cache_impl
+}
+
+# The friendly name for a caller that already knows it is diagnosing or
+# provisioning a PACKAGED install (scripts/doctor.sh, when it is; and, via
+# debian/helpers.sh's own wrapper of the same name, the weights postinst,
+# which is ALWAYS a packaged context -- postinst scripts only ever run
+# against a real `dpkg`/`apt install`).
+tt_bio_demo_weights_cache_packaged() {
+    tt_bio_demo_weights_cache_impl_packaged
+}
