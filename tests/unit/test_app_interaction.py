@@ -879,6 +879,62 @@ class _FakeLabel:
 
 
 # ---------------------------------------------------------------------------
+# Follow-up to Important 3, found during a real-hardware verification run:
+# `_HELP_INTRO`'s last paragraph -- "The booth folds four proteins at a
+# time, one on each chip, all day." -- was the exact same hardcoded-"four"
+# defect Important 3 fixed in `_KEY_HELP`/`_HELP_PANELS`/`QUAD_HELP_LINE`,
+# just missed in this one spot. Same treatment: a function of `n_chips`, a
+# frozen n=4 snapshot kept under the old name for tests that do not care
+# about a specific count, and `_sync_help_copy` extended to update the
+# built label too.
+# ---------------------------------------------------------------------------
+
+def test_help_intro_is_a_function_of_the_real_chip_count():
+    """`_help_intro` is a function, not the frozen module-level tuple it
+    used to be -- called with the real fold-chip count, never a hardcoded
+    one.
+
+    Checked against the LAST paragraph specifically (`_help_intro(n)[-1]`),
+    not the whole joined intro: the second paragraph's "about four and a
+    half seconds per protein" is a fold-timing claim, not a chip count, and
+    stays true regardless of `n_chips` -- the same "check the one paragraph
+    that actually varies" shape `test_help_panels_and_key_help_are_
+    functions_of_the_real_chip_count` uses for the Chips telemetry
+    paragraph.
+    """
+    from ui.app import _help_intro
+    three_chip_intro = _help_intro(3)[-1].lower()
+    assert "three" in three_chip_intro
+    assert "four" not in three_chip_intro
+
+    four_chip_intro = _help_intro(4)[-1].lower()
+    assert "four" in four_chip_intro
+
+
+def test_a_booth_with_qa_enabled_shows_three_chips_not_four_in_the_help_intro():
+    """`_sync_help_copy` must also update the intro paragraph, the same way
+    it already updates the Q row and the quad/Tensix panels -- driven the
+    same way `test_a_booth_with_qa_enabled_shows_three_chips_not_four_on_the_help_card`
+    drives those."""
+    app = _app()
+    app.cards = [0, 1, 2]
+    app._help_intro_labels = [_FakeLabel() for _ in app_module._help_intro(0)]
+    app._sync_help_copy()
+
+    last_paragraph = app._help_intro_labels[-1].get_label().lower()
+    assert "three" in last_paragraph
+    assert "four" not in last_paragraph
+
+
+def test_the_help_intro_frozen_constant_matches_the_function_at_four():
+    """`_HELP_INTRO` (kept only for tests that do not care about a specific
+    chip count) must not silently diverge from what `_help_intro` actually
+    produces at n=4."""
+    from ui.app import _HELP_INTRO, _help_intro
+    assert _HELP_INTRO == _help_intro(4)
+
+
+# ---------------------------------------------------------------------------
 # Important 5 (whole-branch review): before this fix there was ZERO
 # visitor-facing text anywhere explaining what the pocket highlight means or
 # naming its cutoff distance. The `?` card is its natural home (spec

@@ -1324,49 +1324,74 @@ window, .booth-root, .booth-side {{
 # away, the trajectory IS the model's own, and the timings are the measured
 # ones from docs/followups.md's 30-fold soak (4.35-4.45s warm), not marketing
 # numbers.
-_HELP_INTRO = (
-    "A protein structure prediction, running right now on Tenstorrent "
-    "Blackhole chips a few feet away. This is not a recording or an "
-    "animation: the cloud of points collapsing on screen is the model's own "
-    "working, streamed off the chip as it computes, and the ribbon at the "
-    "end is the structure it just predicted.",
+#
+# `_HELP_INTRO` used to be a plain module-level tuple. It is a function of
+# `n_chips` now, for the identical reason `_key_help`/`_help_panels` below
+# are (whole-branch review, Important 3, and this follow-up to it): the last
+# paragraph said "four proteins", hardcoded, which goes false the instant
+# `runner.workers.split_for_qa` reserves one chip for Q&A -- a
+# 4-physical-chip box with the affinity-questions feature enabled folds on
+# 3. Important 3's fix converted `_KEY_HELP`/`_HELP_PANELS` and
+# `ui/quad.py`'s `QUAD_HELP_LINE` to functions of `n_chips` but missed this
+# tuple, found here during a real-hardware verification run of the same
+# feature. `n_chips` is `len(DemoApp.cards)` -- the daemon's own
+# `hello.cards` -- threaded in by `_build_help_overlay` at build time and
+# kept in sync afterwards by `_sync_help_copy`, exactly as the other two.
+def _help_intro(n_chips):
+    word = chip_count_word(n_chips)
+    protein_word = "protein" if n_chips == 1 else "proteins"
+    return (
+        "A protein structure prediction, running right now on Tenstorrent "
+        "Blackhole chips a few feet away. This is not a recording or an "
+        "animation: the cloud of points collapsing on screen is the model's own "
+        "working, streamed off the chip as it computes, and the ribbon at the "
+        "end is the structure it just predicted.",
 
-    "A protein is a chain of amino acids that only does its job once it "
-    "folds into a particular three-dimensional shape. Predicting that shape "
-    "from the sequence of the chain alone is the problem this model solves "
-    "— here, in about four and a half seconds per protein.",
+        "A protein is a chain of amino acids that only does its job once it "
+        "folds into a particular three-dimensional shape. Predicting that shape "
+        "from the sequence of the chain alone is the problem this model solves "
+        "— here, in about four and a half seconds per protein.",
 
-    "It works by denoising: the model starts from a cloud of random atom "
-    "positions and pulls it, over roughly 200 small steps, into a real "
-    "structure. Touch the screen to see everything this booth folds.",
+        "It works by denoising: the model starts from a cloud of random atom "
+        "positions and pulls it, over roughly 200 small steps, into a real "
+        "structure. Touch the screen to see everything this booth folds.",
 
-    # The disclosure, in the visitor's own words. The booth folds its
-    # playlist in its own order and a tap cannot change that: the socket
-    # protocol is one-way (runner/server.py broadcasts, ui/client.py never
-    # sends), so `_on_pick` reaches the state machine and nothing further.
-    # Stated as a fact rather than an apology, and paired with what IS on
-    # offer -- see ui/gallery.py's own module docstring, which carries the
-    # same rule for the copy on that screen.
-    #
-    # The first sentence changed with Task 16 and not before: "one after
-    # another" was true of a booth folding on card 0, and four chips fold at
-    # once now.
-    # The disclosure became an offer with Task 17, in the same commit as
-    # `_on_pick` learning to send. What it must NOT become is a promise of an
-    # instant fold: with four chips busy the pick starts when one frees,
-    # usually within seconds, and "instantly" is a claim the booth breaks in
-    # front of the one visitor watching for it. The second half is the wait
-    # stated as the feature it is -- not interrupting is exactly why the
-    # other three cells keep moving.
-    #
-    # Kept to the same number of wrapped lines as the copy it replaced: the
-    # `?` card is 913px of the booth's 1080 and every line added to it costs
-    # the operator keys at the bottom of the KEYS column (see
-    # `test_the_help_card_still_fits_the_booth_s_own_screen`).
-    "The booth folds four proteins at a time, one on each chip, all day. Tap "
-    "any of them to put it next: it starts on the next chip to come free, "
-    "because the folds already running are left to finish.",
-)
+        # The disclosure, in the visitor's own words. The booth folds its
+        # playlist in its own order and a tap cannot change that: the socket
+        # protocol is one-way (runner/server.py broadcasts, ui/client.py never
+        # sends), so `_on_pick` reaches the state machine and nothing further.
+        # Stated as a fact rather than an apology, and paired with what IS on
+        # offer -- see ui/gallery.py's own module docstring, which carries the
+        # same rule for the copy on that screen.
+        #
+        # The first sentence changed with Task 16 and not before: "one after
+        # another" was true of a booth folding on card 0, and four chips fold at
+        # once now.
+        # The disclosure became an offer with Task 17, in the same commit as
+        # `_on_pick` learning to send. What it must NOT become is a promise of an
+        # instant fold: with four chips busy the pick starts when one frees,
+        # usually within seconds, and "instantly" is a claim the booth breaks in
+        # front of the one visitor watching for it. The second half is the wait
+        # stated as the feature it is -- not interrupting is exactly why the
+        # other three cells keep moving.
+        #
+        # Kept to the same number of wrapped lines as the copy it replaced: the
+        # `?` card is 913px of the booth's 1080 and every line added to it costs
+        # the operator keys at the bottom of the KEYS column (see
+        # `test_the_help_card_still_fits_the_booth_s_own_screen`).
+        f"The booth folds {word} {protein_word} at a time, one on each chip, "
+        "all day. Tap any of them to put it next: it starts on the next chip "
+        "to come free, because the folds already running are left to finish.",
+    )
+
+
+# A frozen 4-chip snapshot, kept ONLY for tests that check general content
+# (no "one after another", no overclaim words) and do not care about a
+# specific chip count -- the running booth never reads this name;
+# `_build_help_overlay`/`_sync_help_copy` call `_help_intro(len(self.cards))`
+# directly, which is what makes the copy track the real fold-chip count
+# instead of silently drifting back to this hardcoded default.
+_HELP_INTRO = _help_intro(4)
 
 # Every key the booth answers to, and what it does. This table is the ONE
 # place the bindings are described to a visitor, and the test
@@ -1771,13 +1796,15 @@ class DemoApp(Gtk.Application):
         self._diagnostics_toggle_label = None
         self._tensix_toggle_label = None
         self._help_box = None
-        # The two chip-count-dependent spots on the `?` card (Important 3,
-        # whole-branch review) -- kept so `_sync_help_copy` can update their
-        # text in place whenever the real fold-chip count changes, rather
-        # than rebuilding the whole card. None/empty until the card is
-        # actually built (headless tests never call do_activate at all).
+        # The chip-count-dependent spots on the `?` card (Important 3,
+        # whole-branch review, and this follow-up to it for the intro
+        # paragraphs) -- kept so `_sync_help_copy` can update their text in
+        # place whenever the real fold-chip count changes, rather than
+        # rebuilding the whole card. None/empty until the card is actually
+        # built (headless tests never call do_activate at all).
         self._help_q_meaning_label = None
         self._help_panel_labels = []
+        self._help_intro_labels = []
 
         # Visibility is tracked as plain booleans, NOT read back off the
         # widgets: `_handle_key`'s decisions have to be testable without a
@@ -2880,8 +2907,14 @@ class DemoApp(Gtk.Application):
             getattr(card, margin)(40)
 
         card.append(self._help_label("What you are looking at", "help-title"))
-        for paragraph in _HELP_INTRO:
-            card.append(self._help_label(paragraph, "help-body", wrap=True))
+        self._help_intro_labels = []
+        for paragraph in _help_intro(len(self.cards)):
+            label = self._help_label(paragraph, "help-body", wrap=True)
+            card.append(label)
+            # Same reason as `_help_panel_labels` below: `_sync_help_copy`
+            # updates this label's text in place when the real fold-chip
+            # count changes, rather than rebuilding the whole help card.
+            self._help_intro_labels.append(label)
 
         columns = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=56)
         columns.set_homogeneous(True)
@@ -2991,10 +3024,13 @@ class DemoApp(Gtk.Application):
 
         A no-op before the card exists at all (headless tests, and the
         instant before `do_activate` runs) -- `_help_q_meaning_label`/
-        `_help_panel_labels` are only ever populated once the real widgets
-        are built.
+        `_help_panel_labels`/`_help_intro_labels` are only ever populated
+        once the real widgets are built.
         """
         n_chips = len(self.cards)
+        for label, paragraph in zip(self._help_intro_labels,
+                                    _help_intro(n_chips)):
+            label.set_label(paragraph)
         if self._help_q_meaning_label is not None:
             for keys, meaning in _key_help(n_chips):
                 if keys.strip().lower() == "q":
