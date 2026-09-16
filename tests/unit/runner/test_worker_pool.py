@@ -653,6 +653,45 @@ def test_the_pool_lists_every_card_it_manages(pool):
     assert pool.cards == [0, 1, 2, 3]
 
 
+def test_all_retired_is_computed_from_real_worker_death_state(tmp_path):
+    """ADDED (Task 6, fix round 2). `WorkerPool.all_retired()` is the real
+    production method `Daemon._dispatch_qa_once` calls to decide whether the
+    Q&A queue should be failed and drained forever -- but every daemon-side
+    test of that behaviour (tests/unit/runner/test_daemon_qa.py) drives a
+    hand-written `_FakeQaPool` whose `all_retired()` is just a constructor
+    flag (`self._retired`), never the real method computing anything from
+    actual worker-death state. This drives an actual `WorkerPool` -- built
+    with a single spec, the exact shape the Q&A pool is always built in
+    (`runner.workers.split_for_qa` reserves exactly one `WorkerSpec`) --
+    through a real `CONTROL_FATAL` retirement and confirms `all_retired()`
+    reflects it, mirroring `test_the_pool_lists_every_card_it_manages`'s own
+    pattern of emitting real control lines at a real `_FakeWorker` rather
+    than poking private state directly.
+    """
+    made, spawns = {}, []
+
+    def spawn(spec, env):
+        worker = _FakeWorker(spec, env)
+        made[spec.card] = worker
+        spawns.append(spec.card)
+        return worker
+
+    p = WorkerPool([_spec(3)], on_event=lambda c, e: None,
+                   log_root=str(tmp_path), spawn=spawn)
+    p.start()
+    assert p.all_retired() is False, (
+        "a freshly started worker is not retired")
+    made[3].emit({"type": CONTROL_READY})
+    assert _wait(lambda: p.ready_cards() == [3])
+    assert p.all_retired() is False, "ready is the opposite of retired"
+    made[3].emit({"type": CONTROL_FATAL, "reason": "weights not provisioned"})
+    assert _wait(lambda: made[3].drained)             # GUARD: the line was read
+    assert _wait(lambda: p.all_retired() is True), (
+        "the one card this single-spec pool manages is permanently gone; "
+        "all_retired() must compute that from real worker-death state, not "
+        "merely report a stored flag")
+
+
 # ---------------------------------------------------------------------------
 # The easter egg's dispatch (runner/egg.py). It borrows a chip for about a
 # second and a half, so it must reserve one exactly as a fold does -- and

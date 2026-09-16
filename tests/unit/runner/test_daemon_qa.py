@@ -46,6 +46,7 @@ this task's own brief where the two differ:
   here rather than only in the implementation.
 """
 
+import threading
 import types
 from pathlib import Path
 
@@ -246,6 +247,66 @@ def test_a_third_question_does_not_resurrect_the_first_two(tmp_path):
     errored_ids = {e["question_id"] for e in daemon.server.events
                   if e["type"] == "answer_error"}
     assert errored_ids == {"q1", "q2"}
+
+
+def test_enqueue_question_is_safe_under_concurrent_callers(tmp_path):
+    """Fix round 2 (task-6 review): `_qa_queue` must never lose a question
+    under concurrent callers.
+
+    `_enqueue_question` runs on whichever client's reader thread received
+    the `question` message -- `EventServer._accept_loop` spawns one
+    `_reader_loop` thread per connected client, with no serializing lock
+    between them, and the protocol allows several simultaneous clients. So
+    two questions queued at the same instant on two different sockets is a
+    real scenario this daemon must survive, not a hypothetical one.
+
+    Before this fix, `_enqueue_question` was three unlocked list operations:
+    read `stale = self._qa_queue[:n]`, `del self._qa_queue[:len(stale)]`,
+    then `append`. Two threads racing through this can both compute `stale`
+    from the SAME queue state before either mutates it; the second thread's
+    `del` then removes whatever the FIRST thread just appended (rather than
+    the entry `stale` was actually computed from), so that appended question
+    is dropped from the queue with no `answer_error` EVER emitted for it --
+    reproducing the exact silent-pileup bug `_enqueue_question`'s own bound
+    exists to close, one layer down.
+
+    This drives many concurrent callers through the real (un-mocked)
+    `_enqueue_question` and checks the invariant the lock restores: every
+    question submitted ends the run accounted for -- still in the queue, or
+    answered with `answer_error` -- and never both, and never neither.
+    Confirmed against the pre-fix code (the lock removed, by hand, for a
+    local run only -- see the fix report) to fail within a handful of runs;
+    it is inherently a race, so a single green run does not by itself prove
+    the fix, but a failure here is unambiguous evidence the bug is back.
+    """
+    daemon = _daemon(tmp_path, _FakePool())
+    daemon._qa_spec = _qa_spec()
+
+    n = 300
+    barrier = threading.Barrier(n)
+
+    def submit(i):
+        barrier.wait()          # every thread starts its call in the same instant
+        daemon._enqueue_question(f"q{i}", "dhfr", "/p/dhfr.yaml")
+
+    threads = [threading.Thread(target=submit, args=(i,)) for i in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    queued_ids = {q[0] for q in daemon._qa_queue}
+    errored_ids = {e["question_id"] for e in daemon.server.events
+                  if e["type"] == "answer_error"}
+    submitted_ids = {f"q{i}" for i in range(n)}
+
+    assert not (queued_ids & errored_ids), (
+        "a question must not be both still queued and reported as replaced")
+    assert queued_ids | errored_ids == submitted_ids, (
+        "every submitted question must be accounted for -- still queued, "
+        "or answered with answer_error -- never silently dropped: missing "
+        f"{submitted_ids - (queued_ids | errored_ids)}")
+    assert len(daemon._qa_queue) <= 1, "MAX_PENDING_QUESTIONS == 1"
 
 
 def test_on_client_message_dispatches_a_question(tmp_path):

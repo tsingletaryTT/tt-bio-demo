@@ -393,6 +393,33 @@ class Daemon:
         # and one that arrives while the queue is already full, or while the
         # reserved chip is permanently gone (`WorkerPool.all_retired()`),
         # gets an `answer_error` instead of piling up silently forever.
+        #
+        # `_qa_lock` guards every read-check-mutate sequence over
+        # `_qa_queue`, the same way `_egg_lock` guards `_egg_request` above.
+        # It is NOT decorative: `_enqueue_question` runs on whichever
+        # client's reader thread received the `question` message
+        # (`EventServer._accept_loop` spawns one `_reader_loop` thread per
+        # connected client, and the protocol allows several clients at
+        # once), so two questions arriving on two sockets in the same
+        # instant both execute `_enqueue_question` concurrently. A first
+        # version of the bound above (read `_qa_queue[:n]`, `del`, then
+        # `append`) was three separate list operations with no lock at all,
+        # which is exactly the kind of compound "check then act" this
+        # project's own review process exists to catch: two threads can both
+        # read the same `stale` slice before either mutates, and the second
+        # thread's `del self._qa_queue[:len(stale)]` then deletes whatever
+        # the FIRST thread just appended rather than the entry it actually
+        # computed `stale` from -- silently dropping a question with no
+        # `answer_error` ever emitted for it, reproducing the exact bug this
+        # queue bound exists to close. `_dispatch_qa_once` (run()'s own
+        # thread) reads and mutates the same list, so the lock covers its
+        # queue-touching sections too, including the dispatch to the Q&A
+        # worker: `WorkerPool.dispatch_question` only writes a few hundred
+        # bytes to a pipe under the POOL's own lock (see that method's own
+        # docstring reasoning for `dispatch`), so holding `_qa_lock` across it
+        # cannot block for any meaningful time and removes the need for a
+        # separate identity check when the dispatched question is popped.
+        self._qa_lock = threading.Lock()
         self._qa_spec = None
         self._qa_pool = None
         self._qa_queue = []
@@ -721,10 +748,23 @@ class Daemon:
         tracking a pending answer per `question_id` -- so a pick can be
         dropped silently and a question cannot: a dropped question with no
         wire event is a pending state on the UI side that never resolves.
+
+        **The read-check-mutate sequence runs under `_qa_lock`.** This
+        method executes on whichever client's reader thread received the
+        message, and the protocol allows several clients at once -- see
+        `_qa_lock`'s own comment in `__init__` for the exact interleaving
+        that dropped a question silently when this was three unlocked list
+        operations. The `answer_error` emits happen AFTER the lock is
+        released (broadcasting can block briefly on a slow client; see
+        `EventServer.broadcast`), over a plain local list of what the lock
+        found stale -- nothing about what gets emitted depends on state read
+        outside the lock.
         """
-        stale = self._qa_queue[:max(0, len(self._qa_queue) -
-                                     MAX_PENDING_QUESTIONS + 1)]
-        del self._qa_queue[:len(stale)]
+        with self._qa_lock:
+            stale = self._qa_queue[:max(0, len(self._qa_queue) -
+                                         MAX_PENDING_QUESTIONS + 1)]
+            del self._qa_queue[:len(stale)]
+            self._qa_queue.append((question_id, target_id, input_path))
         for stale_id, stale_target, _ in stale:
             log.info("question %s replaces %s, which never reached the Q&A "
                      "chip", question_id, stale_id)
@@ -732,7 +772,6 @@ class Daemon:
                         "target_id": stale_target,
                         "message": "a newer question replaced this one "
                                    "before the Q&A chip took it"})
-        self._qa_queue.append((question_id, target_id, input_path))
 
     def _playlist_target(self, target_id):
         """The playlist file whose stem is exactly `target_id`, or None.
@@ -1086,12 +1125,54 @@ class Daemon:
         not have, so every question waiting -- not just the head of the
         queue -- is failed with `answer_error` and the queue is emptied, once
         per pass, at no cost once it is empty.
+
+        **Every touch of `_qa_queue` runs under `_qa_lock`**, including the
+        dispatch to the worker -- see that lock's comment in `__init__`.
+        This method runs only on `run()`'s own thread (never concurrently
+        with itself), but `_enqueue_question` runs on client reader threads
+        and can interleave with any part of this method: without the lock
+        covering the dispatch too, a question could be read out of
+        `self._qa_queue[0]`, then bumped out of the queue (and answered with
+        `answer_error` as "replaced") by a concurrent `_enqueue_question`
+        call BEFORE this method's own unconditional `pop(0)` runs -- which
+        would then pop the wrong entry, the newly-arrived question that
+        replaced it. Holding the lock across the whole attempt (read, send,
+        pop) makes that interleaving impossible instead of papering over it
+        with an identity check. The `answer_error` emits for a retired pool's
+        drained queue happen AFTER the lock is released, over a plain local
+        copy -- same reasoning as `_enqueue_question`.
         """
-        if self._qa_pool is None or not self._qa_queue:
+        if self._qa_pool is None:
             return
-        if self._qa_pool.all_retired():
-            while self._qa_queue:
-                question_id, target_id, _ = self._qa_queue.pop(0)
+        with self._qa_lock:
+            if not self._qa_queue:
+                return
+            if self._qa_pool.all_retired():
+                drained = list(self._qa_queue)
+                self._qa_queue.clear()
+            else:
+                drained = None
+                ready = self._qa_pool.ready_cards()
+                if not ready:
+                    return              # still scoring the previous question
+                card = ready[0]
+                question_id, target_id, input_path = self._qa_queue[0]
+                try:
+                    self._qa_pool.dispatch_question(question_id, target_id,
+                                                     input_path, card)
+                except ValueError:
+                    # Same race `dispatch_once` guards for a fold: the Q&A
+                    # worker died (or was otherwise refused) between
+                    # `ready_cards()` above and the send. Left at the front
+                    # of the queue rather than requeued at the back -- it
+                    # was already next in line, and nothing about this
+                    # failure changes that.
+                    log.warning("Q&A card %s refused question %s (%s); it "
+                                "stays queued", card, question_id, target_id)
+                    return
+                self._qa_queue.pop(0)
+        if drained is not None:
+            for question_id, target_id, _ in drained:
                 log.warning("Q&A card retired for the session; failing "
                             "question %s (target %s) rather than queueing "
                             "it forever", question_id, target_id)
@@ -1099,25 +1180,6 @@ class Daemon:
                             "target_id": target_id,
                             "message": "the Q&A chip is unavailable for "
                                        "this session"})
-            return
-        ready = self._qa_pool.ready_cards()
-        if not ready:
-            return                      # still scoring the previous question
-        card = ready[0]
-        question_id, target_id, input_path = self._qa_queue[0]
-        try:
-            self._qa_pool.dispatch_question(question_id, target_id,
-                                            input_path, card)
-        except ValueError:
-            # Same race `dispatch_once` guards for a fold: the Q&A worker
-            # died (or was otherwise refused) between `ready_cards()` above
-            # and the send. Left at the front of the queue rather than
-            # requeued at the back -- it was already next in line, and
-            # nothing about this failure changes that.
-            log.warning("Q&A card %s refused question %s (%s); it stays "
-                        "queued", card, question_id, target_id)
-            return
-        self._qa_queue.pop(0)
 
     # -- the easter egg's share of the hardware ----------------------------
 
