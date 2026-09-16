@@ -442,8 +442,12 @@ ESM2_CHECK_EOF
 }
 
 # nesso1 + nesso1-ccd + the ESM-2 encoder: what the affinity-Q&A feature
-# needs and neither install path provisions yet (docs/followups.md, "From
-# the affinity-questions feature"). Deliberately WARN-ONLY, never FAIL: a
+# needs. Both install paths (scripts/setup-venvs.sh and the Debian
+# tt-bio-demo-weights postinst) now attempt to fetch these -- but a real,
+# still-open gap (docs/followups.md, "From the affinity-questions feature")
+# means a fetch that reports success does not guarantee the booth's own
+# process can find what it fetched, so this check still earns its keep.
+# Deliberately WARN-ONLY, never FAIL: a
 # booth running `--no-questions`, or with only one chip (which never reserves
 # a Q&A worker -- see runner/daemon.py's qa_capable gate), legitimately never
 # needs any of this, and this check has no way to know which case it is

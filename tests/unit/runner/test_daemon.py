@@ -53,6 +53,46 @@ def test_a_quarantined_target_is_not_re_enqueued(tmp_path):
     assert [j.target_id for j in daemon.queue.pending] == ["good"]
 
 
+def test_manifest_and_questions_yaml_are_never_enqueued_as_fold_targets(tmp_path):
+    """A packaged install ships manifest.yaml and questions.yaml into the
+    SAME directory as real fold-input YAMLs (debian/tt-bio-demo.install
+    puts the whole `playlist/` tree under `/opt/tt-bio-demo/playlist/`,
+    which the systemd unit then passes straight to `--playlist` -- unlike
+    scripts/run-demo.sh's dev-mode symlink farm, which never contains
+    either name). Before this fix, a real deployment enumerated both as
+    bogus fold targets: each fails tt-bio's own YAML parsing three times
+    and gets silently quarantined, but every restart re-globs and pays the
+    three failed attempts again. Real targets still folded, so this was
+    never caught by a fold-outcome test -- only by inspecting exactly what
+    _enqueue_playlist queues."""
+    playlist = tmp_path / "playlist"
+    playlist.mkdir()
+    (playlist / "good.yaml").write_text("version: 1\n")
+    (playlist / "manifest.yaml").write_text("- id: good\n")
+    (playlist / "questions.yaml").write_text("- id: q1\n")
+
+    daemon = _daemon(tmp_path, _FakePool())
+    daemon._enqueue_playlist()
+    assert [j.target_id for j in daemon.queue.pending] == ["good"]
+
+
+def test_playlist_target_never_resolves_manifest_or_questions_by_stem(tmp_path):
+    """The same exclusion, checked at the OTHER call site: a client-supplied
+    target_id of "manifest" or "questions" (accidental or crafted) must not
+    resolve to a real path, the same way `_playlist_target` already refuses
+    a path-separator-bearing id."""
+    playlist = tmp_path / "playlist"
+    playlist.mkdir()
+    (playlist / "good.yaml").write_text("version: 1\n")
+    (playlist / "manifest.yaml").write_text("- id: good\n")
+    (playlist / "questions.yaml").write_text("- id: q1\n")
+
+    daemon = _daemon(tmp_path, _FakePool())
+    assert daemon._playlist_target("good") is not None
+    assert daemon._playlist_target("manifest") is None
+    assert daemon._playlist_target("questions") is None
+
+
 def _fake_tt_bio_main_read_bio_chains(monkeypatch, chains_or_exc):
     """Install a stand-in tt_bio.main with only _read_bio_chains faked --
     same style as tests/unit/runner/test_folder_events.py's tt_bio fakes,

@@ -501,12 +501,14 @@ against — the UI can be more than a second behind the socket in reading a
   smaller on a display much denser than the 1280×800 dev default. Scale by
   `get_scale_factor()` in Phase 3, when the booth display is known.
 
-## From the affinity-questions feature (2026-09-15/16) — one fixed, one carried
+## From the affinity-questions feature (2026-09-15/16) — two fixed, one open
 
-Both named explicitly in CLAUDE.md's entry for this feature as deferred rather
-than fixed in the branch that shipped it; a "handful of other Minor findings
-from the final review" were mentioned but not itemized there, so only these
-two have enough detail to record here.
+The first two were named explicitly in CLAUDE.md's entry for this feature as
+deferred rather than fixed in the branch that shipped it (a "handful of other
+Minor findings from the final review" were mentioned but not itemized there,
+so only these had enough detail to record here); both are now closed. The
+third was found afterward, in PR review, and is deliberately left open rather
+than patched quickly — see its own entry for why.
 
 - **FIXED (2026-09-16). nesso1's weights had no provisioning step.** Neither
   `scripts/setup-venvs.sh`'s weight fetch nor the `.deb`'s
@@ -549,25 +551,55 @@ two have enough detail to record here.
   pass confirmed the two new literal `weights.fetch("nesso1"/"nesso1-ccd", ...)`
   calls are checked against the pinned tt-bio's real registry the same way
   protenix-v2's call always has been.
-- **`runner/affinity.py` imports `torch` and `tt_bio.nesso1` at module scope**,
-  against `runner/folder.py`'s own documented pattern of deferring those
-  imports into `load()` so unit test collection does not need torch
-  installed at all — `runner/folder.py`'s `load()` docstring and its own
-  comment right above the import ("Imported here rather than at module
-  scope: importing tt_bio pulls in torch and ttnn, which the unit tests
-  must not need") state the reasoning directly. A Minor finding from the
-  final whole-branch review: real, and
-  it means any test file that merely imports `runner.affinity` — even one
-  that never calls `AffinityScorer.load()` — now needs torch on `sys.path`
-  to collect, which is exactly the cost `folder.py` was written to avoid.
-  Worth doing: move the two imports inside `AffinityScorer.load()`, mirroring
-  `Folder.load()`'s own comment, and confirm collection-time behavior with a
-  test that imports the module under a torch-less interpreter (the same
-  discipline `test_setup_venvs_weights.py`'s `SETUP_VENVS_LIB_ONLY` guard
-  uses to prove a script doesn't reach further than it should). Not urgent —
-  every environment that runs this module also runs `venv-runner`, which
-  always has torch — but it is a real crack in a pattern this project has
-  otherwise kept consistent.
+- **FIXED (2026-09-16). `runner/affinity.py` imported `torch` and
+  `tt_bio.nesso1` at module scope**, against `runner/folder.py`'s own
+  documented pattern of deferring those imports into `load()` so unit test
+  collection does not need torch installed at all. Moved into `load()`/
+  `_score_real()`, mirroring `Folder.load()`'s own comment exactly, with a
+  test proving `tests/unit/runner/test_affinity.py` collects under a
+  torch-blocked interpreter.
+- **A real, still-open gap, found in PR review: nesso1/nesso1-ccd/ESM-2 can
+  be fetched successfully during install and still be unreachable by the
+  booth at runtime.** `weights.fetch`/the ESM-2 pre-warm silently ignore
+  `root=`/`--cache` for these "hf-repo" rows (see the bullet above this
+  section) and fall back to Hugging Face's own cache resolution, which is
+  `$HF_HUB_CACHE`, then `$TT_BIO_CACHE`-derived, then `~/.cache/huggingface`
+  under WHOEVER'S `$HOME` the fetching process has. The Debian postinst runs
+  as root during `dpkg`/`apt install` (`$HOME=/root`); the booth's compute
+  daemon runs as a `systemd --user` service under the desktop user's own
+  `$HOME` — and neither the postinst nor `debian/tt-bio-demo/usr/lib/systemd/
+  user/tt-bio-demo.service` ever exports `TT_BIO_CACHE`/`BOLTZ_CACHE`/
+  `HF_HUB_CACHE` to pin the two to the same location. So a `.deb` install can
+  report every affinity-weight fetch successful and the booth can still find
+  none of it, with `AffinityScorer.load()` failing at startup and every
+  question erroring from then on (see `MAX_PENDING_QUESTIONS`' comment in
+  `runner/daemon.py`) — the exact "reports ready, isn't" failure class
+  CLAUDE.md's 2026-08-31 "weights were never a checked box" session was
+  written to close, reopened by an execution-context split that session's
+  fix (making four callers agree with EACH OTHER on a `$HOME`-relative path)
+  never addressed, because it never needed to: `protenix-v2`/`mols` are
+  "hf-file" rows, where `root=` genuinely redirects the destination, so the
+  SAME `$HOME`-relative default is at least *self-consistent* if every
+  caller happens to run as the same user — which the postinst (root) and the
+  systemd unit (desktop user) do not. **Confirmed by direct inspection, not
+  reasoned about**: `scripts/weights-cache.sh`'s only resolution is
+  `${TT_BIO_CACHE:-${BOLTZ_CACHE:-$(_tt_bio_demo_home)/.boltz}}`, and
+  `_tt_bio_demo_home` reads `$HOME` (or `getent passwd "$(id -u)"`) with no
+  user-detection logic anywhere in the postinst or the unit file. Worth
+  doing, and deliberately NOT attempted as a quick patch here because it is
+  a decision about the booth's shared-cache architecture, not a one-file
+  fix: either (a) pin `TT_BIO_CACHE` (or `HF_HUB_CACHE`) to one fixed,
+  non-home-relative, world-readable path (e.g. under `/opt/tt-bio-demo/`)
+  in BOTH the postinst's fetch environment and the systemd unit's
+  `Environment=`, sidestepping per-user `$HOME` entirely for every weight,
+  old and new; or (b) have the postinst identify the actual booth operator
+  account (there is real precedent for this being fragile — no `SUDO_USER`/
+  `runuser`/logind-based detection exists anywhere in this codebase today)
+  and fetch in that user's own context. Either fixes protenix-v2/mols too,
+  which have almost certainly had the identical exposure since before this
+  feature existed and were never caught by the "real Docker container
+  installs" packaging tests (those run everything as one user throughout,
+  which cannot see a root-vs-desktop-user split at all).
 
 ## Deliberately not doing
 

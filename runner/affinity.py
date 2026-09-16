@@ -17,10 +17,14 @@ docs/spike-nesso1-affinity.md section 4). Do not size timeouts or UI
 "in-flight" copy around an assumption that residency makes this near-instant
 -- it makes the on-device forward pass warm (~2-4s), not the host prep.
 
-Weights (nesso1, nesso1-ccd) are NOT bundled with tt-bio and are not fetched
-by this module -- see load()'s docstring. Provisioning (postinst /
-doctor.sh) picking these up alongside protenix-v2's is a flagged follow-up,
-not something this task solves.
+Weights (nesso1, nesso1-ccd, and the ESM-2 encoder the featurizer needs) are
+NOT bundled with tt-bio and are not fetched by this module itself -- see
+load()'s docstring. Provisioning now exists (scripts/setup-venvs.sh,
+scripts/doctor.sh, and the Debian tt-bio-demo-weights postinst all fetch/
+check them alongside protenix-v2's), so `load()` failing here means a
+missing or broken weight set on THIS install, not an absent provisioning
+step -- see docs/followups.md for a real, separate gap in that provisioning
+(a root-vs-desktop-user cache-location mismatch) that is still open.
 """
 
 import logging

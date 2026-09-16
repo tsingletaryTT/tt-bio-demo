@@ -156,8 +156,10 @@ MAX_PENDING_PICKS = 1
 # waiting for.
 #
 # Without this, the review that found it traced a concrete failure: nesso1's
-# weights are not provisioned anywhere yet (a separate, explicitly-deferred
-# follow-up), so `_qa_pool`'s worker fails `load()` at startup, CONTROL_FATAL
+# weights missing or broken on a given install (see docs/followups.md for a
+# real, still-open provisioning gap: a root-vs-desktop-user cache-location
+# mismatch can leave them fetched somewhere the booth's own process never
+# looks) makes `_qa_pool`'s worker fail `load()` at startup, CONTROL_FATAL
 # retires its one card permanently, and `_qa_queue` had no bound at all --
 # every question the attract-loop cadence ever mints (a fresh `question_id`
 # per cycle, no dedup) would pile up forever with no `answer_error` telling
@@ -167,6 +169,29 @@ MAX_PENDING_PICKS = 1
 # guards against is a booth silently advertising a feature (`hello`'s
 # `qa_capable`) it can never deliver.
 MAX_PENDING_QUESTIONS = 1
+
+# Filenames that are never fold targets, even though they sit in the same
+# `--playlist` directory as real fold-input YAMLs on a packaged install.
+# `playlist/manifest.yaml` (the fold catalogue itself) and
+# `playlist/questions.yaml` (the affinity-questions catalogue) are both
+# shipped into `/opt/tt-bio-demo/playlist/` alongside real fold inputs by
+# `debian/tt-bio-demo.install` -- the real fold-input YAMLs live in a
+# SIBLING `examples/` directory that manifest.yaml's own `input:` entries
+# point into with a `../` prefix, so this directory is not the exclusive
+# home of fold inputs the way `scripts/run-demo.sh`'s own dev-mode
+# generated symlink farm is (that farm never contains either of these two
+# names at all, which is exactly why this was never caught by a run-demo.sh
+# based verification session). Without this exclusion, `_enqueue_playlist`
+# globs BOTH into the fold queue on a real systemd-unit deployment, where
+# each fails tt-bio's own YAML parsing three times and gets silently
+# quarantined -- harmless to correctness (real targets still fold) but a
+# real, wasted fold attempt and three job_error log lines the daemon has no
+# reason to produce, twice over now that questions.yaml exists too. Named
+# explicitly rather than sniffed by content shape (a fold input is a dict,
+# these two are lists) because a name check is one line, needs no yaml
+# parse before deciding, and can never misclassify a future real fold input
+# that happens to be a bare list for some other reason.
+_NON_FOLD_PLAYLIST_FILENAMES = frozenset({"manifest.yaml", "questions.yaml"})
 
 # How long run()'s loop waits between dispatch passes. The loop body no longer
 # blocks for the length of a fold (that happens in a worker now), so it needs
@@ -852,18 +877,28 @@ class Daemon:
                         "message": "a newer question replaced this one "
                                    "before the Q&A chip took it"})
 
+    def _playlist_files(self):
+        """Every fold-input YAML in the playlist directory, sorted.
+
+        The ONE enumeration both `_playlist_target` and `_enqueue_playlist`
+        use, so a target a visitor can pick and a target the attract loop
+        folds are the same set by construction rather than by two lists
+        agreeing -- and so the `_NON_FOLD_PLAYLIST_FILENAMES` exclusion
+        (see its own comment) only ever needs stating once.
+        """
+        return sorted(p for p in Path(self.config.playlist_dir).glob("*.yaml")
+                      if p.name not in _NON_FOLD_PLAYLIST_FILENAMES)
+
     def _playlist_target(self, target_id):
         """The playlist file whose stem is exactly `target_id`, or None.
 
         The ONLY way a client-supplied id becomes a path in this daemon. See
         `_accept_pick` for why a path join is not an acceptable alternative
-        here. Deliberately the same enumeration `_enqueue_playlist` uses, so a
-        target a visitor can pick and a target the attract loop folds are the
-        same set by construction rather than by two lists agreeing.
+        here.
         """
         if not isinstance(target_id, str) or not target_id:
             return None
-        for path in sorted(Path(self.config.playlist_dir).glob("*.yaml")):
+        for path in self._playlist_files():
             if path.stem == target_id:
                 return path
         return None
@@ -1196,10 +1231,12 @@ class Daemon:
         empty `ready_cards()` while the worker is still loading its model, or
         still scoring the previous question, is "wait, this will clear
         itself" -- the existing early return below, unchanged. A retired pool
-        is "this will NEVER clear itself again" (nesso1's weights are not
-        provisioned yet, so this worker's `load()` fails at startup and
-        `CONTROL_FATAL` retires its one card permanently -- see
-        MAX_PENDING_QUESTIONS' comment). Leaving those questions parked
+        is "this will NEVER clear itself again" (nesso1's weights are
+        missing or broken on this install, so this worker's `load()` fails
+        at startup and `CONTROL_FATAL` retires its one card permanently --
+        see MAX_PENDING_QUESTIONS' comment, and docs/followups.md for why
+        "provisioned" does not always mean "reachable by this process").
+        Leaving those questions parked
         indefinitely is exactly the silent-pileup bug this method exists to
         not have, so every question waiting -- not just the head of the
         queue -- is failed with `answer_error` and the queue is emptied, once
@@ -1391,7 +1428,7 @@ class Daemon:
             return 0
 
     def _enqueue_playlist(self):
-        for target in sorted(Path(self.config.playlist_dir).glob("*.yaml")):
+        for target in self._playlist_files():
             if target.stem in self._quarantined:
                 continue
             self.queue.submit(
