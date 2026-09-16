@@ -98,6 +98,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from protocol.events import PROTOCOL_VERSION
+from runner.affinity import _affinity_out_dir
 from runner.cards import CardPool, sample_tt_smi
 from runner.env import log_root_size, prune_log_root, runner_environ
 # NOT `Folder`. This process opens no device and holds no model, and a Folder
@@ -105,7 +106,12 @@ from runner.env import log_root_size, prune_log_root, runner_environ
 # a chip nobody is folding on -- `_structures_dir_for` is a pure path helper
 # (tempdir + device id), imported so the janitor below and the worker that
 # writes into that directory agree on where it is without copying the path
-# into two modules.
+# into two modules. `_affinity_out_dir` above is the same pattern applied to
+# `runner.affinity.AffinityScorer`'s own scratch cache -- also a pure path
+# helper, safe to import at module scope even before Task 1's fix moved
+# runner/affinity.py's torch/tt_bio imports into its methods (see that
+# module's own comment); now doubly so, since importing the module itself
+# no longer pulls torch in at all.
 from runner.folder import _structures_dir_for
 # `_spawn_subprocess` (private, like `_structures_dir_for` above) is the
 # production `spawn` seam `WorkerPool` defaults to for a fold worker; the
@@ -219,6 +225,18 @@ DEFAULT_LOG_BUDGET_BYTES = 2 * 1024**3
 # an oldest-first sweep of one can never reach into another's.
 DEFAULT_STRUCTURES_BUDGET_BYTES = 200 * 1024**2
 
+# Same reasoning as DEFAULT_STRUCTURES_BUDGET_BYTES immediately above,
+# applied to AffinityScorer's own scratch cache (`runner.affinity.
+# _affinity_out_dir`): prepare()'s parsed structures/conformers/ESM-2
+# embeddings, one directory per reserved Q&A chip. Bounded today by only the
+# three questions playlist/questions.yaml ships, so this is unlikely to ever
+# bind in practice -- it exists so the scratch directory is not simply
+# unswept, which is what a whole-branch review flagged it as (a Minor
+# finding, deferred rather than fixed at the time; see docs/followups.md).
+# Reuses the fold structures budget's own number rather than inventing a
+# second constant with no measurement behind it either.
+DEFAULT_AFFINITY_BUDGET_BYTES = DEFAULT_STRUCTURES_BUDGET_BYTES
+
 # How many of each card's most-recently-emitted .cif paths _prune_structures
 # refuses to delete, no matter how old they look to prune_log_root. Review
 # finding (Phase 3a Task 10): the file a fold *just* wrote is never actually
@@ -302,6 +320,11 @@ class DaemonConfig:
     max_temp_c: float = 85.0
     log_budget_bytes: int = DEFAULT_LOG_BUDGET_BYTES
     structures_budget_bytes: int = DEFAULT_STRUCTURES_BUDGET_BYTES
+    # Same budget-per-root shape as structures_budget_bytes just above,
+    # applied to AffinityScorer's scratch cache -- see
+    # DEFAULT_AFFINITY_BUDGET_BYTES's own comment for why it reuses that
+    # number rather than inventing a new one.
+    affinity_budget_bytes: int = DEFAULT_AFFINITY_BUDGET_BYTES
     # False opts a booth OUT of the affinity-Q&A feature entirely: no chip
     # is permanently reserved (`_build_pool` skips `split_for_qa`
     # altogether -- see the comment there), so all detected chips fold and
@@ -333,6 +356,10 @@ class Daemon:
         # pool respectively); a list means a caller has overridden it. See the
         # two properties below.
         self._structures_dirs = None
+        # Same "None means derive it" contract as _structures_dirs above,
+        # for AffinityScorer's scratch cache -- see the affinity_scratch_dirs
+        # property below.
+        self._affinity_scratch_dirs = None
         self._worker_log_paths = None
         self._stop = threading.Event()
         # Set whenever something has happened that `run()`'s next pass should
@@ -491,6 +518,32 @@ class Daemon:
         self._structures_dirs = list(value)
 
     @property
+    def affinity_scratch_dirs(self):
+        """Where AffinityScorer's prepare() cache lives -- at most one
+        directory, since there is at most one reserved Q&A chip, but returned
+        as a list so `_prune_affinity_scratch` can share `structures_dirs`'s
+        own per-root loop shape exactly.
+
+        `[]` when no chip is reserved for Q&A (`self._qa_spec is None`) -- a
+        one-chip booth, `--no-questions`, or a daemon/test that never built
+        a Q&A pool has nothing here to sweep, the same "empty is the honest
+        default" reasoning `worker_log_paths` above already uses.
+
+        Derived by default and assignable, exactly like `structures_dirs`,
+        so a test can point the janitor at a tmp_path instead of the real
+        system temp directory a running booth is writing into.
+        """
+        if self._affinity_scratch_dirs is not None:
+            return list(self._affinity_scratch_dirs)
+        if self._qa_spec is None:
+            return []
+        return [str(_affinity_out_dir(self._qa_spec.card))]
+
+    @affinity_scratch_dirs.setter
+    def affinity_scratch_dirs(self, value):
+        self._affinity_scratch_dirs = list(value)
+
+    @property
     def worker_log_paths(self):
         """Every `<log-root>/card-<n>/worker.log` the parent holds open.
 
@@ -569,7 +622,21 @@ class Daemon:
                 # hides the whole question feature when this is False
                 # (spec section 5) rather than showing a queue that could
                 # never answer.
-                "qa_capable": self._qa_spec is not None}
+                "qa_capable": self._qa_spec is not None,
+                # Which physical chip is reserved, named explicitly rather
+                # than left for the UI to infer from `cards` being N-1 (a
+                # Minor finding from the final whole-branch review: the UI
+                # has no current consumer of this -- its quad/telemetry code
+                # only ever reads `cards` above -- so this is deliberately
+                # future-proofing, added because it costs nothing: `_hello`'s
+                # payload has no per-field schema on the wire (`decode()` in
+                # protocol/events.py only checks `type`), so an optional key
+                # on an existing event needs no PROTOCOL_VERSION bump, unlike
+                # a new required field or a new event/client-message type
+                # would. `None` on a one-chip booth or one started with
+                # `--no-questions`, exactly when `qa_capable` is False.
+                "qa_card": (self._qa_spec.card
+                           if self._qa_spec is not None else None)}
 
     def _emit(self, event):
         self.server.broadcast(event)
@@ -1531,6 +1598,7 @@ class Daemon:
                     next_prune = time.monotonic() + JANITOR_PERIOD_S
                     self._prune_logs()
                     self._prune_structures()
+                    self._prune_affinity_scratch()
                 # `_wake`, not `_stop`: same two numbers, both now
                 # interruptible. `stop()` sets `_wake` as well, so shutdown is
                 # exactly as prompt as it was when this waited on `_stop`, and
@@ -1691,6 +1759,35 @@ class Daemon:
             except Exception:
                 log.exception("card %s: structure pruning failed; continuing",
                               card)
+
+    def _prune_affinity_scratch(self):
+        """Keep AffinityScorer's scratch cache (`runner.affinity.
+        _affinity_out_dir`) inside its budget -- the same operation as
+        `_prune_structures` above, applied to the reserved Q&A chip instead
+        of the folding ones.
+
+        No `protect` set, unlike `_prune_structures`: nothing in this
+        codebase reads a file under here after `prepare()` writes it, except
+        `prepare()` itself, as a cache (see runner/affinity.py's module
+        docstring). Losing the oldest entries under budget pressure only
+        costs a recomputed embedding on the next question for that target,
+        never a UI reading something out from under it -- there is no
+        `job_done`-style handoff of these paths to anything outside this
+        process.
+
+        A no-op on a booth with no chip reserved for Q&A
+        (`affinity_scratch_dirs` returns `[]` then) and, same as
+        `_prune_structures`, never fatal.
+        """
+        for root in self.affinity_scratch_dirs:
+            try:
+                freed, removed = prune_log_root(
+                    root, self.config.affinity_budget_bytes, protect=set())
+                if removed:
+                    log.info("affinity scratch pruned: %d file(s), "
+                             "%.1f MB freed", len(removed), freed / 1e6)
+            except Exception:
+                log.exception("affinity scratch pruning failed; continuing")
 
 
 def main(argv=None):

@@ -96,6 +96,30 @@ def test_hello_reports_not_qa_capable_with_no_reserved_chip(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# hello's qa_card field (item 8 of the deferred-nits batch): names the
+# physical chip reserved for Q&A explicitly, rather than leaving the UI to
+# infer it from `cards` being N-1. No current consumer in ui/app.py -- this
+# is deliberate future-proofing, safe to add because `hello`'s payload has
+# no per-field wire schema (decode() only checks `type`), so an optional key
+# needs no PROTOCOL_VERSION bump.
+# ---------------------------------------------------------------------------
+
+def test_hello_names_the_reserved_qa_card_explicitly(tmp_path):
+    daemon = _daemon(tmp_path, _FakePool())
+    daemon._qa_spec = _qa_spec(card=3)
+    assert daemon._hello()["qa_card"] == 3
+
+
+def test_hello_reports_no_qa_card_with_no_reserved_chip(tmp_path):
+    """The mutation guard for the test above: an implementation that always
+    returned some fixed card id (e.g. 0) regardless of reservation state
+    fails this one."""
+    daemon = _daemon(tmp_path, _FakePool())
+    assert daemon._qa_spec is None, "guard: nothing set it yet"
+    assert daemon._hello()["qa_card"] is None
+
+
+# ---------------------------------------------------------------------------
 # _accept_question
 # ---------------------------------------------------------------------------
 

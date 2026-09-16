@@ -359,6 +359,50 @@ def test_one_cards_output_does_not_evict_anothers_protected_file(tmp_path):
     assert all(p.exists() for p in fresh), "each card protects its own three"
 
 
+def test_affinity_scratch_is_pruned_when_over_budget(tmp_path):
+    """AffinityScorer's scratch cache (`_affinity_out_dir`) is exactly as
+    unbounded as the fold structures directories above -- see item 7 of the
+    deferred-nits batch that added this sweep. No `protect` set here: unlike
+    a fold's .cif, nothing outside `AffinityScorer._score_real` ever reads a
+    file under this root, so an oldest-first sweep is safe unconditionally.
+    """
+    daemon = _daemon(tmp_path, _FakePool(), affinity_budget_bytes=1024)
+    d = tmp_path / "affinity" / "device-3"
+    old = _write(d / "old_embedding.pt", 8192)
+    daemon.affinity_scratch_dirs = [str(d)]
+
+    daemon._prune_affinity_scratch()
+
+    assert not old.exists()
+
+
+def test_affinity_scratch_prune_is_a_noop_with_no_qa_chip_reserved(tmp_path):
+    """A one-chip booth, or one started with --no-questions, never reserves
+    a Q&A chip -- `daemon._qa_spec` stays `None` -- so there is no scratch
+    directory to derive at all. Must not raise, and must not invent a path
+    out of thin air."""
+    daemon = _daemon(tmp_path, _FakePool())
+    assert daemon._qa_spec is None
+    assert daemon.affinity_scratch_dirs == []
+
+    daemon._prune_affinity_scratch()  # must not raise
+
+
+def test_affinity_scratch_dir_is_derived_from_the_reserved_qa_card(tmp_path):
+    """Mirrors structures_dirs's own derivation test: when nothing has
+    overridden `affinity_scratch_dirs`, it is derived from
+    `_affinity_out_dir(self._qa_spec.card)` -- the SAME path
+    `runner.affinity_worker` (via `AffinityScorer`) actually writes into,
+    not a second, independently-computed guess at where that is."""
+    from runner.affinity import _affinity_out_dir
+    from runner.workers import WorkerSpec
+
+    daemon = _daemon(tmp_path, _FakePool())
+    daemon._qa_spec = WorkerSpec(card=2, label="card-2", visible_devices="2",
+                                 logical_device_id=0, mesh_graph_descriptor=None)
+    assert daemon.affinity_scratch_dirs == [str(_affinity_out_dir(2))]
+
+
 def test_emit_and_track_protects_the_file_before_telling_anyone_about_it(
         tmp_path):
     """Order matters, and it is free. The instant the event leaves this
@@ -405,8 +449,14 @@ def test_a_janitor_failure_never_stops_the_booth(tmp_path, monkeypatch):
 
     monkeypatch.setattr(mod, "prune_log_root", explode)
     daemon = _daemon(tmp_path, _FakePool())
-    daemon._prune_logs()          # must not raise
-    daemon._prune_structures()    # must not raise
+    # Otherwise affinity_scratch_dirs derives to [] (no Q&A chip reserved)
+    # and the loop in _prune_affinity_scratch never calls the exploding
+    # prune_log_root at all -- give it a root so the except branch is the
+    # one actually under test.
+    daemon.affinity_scratch_dirs = [str(tmp_path / "affinity" / "device-0")]
+    daemon._prune_logs()             # must not raise
+    daemon._prune_structures()       # must not raise
+    daemon._prune_affinity_scratch()  # must not raise
 
 
 def test_a_worker_log_that_cannot_be_truncated_still_gets_the_root_swept(
