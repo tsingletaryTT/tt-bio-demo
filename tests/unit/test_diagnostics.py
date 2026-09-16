@@ -162,6 +162,41 @@ def test_a_multiline_wire_string_can_never_paint_a_multiline_entry():
 
 
 # ---------------------------------------------------------------------------
+# The affinity-questions events (Task 11): answer_start/answer_done/
+# answer_error must each produce a real line -- an event this build DOES
+# handle falling into the "unhandled event" branch would be its own small
+# dishonesty, the same class this module's own docstring is built around.
+# ---------------------------------------------------------------------------
+
+def test_answer_start_produces_a_real_line_not_unhandled():
+    diag_log = _log()
+    diag_log.note_event({"type": "answer_start", "question_id": "q1",
+                         "target_id": "fkbp12"})
+    blob = _blob(diag_log)
+    assert "q1" in blob and "fkbp12" in blob
+    assert "unhandled" not in blob
+
+
+def test_answer_done_shows_the_question_target_and_score():
+    diag_log = _log()
+    diag_log.note_event({"type": "answer_done", "question_id": "q1",
+                         "target_id": "fkbp12", "score": 0.87})
+    blob = _blob(diag_log)
+    assert "q1" in blob and "fkbp12" in blob and "0.87" in blob
+    assert "unhandled" not in blob
+
+
+def test_answer_error_says_not_answered_not_unhandled():
+    diag_log = _log()
+    diag_log.note_event({"type": "answer_error", "question_id": "q1",
+                         "target_id": "fkbp12"})
+    blob = _blob(diag_log)
+    assert "q1" in blob and "fkbp12" in blob
+    assert "not answered" in blob
+    assert "unhandled" not in blob
+
+
+# ---------------------------------------------------------------------------
 # It reads like a log of REAL traffic.
 # ---------------------------------------------------------------------------
 
@@ -319,6 +354,10 @@ def test_the_teaching_copy_fits_the_rail_without_ellipsizing():
     {"type": "not_ready", "missing": "everything"},
     {"type": "future_event_from_a_later_protocol"},
     {"type": None},
+    {"type": "answer_start", "question_id": None, "target_id": None},
+    {"type": "answer_done", "question_id": None, "target_id": None,
+     "score": "not-a-number"},
+    {"type": "answer_error"},
 ])
 def test_no_wire_shaped_event_can_raise(event):
     """Every one of these produces a line and no exception. An exception

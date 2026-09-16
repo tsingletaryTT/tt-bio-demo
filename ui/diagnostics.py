@@ -357,6 +357,21 @@ class DiagnosticsLog:
             # are logged where they are DRAWN, by note_frame below, with
             # the geometry the viewer actually received.
             pass
+        elif kind == "answer_start":
+            self.add(f"? question {_safe(event.get('question_id'), 16)}"
+                     f" · target {_safe(event.get('target_id'), 22)}"
+                     " · scoring", KIND_MARK)
+        elif kind == "answer_done":
+            self.add(f"? question {_safe(event.get('question_id'), 16)}"
+                     f" · target {_safe(event.get('target_id'), 22)}"
+                     f" · score {_num(event.get('score'), '.2f')}", KIND_MARK)
+        elif kind == "answer_error":
+            # Same rule as job_error above: whatever detail the wire might
+            # carry stays off this line. There is none documented on this
+            # event today, but the rule is the same regardless.
+            self.add(f"? question {_safe(event.get('question_id'), 16)}"
+                     f" · target {_safe(event.get('target_id'), 22)}"
+                     " · not answered (error)", KIND_MARK)
         else:
             self.add(f"? unhandled event {_safe(kind, 20)}")
 
