@@ -206,12 +206,11 @@ class Choreography:
                 return None
             self._owned.discard("gallery")
             return action
-        if action == ASK_QUESTION:
-            # No ownership taken -- see ASK_QUESTION's own comment above.
-            # Spelled out explicitly (rather than left to the bare
-            # `return action` below) so a reader does not have to wonder
-            # whether this cue was simply forgotten here.
-            return action
+        # ASK_QUESTION falls through to here deliberately: no ownership is
+        # taken for it (see its own comment above -- there is nothing on
+        # screen it opens, so nothing for rule 2 to undo), which is exactly
+        # what this bare `return action` already does for any action this
+        # function does not special-case above.
         return action
 
     def disown(self, panel):
