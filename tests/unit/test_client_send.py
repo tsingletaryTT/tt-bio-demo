@@ -333,6 +333,25 @@ def test_a_pick_carries_the_protocol_version(listener):
         client.stop()
 
 
+def test_a_question_reaches_a_listening_daemon(listener):
+    """`send_question` mirrors `send_pick` exactly (Task 11) -- same wiring,
+    same wire shape (protocol.events.question_message), just a different
+    client->server message type."""
+    client = _client(listener.path)
+    client.start()
+    try:
+        assert _wait(lambda: client.state == "connected")
+        assert client.send_question("q1", "trpcage") is True
+        assert _wait(lambda: listener.received)
+        message = listener.received[0]
+        assert message["type"] == "question"
+        assert message["question_id"] == "q1"
+        assert message["target_id"] == "trpcage"
+        assert message["version"] == PROTOCOL_VERSION
+    finally:
+        client.stop()
+
+
 def test_send_before_there_has_ever_been_a_connection_never_raises(tmp_path):
     """_on_pick runs in a GLib callback. An exception there freezes that
     source for the life of the process, and the booth stops answering
