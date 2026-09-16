@@ -79,6 +79,18 @@ def test_a_structure_with_no_ligand_has_an_empty_pocket():
     assert pocket_residues(structure) == set()
 
 
+def test_a_structure_with_no_model_at_all_has_an_empty_pocket():
+    """Degenerate input -- a gemmi.Structure with zero models -- must not
+    raise a bare IndexError. `ui/geometry.py`'s `load_backbone_trace` guards
+    this exact case too (for a similar reason), but raises there because an
+    empty ribbon is nothing to draw; here it is nothing to report, which
+    this module already treats as legitimate for the no-ligand case above,
+    so the same answer (empty set, no error) is what this mirrors."""
+    structure = gemmi.Structure()
+    assert len(structure) == 0, "guard: this fixture really has no model"
+    assert pocket_residues(structure) == set()
+
+
 def test_default_cutoff_is_five_angstrom():
     """`pocket_residues(structure)` with no explicit cutoff must match the
     5 A behaviour, so a caller that forgets to pass cutoff_angstrom gets the

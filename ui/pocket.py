@@ -51,16 +51,33 @@ def pocket_residues(structure, cutoff_angstrom=POCKET_CUTOFF_ANGSTROM):
     any ligand atom, in a `.cif` already parsed into a `gemmi.Structure`.
 
     Returns a set of `(chain_id, residue_seqid)` pairs -- `chain.name` and
-    `residue.seqid.num`, the same identifiers `ui/geometry.py`'s
-    `BackboneTrace` already carries per residue, so a caller can intersect
-    this set against a trace's `chain_ids` without translating between two
-    different residue-naming schemes.
+    `residue.seqid.num`, read directly off the SAME `gemmi.Structure` this
+    function was handed. NOT `ui/geometry.py`'s `BackboneTrace`: that
+    dataclass carries only `coords`/`plddt`/`chain_ids` per residue, no
+    `seqid` at all, so a caller cannot intersect this set against a trace
+    without one of them still going back to the structure. The actual
+    consumer, `ui/cartoon.py`'s `cartoon_from_cif`, does exactly that: it
+    re-derives its own `seqids` from the structure while building the
+    cartoon (`res.seqid.num`, the same field this function reads), rather
+    than from any `BackboneTrace` it might also have.
 
     A structure with no ligand (three of this booth's targets have none, and
     every non-affinity target has none) returns an empty set rather than
     raising -- there is nothing wrong with such a structure, there is simply
-    no pocket to report.
+    no pocket to report. A structure with no MODEL AT ALL gets the same
+    answer, for the same reason: `ui/geometry.py`'s `load_backbone_trace`
+    guards this exact case (an empty `.cif`, or one gemmi parsed with zero
+    models), but raises there because an empty ribbon is nothing to draw.
+    Here it is nothing to report, which this function already treats as a
+    legitimate, non-error outcome one line below -- so this mirrors that
+    choice rather than `load_backbone_trace`'s raise. Without this check,
+    `ligands_from_structure(structure)` below indexes `structure[0]`
+    directly and raises a bare `IndexError`, no caller-facing message at
+    all.
     """
+    if len(structure) == 0:
+        return set()
+
     ligand_positions = [
         gemmi.Position(float(x), float(y), float(z))
         for positions, _elements in ligands_from_structure(structure)
