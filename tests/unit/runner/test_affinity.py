@@ -11,6 +11,10 @@ for the same reason: a wedged or erroring Q&A worker must not take the
 daemon's driving thread down with it.
 """
 
+import builtins
+import importlib
+import sys
+
 import pytest
 
 from runner.affinity import AffinityScorer
@@ -70,3 +74,39 @@ def test_score_passes_the_input_path_through_to_score_real(monkeypatch, tmp_path
     input_path = str(tmp_path / "affinity_dhfr.yaml")
     scorer.score("q1", "dhfr", input_path, lambda e: None)
     assert seen == [input_path]
+
+
+def test_module_import_does_not_require_torch_or_tt_bio_nesso1(monkeypatch):
+    """runner/affinity.py must defer its torch / tt_bio.nesso1* imports into
+    load()/_score_real(), mirroring runner/folder.py's Folder.load() comment
+    ("Imported here rather than at module scope: importing tt_bio pulls in
+    torch and ttnn, which the unit tests must not need"). Without that
+    discipline, merely importing this module -- collection, not use --
+    requires torch on sys.path, which is exactly the cost folder.py's own
+    pattern exists to avoid.
+
+    Proven here by blocking torch/tt_bio.nesso1/tt_bio.nesso1_input at the
+    __import__ level and re-importing runner.affinity fresh: if the module
+    ever regresses to a module-scope import of any of these, this test goes
+    red on collection (an ImportError raised by fake_import, not a normal
+    assertion failure) the same way real torch-less collection would.
+    """
+    blocked = {"torch", "tt_bio.nesso1", "tt_bio.nesso1_input"}
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name in blocked:
+            raise ImportError(f"{name} is blocked for this test")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    # Force a fresh import: sys.modules already holds runner.affinity (and
+    # possibly torch/tt_bio.nesso1*) from this file's own top-of-module
+    # import and from whatever else pytest has collected already.
+    for name in list(sys.modules):
+        if name == "runner.affinity" or name.startswith("torch") or \
+                name.startswith("tt_bio.nesso1"):
+            monkeypatch.delitem(sys.modules, name, raising=False)
+
+    module = importlib.import_module("runner.affinity")
+    assert hasattr(module, "AffinityScorer")

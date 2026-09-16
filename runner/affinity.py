@@ -27,11 +27,6 @@ import logging
 import tempfile
 from pathlib import Path
 
-import torch
-
-from tt_bio.nesso1 import DEFAULT_SEED, Nesso1
-from tt_bio.nesso1_input import CLI_PREDICT_ARGS, collate, prepare
-
 log = logging.getLogger(__name__)
 
 
@@ -83,6 +78,15 @@ class AffinityScorer:
         """
         if self._loaded:
             return
+        # Imported here rather than at module scope: importing tt_bio pulls in
+        # torch and ttnn, which the unit tests must not need -- mirrors
+        # runner/folder.py's Folder.load() comment exactly (same reasoning,
+        # same pattern).
+        import torch
+
+        from tt_bio.nesso1 import Nesso1
+        from tt_bio.nesso1_input import CLI_PREDICT_ARGS
+
         torch.set_grad_enabled(False)
         self._model = Nesso1.from_pretrained(use_tenstorrent=True)
         # screen()'s own override (see its module comment, and
@@ -139,6 +143,14 @@ class AffinityScorer:
         """
         if not self._loaded:
             raise RuntimeError("score() called before load()")
+        # Imported here rather than at module scope -- same reasoning as
+        # load()'s own import comment above, mirroring
+        # runner/folder.py's Folder.load().
+        import torch
+
+        from tt_bio.nesso1 import DEFAULT_SEED
+        from tt_bio.nesso1_input import collate, prepare
+
         out_dir = _affinity_out_dir(self.device_id)
         out_dir.mkdir(parents=True, exist_ok=True)
         dataset, _manifest, failed = prepare(Path(input_path), out_dir)
