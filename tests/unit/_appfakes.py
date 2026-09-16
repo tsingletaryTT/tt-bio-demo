@@ -138,9 +138,10 @@ def _app(cards=(0, 1, 2, 3), clock=None, viewer_factory=_FakeViewer):
     return app
 
 
-def _hello(cards=(0, 1, 2, 3)):
+def _hello(cards=(0, 1, 2, 3), qa_capable=False):
     return {"type": "hello", "version": 1, "cards": list(cards),
-            "models": ["protenix-v2"], "preflight": "ok"}
+            "models": ["protenix-v2"], "preflight": "ok",
+            "qa_capable": qa_capable}
 
 
 def _start(job_id, card, target_id="t"):

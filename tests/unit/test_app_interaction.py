@@ -32,6 +32,7 @@ from ui import app as app_module
 from ui import chipviz as chipviz_module
 from ui import diagnostics as diagnostics_module
 from ui import panels as panels_module
+from ui import questions as questions_module
 from ui.app import DemoApp
 from ui.geometry import PLDDT_STOPS
 from ui.panels import MIN_CONTRAST_RATIO, contrast_ratio
@@ -1320,6 +1321,13 @@ _MERGED_CSS_FN, _MERGED_BG_FN = _legibility.merged_stylesheets(
     # this line came to be written).
     (lambda: chipviz_module._CHIPVIZ_CSS,
      lambda: chipviz_module._BACKGROUND_BY_CLASS),
+    # The affinity-questions rail panel (Task 11) is the FIFTH stylesheet in
+    # this one tree, added the same way the Tensix panel was above: its own
+    # `.question-queue-panel` paints its own ground, so its labels need this
+    # entry or the walker hits a background-painting ancestor it does not
+    # recognize.
+    (lambda: questions_module._QUESTIONS_CSS,
+     lambda: questions_module._BACKGROUND_BY_CLASS),
 )
 
 
