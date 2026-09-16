@@ -693,6 +693,22 @@ def test_the_weights_postinst_uses_the_tt_bio_api_that_actually_exists():
             f'postinst fetches artifact "{key}", which is not a row in '
             f"tt_bio/weights.py (rows: {sorted(declared)})")
 
+    # The same contract, one more constant over: the postinst's ESM-2
+    # pre-warm imports ESM2_MODEL from tt_bio.nesso1_input rather than
+    # duplicating the model id as a literal (see the affinity-questions
+    # tests below for why), so that import is only as safe as the name
+    # actually existing on the pinned tt-bio. Folded into THIS test rather
+    # than given its own venv-runner-dependent test, per this file's own
+    # rule above the CI deselection: a second test needing the multi-GB
+    # venv is a signal to re-examine scope, not to lengthen that list.
+    nesso1_input_tree = ast.parse((site / "nesso1_input.py").read_text())
+    nesso1_input_names = {
+        n.targets[0].id for n in ast.walk(nesso1_input_tree)
+        if isinstance(n, ast.Assign) and len(n.targets) == 1
+        and isinstance(n.targets[0], ast.Name)}
+    assert "ESM2_MODEL" in nesso1_input_names, (
+        "tt_bio.nesso1_input no longer defines ESM2_MODEL; update the postinst")
+
 
 # ── affinity-questions weights: nesso1 / nesso1-ccd / the ESM-2 encoder ─────
 #
@@ -717,26 +733,21 @@ def test_the_postinst_pre_warms_the_esm2_encoder_through_the_real_constant():
     scripts/setup-venvs.sh, which hardcode it (importing nesso1_input there
     pulls torch/rdkit/safetensors just to read one string). The postinst
     already imports tt_bio.main, which pulls torch anyway, so there is no
-    cost to importing the real constant here and no duplicate to drift."""
-    import ast
+    cost to importing the real constant here and no duplicate to drift.
 
+    Checks only the postinst's own source text -- no venv-runner needed.
+    Whether `ESM2_MODEL` actually still exists on the pinned tt-bio is
+    checked in `test_the_weights_postinst_uses_the_tt_bio_api_that_actually_
+    exists` instead, which already pays the venv-runner cost for the same
+    class of check; see that test's own comment on why a second such test
+    is a scope smell rather than a second line to add to the CI deselect
+    list."""
     p = _weights("postinst")
     assert "from tt_bio.nesso1_input import ESM2_MODEL" in p, (
         "postinst should import the real ESM2_MODEL constant, not "
         "hardcode the model id")
     assert "snapshot_download(ESM2_MODEL" in p, (
         "postinst does not pre-warm the ESM-2 encoder through huggingface_hub")
-
-    venv = REPO / ".venvs" / "venv-runner"
-    site = next(venv.glob("lib/python3.*/site-packages/tt_bio"), None)
-    if site is None:
-        pytest.fail("venv-runner is not built; cannot check nesso1_input")
-    tree = ast.parse((site / "nesso1_input.py").read_text())
-    names = {n.targets[0].id for n in ast.walk(tree)
-             if isinstance(n, ast.Assign) and len(n.targets) == 1
-             and isinstance(n.targets[0], ast.Name)}
-    assert "ESM2_MODEL" in names, (
-        "tt_bio.nesso1_input no longer defines ESM2_MODEL; update the postinst")
 
 
 def test_the_postinst_esm2_prewarm_restricts_the_download_to_the_files_it_needs():
