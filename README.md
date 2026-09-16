@@ -158,9 +158,11 @@ On a box with a Tenstorrent device, from a fresh clone:
 ./scripts/run-demo.sh              # start the daemon + UI, fold on real silicon
 ```
 
-`setup-venvs.sh` fetches the ~3.7 GB of model weights as its last step, so a fresh clone
-ends up able to fold rather than able to start. Pass `--skip-weights` to opt out; the
-download is resumable and re-running the script is a cheap no-op once they are there.
+`setup-venvs.sh` fetches the ~6.9 GB of model weights as its last step (protenix-v2 + CCD to
+fold, nesso1 + its own CCD dict + the ESM-2 encoder to answer affinity questions), so a fresh
+clone ends up able to fold and answer rather than able to start. Pass `--skip-weights` to opt
+out of all of it; the download is resumable and re-running the script is a cheap no-op once
+they are there.
 
 **If the booth is going to a venue, do this before it leaves** — the venue is offline.
 [`scripts/doctor.sh`](#is-this-machine-ready--scriptsdoctorsh) is the check, and it names
@@ -208,12 +210,22 @@ else `~/.boltz`, which is tt-bio's own order and the one thing in this repo that
 where weights live ([`scripts/weights-cache.sh`](scripts/weights-cache.sh) and
 [`runner/env.py`](runner/env.py), pinned to each other by tests).
 
+It then does the same for **affinity Q&A**: nesso1's affinity head (165 MB) and its own CCD
+molecule dict (413 MB) via `tt-bio weights --download nesso1` — one call fetches both, since
+`tt_bio.weights.MODEL_ARTIFACTS["nesso1"]` lists both artifacts under that one model name —
+plus the ESM-2 protein-language-model encoder nesso1's featurizer runs (2.6 GB), pre-warmed
+straight through `huggingface_hub` because it has no `tt_bio.weights` row of its own. Unlike
+protenix-v2/mols, a failure fetching any of these three is reported but does not stop the
+script or fail anything: `--no-questions`, or a single-chip booth that never reserves a Q&A
+worker, never needs them at all.
+
 Useful flags:
 
 - `--dev` — also install pytest into `venv-runner`, needed to run the runner-side tests.
   Off by default, because `venv-runner` is the same artifact a Debian build produces and
   test tooling should not ship to a booth machine.
-- `--skip-weights` — do not fetch the ~3.7 GB of model weights. They are fetched by
+- `--skip-weights` — do not fetch the ~6.9 GB of model weights (folding and affinity Q&A
+  alike — one flag for all of it). They are fetched by
   default, because a booth without them cannot fold: `setup-venvs.sh` used to build both
   venvs and stop, which left a box that looked finished and wasn't. A failed download is
   reported and is **not** fatal — the venvs are the expensive part and they are fine, and
@@ -259,10 +271,12 @@ manifest, so the gallery advertised proteins the daemon had no input file for.
 One command that answers "can this box run the booth, and if not, what is the
 exact command that fixes it?" — the application tree, both venvs and whether
 they can actually *import* their stacks, the tt-bio pin versus what is
-installed, the 3.7 GB of weights (**by size, not existence** — a truncated
-download is the realistic failure and looks healthy to an existence check),
-every playlist input, visible chips, free disk, the systemd unit, and a
-display.
+installed, the 3.7 GB of weights the booth cannot fold without (**by size,
+not existence** — a truncated download is the realistic failure and looks
+healthy to an existence check), nesso1/ESM-2's 3.2 GB for affinity Q&A (as a
+warning, not a failure — a booth running `--no-questions` or with one chip
+never needs them), every playlist input, visible chips, free disk, the
+systemd unit, and a display.
 
 **It works the same from a git checkout or from `/opt/tt-bio-demo`** installed
 by the `.deb`s — it finds the tree itself and only the *advice* changes
@@ -518,8 +532,12 @@ resident fold workers rather than leaving it implicit. `--no-questions` (see
 chip folds, and the question queue, the gallery's ask strip and the attract loop's question
 cue all stay hidden — byte-for-byte the pre-Q&A booth.
 
-**Known gap:** nesso1's weights are not fetched by either install path yet — see
-[Not yet built](#not-yet-built).
+nesso1's weights (the affinity head, its own CCD molecule dict, and the ESM-2 encoder its
+featurizer runs) are fetched by both install paths now — `setup-venvs.sh` by default,
+alongside protenix-v2, and the `.deb`'s postinst behind the same debconf question — and
+checked by `scripts/doctor.sh`, as a warning rather than a failure: a booth running
+`--no-questions`, or with only one chip, never needs any of it. See
+[Installing a booth machine](#installing-a-booth-machine).
 
 ## What is on screen
 
@@ -574,20 +592,18 @@ proteins come back yellow and orange. And a **kernel-cache pre-warm**, which the
 package already advertises but does not do — see
 [Installing a booth machine](#installing-a-booth-machine).
 
-**nesso1's weights have no provisioning step.** Neither `setup-venvs.sh`'s weight fetch nor
-the `.deb`'s postinst/`doctor.sh` know about `nesso1` — both only fetch and check
-`protenix-v2`. A fresh install (source or packaged) needs this run by hand before
-[asking the booth a question](#asking-the-booth-a-question) can answer anything (one command
-fetches both of the model's artifacts — the affinity head and the CCD molecule dict its
-featurizer reads):
+**nesso1's weights now have a provisioning step** (they did not for a while — see
+[`CLAUDE.md`](CLAUDE.md)'s "The weights were never a checked box", the same shape one layer
+up). `setup-venvs.sh`'s weight fetch and the `.deb`'s postinst both fetch nesso1's affinity
+head, its own CCD molecule dict, and the ESM-2 encoder its featurizer runs, alongside
+protenix-v2 and under the same opt-out (`--skip-weights`, or the packaged install's single
+debconf question); `doctor.sh` checks all three too, as a warning rather than a failure,
+since a booth running `--no-questions` or with one chip never needs any of it. The one
+command that fetches nesso1's own two artifacts by hand, if you skipped the default fetch:
 
 ```bash
 .venvs/venv-runner/bin/tt-bio weights --download nesso1
 ```
-
-This is the same shape as every prior weights gap this project has shipped and then closed —
-see [`CLAUDE.md`](CLAUDE.md)'s "The weights were never a checked box" — flagged here rather
-than left for someone to discover at a venue.
 
 Debian packaging itself has landed (four packages, via `scripts/build-deb.sh`), as did the 2×2 quad
 view and the visitor's pick in Phase 5 — none of the three are on this list any more: four
@@ -668,8 +684,9 @@ On a QB2 that has just had `tt-installer` run on it, this brings the application
 curated content, the systemd `--user` unit and the desktop entry. Two things it deliberately
 does **not** do: build the Python environments (that downloads gigabytes and cannot run while
 apt holds the dpkg lock — the postinst prints the one command left to run), and fetch the
-~3.7 GB of model weights, which is offered as a debconf question defaulting to *no* because
-the venue is offline and an unattended install should not start a 3.7 GB download on its own.
+~6.9 GB of model weights (3.7 GB to fold, 3.2 GB more for affinity Q&A), which is offered as
+a single debconf question defaulting to *no* because the venue is offline and an unattended
+install should not start a 6.9 GB download on its own.
 
 It also does not pre-warm the tt-metal kernel cache. The `tt-bio-demo-weights` package
 description claims it does; its postinst only downloads and verifies weights. Warm the cache

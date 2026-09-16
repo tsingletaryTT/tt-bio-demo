@@ -39,10 +39,32 @@ CACHE="$(tt_bio_demo_weights_cache)" || exit 1
 #
 # To add an artifact: add a line. An artifact with no hash FAILS the install
 # (see the loop below); it is never silently skipped.
+#
+# nesso1 and nesso1-ccd (the affinity-Q&A model, added for the
+# affinity-questions feature) are DELIBERATELY NOT in this table. Both are
+# "hf-repo" registry rows, and `tt_bio.weights.fetch`/`.resolve`/`.status`
+# IGNORE their `root=` argument for that source type -- confirmed empirically
+# against this box's real, pinned tt-bio: `weights.fetch("nesso1",
+# root=<anything>)` lands under the standard Hugging Face hub cache
+# regardless of `root`, never under `${CACHE}/model.safetensors` the way
+# protenix-v2.pt lands under `${CACHE}/protenix-v2.pt`. This table's
+# `tt_bio_demo_verify_sha256 "${CACHE}/${name}" ...` shape assumes a flat
+# path under `$CACHE` and would check a file that is never there, silently
+# reporting a present artifact as missing. nesso1/nesso1-ccd are fetched AND
+# checksum-verified inside the Python block below instead, where the real
+# resolved path (whatever it turns out to be) is known.
 # ---------------------------------------------------------------------------
 ARTIFACTS="
 protenix-v2.pt 8f931f9774a396b67033d0e58628e1834f4a1448165e04254b40a780b0c0d599
 mols.tar 39e076d96dbec6b4e86982bbda16f3a53a2a60c9bdc17828d88f6f9a0c7d1fd7
+"
+
+# nesso1's own artifacts, hashed the same way and from the same box, but kept
+# in a SEPARATE table (see the big comment above) because they are verified
+# in Python against tt-bio's own resolved path, not against `${CACHE}/<name>`.
+NESSO1_ARTIFACTS="
+model.safetensors 9928a8a824d147d665e76656804af1cd91c86731516d0b561f9fd1c91ee45622
+ccd.pkl 7ed0ccd3903f19627926a5e41a5c0b5309c127a071cb9498dcae96926799ffd8
 "
 
 tt_bio_demo_weights_verify_all() {
@@ -99,18 +121,37 @@ case "$1" in
         # interrupted download continues where it stopped. 0.7.0 also
         # re-fetches a copy that is present but corrupt, which used to be
         # scripts/doctor.sh's job alone to notice.
-        "$runner_py" - "$CACHE" <<'PYEOF'
+        #
+        # nesso1/nesso1-ccd/ESM-2 (affinity Q&A) are fetched in the SAME
+        # python invocation, behind the SAME debconf question, so a booth
+        # that says yes here does not end up folding but unable to answer a
+        # single question -- the exact gap docs/followups.md's
+        # "affinity-questions feature" entry names. Their failure is
+        # DELIBERATELY NOT fatal to this install: unlike protenix-v2/mols,
+        # the booth runs fine without them (`--no-questions`, or a
+        # single-chip box that never reserves a Q&A worker at all -- see
+        # runner/daemon.py's qa_capable gate), so a dropped connection on
+        # ~578 MB + 2.6 GB of optional weights must not fail a package
+        # configure step over the required 3.7 GB that already downloaded
+        # fine. A marker file (not piped output -- protenix-v2/mols's own
+        # download progress needs to keep streaming live to the console, and
+        # piping this script's output risks the exact SIGPIPE/pipefail trap
+        # CLAUDE.md already records for `pip show | awk '{...; exit}'`)
+        # carries the verdict back to the shell below.
+        rm -f "${CACHE}/.affinity-weights-incomplete"
+        "$runner_py" - "$CACHE" <<PYEOF
+import hashlib
 import sys
 from pathlib import Path
 
 try:
     # These names are the packaging<->tt-bio contract, and
-    # `test_the_weights_postinst_uses_the_tt_bio_api_that_actually_exists`
+    # \`test_the_weights_postinst_uses_the_tt_bio_api_that_actually_exists\`
     # checks them against the pinned tt-bio's own source so a rename upstream
     # breaks the test suite rather than an operator's install. It did exactly
     # that on the 0.7.0 upgrade: 0.6.6 moved the artifact machinery into
-    # tt_bio.weights and 0.7.0 shipped without `tt_bio.main.hf_artifact`, so
-    # this block imported a name that no longer existed. `weights.fetch(key)`
+    # tt_bio.weights and 0.7.0 shipped without \`tt_bio.main.hf_artifact\`, so
+    # this block imported a name that no longer existed. \`weights.fetch(key)\`
     # takes a registry key rather than a (repo, filename) pair.
     from tt_bio import weights
     from tt_bio.main import download_mols
@@ -130,6 +171,78 @@ weights.fetch("protenix-v2", root=cache)
 # EXTRACTED mols/ directory, and this fetches the tar and unpacks it in one
 # resumable step. (It is itself a thin wrapper over weights.fetch("mols").)
 download_mols(cache)
+
+# --- nesso1 / nesso1-ccd: the affinity-Q&A model, non-fatal to this install.
+#
+# \`root=cache\` is passed for consistency with the calls above, but it is
+# IGNORED for these two rows: both are "hf-repo" registry entries, and
+# \`weights.fetch\`/\`.resolve\`/\`.status\` only honour \`root\` for "hf-file"
+# and "url" sources. Confirmed empirically against this box's pinned
+# tt-bio: nesso1 lands under the standard Hugging Face hub cache
+# (\$TT_BIO_CACHE's own redirect of it, if the operator set that -- see
+# tt_bio.weights.configure_hf_cache -- or plain \$HF_HUB_CACHE/\$HF_HOME/
+# ~/.cache/huggingface, never under \${CACHE}). That is also why these two
+# are checksum-verified HERE rather than through the shell's flat-file
+# ARTIFACTS table above: only this block knows the real resolved path.
+def _sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+# Two explicit calls with literal string keys, not a loop over a dict -- so
+# that \`test_the_weights_postinst_uses_the_tt_bio_api_that_actually_exists\`'s
+# regex, which looks for a quoted string as fetch's first argument, sees
+# both calls below and keeps checking them against the pinned tt-bio's real
+# registry rows, the same way it already checks protenix-v2 above. A
+# variable in that position (e.g. from a dict/loop) would be invisible to
+# that regex and silently stop being checked.
+affinity_ok = True
+try:
+    nesso1_path = weights.fetch("nesso1", root=cache)
+    nesso1_ccd_path = weights.fetch("nesso1-ccd", root=cache)
+except Exception as exc:                                  # noqa: BLE001
+    print(f"AFFINITY-WEIGHTS-WARN: could not fetch nesso1/nesso1-ccd: {exc}",
+          file=sys.stderr)
+    affinity_ok = False
+else:
+    for key, path, expected in (
+        ("nesso1", nesso1_path,
+         "9928a8a824d147d665e76656804af1cd91c86731516d0b561f9fd1c91ee45622"),
+        ("nesso1-ccd", nesso1_ccd_path,
+         "7ed0ccd3903f19627926a5e41a5c0b5309c127a071cb9498dcae96926799ffd8"),
+    ):
+        actual = _sha256(path)
+        if actual != expected:
+            print(f"AFFINITY-WEIGHTS-WARN: {key} at {path} does not match "
+                  f"its recorded sha256 (expected {expected}, got {actual}) "
+                  "-- either a corrupt download or a new upstream revision",
+                  file=sys.stderr)
+            affinity_ok = False
+        else:
+            print(f"verified {key} ({path})")
+
+# --- the ESM-2 encoder nesso1's featurizer needs. No tt_bio.weights row at
+# all -- its own module comment says why ("ESM-2 650M deliberately gets no
+# row: ... reaches it through the vendored setup_esm_model, i.e. through
+# transformers, not through this fetch path") -- so this pre-warms it
+# directly through huggingface_hub, the same library setup_esm_model uses,
+# so it lands in the SAME cache location the real featurizer will read from.
+try:
+    from tt_bio.nesso1_input import ESM2_MODEL
+    from huggingface_hub import snapshot_download
+
+    snapshot_download(ESM2_MODEL)
+    print(f"verified ESM-2 encoder ({ESM2_MODEL})")
+except Exception as exc:                                  # noqa: BLE001
+    print(f"AFFINITY-WEIGHTS-WARN: could not fetch the ESM-2 encoder: {exc}",
+          file=sys.stderr)
+    affinity_ok = False
+
+if not affinity_ok:
+    Path("${CACHE}/.affinity-weights-incomplete").write_text("incomplete\\n")
 PYEOF
 
         if tt_bio_demo_weights_verify_all; then
@@ -137,6 +250,16 @@ PYEOF
         else
             tt_bio_demo_log "WEIGHTS DID NOT VERIFY -- see above."
             exit 1
+        fi
+
+        if [ -f "${CACHE}/.affinity-weights-incomplete" ]; then
+            rm -f "${CACHE}/.affinity-weights-incomplete"
+            tt_bio_demo_log "affinity Q&A weights (nesso1/ESM-2) are incomplete -- see warnings above."
+            tt_bio_demo_log "The booth will still fold; affinity questions will not answer until:"
+            tt_bio_demo_log "    ${PREFIX}/.venvs/venv-runner/bin/tt-bio weights --download nesso1"
+            tt_bio_demo_log "This does not fail the install -- run scripts/doctor.sh to re-check."
+        else
+            tt_bio_demo_log "affinity Q&A weights (nesso1 + ESM-2) present and verified too."
         fi
         ;;
 

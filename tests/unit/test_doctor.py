@@ -350,3 +350,154 @@ def test_tt_bios_present_verdict_clears_a_path_the_doctor_cannot_see(tmp_path):
     assert r.returncode == 0, f"a relocated but present artifact failed:\n{out}"
     assert "/big-disk/protenix-v2.pt" in out, \
         f"the doctor should report where tt-bio actually found it:\n{out}"
+
+
+# ---------------------------------------------------------------------------
+# nesso1 / nesso1-ccd / the ESM-2 encoder -- the affinity-questions
+# provisioning gap (docs/followups.md, "From the affinity-questions
+# feature"). Deliberately WARN-ONLY: a booth running --no-questions, or a
+# single-chip box (which never reserves a Q&A worker), legitimately never
+# needs any of this, and the doctor cannot tell which case it is looking at.
+# ---------------------------------------------------------------------------
+
+def _stub_runner_for_affinity(tmp_path, *, nesso1="present", nesso1_ccd="present",
+                               esm2="present", mode="source"):
+    """A prefix whose venv-runner/bin/python3 is a stub that answers BOTH
+    calls doctor_check_affinity_weights makes: the 2-arg status query
+    (cache, model) that doctor_ask_tt_bio_about_weights sends, and the 1-arg
+    ESM-2 cache check. Discriminated by argument COUNT, since a shell stub
+    cannot run the real Python either heredoc actually contains."""
+    prefix = tmp_path / "prefix"
+    (prefix / "ui").mkdir(parents=True)
+    if mode == "source":
+        (prefix / "tests").mkdir()
+    stub = prefix / ".venvs" / "venv-runner" / "bin"
+    stub.mkdir(parents=True)
+    py = stub / "python3"
+    py.write_text(
+        "#!/bin/sh\n"
+        'if [ "$#" = "2" ]; then\n'
+        f'  echo "nesso1 {nesso1} /cache/nesso1/v1.0.0/model.safetensors"\n'
+        f'  echo "nesso1-ccd {nesso1_ccd} /cache/nesso1/ccd.pkl"\n'
+        "else\n"
+        f'  echo "{esm2} /hf-cache/models--facebook--esm2_t33_650M_UR50D"\n'
+        "fi\n")
+    py.chmod(0o755)
+    return prefix
+
+
+def test_affinity_weights_present_reports_ok_and_never_fails(tmp_path):
+    prefix = _stub_runner_for_affinity(tmp_path)
+    r = _sh("doctor_check_affinity_weights", TT_BIO_DEMO_PREFIX=str(prefix))
+    out = r.stdout + r.stderr
+    assert r.returncode == 0, f"a healthy affinity-weights check failed:\n{out}"
+    assert "nesso1" in out and "ESM-2" in out, out
+    assert "[FAIL]" not in out, f"this check must never FAIL:\n{out}"
+
+
+def test_missing_nesso1_is_a_warning_not_a_failure(tmp_path):
+    """THE CORE RULE. A booth running --no-questions or with one chip never
+    needs nesso1 at all, and this check cannot tell -- so absence is
+    reported, loudly, but the exit code must stay 0."""
+    prefix = _stub_runner_for_affinity(tmp_path, nesso1="missing", nesso1_ccd="missing")
+    r = _sh("doctor_check_affinity_weights", TT_BIO_DEMO_PREFIX=str(prefix))
+    out = r.stdout + r.stderr
+    assert r.returncode == 0, f"a missing nesso1 must warn, not fail:\n{out}"
+    assert "[warn]" in out, f"nothing warned about the missing weights:\n{out}"
+    assert "nesso1" in out
+
+
+def test_missing_nesso1_names_the_download_command(tmp_path):
+    prefix = _stub_runner_for_affinity(tmp_path, nesso1="missing", nesso1_ccd="missing")
+    r = _sh("doctor_check_affinity_weights", TT_BIO_DEMO_PREFIX=str(prefix))
+    out = r.stdout + r.stderr
+    assert "tt-bio weights --download nesso1" in out, (
+        f"no command offered to fetch the missing weights:\n{out}")
+
+
+def test_missing_esm2_is_also_a_warning_not_a_failure(tmp_path):
+    prefix = _stub_runner_for_affinity(tmp_path, esm2="missing")
+    r = _sh("doctor_check_affinity_weights", TT_BIO_DEMO_PREFIX=str(prefix))
+    out = r.stdout + r.stderr
+    assert r.returncode == 0, f"a missing ESM-2 cache must warn, not fail:\n{out}"
+    assert "[warn]" in out and "ESM-2" in out, out
+
+
+def test_corrupt_nesso1_is_a_warning_not_a_failure(tmp_path):
+    """Mirrors protenix-v2's corrupt-file case, one layer over -- but this
+    check's whole point is that it must never escalate to FAIL."""
+    prefix = _stub_runner_for_affinity(tmp_path, nesso1="corrupt")
+    r = _sh("doctor_check_affinity_weights", TT_BIO_DEMO_PREFIX=str(prefix))
+    out = r.stdout + r.stderr
+    assert r.returncode == 0, f"a corrupt nesso1 must warn, not fail:\n{out}"
+    assert "[warn]" in out and "corrupt" in out.lower(), out
+
+
+def test_no_venv_runner_warns_gracefully_instead_of_erroring(tmp_path):
+    """Before venv-runner exists there is nothing to ask -- tt_bio cannot be
+    imported from anywhere. This must read as a warning, not a shell error."""
+    prefix = tmp_path / "prefix"
+    (prefix / "ui").mkdir(parents=True)
+    r = _sh("doctor_check_affinity_weights", TT_BIO_DEMO_PREFIX=str(prefix))
+    out = r.stdout + r.stderr
+    assert r.returncode == 0, out
+    assert "[warn]" in out, f"a missing venv-runner should warn, not go silent:\n{out}"
+    assert "no-questions" in out or "--no-questions" in out, (
+        f"should point out this only matters for affinity Q&A:\n{out}")
+
+
+def test_the_check_never_calls_fail_directly():
+    """The rule stated in the function's own comment, pinned as a test: a
+    single stray `fail` call inside this function would make a booth that
+    never uses affinity Q&A unable to pass the doctor. Parsed textually
+    rather than by running every combination, since the invariant is about
+    what the function CAN do, not what one input happens to trigger."""
+    src = DOCTOR.read_text()
+    start = src.index("doctor_check_affinity_weights() {")
+    # The next top-level function definition ends this one's body.
+    end = src.index("\ndoctor_check_playlist() {")
+    body = src[start:end]
+    assert "fail " not in _uncommented(body) and "fail\"" not in _uncommented(body), (
+        "doctor_check_affinity_weights must never call fail() -- it is "
+        "deliberately warn-only")
+
+
+def test_it_is_wired_into_doctor_main():
+    s = DOCTOR.read_text()
+    assert "doctor_check_affinity_weights" in s.split("doctor_main()")[1], (
+        "the new check is defined but never called from doctor_main")
+
+
+def test_the_hardcoded_esm2_model_id_matches_the_real_constant():
+    """DOCTOR_ESM2_MODEL is hardcoded (importing tt_bio.nesso1_input pulls
+    torch/rdkit/safetensors just to read one string) and must be pinned
+    against the real tt_bio.nesso1_input.ESM2_MODEL -- the same guard
+    scripts/setup-venvs.sh's own copy of this string has."""
+    import ast
+
+    venv = REPO / ".venvs" / "venv-runner"
+    site = next(venv.glob("lib/python3.*/site-packages/tt_bio"), None)
+    if site is None:
+        pytest.skip("venv-runner is not built; cannot check the real constant")
+
+    tree = ast.parse((site / "nesso1_input.py").read_text())
+    real_value = None
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id == "ESM2_MODEL"
+                and isinstance(node.value, ast.Constant)):
+            real_value = node.value.value
+            break
+    assert real_value is not None, "could not find ESM2_MODEL in tt_bio/nesso1_input.py"
+
+    hardcoded = None
+    for line in DOCTOR.read_text().splitlines():
+        line = line.strip()
+        if line.startswith("DOCTOR_ESM2_MODEL="):
+            hardcoded = line.split("=", 1)[1].strip('"')
+            break
+    assert hardcoded == real_value, (
+        f"doctor.sh hardcodes DOCTOR_ESM2_MODEL={hardcoded!r}, but the pinned "
+        f"tt-bio's tt_bio.nesso1_input.ESM2_MODEL is {real_value!r}")

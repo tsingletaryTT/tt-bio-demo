@@ -9,10 +9,19 @@ so the first fold either pulled them silently or, at a venue, failed.
 The .deb had covered this since Phase 3b (debian/tt-bio-demo-weights.postinst,
 behind a debconf question). A git checkout had nothing.
 
+Extended for the affinity-questions feature (2026-09-15/16): nesso1's weights
+(the affinity head + its own CCD dict) and the ESM-2 encoder its featurizer
+needs had the identical gap one layer up -- see docs/followups.md's "From the
+affinity-questions feature" entry. `fetch_weights` now fetches all three,
+under the SAME `--skip-weights`/`--skip-runner` gates as protenix-v2 -- a
+booth that opts out of weights should not end up with folding but not Q&A (or
+vice versa) because a second flag was needed and nobody added one.
+
 Tested by SOURCING the script with SETUP_VENVS_LIB_ONLY=1, the same way
 tests/unit/test_doctor.py sources doctor.sh: a shell function nothing calls
 directly is one whose behaviour is only ever observed at a venue.
 """
+import ast
 import os
 import pathlib
 import subprocess
@@ -23,15 +32,28 @@ REPO = pathlib.Path(__file__).resolve().parents[2]
 SETUP = REPO / "scripts" / "setup-venvs.sh"
 
 
-def _stub_prefix(tmp_path, *, tt_bio_exit=0):
-    """A prefix holding a venv-runner whose `tt-bio` is a stub that records its
-    argv. Real interpreter, real exit code -- what is under test is that the
-    script RUNS the right command and honours what it returns."""
+def _stub_prefix(tmp_path, *, tt_bio_exit=0, python3_exit=0):
+    """A prefix holding a venv-runner whose `tt-bio` and `python3` are stubs
+    that record their invocations. Real interpreters, real exit codes -- what
+    is under test is that the script RUNS the right command and honours what
+    it returns.
+
+    `python3` consumes its stdin (the ESM-2 pre-warm step feeds it a heredoc
+    script) rather than leaving it unread, and logs one line per invocation
+    to `python3.log` -- separate from `tt-bio`'s `argv.log` -- so a test can
+    tell whether the ESM-2 pre-warm ran at all without caring what Python
+    code it would have executed for real.
+    """
     prefix = tmp_path / "prefix"
     bin_ = prefix / "venv-runner" / "bin"
     bin_.mkdir(parents=True)
-    (bin_ / "python3").write_text("#!/bin/sh\nexit 0\n")
-    (bin_ / "python3").chmod(0o755)
+    py = bin_ / "python3"
+    py.write_text(
+        "#!/bin/sh\n"
+        "cat >/dev/null\n"
+        f'echo called >> "{tmp_path}/python3.log"\n'
+        f"exit {python3_exit}\n")
+    py.chmod(0o755)
     tt_bio = bin_ / "tt-bio"
     tt_bio.write_text(
         "#!/bin/sh\n"
@@ -53,6 +75,11 @@ def _run(tmp_path, script, *args, **env):
 def _argv_log(tmp_path):
     log = tmp_path / "argv.log"
     return log.read_text() if log.exists() else ""
+
+
+def _python3_call_count(tmp_path):
+    log = tmp_path / "python3.log"
+    return len(log.read_text().splitlines()) if log.exists() else 0
 
 
 def test_it_still_parses():
@@ -163,3 +190,143 @@ def test_the_fetch_is_told_which_cache_to_use(tmp_path):
     log = _argv_log(tmp_path)
     assert "--cache" in log, f"the fetch did not pin the cache:\n{log}\n{r.stdout}"
     assert str(cache) in log, f"the fetch used a different cache:\n{log}"
+
+
+# ---------------------------------------------------------------------------
+# The affinity-questions provisioning gap (docs/followups.md, "From the
+# affinity-questions feature"): nesso1's weights and the ESM-2 encoder its
+# featurizer needs had no fetch step at all. These mirror the protenix-v2
+# tests above, one artifact set over.
+# ---------------------------------------------------------------------------
+
+def test_it_also_fetches_nesso1(tmp_path):
+    """THE GAP THIS SECTION EXISTS FOR. `tt-bio weights --download nesso1` is
+    a MODEL name, not an artifact key -- confirmed against the pinned
+    tt-bio's own CLI (weights_cmd resolves MODEL names via
+    weights.artifacts_for(*models); "nesso1-ccd" is an artifact key and
+    raises KeyError if passed to --download). One call fetches BOTH of
+    nesso1's registry rows (nesso1 itself and nesso1-ccd), since
+    tt_bio.weights.MODEL_ARTIFACTS["nesso1"] lists both."""
+    prefix = _stub_prefix(tmp_path)
+    r = _run(tmp_path, "fetch_weights", "--prefix", str(prefix))
+    log = _argv_log(tmp_path)
+    assert "weights --download nesso1" in log, (
+        f"nesso1 was not fetched:\n{r.stdout}{r.stderr}\n{log}")
+    # Never the artifact key by itself: that is not a valid --download MODEL.
+    assert "download nesso1-ccd" not in log, (
+        f"nesso1-ccd is an artifact key, not a model -- `--download "
+        f"nesso1-ccd` raises KeyError on the real CLI:\n{log}")
+
+
+def test_it_also_pre_warms_the_esm2_cache(tmp_path):
+    """The ESM-2 encoder (nesso1's featurizer) is not in tt_bio.weights'
+    registry at all (its own module comment says so directly), so there is
+    no `tt-bio weights --download` row to ask for it -- this is fetched
+    through venv-runner's own python3 instead, which is why it shows up as a
+    python3 invocation rather than another tt-bio argv line."""
+    prefix = _stub_prefix(tmp_path)
+    r = _run(tmp_path, "fetch_weights", "--prefix", str(prefix))
+    assert _python3_call_count(tmp_path) >= 1, (
+        f"the ESM-2 pre-warm never ran python3:\n{r.stdout}{r.stderr}")
+
+
+def test_skip_weights_skips_nesso1_and_esm2_too(tmp_path):
+    """ONE FLAG FOR ALL OF IT. A booth that opts out of downloading weights
+    must not end up with protenix-v2 skipped and nesso1/ESM-2 fetched anyway
+    (or the reverse) because a second flag was needed and nobody added one."""
+    prefix = _stub_prefix(tmp_path)
+    r = _run(tmp_path, "fetch_weights", "--prefix", str(prefix), "--skip-weights")
+    out = r.stdout + r.stderr
+    assert _argv_log(tmp_path) == "", f"--skip-weights fetched nesso1 anyway:\n{out}"
+    assert _python3_call_count(tmp_path) == 0, (
+        f"--skip-weights pre-warmed ESM-2 anyway:\n{out}")
+    assert "nesso1" in out, f"nothing said Q&A weights were skipped too:\n{out}"
+
+
+def test_skip_runner_skips_nesso1_and_esm2_too(tmp_path):
+    """Same reasoning as --skip-weights: there is no venv-runner to fetch
+    WITH, for any of the three artifact sets."""
+    prefix = _stub_prefix(tmp_path)
+    r = _run(tmp_path, "fetch_weights", "--prefix", str(prefix), "--skip-runner")
+    out = r.stdout + r.stderr
+    assert _argv_log(tmp_path) == "", f"--skip-runner fetched nesso1 anyway:\n{out}"
+    assert _python3_call_count(tmp_path) == 0, (
+        f"--skip-runner pre-warmed ESM-2 anyway:\n{out}")
+
+
+def test_a_failed_nesso1_download_is_reported_but_not_fatal(tmp_path):
+    """Same non-fatal-download reasoning as protenix-v2: a resumable download
+    dropping must not turn a good venv bootstrap into exit 1."""
+    prefix = _stub_prefix(tmp_path, tt_bio_exit=1)
+    r = _run(tmp_path, "fetch_weights || echo CAUGHT_NONZERO", "--prefix", str(prefix))
+    out = r.stdout + r.stderr
+    assert "CAUGHT_NONZERO" not in out, f"a failed nesso1 fetch was made fatal:\n{out}"
+    assert "weights --download nesso1" in out, (
+        f"a failed nesso1 fetch must leave the operator the command:\n{out}")
+
+
+def test_a_failed_esm2_prewarm_is_reported_but_not_fatal(tmp_path):
+    """Same reasoning again, one artifact set over: the ESM-2 pre-warm is a
+    resumable network operation too, and a dropped connection must not cost
+    the operator a working venv bootstrap."""
+    prefix = _stub_prefix(tmp_path, python3_exit=1)
+    r = _run(tmp_path, "fetch_weights || echo CAUGHT_NONZERO", "--prefix", str(prefix))
+    out = r.stdout + r.stderr
+    assert "CAUGHT_NONZERO" not in out, f"a failed ESM-2 pre-warm was made fatal:\n{out}"
+    assert "esm2" in out.lower() or "ESM-2" in out, (
+        f"a failed ESM-2 pre-warm must say so:\n{out}")
+
+
+def test_the_nesso1_fetch_is_told_which_cache_to_use(tmp_path):
+    """Same defect class as the protenix-v2 version of this test: an
+    unpinned --cache lets tt-bio re-derive the root from its own
+    environment, which agrees with weights_cache_dir() only while $HOME
+    does."""
+    prefix = _stub_prefix(tmp_path)
+    cache = tmp_path / "chosen-cache"
+    r = _run(tmp_path, "fetch_weights", "--prefix", str(prefix),
+             TT_BIO_CACHE=str(cache))
+    log = _argv_log(tmp_path)
+    nesso1_lines = [l for l in log.splitlines() if "nesso1" in l]
+    assert nesso1_lines, f"no nesso1 invocation found:\n{log}"
+    assert all("--cache" in l and str(cache) in l for l in nesso1_lines), (
+        f"the nesso1 fetch did not use the pinned cache:\n{nesso1_lines}")
+
+
+def test_the_hardcoded_esm2_model_id_matches_the_real_constant():
+    """ESM2_MODEL is hardcoded in setup-venvs.sh rather than imported from
+    tt_bio.nesso1_input (which pulls torch, rdkit and safetensors at module
+    scope just to read one string -- see the big comment above fetch_weights
+    in setup-venvs.sh). Hardcoding without a guard is exactly the kind of
+    drift this project's CLAUDE.md warns about, so this pins the literal
+    against the pinned tt-bio's own source, parsed with `ast` rather than
+    imported for the same reason the postinst's contract test does.
+    """
+    site = next((REPO / ".venvs" / "venv-runner").glob(
+        "lib/python3.*/site-packages/tt_bio"), None)
+    if site is None:
+        pytest.skip("venv-runner is not built; cannot check the real constant")
+
+    tree = ast.parse((site / "nesso1_input.py").read_text())
+    real_value = None
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id == "ESM2_MODEL"
+                and isinstance(node.value, ast.Constant)):
+            real_value = node.value.value
+            break
+    assert real_value is not None, (
+        "could not find ESM2_MODEL = \"...\" in tt_bio/nesso1_input.py; "
+        "update this test if it was renamed")
+
+    hardcoded = None
+    for line in SETUP.read_text().splitlines():
+        line = line.strip()
+        if line.startswith("ESM2_MODEL="):
+            hardcoded = line.split("=", 1)[1].strip('"')
+            break
+    assert hardcoded == real_value, (
+        f"setup-venvs.sh hardcodes ESM2_MODEL={hardcoded!r}, but the pinned "
+        f"tt-bio's tt_bio.nesso1_input.ESM2_MODEL is {real_value!r}")

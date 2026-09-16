@@ -40,13 +40,19 @@
 #                    look valid. Without this flag, re-running is a cheap
 #                    no-op once both venvs are verified.
 #   --skip-weights  Do not fetch the model weights. The booth cannot fold
-#                    without them (~3.7 GB: the protenix-v2 checkpoint and the
-#                    CCD molecule library), so this is an opt-OUT, not an
+#                    without them (~6.9 GB total: protenix-v2's checkpoint and
+#                    CCD molecule library for folding, ~3.7 GB, plus nesso1's
+#                    affinity head and its own CCD dict, ~578 MB, plus the
+#                    ESM-2 encoder nesso1's featurizer needs, ~2.6 GB, for the
+#                    affinity-Q&A feature), so this is an opt-OUT, not an
 #                    opt-in — a source install that builds both venvs and
 #                    stops leaves a box that looks finished and cannot fold.
 #                    That is exactly what a user reported: "I had to discover
 #                    a model downloading command". Implied by --skip-runner,
 #                    since the fetch runs through venv-runner's own tt-bio.
+#                    One flag for all of it, deliberately: a booth that opts
+#                    out of downloading weights should not end up with half
+#                    of them anyway because a second flag was forgotten.
 #   --skip-runner   Only build/verify venv-ui. venv-runner's `pip install
 #                    tt-bio` pulls torch + ttnn and can be multiple GB and
 #                    slow (see docs/venv-bootstrap-notes.md) — useful while
@@ -136,9 +142,11 @@ Usage: $(basename "$0") [--prefix PATH] [--force] [--skip-runner]
 Creates <prefix>/venv-ui and <prefix>/venv-runner. Default prefix:
 ${REPO_ROOT}/.venvs
 
-The model weights are DOWNLOADED BY DEFAULT (~3.7 GB), because a booth
-without them cannot fold; pass --skip-weights to opt out. The download is
-resumable and re-running this script is a cheap no-op once they are present.
+The model weights are DOWNLOADED BY DEFAULT (~6.9 GB: protenix-v2 + CCD for
+folding, nesso1 + its own CCD dict and the ESM-2 encoder for affinity Q&A),
+because a booth without them cannot fold or answer questions; pass
+--skip-weights to opt out of all of it. The download is resumable and
+re-running this script is a cheap no-op once everything is present.
 
 --dev also installs pytest into venv-runner, for running this phase's own
 unit tests there (see the header comment) — off by default, since
@@ -897,6 +905,8 @@ create_runner_venv() {
 # ---------------------------------------------------------------------------
 
 WEIGHTS_STATUS="not attempted"
+NESSO1_STATUS="not attempted"
+ESM2_STATUS="not attempted"
 
 # Where the weights live, derived exactly as tt-bio derives it: $TT_BIO_CACHE,
 # then $BOLTZ_CACHE, then ~/.boltz. Reported in the summary so an operator can
@@ -915,15 +925,20 @@ weights_cache_dir() {
   tt_bio_demo_weights_cache
 }
 
-# The 3.7 GB the booth cannot fold without: the protenix-v2 checkpoint and the
-# CCD molecule library it loads alongside.
+# The ~6.9 GB the booth cannot fold or answer questions without:
+#   protenix-v2.pt + the CCD molecule library (~3.7 GB)     -- folding
+#   nesso1's affinity head + its own CCD dict (~578 MB)      -- affinity Q&A
+#   the ESM-2 encoder nesso1's featurizer runs on (~2.6 GB)  -- affinity Q&A
 #
 # WHY THIS IS HERE AT ALL. Before it, a source install built both venvs and
 # stopped. The .deb had covered weights since Phase 3b (debian/
 # tt-bio-demo-weights.postinst, behind a debconf question); a git checkout had
 # nothing, so the first fold either pulled gigabytes silently or, at a venue,
 # failed. A user hit exactly that and reported it: "I had to discover a model
-# downloading command".
+# downloading command". The nesso1/ESM-2 rows are the same gap one layer up:
+# the affinity-questions feature shipped with `qa_capable: true` and no
+# provisioning at all -- see docs/followups.md's "From the affinity-questions
+# feature" entry -- so every question a visitor asked would silently error.
 #
 # WHY IT SHELLS OUT TO `tt-bio weights --download` rather than importing
 # tt_bio.weights and calling fetch(). It is the same command the docs,
@@ -932,36 +947,68 @@ weights_cache_dir() {
 # "fetch the weights" means. tt-bio resolves its own cache ($TT_BIO_CACHE,
 # then $BOLTZ_CACHE, then ~/.boltz — see runner/env.py's weights_cache), and
 # re-running is cheap: it verifies rather than re-downloading.
+# `tt-bio weights --download nesso1` (a MODEL name, not an artifact key) is
+# ONE call that fetches BOTH of nesso1's registry rows -- nesso1 itself and
+# nesso1-ccd, since tt_bio.weights.MODEL_ARTIFACTS["nesso1"] lists both --
+# confirmed against the pinned tt-bio's own CLI (`weights_cmd` takes MODEL
+# names via `weights.artifacts_for(*models)`; `nesso1-ccd` is an ARTIFACT key,
+# not a model, and raises KeyError if passed to `--download`).
+#
+# WHY ESM-2 IS FETCHED DIFFERENTLY. tt_bio/weights.py says so directly: "ESM-2
+# 650M deliberately gets no row: tt_bio/nesso1_input.py::run_esm reaches it
+# through the vendored setup_esm_model, i.e. through transformers, not through
+# this fetch path." So there is no `tt-bio weights` row to ask for it — the
+# real featurizer downloads it straight through huggingface_hub, and this
+# pre-warms the SAME cache location by running the same download through the
+# same library, from inside venv-runner's own interpreter so it lands wherever
+# THIS environment's HF_HUB_CACHE/HF_HOME/$TT_BIO_CACHE resolve to (importing
+# tt_bio first triggers tt_bio.weights.configure_hf_cache()'s $TT_BIO_CACHE
+# redirect, exactly as nesso1_input.py's own run_esm() does at fold time).
+# ESM2_MODEL is hardcoded here rather than imported from tt_bio.nesso1_input
+# (which pulls torch, rdkit and safetensors at module scope just to read one
+# string) -- pinned against the installed source instead, by
+# tests/unit/test_setup_venvs_weights.py's
+# test_the_hardcoded_esm2_model_id_matches_the_real_constant.
 #
 # WHY A FAILURE HERE IS NOT FATAL. The venvs above are the expensive,
 # hard-to-redo part and they are fine; what failed is a resumable download
 # over what may be a conference-hotel connection. Turning that into exit 1
 # would throw away a good bootstrap and tell the operator nothing they can
-# act on. So: warn, print the command, carry on.
+# act on. So: warn, print the command, carry on -- for every one of the three
+# fetches below, not just the first.
+ESM2_MODEL="facebook/esm2_t33_650M_UR50D"
+
 fetch_weights() {
   local tt_bio="${VENV_RUNNER}/bin/tt-bio"
   # --cache is PINNED, not left to tt-bio's own derivation. The summary below
   # prints this same value, and without --cache the two were independent
   # derivations that agree only while $HOME does -- which `sudo
   # scripts/setup-venvs.sh` (what doctor.sh and INSTALL.md both tell you to
-  # run) is precisely the case that breaks. The 3.7 GB would land in root's
+  # run) is precisely the case that breaks. The weights would land in root's
   # home while the user-service booth loads from the operator's, and the
   # download would report success.
   local cache
   cache="$(weights_cache_dir)"
   local cmd="${tt_bio} weights --download protenix-v2 --cache ${cache}"
+  local nesso1_cmd="${tt_bio} weights --download nesso1 --cache ${cache}"
 
   if [[ "$SKIP_RUNNER" -eq 1 ]]; then
     # Nothing to fetch WITH: the fetch runs through venv-runner's own tt-bio.
     log "weights: --skip-runner given, not fetching (needs venv-runner)"
     WEIGHTS_STATUS="skipped (--skip-runner)"
+    NESSO1_STATUS="skipped (--skip-runner)"
+    ESM2_STATUS="skipped (--skip-runner)"
     return 0
   fi
   if [[ "$SKIP_WEIGHTS" -eq 1 ]]; then
-    log "weights: --skip-weights given, not fetching"
-    log "weights: the booth cannot fold until they are present:"
+    log "weights: --skip-weights given, not fetching anything (folding or Q&A)"
+    log "weights: the booth cannot fold until this runs:"
     log "weights:     ${cmd}"
+    log "weights: and cannot answer affinity questions until this runs:"
+    log "weights:     ${nesso1_cmd}"
     WEIGHTS_STATUS="skipped (--skip-weights) — the booth cannot fold yet"
+    NESSO1_STATUS="skipped (--skip-weights) — affinity Q&A cannot answer yet"
+    ESM2_STATUS="skipped (--skip-weights)"
     return 0
   fi
   if [[ ! -x "$tt_bio" ]]; then
@@ -970,7 +1017,10 @@ fetch_weights() {
     warn "weights: no usable tt-bio at ${tt_bio}; not fetching"
     warn "weights: once venv-runner works, fetch them with:"
     warn "weights:     ${cmd}"
+    warn "weights:     ${nesso1_cmd}"
     WEIGHTS_STATUS="not fetched (no usable venv-runner)"
+    NESSO1_STATUS="not fetched (no usable venv-runner)"
+    ESM2_STATUS="not fetched (no usable venv-runner)"
     return 0
   fi
 
@@ -985,6 +1035,57 @@ fetch_weights() {
     warn "weights: this is resumable. Re-run this script, or directly:"
     warn "weights:     ${cmd}"
     WEIGHTS_STATUS="INCOMPLETE — re-run; the booth cannot fold yet"
+  fi
+
+  log "weights: fetching nesso1's affinity head and its own CCD molecule dict"
+  log "weights: into ${cache}"
+  log "weights: ~578 MB (165 MB + 413 MB), resumable, verified — a no-op if already present"
+  if "$tt_bio" weights --download nesso1 --cache "$cache"; then
+    NESSO1_STATUS="present and verified"
+    log "weights: nesso1 present and verified — the booth can answer affinity questions offline"
+  else
+    warn "weights: the nesso1 download did not complete. Everything above is fine;"
+    warn "weights: this is resumable. Re-run this script, or directly:"
+    warn "weights:     ${nesso1_cmd}"
+    NESSO1_STATUS="INCOMPLETE — re-run; affinity Q&A cannot answer yet"
+  fi
+
+  fetch_esm2_cache
+  return 0
+}
+
+# ESM-2 has no tt_bio.weights row (see the big comment above fetch_weights);
+# this pre-warms it directly through huggingface_hub, in venv-runner's own
+# interpreter so it resolves the SAME cache location the real featurizer will
+# read from later (see that comment for why).
+fetch_esm2_cache() {
+  local py="${VENV_RUNNER}/bin/python3"
+  log "weights: pre-warming the ESM-2 encoder (${ESM2_MODEL}, ~2.6 GB) nesso1's featurizer needs"
+  if ESM2_MODEL="$ESM2_MODEL" "$py" - <<'PYEOF'
+import os
+import sys
+
+try:
+    import tt_bio  # noqa: F401 -- side effect: configure_hf_cache()
+    from huggingface_hub import snapshot_download
+except Exception as exc:                                          # noqa: BLE001
+    print(f"cannot import huggingface_hub: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+
+try:
+    snapshot_download(os.environ["ESM2_MODEL"])
+except Exception as exc:                                          # noqa: BLE001
+    print(f"snapshot_download failed: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+PYEOF
+  then
+    ESM2_STATUS="present and verified"
+    log "weights: ESM-2 encoder present — affinity Q&A featurization can run offline"
+  else
+    warn "weights: the ESM-2 encoder download did not complete. Everything above is fine;"
+    warn "weights: this is resumable. Re-run this script, or directly:"
+    warn "weights:     ${py} -c 'from huggingface_hub import snapshot_download; snapshot_download(\"${ESM2_MODEL}\")'"
+    ESM2_STATUS="INCOMPLETE — re-run; affinity Q&A cannot featurize offline yet"
   fi
   return 0
 }
@@ -1037,8 +1138,11 @@ echo "  pinned:      tt-bio==${TT_BIO_VERSION}"
 echo "  test deps:   $TEST_DEPS_STATUS"
 echo
 echo "weights:       $(weights_cache_dir)"
-echo "  status:      $WEIGHTS_STATUS"
-echo "  fetch/check: ${VENV_RUNNER}/bin/tt-bio weights --download protenix-v2"
+echo "  protenix-v2: $WEIGHTS_STATUS"
+echo "    fetch/check: ${VENV_RUNNER}/bin/tt-bio weights --download protenix-v2"
+echo "  nesso1:      $NESSO1_STATUS  (affinity Q&A; fetches nesso1 + nesso1-ccd)"
+echo "    fetch/check: ${VENV_RUNNER}/bin/tt-bio weights --download nesso1"
+echo "  ESM-2:       $ESM2_STATUS  (affinity Q&A featurizer, ${ESM2_MODEL})"
 if [[ "$DEV" -eq 1 ]]; then
   echo "  run tests:   ${VENV_RUNNER}/bin/python3 -m pytest tests/unit/test_runner_env.py -v"
 fi

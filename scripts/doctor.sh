@@ -250,17 +250,25 @@ doctor_ask_tt_bio_about_weights() {
     # Prints "<key> <state> <path>" per artifact, or nothing at all if it
     # cannot ask. A failure to ask is swallowed on purpose: an unaskable
     # tt-bio is not itself a weights fault, and the caller falls back.
+    #
+    # `$3`, the MODEL name, defaults to protenix-v2 -- the original, only
+    # caller. doctor_check_affinity_weights below passes "nesso1", which
+    # (per tt_bio.weights.MODEL_ARTIFACTS) resolves to BOTH of nesso1's
+    # registry rows -- nesso1 itself and nesso1-ccd -- in one ask, the same
+    # way `tt-bio weights --download nesso1` fetches both in one call.
     _rn="$1"
     _cache="$2"
+    _model="${3:-protenix-v2}"
     [ -x "$_rn" ] || return 1
-    "$_rn" - "$_cache" <<'TT_BIO_STATUS_EOF' 2>/dev/null
+    "$_rn" - "$_cache" "$_model" <<'TT_BIO_STATUS_EOF' 2>/dev/null
 import sys
 try:
     from tt_bio import weights
 except Exception:
     raise SystemExit(1)
 root = sys.argv[1]
-for art in weights.artifacts_for("protenix-v2"):
+model = sys.argv[2]
+for art in weights.artifacts_for(model):
     st = weights.status(art.key, root)
     # resolve() honours the per-artifact overrides that status()'s own path
     # does not for a derived row, so an operator who moved just the molecule
@@ -355,6 +363,111 @@ VERDICT_EOF
         hint "about 3.7 GB, resumable, and THE VENUE IS OFFLINE -- do it first"
     fi
     return $_rc
+}
+
+# The ESM-2 encoder's model id, exactly as tt_bio.nesso1_input.ESM2_MODEL
+# declares it -- hardcoded here (importing that module pulls torch, rdkit and
+# safetensors just to read one string) and pinned against the real constant
+# by test_doctor.py's test_the_hardcoded_esm2_model_id_matches_the_real_constant,
+# the same guard scripts/setup-venvs.sh's copy of this string has.
+DOCTOR_ESM2_MODEL="facebook/esm2_t33_650M_UR50D"
+
+# nesso1 + nesso1-ccd + the ESM-2 encoder: what the affinity-Q&A feature
+# needs and neither install path provisions yet (docs/followups.md, "From
+# the affinity-questions feature"). Deliberately WARN-ONLY, never FAIL: a
+# booth running `--no-questions`, or with only one chip (which never reserves
+# a Q&A worker -- see runner/daemon.py's qa_capable gate), legitimately never
+# needs any of this, and this check has no way to know which case it is
+# looking at from here. runner/daemon.py already degrades a missing/broken
+# nesso1 gracefully (every question errors, nothing crashes) -- see its
+# MAX_PENDING_QUESTIONS comment -- so the doctor's job is to say "this will
+# not work" in advance, not to gate the booth on it.
+doctor_check_affinity_weights() {
+    _p="$(doctor_prefix)"
+    _rn="$_p/.venvs/venv-runner/bin/python3"
+    _c="$(doctor_weights_cache)"
+
+    if [ ! -x "$_rn" ]; then
+        warn "cannot check nesso1/ESM-2 yet -- venv-runner is not built"
+        hint "only matters if this booth answers affinity questions; see"
+        hint "--no-questions in run-demo.sh if it does not"
+        return 0
+    fi
+
+    _verdicts="$(doctor_ask_tt_bio_about_weights "$_rn" "$_c" "nesso1")"
+    _nesso1_missing=0
+    if [ -n "$_verdicts" ]; then
+        while read -r _key _state _path; do
+            [ -n "$_key" ] || continue
+            case "$_state" in
+                present)
+                    ok "$_key ($_path)"
+                    ;;
+                corrupt|partial)
+                    warn "$_key is $_state at $_path -- affinity Q&A cannot answer"
+                    _nesso1_missing=1
+                    ;;
+                *)
+                    warn "$_key is missing ($_path) -- affinity Q&A cannot answer"
+                    _nesso1_missing=1
+                    ;;
+            esac
+        done <<VERDICT_EOF
+$_verdicts
+VERDICT_EOF
+    else
+        warn "could not ask tt-bio about nesso1/nesso1-ccd"
+        _nesso1_missing=1
+    fi
+
+    # ESM-2 has no tt_bio.weights row at all (its own module comment says why
+    # -- see scripts/setup-venvs.sh's fetch_esm2_cache), so this asks
+    # huggingface_hub's own cache resolution directly rather than tt-bio's
+    # registry. Cheap and torch-free: huggingface_hub does not import torch
+    # (verified against this project's own venv-runner).
+    _esm_line="$("$_rn" - "$DOCTOR_ESM2_MODEL" <<'ESM2_CHECK_EOF' 2>/dev/null
+import os
+import sys
+try:
+    import tt_bio  # noqa: F401 -- side effect: configure_hf_cache()
+    from huggingface_hub import constants
+except Exception:
+    raise SystemExit(1)
+model = sys.argv[1]
+snapshot_name = "models--" + model.replace("/", "--")
+d = os.path.join(constants.HF_HUB_CACHE, snapshot_name)
+print(("present" if os.path.isdir(d) else "missing"), d)
+ESM2_CHECK_EOF
+)"
+    if [ -n "$_esm_line" ]; then
+        _esm_state="${_esm_line%% *}"
+        _esm_path="${_esm_line#* }"
+        if [ "$_esm_state" = "present" ]; then
+            ok "ESM-2 encoder ($_esm_path)"
+        else
+            warn "ESM-2 encoder is missing ($_esm_path) -- affinity Q&A cannot featurize"
+            _nesso1_missing=1
+        fi
+    else
+        warn "could not check the ESM-2 encoder cache"
+        _nesso1_missing=1
+    fi
+
+    if [ "$_nesso1_missing" != "0" ]; then
+        if [ "$(doctor_install_mode)" = "package" ]; then
+            hint "sudo dpkg-reconfigure tt-bio-demo-weights"
+            hint "or, directly:"
+        else
+            hint "fetch them with:"
+        fi
+        hint "$_p/.venvs/venv-runner/bin/tt-bio weights --download nesso1"
+        hint "the ESM-2 encoder downloads through scripts/setup-venvs.sh's own"
+        hint "fetch step, or on first use if a question is ever asked with a"
+        hint "network available"
+        hint "about 578 MB + 2.6 GB; not required to fold or run the booth --"
+        hint "only to answer affinity questions"
+    fi
+    return 0
 }
 
 # Every manifest entry must name an input file that exists. The failure this
@@ -501,6 +614,7 @@ doctor_main() {
     head_ "virtual environments";  doctor_check_venvs && doctor_check_imports
     head_ "tt-bio version";        doctor_check_tt_bio_version
     head_ "model weights";         doctor_check_weights
+    head_ "affinity Q&A weights (optional)";  doctor_check_affinity_weights
     head_ "playlist";              doctor_check_playlist
     head_ "hardware";              doctor_check_hardware
     head_ "disk";                  doctor_check_space

@@ -41,7 +41,8 @@ work around it.
 - The GTK4 / OpenGL system libraries the UI needs (`python3-gi`, `gir1.2-gtk-4.0`, `libgl1`, …)
 - tt-bio itself, or the torch/ttnn stack it sits on
 - The SFPI RISC-V cross-toolchain tt-bio's kernels compile against
-- The model weights (3.7 GB)
+- The model weights (~6.9 GB: protenix-v2 + CCD for folding, nesso1 + its own
+  CCD dict + the ESM-2 encoder for affinity Q&A)
 - The application
 
 Steps 1–4 supply exactly those, in that order.
@@ -100,7 +101,7 @@ the opposite of what this packaging is for.
 | Prompt | Default | What to answer on a post-`tt-installer` box |
 |---|---|---|
 | `Run "tt-bio install-deps" now?` | No | **No.** `tt-installer` has already installed the Tenstorrent system packages and kernel modules this would fetch. Saying yes re-runs a kernel-module installer you do not need. |
-| `Download the model weights now (3.7 GB)?` | No | **No here, yes in step 3.** The download is better run deliberately, where you can watch it, than under the dpkg lock. (A *source* install has no such lock, so `scripts/setup-venvs.sh` fetches them by default; `--skip-weights` opts out.) |
+| `Download the model weights now (6.9 GB)?` | No | **No here, yes in step 3.** The download is better run deliberately, where you can watch it, than under the dpkg lock. (A *source* install has no such lock, so `scripts/setup-venvs.sh` fetches them by default; `--skip-weights` opts out.) The 6.9 GB is protenix-v2 + CCD (3.7 GB, required to fold) plus nesso1 + its own CCD dict + the ESM-2 encoder (3.2 GB, only needed for affinity Q&A — a booth running `--no-questions` or with one chip never touches them, and a failure fetching them does not fail the install). |
 
 The install finishes by printing `ONE STEP LEFT` and the exact command for step 2. That is
 expected — the postinst deliberately does not build the Python environments while apt holds
@@ -169,14 +170,27 @@ A second run without `--force` is a ~0.3–0.5 s no-op, so re-running to confirm
 sudo dpkg-reconfigure tt-bio-demo-weights      # answer Yes this time
 ```
 
-That pulls two artifacts totalling ~3.7 GB through tt-bio's own Hugging Face client:
+That pulls five artifacts totalling ~6.9 GB through tt-bio's own Hugging Face client (or,
+for the last three, straight through `huggingface_hub` — see below):
 
-- `protenix-v2.pt` — 1.86 GB
-- `mols` — the CCD molecule library, 1.85 GB, unpacked into a directory beside it
+- `protenix-v2.pt` — 1.86 GB — **required to fold**
+- `mols` — the CCD molecule library, 1.85 GB, unpacked into a directory beside it —
+  **required to fold**
+- nesso1's affinity head — 165 MB — needed to answer affinity questions
+- nesso1's own CCD molecule dict — 413 MB — needed to answer affinity questions
+- the ESM-2 protein-language-model encoder nesso1's featurizer runs — 2.6 GB — needed to
+  answer affinity questions
 
 The download is **resumable**: an interrupted attempt continues rather than restarting. The
 postinst verifies what landed and prints `weights present and verified. The booth can fold
-offline.` — treat any other final line as a failure.
+offline.` — treat any other final line for the first two as a failure.
+
+**The last three are optional and their failure does not fail the install.** A booth running
+`--no-questions`, or with only one Tenstorrent chip (which never reserves a Q&A worker — see
+the README's [Asking the booth a question](README.md#asking-the-booth-a-question)), never
+touches nesso1 at all, so a dropped connection on that ~3.2 GB must not block a booth that can
+already fold perfectly well. If they warn, `scripts/doctor.sh` names the exact command to
+resume with — it checks nesso1/ESM-2 too, but as a warning, never a failure.
 
 ### The same thing, without dpkg
 
@@ -339,7 +353,7 @@ published unless it passes.
 and script flags were read from source and are individually tested, but **no full
 clean-machine install has been run against a freshly imaged QB2** — CI has no Tenstorrent
 hardware and never will. Expect step 2 (the venv build, which needs network and the SFPI
-toolchain) and step 3 (3.7 GB of weights) to be where a real first run finds something.
+toolchain) and step 3 (6.9 GB of weights) to be where a real first run finds something.
 
 **Budget the first fold.** Step 4's fold on a machine that has never folded that target costs
 ~94.5 s rather than the warm ~9 s — see [`docs/cold-start.md`](docs/cold-start.md). That is

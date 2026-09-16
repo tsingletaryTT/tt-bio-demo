@@ -694,6 +694,107 @@ def test_the_weights_postinst_uses_the_tt_bio_api_that_actually_exists():
             f"tt_bio/weights.py (rows: {sorted(declared)})")
 
 
+# ── affinity-questions weights: nesso1 / nesso1-ccd / the ESM-2 encoder ─────
+#
+# docs/followups.md's "From the affinity-questions feature" entry: the
+# feature shipped with `qa_capable: true` and no provisioning at all, so a
+# fresh install (source or .deb) reported the booth ready and then failed
+# every single question. These mirror the protenix-v2 tests above, one
+# artifact set over, plus the one new rule that set has and protenix-v2/mols
+# does not: failure here must NOT fail the install (see runner/daemon.py's
+# graceful-degrade design -- --no-questions or a one-chip box never needs
+# any of this at all).
+
+def test_the_postinst_also_fetches_nesso1_and_nesso1_ccd():
+    p = _weights("postinst")
+    assert 'weights.fetch("nesso1"' in p, "postinst does not fetch nesso1"
+    assert 'weights.fetch("nesso1-ccd"' in p, "postinst does not fetch nesso1-ccd"
+
+
+def test_the_postinst_pre_warms_the_esm2_encoder_through_the_real_constant():
+    """ESM2_MODEL is imported from tt_bio.nesso1_input, not duplicated as a
+    literal, in the postinst's Python block -- unlike scripts/doctor.sh and
+    scripts/setup-venvs.sh, which hardcode it (importing nesso1_input there
+    pulls torch/rdkit/safetensors just to read one string). The postinst
+    already imports tt_bio.main, which pulls torch anyway, so there is no
+    cost to importing the real constant here and no duplicate to drift."""
+    import ast
+
+    p = _weights("postinst")
+    assert "from tt_bio.nesso1_input import ESM2_MODEL" in p, (
+        "postinst should import the real ESM2_MODEL constant, not "
+        "hardcode the model id")
+    assert "snapshot_download(ESM2_MODEL)" in p, (
+        "postinst does not pre-warm the ESM-2 encoder through huggingface_hub")
+
+    venv = REPO / ".venvs" / "venv-runner"
+    site = next(venv.glob("lib/python3.*/site-packages/tt_bio"), None)
+    if site is None:
+        pytest.fail("venv-runner is not built; cannot check nesso1_input")
+    tree = ast.parse((site / "nesso1_input.py").read_text())
+    names = {n.targets[0].id for n in ast.walk(tree)
+             if isinstance(n, ast.Assign) and len(n.targets) == 1
+             and isinstance(n.targets[0], ast.Name)}
+    assert "ESM2_MODEL" in names, (
+        "tt_bio.nesso1_input no longer defines ESM2_MODEL; update the postinst")
+
+
+def test_every_nesso1_artifact_the_package_fetches_is_checksum_verified():
+    """Same invariant as protenix-v2/mols's own version of this test, over
+    the SEPARATE table these two live in (see the postinst's own comment for
+    why: nesso1/nesso1-ccd are "hf-repo" rows and ignore the flat-cache
+    ARTIFACTS table's assumed path shape, so they are verified inside the
+    Python block against tt-bio's own resolved path instead)."""
+    p = _weights("postinst")
+    artifacts = re.findall(
+        r'^\s*\("([a-z0-9-]+)",\s*\w+,\s*\n?\s*"([a-f0-9]{64})"\)', p, re.MULTILINE)
+    assert artifacts, "no nesso1 (key, path, sha256) tuples found in the postinst"
+    keys = {k for k, _ in artifacts}
+    assert keys == {"nesso1", "nesso1-ccd"}, (
+        f"expected exactly nesso1 + nesso1-ccd to be checksum-verified, got {keys}")
+
+
+def test_a_failed_affinity_weights_fetch_does_not_fail_the_install():
+    """THE RULE THIS SECTION EXISTS TO ENFORCE. Unlike protenix-v2/mols
+    (whose verification failure calls `exit 1`), nesso1/nesso1-ccd/ESM-2 are
+    optional: `--no-questions` or a single-chip box never reserves a Q&A
+    worker at all, so a package "configure" step must not fail over ~3.2 GB
+    of weights that specific booth will never touch."""
+    p = _weights("postinst")
+    # The marker-file branch that reports the affinity-weights outcome must
+    # not itself call exit 1 -- only the protenix-v2/mols branch above it may.
+    marker_branch = p.split('if [ -f "${CACHE}/.affinity-weights-incomplete" ]')[1]
+    marker_branch = marker_branch.split("\n        ;;")[0]
+    assert "exit 1" not in marker_branch, (
+        f"the affinity-weights branch must never fail the install:\n{marker_branch}")
+
+
+def test_the_affinity_weights_python_block_never_raises_for_nesso1_or_esm2():
+    """The nesso1/nesso1-ccd fetch and the ESM-2 pre-warm must both be
+    wrapped so a network failure sets a flag rather than raising -- an
+    uncaught exception in this heredoc kills the whole postinst (`set -e`
+    is not even needed; an unhandled exception exits the python process
+    nonzero on its own), which is exactly the failure mode the marker-file
+    design exists to avoid."""
+    p = _weights("postinst")
+    # Both new fetches must be inside a try/except, unlike the (deliberately
+    # fatal) protenix-v2/mols calls above them.
+    assert re.search(r'try:\s*\n\s*nesso1_path = weights\.fetch\("nesso1"', p), (
+        "the nesso1/nesso1-ccd fetch is not wrapped in a try/except")
+    assert re.search(r'try:\s*\n\s*from tt_bio\.nesso1_input import ESM2_MODEL', p), (
+        "the ESM-2 pre-warm is not wrapped in a try/except")
+
+
+def test_the_prompt_states_the_new_total_size():
+    """The SAME debconf question now triggers protenix-v2 + mols + nesso1 +
+    nesso1-ccd + the ESM-2 encoder, so its stated size must be the real
+    total a "yes" answer downloads, not just protenix-v2/mols's 3.7 GB."""
+    t = _weights("templates")
+    assert "6.9 GB" in t, f"the prompt still states the old, incomplete size:\n{t}"
+    assert "nesso1" in t.lower() or "affinity" in t.lower(), (
+        "the prompt does not mention what the extra download is for")
+
+
 # ── Task 7: the systemd user unit and the desktop entry ─────────────────────
 
 def test_the_unit_is_a_user_service_not_a_system_one(built):

@@ -501,29 +501,54 @@ against — the UI can be more than a second behind the socket in reading a
   smaller on a display much denser than the 1280×800 dev default. Scale by
   `get_scale_factor()` in Phase 3, when the booth display is known.
 
-## From the affinity-questions feature (2026-09-15/16) — carried, not fixed
+## From the affinity-questions feature (2026-09-15/16) — one fixed, one carried
 
 Both named explicitly in CLAUDE.md's entry for this feature as deferred rather
 than fixed in the branch that shipped it; a "handful of other Minor findings
 from the final review" were mentioned but not itemized there, so only these
 two have enough detail to record here.
 
-- **nesso1's weights have no provisioning step.** Neither
+- **FIXED (2026-09-16). nesso1's weights had no provisioning step.** Neither
   `scripts/setup-venvs.sh`'s weight fetch nor the `.deb`'s
-  postinst/`scripts/doctor.sh` know about `nesso1` — both only fetch and check
-  `protenix-v2`. Same shape as every prior weights gap this project's history
-  records ("The weights were never a checked box", CLAUDE.md, 2026-08-31):
-  a real capability shipped ahead of its provisioning story, flagged rather
-  than silently absent, rather than something a fresh install will merely
-  fail to notice until it fails at a venue. Worth doing looks like
-  `runner/daemon.py`'s `MAX_PENDING_QUESTIONS` comment's own shape for a
-  "silently advertising a feature it can never deliver" failure, one layer up
-  the stack: extend `setup-venvs.sh`'s fetch and `doctor.sh`'s size-floor/
-  verifier checks to cover `nesso1` alongside `protenix-v2`, and extend
-  `test_documented_weights_commands.py`'s command-pinning discipline to
-  whichever doc ends up naming it. Until then the one command that works is
-  documented in the README's "Not yet built" section
-  (`tt-bio weights --download nesso1`).
+  postinst/`scripts/doctor.sh` knew about `nesso1` — both only fetched and
+  checked `protenix-v2`. Same shape as every prior weights gap this project's
+  history records ("The weights were never a checked box", CLAUDE.md,
+  2026-08-31): a real capability shipped ahead of its provisioning story.
+  Closed by extending all three surfaces under the SAME `--skip-weights`
+  flag / debconf question `protenix-v2` already uses, rather than a second
+  flag: `setup-venvs.sh`'s `fetch_weights` now also runs
+  `tt-bio weights --download nesso1` (one call, since
+  `tt_bio.weights.MODEL_ARTIFACTS["nesso1"]` lists both the affinity head
+  and its own CCD dict) and pre-warms the ESM-2 encoder
+  (`facebook/esm2_t33_650M_UR50D`, ~2.6 GB — not in tt_bio's weights registry
+  at all, so this goes straight through `huggingface_hub`, the same library
+  `tt_bio.nesso1_input.setup_esm_model` uses, so it lands in the cache the
+  real featurizer will read from later). `doctor.sh`'s new
+  `doctor_check_affinity_weights` asks the same question `doctor_check_weights`
+  already asks tt-bio about protenix-v2, but WARN-only, never FAIL: a booth
+  running `--no-questions`, or with one chip (which never reserves a Q&A
+  worker), legitimately needs none of it, and the doctor cannot tell which
+  case it is looking at. The `.deb` postinst fetches and checksum-verifies
+  nesso1/nesso1-ccd too, behind the same debconf question as protenix-v2/mols,
+  but — unlike that pair — a failure there does not fail the install (a
+  marker file, not piped output, carries the verdict back to the shell so
+  protenix-v2/mols's own download progress keeps streaming live). One real
+  finding along the way, worth keeping: nesso1 and nesso1-ccd are "hf-repo"
+  registry rows, and `tt_bio.weights.fetch`/`.resolve`/`.status` SILENTLY
+  IGNORE their `root=`/`--cache` argument for that source type — confirmed
+  empirically (`weights.fetch("nesso1", root=<anything>)` lands under the
+  standard Hugging Face hub cache regardless of `root`), unlike protenix-v2
+  ("hf-file"), which honours it and lands flat at `<cache>/protenix-v2.pt`.
+  That is why nesso1/nesso1-ccd are checksum-verified inside the postinst's
+  Python block, against tt-bio's own resolved path, rather than through the
+  shell's flat-file `ARTIFACTS` table the way protenix-v2.pt/mols.tar are.
+  `test_documented_weights_commands.py`'s command-pinning discipline already
+  covers the new `tt-bio weights --download nesso1` invocations (it scans
+  every doc/script for any `tt-bio weights ...` line), and a new
+  `tests/unit/test_packaging.py::test_the_weights_postinst_uses_the_tt_bio_api_that_actually_exists`
+  pass confirmed the two new literal `weights.fetch("nesso1"/"nesso1-ccd", ...)`
+  calls are checked against the pinned tt-bio's real registry the same way
+  protenix-v2's call always has been.
 - **`runner/affinity.py` imports `torch` and `tt_bio.nesso1` at module scope**,
   against `runner/folder.py`'s own documented pattern of deferring those
   imports into `load()` so unit test collection does not need torch
