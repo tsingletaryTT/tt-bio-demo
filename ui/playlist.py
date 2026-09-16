@@ -507,9 +507,17 @@ def load_questions(path=None):
 
         for field in _QUESTION_REQUIRED_FIELDS:
             value = entry.get(field)
-            # Reject missing, None, and "" alike -- same rule
-            # load_playlist applies to its own _REQUIRED_FIELDS above.
-            if value is None or (isinstance(value, str) and not value.strip()):
+            # Reject anything that is not a real, non-blank string -- not
+            # just missing/None/"". The looser
+            # `value is None or (isinstance(value, str) and not value.strip())`
+            # this used to read let a YAML number or list through silently:
+            # an unhashable `target_id` (a list) raised an uncaught
+            # `TypeError` at the `in manifest_ids` membership check below,
+            # and a non-string `question`/`ligand_name` reached GTK label
+            # text downstream, which does not accept it either. Same rule
+            # `id`'s own check above already applies -- this loop just
+            # hadn't matched it.
+            if not isinstance(value, str) or not value.strip():
                 raise PlaylistError(f"{entry_id}: missing required field '{field}'")
 
         if entry_id in seen_ids:

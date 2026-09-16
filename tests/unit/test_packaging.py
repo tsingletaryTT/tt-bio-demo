@@ -713,9 +713,15 @@ def test_the_weights_postinst_uses_the_tt_bio_api_that_actually_exists():
 # ── affinity-questions weights: nesso1 / nesso1-ccd / the ESM-2 encoder ─────
 #
 # docs/followups.md's "From the affinity-questions feature" entry: the
-# feature shipped with `qa_capable: true` and no provisioning at all, so a
-# fresh install (source or .deb) reported the booth ready and then failed
-# every single question. These mirror the protenix-v2 tests above, one
+# feature originally shipped with `qa_capable: true` and no provisioning at
+# all, so a fresh install (source or .deb) reported the booth ready and then
+# failed every single question. Both source setup and the Debian postinst
+# now attempt this provisioning -- these tests below confirm the ATTEMPT is
+# real and correctly formed, not that it always succeeds: the fetch is
+# optional and non-fatal (see the rule below), can be declined, and (per a
+# real, separate, still-open gap documented in docs/followups.md) can even
+# succeed at install time and still leave the weights unreachable to the
+# booth's own process. These mirror the protenix-v2 tests above, one
 # artifact set over, plus the one new rule that set has and protenix-v2/mols
 # does not: failure here must NOT fail the install (see runner/daemon.py's
 # graceful-degrade design -- --no-questions or a one-chip box never needs

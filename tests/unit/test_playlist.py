@@ -627,6 +627,33 @@ def test_a_missing_questions_file_raises_a_clear_error(tmp_path):
         load_questions(tmp_path / "nope.yaml")
 
 
+def test_a_list_valued_target_id_is_a_loud_error_not_a_crash(tmp_path):
+    """Found in PR review: the old check (`value is None or (isinstance(
+    value, str) and not value.strip())`) let a YAML collection or number
+    through silently, and a list-valued target_id then raised an
+    uncaught TypeError at the `target_id not in manifest_ids` membership
+    check (a list is unhashable) instead of a clean PlaylistError."""
+    bad = tmp_path / "questions.yaml"
+    bad.write_text(
+        "- id: x\n  target_id: [dhfr, trypsin]\n  question: 'q?'\n"
+        "  ligand_name: 'L'\n"
+    )
+    with pytest.raises(PlaylistError, match="target_id"):
+        load_questions(bad)
+
+
+def test_a_numeric_question_text_is_a_loud_error_not_a_crash(tmp_path):
+    """Same class of gap, the other required field: a bare YAML number for
+    `question` used to pass validation and reach a GTK label downstream,
+    which does not accept it either."""
+    bad = tmp_path / "questions.yaml"
+    bad.write_text(
+        "- id: x\n  target_id: dhfr\n  question: 42\n  ligand_name: 'L'\n"
+    )
+    with pytest.raises(PlaylistError, match="question"):
+        load_questions(bad)
+
+
 def test_duplicate_question_ids_are_rejected(tmp_path):
     """Same ambiguity load_playlist's own duplicate-id check exists to avoid:
     two questions sharing an id makes 'which one did the visitor ask'

@@ -56,7 +56,16 @@ T0="$(date +%s)"
 echo "recording to $(basename "$AFTER"); bringing the booth up over it"
 
 # 2. Now the booth, fullscreen, on top.
-setsid ./scripts/run-demo.sh --quad > "$S/demo.log" 2>&1 < /dev/null &
+#
+# --no-questions: this recording's whole point is the classic four-chip
+# quad view, and the affinity-questions feature reserves one chip for Q&A
+# by default whenever 2+ chips are detected -- leaving only three fold
+# workers, not four. Without this flag the wait below for four distinct
+# "on chip N" lines would run to its full timeout and then proceed anyway,
+# recording three folding chips under a script whose name and log lines
+# both claim four -- exactly the "capture that reports success but shows
+# the wrong thing" failure this project's own history warns about.
+setsid ./scripts/run-demo.sh --quad --no-questions > "$S/demo.log" 2>&1 < /dev/null &
 sleep 1
 
 echo "waiting for all four chips..."

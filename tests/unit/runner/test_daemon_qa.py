@@ -441,10 +441,14 @@ def test_dispatch_qa_once_sends_only_one_question_per_pass(tmp_path):
 
 def test_dispatch_qa_once_fails_every_queued_question_when_the_pool_is_retired(
         tmp_path):
-    """Finding 2 (task-6 review): nesso1's weights are not provisioned
-    anywhere yet, so the Q&A worker's load() fails at startup, CONTROL_FATAL
-    retires its one card permanently, and ready_cards() for this pool is `[]`
-    forever -- not "still starting up", not "still scoring the last one".
+    """Finding 2 (task-6 review): if nesso1's weights are missing, broken,
+    or unreachable to the worker on a given install, the Q&A worker's
+    load() fails at startup, CONTROL_FATAL retires its one card
+    permanently, and ready_cards() for this pool is `[]` forever -- not
+    "still starting up", not "still scoring the last one". (Both source
+    setup and the Debian postinst do attempt to provision these weights
+    now -- see docs/followups.md for a real, separate gap in that
+    provisioning that can still leave them unreachable.)
     Every question ever queued from that point on must be failed loudly, not
     left to pile up silently: the attract-loop cadence (a later task) mints a
     fresh question_id every cycle with no dedup, so an unbounded silent
