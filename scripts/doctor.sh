@@ -65,13 +65,13 @@ doctor_prefix() {
 # "source" or "package" -- which changes the ADVICE, not the checks. A source
 # checkout is told to run scripts/setup-venvs.sh; a packaged install is told
 # to use dpkg-reconfigure, because that is where its debconf answers live.
+#
+# The .git/tests sniff test itself now lives in scripts/weights-cache.sh's
+# tt_bio_demo_install_mode (shared with scripts/run-demo.sh, which used to
+# have no equivalent at all -- see that function's own comment), so this is
+# just doctor.sh's own notion of the prefix handed to the shared check.
 doctor_install_mode() {
-    _p="$(doctor_prefix)"
-    if [ -d "$_p/.git" ] || [ -d "$_p/tests" ]; then
-        printf 'source\n'
-    else
-        printf 'package\n'
-    fi
+    tt_bio_demo_install_mode "$(doctor_prefix)"
 }
 
 # Where the weights live, derived exactly as tt-bio derives it:
@@ -682,6 +682,7 @@ doctor_check_display() {
     fi
     return 0
 }
+
 
 # ── main ────────────────────────────────────────────────────────────────────
 

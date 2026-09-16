@@ -83,7 +83,7 @@ def _write_stub(path, argv_log, real_python, *, sentinel, wait_for_sentinel):
     path.chmod(0o755)
 
 
-def _launch(tmp_path, *args, expect_ok=True, env_overrides=None):
+def _launch(tmp_path, *args, expect_ok=True, env_overrides=None, script=None):
     """Run the real launcher with stub interpreters. Returns (proc, runtime).
 
     `expect_ok` asserts the launch succeeded right here, with the script's
@@ -95,6 +95,14 @@ def _launch(tmp_path, *args, expect_ok=True, env_overrides=None):
     order that works: this harness deliberately deletes the launcher's env
     knobs so nothing leaks in from the developer's shell, and a test that is
     specifically about one of those knobs has to be able to put it back.
+
+    `script` overrides which copy of run-demo.sh is actually invoked --
+    defaults to RUN_DEMO (this repo's own). test_run_demo_sh_packaged_
+    weights.py-style tests pass a path under a fake, .git/tests-less
+    directory so run-demo.sh's own $REPO_ROOT (computed from its own
+    location, not from TT_BIO_DEMO_PREFIX -- see run-demo.sh's own comment
+    on why those are different questions) resolves to something
+    tt_bio_demo_install_mode calls "package".
     """
     prefix = tmp_path / "prefix"
     runtime = tmp_path / "xdg"
@@ -128,9 +136,16 @@ def _launch(tmp_path, *args, expect_ok=True, env_overrides=None):
     # above, must not merely be emptied: an empty value is itself one of the
     # cases under test (see test_no_chip_selection_means_no_flag_at_all).
     env.pop("TT_BIO_DEMO_DEVICES", None)
+    # Likewise the weights-cache variables: a developer's own shell easily
+    # has $TT_BIO_CACHE or $BOLTZ_CACHE set (this project's own docs tell you
+    # to), and that would silently defeat exactly what the packaged-vs-source
+    # weights tests below are checking.
+    env.pop("TT_BIO_CACHE", None)
+    env.pop("BOLTZ_CACHE", None)
+    env.pop("TT_BIO_DEMO_WEIGHTS", None)
     env.update(env_overrides or {})
 
-    proc = subprocess.run(["bash", str(RUN_DEMO), *args], env=env,
+    proc = subprocess.run(["bash", str(script or RUN_DEMO), *args], env=env,
                           capture_output=True, text=True, timeout=120)
     if expect_ok:
         assert proc.returncode == 0, (
@@ -342,3 +357,90 @@ def test_the_no_questions_flag_is_not_echoed_to_the_ui(tmp_path):
     `hello`, never a command-line flag of its own."""
     _launch(tmp_path, "--no-questions", "--targets", "trpcage")
     assert "--no-questions" not in _argv(tmp_path, "venv-ui")
+
+
+# --- weights-cache resolution: source vs. packaged (Critical 1) ------------
+#
+# scripts/run-demo.sh is not a dev convenience: debian/com.tenstorrent.ttbio.
+# demo.desktop's Exec= runs it directly, and INSTALL.md calls it "the normal
+# path" for a packaged install. It used to always resolve the plain,
+# $HOME-relative weights default (scripts/weights-cache.sh's
+# tt_bio_demo_weights_cache), even when this checkout WAS a real
+# /opt/tt-bio-demo tree -- so a packaged booth's postinst fetched weights to
+# the fixed /opt/tt-bio-demo/weights while launching the booth via the
+# desktop entry resolved the desktop user's own ~/.boltz instead. See
+# docs/followups.md's "run-demo.sh resolved home-relative even from a
+# packaged install" entry (FIXED).
+#
+# tt_bio_demo_install_mode ("source"/"package") is a .git/tests sniff test on
+# the directory holding the script (scripts/weights-cache.sh's shared
+# function; see also tests/unit/test_doctor.py's identical technique for
+# scripts/doctor.sh). So a "packaged install" is simulated here by symlinking
+# the real ui/protocol/playlist/examples trees (needed for `-m ui.playlist`
+# to actually import something) and the real run-demo.sh/weights-cache.sh
+# into a directory with neither -- never a directory this repo's own .git
+# happens to be an ancestor of.
+
+
+def _fake_packaged_tree(tmp_path):
+    """A directory tt_bio_demo_install_mode reports "package" for, with just
+    enough of the real tree (via symlinks, not copies -- so this always runs
+    the ACTUAL current run-demo.sh/weights-cache.sh, not a frozen copy) for
+    run-demo.sh to actually work end to end."""
+    fake_root = tmp_path / "fake-opt-tt-bio-demo"
+    (fake_root / "scripts").mkdir(parents=True)
+    for name in ("run-demo.sh", "weights-cache.sh"):
+        (fake_root / "scripts" / name).symlink_to(REPO_ROOT / "scripts" / name)
+    for name in ("ui", "protocol", "playlist", "examples"):
+        (fake_root / name).symlink_to(REPO_ROOT / name)
+    return fake_root
+
+
+def test_a_packaged_install_resolves_weights_to_the_fixed_path(tmp_path):
+    """CRITICAL-1 FIX, the headline assertion: from a directory
+    tt_bio_demo_install_mode calls "package", with neither $TT_BIO_CACHE nor
+    $BOLTZ_CACHE set, run-demo.sh must hand the daemon the SAME fixed
+    /opt/tt-bio-demo/weights the postinst populates and scripts/doctor.sh
+    already diagnoses against -- not a $HOME-relative guess belonging to
+    whoever's desktop session happens to launch the booth."""
+    fake_root = _fake_packaged_tree(tmp_path)
+    _launch(tmp_path, "--targets", "trpcage",
+            script=fake_root / "scripts" / "run-demo.sh")
+    weights = _flag(_argv(tmp_path, "venv-runner"), "--weights")
+    assert weights == "/opt/tt-bio-demo/weights", (
+        f"expected the packaged fixed cache, got {weights!r}")
+
+
+def test_a_source_checkout_keeps_resolving_the_home_relative_default(tmp_path):
+    """The fix is scoped to a packaged tree -- this repo (or ANY prefix
+    tt_bio_demo_install_mode calls "source") must keep resolving today's
+    $HOME-relative default unconditionally."""
+    home = tmp_path / "somebody"
+    home.mkdir()
+    _launch(tmp_path, "--targets", "trpcage", env_overrides={"HOME": str(home)})
+    weights = _flag(_argv(tmp_path, "venv-runner"), "--weights")
+    assert weights == str(home / ".boltz"), weights
+
+
+def test_a_packaged_installs_own_cache_override_still_wins(tmp_path):
+    """This project's standing rule, restated for run-demo.sh: an operator
+    who has already set $TT_BIO_CACHE (or $BOLTZ_CACHE) keeps that choice --
+    the packaged pin only fills the gap when NEITHER is set."""
+    fake_root = _fake_packaged_tree(tmp_path)
+    moved = tmp_path / "operators-own-disk"
+    _launch(tmp_path, "--targets", "trpcage",
+            script=fake_root / "scripts" / "run-demo.sh",
+            env_overrides={"TT_BIO_CACHE": str(moved)})
+    weights = _flag(_argv(tmp_path, "venv-runner"), "--weights")
+    assert weights == str(moved), weights
+
+
+def test_the_weights_flag_still_overrides_everything(tmp_path):
+    """--weights (and its env twin) is a separate, explicit escape hatch and
+    must still win regardless of source-vs-package detection."""
+    fake_root = _fake_packaged_tree(tmp_path)
+    custom = tmp_path / "a-custom-cache"
+    _launch(tmp_path, "--targets", "trpcage", "--weights", str(custom),
+            script=fake_root / "scripts" / "run-demo.sh")
+    weights = _flag(_argv(tmp_path, "venv-runner"), "--weights")
+    assert weights == str(custom), weights

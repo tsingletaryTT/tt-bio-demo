@@ -66,6 +66,39 @@ tt_bio_demo_weights_cache() {
 }
 
 # ---------------------------------------------------------------------------
+# "source" or "package" -- shared so scripts/doctor.sh and scripts/run-demo.sh
+# do not each carry their own copy of the same .git/tests sniff test. Before
+# this existed, doctor.sh had its own doctor_install_mode (calling this) and
+# run-demo.sh had NO equivalent at all -- it always used the plain,
+# home-relative resolver, even from a real packaged install. See docs/
+# followups.md's "run-demo.sh resolved home-relative even from a packaged
+# install" entry (FIXED) for the full history: a `.deb`'s desktop entry runs
+# `/opt/tt-bio-demo/scripts/run-demo.sh` directly (INSTALL.md calls this "the
+# normal path"), so a packaged booth's postinst fetched weights to the fixed
+# path below while its actual launcher kept resolving the desktop user's own
+# $HOME -- the postinst/unit/doctor triangle agreed with each other and
+# disagreed with the one script an operator actually runs.
+#
+# Takes the CALLER's own notion of the application-tree root as $1, rather
+# than computing one itself, because the two callers already have two
+# slightly different ways of finding it: doctor.sh's doctor_prefix() (which
+# honours an explicit $TT_BIO_DEMO_PREFIX override naming the WHOLE app
+# tree) and run-demo.sh's $REPO_ROOT (always the checkout this script itself
+# lives in -- unaffected by run-demo.sh's OWN $TT_BIO_DEMO_PREFIX, which
+# means something different there: where the venvs live, not the app tree).
+# Both resolve to the identical real directory for an installed
+# /opt/tt-bio-demo booth, so passing either one in here answers the same
+# question the same way.
+tt_bio_demo_install_mode() {
+    _prefix="$1"
+    if [ -d "$_prefix/.git" ] || [ -d "$_prefix/tests" ]; then
+        printf 'source\n'
+    else
+        printf 'package\n'
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # THE PACKAGED VARIANT. See docs/followups.md's "root's postinst-time HOME vs
 # desktop-user's systemd-service-time HOME" entry (FIXED) for the full
 # history: debian/tt-bio-demo-weights.postinst runs as ROOT during
@@ -76,14 +109,20 @@ tt_bio_demo_weights_cache() {
 # that is supposed to use them looked in an empty directory.
 #
 # The fix is to sidestep $HOME entirely for a packaged deployment: pin
-# $TT_BIO_CACHE to one fixed, non-home-relative path, identically, in THREE
-# places -- the postinst (below, via this function), the systemd unit's own
-# `Environment=TT_BIO_CACHE=...` line (a static file, not shell, so it
-# repeats the literal value rather than calling this), and
-# scripts/doctor.sh's diagnosis of an installed booth (also via this
-# function, called directly since doctor.sh sources this file itself).
-# tests/unit/test_packaging.py checks the three literal values never drift
-# apart.
+# $TT_BIO_CACHE to one fixed, non-home-relative path, by CALLING this
+# function -- never by repeating the literal value -- from every packaged
+# caller: the postinst (below), scripts/doctor.sh's diagnosis of an
+# installed booth, scripts/run-demo.sh (the packaged install's actual
+# operator-facing launcher -- see docs/followups.md's "run-demo.sh resolved
+# home-relative even from a packaged install" entry, FIXED), and
+# scripts/tt-bio-demo-daemon-launcher.sh (what the systemd unit's
+# ExecStart= actually runs -- a static `Environment=` line in the unit
+# ITSELF used to repeat the literal value instead, which is what made it
+# unconditional; see docs/followups.md's "the systemd unit's Environment=
+# is unconditional" entry, FIXED, for why that could not honour an
+# operator's own override and had to move into something that could call
+# this function instead). tests/unit/test_packaging.py checks that none of
+# these callers keep their own copy of the literal path.
 #
 # This lives HERE, in the resolver, rather than in the postinst or doctor.sh
 # themselves, so that $TT_BIO_CACHE/$BOLTZ_CACHE are read in exactly the two

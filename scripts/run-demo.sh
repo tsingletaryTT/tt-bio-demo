@@ -129,11 +129,15 @@
 #                                 2+ chips are detected, same as today.
 #
 #   --weights DIR                 tt-bio's weights cache. (TT_BIO_DEMO_WEIGHTS)
-#                                 Default: $TT_BIO_CACHE, else
-#                                 $BOLTZ_CACHE, else ~/.boltz --
-#                                 tt-bio's own order. Whatever is used
-#                                 is pinned for the folding workers
-#                                 too, not just the readiness check.
+#                                 Default: $TT_BIO_CACHE, else $BOLTZ_CACHE,
+#                                 else ~/.boltz -- tt-bio's own order --
+#                                 EXCEPT from a packaged /opt/tt-bio-demo
+#                                 install, where it defaults to the fixed
+#                                 /opt/tt-bio-demo/weights the postinst
+#                                 populated (still overridden if $TT_BIO_CACHE
+#                                 or $BOLTZ_CACHE is already set). Whatever is
+#                                 used is pinned for the folding workers too,
+#                                 not just the readiness check.
 #   --log-budget-gb N             Forwarded to the daemon's own
 #                                 --log-budget-gb (tt-metal log containment;
 #                                 see runner/env.py). Default: 2.0
@@ -162,14 +166,50 @@ RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}/tt-bio-demo"
 
 SOCKET="${TT_BIO_DEMO_SOCKET:-${RUNTIME_DIR}/runner.sock}"
 LOG_ROOT="${TT_BIO_DEMO_LOG_ROOT:-${RUNTIME_DIR}/logs}"
-# The DEFAULT comes from the shared resolver ($TT_BIO_CACHE, then
-# $BOLTZ_CACHE, then ~/.boltz -- tt-bio's own order). --weights and
-# TT_BIO_DEMO_WEIGHTS still win; this only fixes what they fall back to,
-# which used to ignore both variables and hand the daemon a directory the
-# operator had moved away from.
 # shellcheck source=weights-cache.sh
 . "${SCRIPT_DIR}/weights-cache.sh"
-WEIGHTS="${TT_BIO_DEMO_WEIGHTS:-$(tt_bio_demo_weights_cache)}"
+# The DEFAULT comes from the shared resolver -- but which resolver depends on
+# whether THIS checkout is a source tree or the packaged /opt/tt-bio-demo
+# tree, same distinction scripts/doctor.sh already draws (doctor_install_mode,
+# now backed by the shared tt_bio_demo_install_mode above). Before this, this
+# script always used the plain, home-relative resolver even from a packaged
+# install -- and this script is not a dev convenience, it is the packaged
+# install's actual operator-facing launcher: debian/com.tenstorrent.ttbio.
+# demo.desktop's Exec= runs it directly, and INSTALL.md calls it "the normal
+# path". So a real `.deb` install had the postinst fetching to the fixed
+# /opt/tt-bio-demo/weights (see scripts/weights-cache.sh's own big comment on
+# TT_BIO_DEMO_PACKAGED_WEIGHTS_CACHE) while launching the booth via the
+# desktop entry resolved the desktop user's own $HOME/.boltz instead --
+# worse than before that fix, because the postinst and this launcher used to
+# at least agree (both home-relative). See docs/followups.md's "run-demo.sh
+# resolved home-relative even from a packaged install" entry (FIXED).
+#
+# $REPO_ROOT, not this script's OWN $TT_BIO_DEMO_PREFIX (which chooses where
+# the VENVS live -- see the PREFIX assignment above -- a different question):
+# $REPO_ROOT is always the checkout this script itself lives in, so it
+# answers "source or package" exactly the way doctor.sh's doctor_prefix()
+# does for a real /opt/tt-bio-demo install (both resolve to the identical
+# directory there).
+if [ "$(tt_bio_demo_install_mode "$REPO_ROOT")" = "package" ]; then
+  # Bare top-level call, not inside `$(...)`: the export has to land in
+  # THIS shell, not a subshell that evaporates on exit, so the daemon
+  # process started below (which does `import tt_bio` itself) inherits
+  # $TT_BIO_CACHE too -- not just the flat --weights argv value. That is
+  # what makes nesso1/nesso1-ccd/the ESM-2 encoder ("hf-repo" artifacts that
+  # SILENTLY IGNORE --weights/root= entirely -- see scripts/weights-cache.sh's
+  # own TT_BIO_DEMO_PACKAGED_WEIGHTS_CACHE comment) resolve to the SAME fixed
+  # cache the postinst populated, rather than to whatever $HOME the desktop
+  # session launching this script happens to have. Same "prime once, capture
+  # again" shape debian/tt-bio-demo-weights.postinst and scripts/doctor.sh's
+  # doctor_prime_weights_cache already use.
+  tt_bio_demo_weights_cache_packaged >/dev/null
+  WEIGHTS_DEFAULT="$(tt_bio_demo_weights_cache_packaged)"
+else
+  WEIGHTS_DEFAULT="$(tt_bio_demo_weights_cache)"
+fi
+# --weights and TT_BIO_DEMO_WEIGHTS still win over either default -- this
+# only fixes what they fall back to.
+WEIGHTS="${TT_BIO_DEMO_WEIGHTS:-$WEIGHTS_DEFAULT}"
 MANIFEST="${TT_BIO_DEMO_PLAYLIST:-${REPO_ROOT}/playlist/manifest.yaml}"
 TARGETS="${TT_BIO_DEMO_TARGETS-}"   # empty == every target in the manifest
 DEVICES="${TT_BIO_DEMO_DEVICES-}"   # empty == every chip the daemon detects

@@ -670,3 +670,41 @@ def test_the_summary_line_reports_the_pinned_path_for_a_packaged_install(tmp_pat
             'say "  weights: $(doctor_weights_cache)"',
             TT_BIO_DEMO_PREFIX=str(prefix), TT_BIO_CACHE="", BOLTZ_CACHE="")
     assert "/opt/tt-bio-demo/weights" in r.stdout, r.stdout + r.stderr
+
+
+# ---------------------------------------------------------------------------
+# The shared "source"/"package" sniff test (Critical 1's plumbing): before
+# this, doctor_install_mode had ITS OWN copy of the .git/tests check, and
+# scripts/run-demo.sh -- a fourth caller of the weights-cache machinery, and
+# the packaged install's actual operator-facing launcher -- had no equivalent
+# at all, so it always resolved the plain, $HOME-relative default even from a
+# real /opt/tt-bio-demo tree. See docs/followups.md's "run-demo.sh resolved
+# home-relative even from a packaged install" entry (FIXED).
+# ---------------------------------------------------------------------------
+
+def test_doctor_install_mode_delegates_to_the_shared_check_rather_than_repeating_it():
+    """doctor_install_mode must not keep its own copy of the .git/tests sniff
+    test -- that is exactly the kind of second copy this project's tests
+    already guard against for the weights-cache resolvers themselves, and
+    scripts/run-demo.sh needs the identical check applied to ITS OWN notion
+    of the prefix."""
+    doctor = DOCTOR.read_text()
+    fn = doctor.split("doctor_install_mode() {", 1)[1].split("\n}\n", 1)[0]
+    assert "tt_bio_demo_install_mode" in fn, \
+        "doctor_install_mode should delegate to the shared function"
+    assert ".git" not in fn and "tests" not in fn, \
+        "doctor_install_mode should not repeat the .git/tests check itself"
+
+
+def test_the_shared_install_mode_function_works_directly(tmp_path):
+    """scripts/weights-cache.sh's tt_bio_demo_install_mode, called directly
+    with an explicit prefix argument -- exactly how scripts/run-demo.sh now
+    calls it (with $REPO_ROOT), as opposed to doctor.sh's own doctor_prefix()
+    wrapper around the same underlying check."""
+    assert _sh(f'tt_bio_demo_install_mode "{REPO}"').stdout.strip() == "source"
+    fake = tmp_path / "opt" / "tt-bio-demo"
+    fake.mkdir(parents=True)
+    assert _sh(f'tt_bio_demo_install_mode "{fake}"').stdout.strip() == "package"
+    (fake / ".git").mkdir()
+    assert _sh(f'tt_bio_demo_install_mode "{fake}"').stdout.strip() == "source"
+
