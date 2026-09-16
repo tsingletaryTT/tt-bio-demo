@@ -786,6 +786,132 @@ def test_the_tensix_paragraph_still_says_a_resting_chip_is_drawn_resting():
     assert "rest" in lowered or "idle" in lowered or "quiet" in lowered
 
 
+# ---------------------------------------------------------------------------
+# Important 3 (whole-branch review, affinity-questions): the Q row, the
+# quad's own help line, and the Tensix paragraph must not hardcode "four" --
+# `runner.workers.split_for_qa` permanently reserves one chip for Q&A when
+# the affinity-questions feature is enabled, so a 4-physical-chip box folds
+# on 3, and the `?` card must say so rather than claim four.
+# ---------------------------------------------------------------------------
+
+def test_help_panels_and_key_help_are_functions_of_the_real_chip_count():
+    """`_key_help`/`_help_panels` (Important 3's fix) are functions, not the
+    frozen module-level tuples they used to be -- called with the real
+    fold-chip count, never a hardcoded one.
+
+    Checked against the QUAD line specifically (`_help_panels(n)[0]`), not
+    the whole joined column: the separate "Chips" (telemetry) paragraph
+    deliberately keeps saying "four" when the box genuinely has four
+    physical chips -- it samples every chip via tt-smi independently of the
+    daemon and of how many are reserved for folding vs. Q&A, so its claim is
+    about hardware inventory, not about how many chips are folding, and
+    stays true regardless of `n_chips`.
+    """
+    from ui.app import _help_panels, _key_help
+    quad_line = _help_panels(3)[0].lower()
+    assert "three" in quad_line
+    assert "four" not in quad_line
+
+    three_chip_keys = " ".join(m for _k, m in _key_help(3)).lower()
+    assert "three" in three_chip_keys
+    assert "four" not in three_chip_keys
+
+
+def test_the_tensix_paragraph_says_three_when_one_chip_is_reserved_for_qa():
+    from ui.app import _help_panels
+    tensix = [p for p in _help_panels(3) if "tensix activity" in p.lower()][0]
+    lowered = tensix.lower()
+    assert "three" in lowered
+    assert "four" not in lowered
+
+
+def test_a_booth_with_qa_enabled_shows_three_chips_not_four_on_the_help_card():
+    """`_sync_help_copy` (Important 3's fix) is what keeps the `?` card's
+    chip-count claims matched to the real fold-chip count after it changes
+    -- e.g. the affinity-questions feature's one-chip Q&A reservation on
+    what would otherwise be a 4-chip box. Driven directly against a
+    headless app (this file's own `_app()` fixture is fixed to one card, so
+    `self.cards` is set directly here rather than through the real
+    multi-chip `attach_cards`/`_ensure_quad` path, which needs a real quad
+    widget tree this test does not build) with fake labels standing in for
+    the real `Gtk.Label`s -- the same "record what a widget was told, no
+    GTK needed" shape every other fake in this file uses.
+    """
+    app = _app()
+    app.cards = [0, 1, 2]
+    app._help_q_meaning_label = _FakeLabel()
+    app._help_panel_labels = [_FakeLabel() for _ in app_module._help_panels(0)]
+    app._sync_help_copy()
+
+    q_text = app._help_q_meaning_label.get_label().lower()
+    assert "three" in q_text
+    assert "four" not in q_text
+
+    # Index 0 is the quad line, and the Tensix paragraph is found by
+    # content -- not the whole column joined, since the separate "Chips"
+    # (telemetry) paragraph correctly keeps saying "four" when the box
+    # genuinely has four physical chips (see the test above for why).
+    quad_text = app._help_panel_labels[0].get_label().lower()
+    assert "three" in quad_text
+    assert "four" not in quad_text
+
+    tensix_text = next(label.get_label().lower()
+                       for label in app._help_panel_labels
+                       if "tensix activity" in label.get_label().lower())
+    assert "three" in tensix_text
+    assert "four" not in tensix_text
+
+
+class _FakeLabel:
+    """A minimal stand-in for the one `Gtk.Label` method `_sync_help_copy`
+    calls -- so this test can drive it with no display, the same "record
+    what a widget was told, no GTK needed" shape every other fake in this
+    file uses."""
+
+    def __init__(self):
+        self._label = ""
+
+    def set_label(self, text):
+        self._label = text
+
+    def get_label(self):
+        return self._label
+
+
+# ---------------------------------------------------------------------------
+# Important 5 (whole-branch review): before this fix there was ZERO
+# visitor-facing text anywhere explaining what the pocket highlight means or
+# naming its cutoff distance. The `?` card is its natural home (spec
+# section 7).
+# ---------------------------------------------------------------------------
+
+def test_the_help_card_explains_the_pocket_highlight():
+    from ui.app import _help_panels
+    from ui.pocket import POCKET_CUTOFF_ANGSTROM
+    text = " ".join(_help_panels(4)).lower()
+    assert "residues nearest the ligand" in text
+    assert f"{POCKET_CUTOFF_ANGSTROM:g}".lower() in text
+    assert "the binding site" not in text, (
+        "spec section 7: a distance cutoff cannot establish a TRUE binding "
+        "site, so the card must never claim one")
+
+
+def test_the_help_card_mentions_the_affinity_questions_panel():
+    from ui.app import _help_panels
+    text = " ".join(_help_panels(4)).lower()
+    assert "affinity question" in text
+
+
+def test_the_help_cards_stated_cutoff_matches_what_pocket_residues_uses():
+    """The number in the sentence and the number the geometry actually uses
+    must be the SAME name, not two independently typed literals that happen
+    to agree today -- ui.pocket.POCKET_CUTOFF_ANGSTROM is imported by
+    ui/app.py for exactly this reason."""
+    import ui.app as app_mod
+    from ui.pocket import POCKET_CUTOFF_ANGSTROM
+    assert app_mod.POCKET_CUTOFF_ANGSTROM is POCKET_CUTOFF_ANGSTROM
+
+
 def test_the_help_intro_no_longer_says_one_after_another():
     """It reads, verbatim before Task 16: 'The booth works through its
     proteins one after another, all day.' That was true; it is not any
@@ -919,6 +1045,22 @@ def test_the_readme_no_longer_says_a_tap_queues_nothing():
     assert "what is still missing is the last hop" not in lowered
     # ...and it has to say what DOES happen, or an operator learns nothing.
     assert "never pre-empts a running fold" in lowered
+
+
+def test_the_readme_does_not_claim_four_chips_unconditionally():
+    """Important 3 (whole-branch review): `runner.workers.split_for_qa`
+    permanently reserves one chip for Q&A when the affinity-questions
+    feature is enabled, so a 4-physical-chip box folds on 3 -- the README's
+    own "four chips, four proteins" claim must be qualified with that fact
+    rather than left as an unconditional number that goes false the instant
+    Q&A is turned on, the same standard `ui/app.py`'s `?` card and
+    `ui/quad.py`'s help line are held to.
+    """
+    readme = (Path(__file__).resolve().parents[2] / "README.md").read_text()
+    lowered = readme.lower()
+    assert "reserved" in lowered and "q&a" in lowered, (
+        "the README's chip-count claims need a caveat about the Q&A chip "
+        "reservation, the same one the ? card and quad_help_line carry")
 
 
 def test_the_pick_docstring_in_the_app_no_longer_says_it_reaches_nothing():

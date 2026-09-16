@@ -38,8 +38,15 @@ import gemmi
 
 from ui.ligand import ligands_from_structure
 
+# The stated, checkable cutoff distance (spec section 7) -- named so the
+# one number that decides the pocket is defined exactly once. `ui/app.py`'s
+# `?` help card (Important 5, whole-branch review) imports this rather than
+# repeating "5" as a separate literal, so the card's own claimed cutoff can
+# never quietly drift from the one `pocket_residues` actually uses.
+POCKET_CUTOFF_ANGSTROM = 5.0
 
-def pocket_residues(structure, cutoff_angstrom=5.0):
+
+def pocket_residues(structure, cutoff_angstrom=POCKET_CUTOFF_ANGSTROM):
     """Protein residues with at least one atom within `cutoff_angstrom` of
     any ligand atom, in a `.cif` already parsed into a `gemmi.Structure`.
 

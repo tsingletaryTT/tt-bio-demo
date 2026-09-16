@@ -70,6 +70,12 @@ booth runs unattended all day.
 labeled with the chip it runs on, the protein, and the stage it has reached. Four
 independent folds at four independent points in their pipelines, on one screen.
 
+*(This section describes the base configuration, with the affinity-questions feature
+disabled. When it is enabled on a 4-chip box, one chip is permanently reserved to answer
+questions rather than fold — the quad and the `?` card both then show and say three chips,
+not four, and every count on this page is the real one for whichever configuration is
+actually running, not a hardcoded "four".)*
+
 Each cell names its chip, what it is drawing, and what that chip has moved on to.
 Three of these say `TRUNK`: only the diffusion stage produces coordinates, so a cell in
 `trunk` keeps showing the **previous** fold rather than going black (see
@@ -111,13 +117,15 @@ in — its per-target *minima* match chip 0. A visitor's pick takes whichever ch
 long session drifts slower than these fresh-chip numbers. See `playlist/manifest.yaml` for the
 full table.
 
-**Four chips, four proteins — one protein per chip.** The booth runs one worker process per
-chip, each pinned to its own physical device, each holding its own resident copy of the
-model; press `Q` for the 2×2 quad view and you are watching four independent folds at four
-independent points in their pipelines. What that is *not* is one protein folded four times
-faster: **a single target is a single-card fold**, which is tt-bio's own documented limit and
-not something this demo works around. Four chips buy the booth four proteins at once, and
-they buy a visitor's pick a chip to land on sooner — they do not make any one fold quicker.
+**Four chips, four proteins — one protein per chip** (three, not four, when the
+affinity-questions feature has reserved one chip for Q&A — see the note above). The booth
+runs one worker process per fold chip, each pinned to its own physical device, each holding
+its own resident copy of the model; press `Q` for the quad view and you are watching that
+many independent folds at that many independent points in their pipelines. What that is
+*not* is one protein folded faster with more chips: **a single target is a single-card
+fold**, which is tt-bio's own documented limit and not something this demo works around.
+More chips buy the booth more proteins at once, and they buy a visitor's pick a chip to land
+on sooner — they do not make any one fold quicker.
 Measured on this box: four workers reach "model resident, chip open" in **4.8 s** from a cold
 start, and all four then fold Trp-cage concurrently to pLDDT 95.2–95.3.
 

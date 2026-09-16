@@ -186,7 +186,7 @@ from ui.client import EventClient, LatestFrameByJob
 from ui.diagnostics import KIND_MARK, DiagnosticsLog, DiagnosticsPanel
 from ui.gallery import Gallery
 from ui.geometry import PLDDT_STOPS, ribbon_from_cif
-from ui.pocket import pocket_residues
+from ui.pocket import POCKET_CUTOFF_ANGSTROM, pocket_residues
 from ui.structure_view import structure_mesh
 from ui.panels import PipelinePanel, TelemetryPanel
 from ui.playlist import PlaylistError, load_playlist, load_questions, select_targets
@@ -194,7 +194,7 @@ from ui.questions import QuestionQueuePanel
 from ui.attract import (ASK_QUESTION, CLOSE_DIAGNOSTICS, CLOSE_TENSIX,
                         HIDE_GALLERY, OPEN_DIAGNOSTICS, OPEN_TENSIX,
                         SHOW_GALLERY, Choreography)
-from ui.quad import QUAD_HELP_LINE, QUAD_KEYS, QuadView
+from ui.quad import QUAD_KEYS, QuadView, chip_count_word, quad_help_line
 from ui.slots import MAX_SLOTS, SlotRouter
 from ui.states import BoothState, StateMachine
 from ui.telemetry import TelemetrySampler
@@ -835,7 +835,7 @@ _DIAGNOSTICS_KEYS = frozenset({"d"})
 # Nothing about it is persisted: a restart at the venue is a clean booth.
 _TENSIX_KEYS = frozenset({"t"})
 # The quad view's key is DECIDED IN `ui/quad.py`, beside the view it opens and
-# beside the `?`-card copy that describes it (`QUAD_HELP_LINE`), so the
+# beside the `?`-card copy that describes it (`quad_help_line`), so the
 # binding and the words a visitor reads about it cannot drift apart. Imported
 # rather than restated for the same reason -- a second `frozenset({"q"})` here
 # would be a second place to change it. `_handle_key` reads it exactly the way
@@ -1374,69 +1374,144 @@ _HELP_INTRO = (
 # `_handle_key`'s real behavior against it -- so a binding added to the
 # handler without a line here fails the suite rather than quietly becoming
 # folklore.
-_KEY_HELP = (
-    ("?  or  F1", "this card — from any screen, at any time"),
-    ("Q", "the quad view: all four chips at once, one protein per chip — "
-          "press it again for the single large view"),
-    ("T", "Tensix activity: the live core-grid animation, one grid per chip"),
-    ("D", "diagnostics: the live protocol log in the right-hand rail"),
-    ("Esc", "close this card, or close whichever rail panel is open"),
-    ("any other key,\nor a tap anywhere",
-     "wake the booth and look through the proteins it folds"),
-    ("Ctrl + F", "leave or return to fullscreen — for the booth operator"),
-    ("Ctrl + Q", "quit the booth — for the booth operator"),
-)
+#
+# `_KEY_HELP`/`_HELP_PANELS` used to be plain module-level tuples. They are
+# functions of `n_chips` now (whole-branch review, Important 3): the Q row
+# and the Tensix paragraph both used to say "four chips", hardcoded, which
+# goes false the instant `runner.workers.split_for_qa` reserves one chip for
+# Q&A -- a 4-physical-chip box with the affinity-questions feature enabled
+# folds on 3, and a visitor reading the `?` card would see a claim the booth
+# cannot back up (this project's own standing rule against exactly that
+# class of defect: CLAUDE.md, "the turnkey launcher advertised four targets
+# over a daemon that could fold one"). `n_chips` is `len(DemoApp.cards)` --
+# the daemon's own `hello.cards`, i.e. the REAL fold-chip count, not the
+# physical chip count on the box (those two agree except when a chip is
+# reserved) -- threaded in by `_build_help_keys`/`_build_help_panels` at
+# build time and kept in sync afterwards by `_sync_help_copy` (called from
+# `attach_cards`, since a `hello` naming a different chip count can arrive
+# well after the help card was first built).
+def _key_help(n_chips):
+    return (
+        ("?  or  F1", "this card — from any screen, at any time"),
+        ("Q", "the quad view: all " + chip_count_word(n_chips) +
+              (" chip" if n_chips == 1 else " chips") +
+              " at once, one protein per chip — press it again for the "
+              "single large view"),
+        ("T", "Tensix activity: the live core-grid animation, one grid per chip"),
+        ("D", "diagnostics: the live protocol log in the right-hand rail"),
+        ("Esc", "close this card, or close whichever rail panel is open"),
+        ("any other key,\nor a tap anywhere",
+         "wake the booth and look through the proteins it folds"),
+        ("Ctrl + F", "leave or return to fullscreen — for the booth operator"),
+        ("Ctrl + Q", "quit the booth — for the booth operator"),
+    )
 
-_HELP_PANELS = (
-    # The quad view's own line, imported from `ui/quad.py` rather than
-    # re-typed here: the key, the view and the words describing it are one
-    # decision, and a hand-copied second sentence is where a booth ends up
-    # documenting a key it no longer has. It leads this column because it is
-    # the only entry that changes what the hero image IS, rather than what
-    # sits in the rail beside it.
-    QUAD_HELP_LINE,
 
-    "Pipeline — one row per stage of a fold: msa, prep, trunk, diffusion, "
-    "confidence, saving. The bright row is the stage running right now; "
-    "diffusion owns most of the bar because it does most of the work.",
+def _help_panels(n_chips):
+    word = chip_count_word(n_chips)
+    plural = "chip" if n_chips == 1 else "chips"
+    verb = "folds" if n_chips == 1 else "fold"
+    return (
+        # The quad view's own line, from `ui/quad.py` rather than re-typed
+        # here: the key, the view and the words describing it are one
+        # decision, and a hand-copied second sentence is where a booth ends
+        # up documenting a key it no longer has. It leads this column
+        # because it is the only entry that changes what the hero image IS,
+        # rather than what sits in the rail beside it.
+        quad_help_line(n_chips),
 
-    # The cadence here is `ui/telemetry.py`'s TelemetrySampler(period_s=2.0)
-    # -- one `tt-smi` snapshot every two seconds, on its own thread. This
-    # paragraph used to say "read from the driver twice a second", which was
-    # wrong twice over: it is 4x the real rate (500ms is `_TELEMETRY_REPAINT_MS`,
-    # the REPAINT cadence, not the sample rate) and it is a `tt-smi`
-    # subprocess, not a driver read. The chip panel below it genuinely does
-    # read the driver, once a second, and says so.
-    "Chips — temperature, power draw and clock speed for every Tenstorrent "
-    "chip in this machine, taken from a tt-smi snapshot every two seconds. A "
-    "Blackhole p300c board carries two chips, so the four chips here are two "
-    "boards. It is independent of the fold, so the silicon keeps breathing "
-    "even if a fold stalls.",
+        "Pipeline — one row per stage of a fold: msa, prep, trunk, diffusion, "
+        "confidence, saving. The bright row is the stage running right now; "
+        "diffusion owns most of the bar because it does most of the work.",
 
-    # Every claim in this paragraph was checked against the rendered pixels
-    # before it was written. An earlier draft said each grid was "driven by
-    # that chip's own clock" -- the per-chip feed IS wired (ui/chipviz.py),
-    # but at this size it makes no visible difference, so the sentence was
-    # cut rather than left as a nice-sounding thing the screen does not
-    # actually do. What IS live and per-chip is the clock number, and the
-    # temperatures directly above it.
-    # Rewritten with Task 16, in the same commit as the behaviour. This
-    # paragraph was walked back once (whole-branch review, Critical 3) to say
-    # the fold "runs on one chip" and that the others "sit idle" -- true then,
-    # a lie now that all four fold at once. What it must NOT do is overshoot
-    # in the other direction: the panel counts the chips that are actually
-    # animating work, so a chip between folds really is drawn resting and the
-    # card has to say so or it promises four grids of motion at every moment.
-    "Tensix activity (press T) — one animated Tensix core grid per chip, in "
-    "the same left-to-right order as the readouts above it. Each grid follows "
-    "its own chip's fold: a spreading ring while that chip is denoising atom "
-    "positions, a steady glow while it is reasoning about which residues "
-    "touch, and quiet when it is between folds. Four chips fold at the same "
-    "time, so the header says how many are working right now — or names the "
-    "one, if only one is. The number beside it is the fastest clock any of "
-    "these chips is running at, read from the driver every second. It is a "
-    "picture of the work, not a trace of individual cores.",
-)
+        # The cadence here is `ui/telemetry.py`'s TelemetrySampler(period_s=2.0)
+        # -- one `tt-smi` snapshot every two seconds, on its own thread. This
+        # paragraph used to say "read from the driver twice a second", which was
+        # wrong twice over: it is 4x the real rate (500ms is `_TELEMETRY_REPAINT_MS`,
+        # the REPAINT cadence, not the sample rate) and it is a `tt-smi`
+        # subprocess, not a driver read. The chip panel below it genuinely does
+        # read the driver, once a second, and says so.
+        #
+        # Deliberately NOT parameterized on `n_chips`: this panel samples
+        # EVERY physical Tenstorrent chip on the box via `tt-smi`
+        # (`self.sampler`, independent of the daemon and of which chips it
+        # has reserved for folding vs. Q&A), so "four chips" here is a
+        # hardware-inventory fact, unaffected by `split_for_qa` -- unlike the
+        # quad/Tensix lines below, which describe how many chips are
+        # actually FOLDING right now.
+        "Chips — temperature, power draw and clock speed for every Tenstorrent "
+        "chip in this machine, taken from a tt-smi snapshot every two seconds. A "
+        "Blackhole p300c board carries two chips, so the four chips here are two "
+        "boards. It is independent of the fold, so the silicon keeps breathing "
+        "even if a fold stalls.",
+
+        # Every claim in this paragraph was checked against the rendered pixels
+        # before it was written. An earlier draft said each grid was "driven by
+        # that chip's own clock" -- the per-chip feed IS wired (ui/chipviz.py),
+        # but at this size it makes no visible difference, so the sentence was
+        # cut rather than left as a nice-sounding thing the screen does not
+        # actually do. What IS live and per-chip is the clock number, and the
+        # temperatures directly above it.
+        # Rewritten with Task 16, in the same commit as the behaviour. This
+        # paragraph was walked back once (whole-branch review, Critical 3) to say
+        # the fold "runs on one chip" and that the others "sit idle" -- true then,
+        # a lie now that all four fold at once. What it must NOT do is overshoot
+        # in the other direction: the panel counts the chips that are actually
+        # animating work, so a chip between folds really is drawn resting and the
+        # card has to say so or it promises four grids of motion at every moment.
+        #
+        # `n_chips` chips fold at the same time -- NOT always "four": with
+        # the affinity-questions feature enabled, one chip is permanently
+        # reserved for Q&A (see the comment above this function), so this
+        # panel's own cell count (`ui/app.py`'s `_sync_chipviz`, driven by
+        # `self.cards`) is `n_chips` too, and the two must agree.
+        "Tensix activity (press T) — one animated Tensix core grid per chip, in "
+        "the same left-to-right order as the readouts above it. Each grid follows "
+        "its own chip's fold: a spreading ring while that chip is denoising atom "
+        "positions, a steady glow while it is reasoning about which residues "
+        f"touch, and quiet when it is between folds. {word.capitalize()} {plural} "
+        f"{verb} at the same time, so the header says how many are working right "
+        "now — or names the one, if only one is. The number beside it is the "
+        "fastest clock any of these chips is running at, read from the driver "
+        "every second. It is a picture of the work, not a trace of individual "
+        "cores.",
+
+        # Important 5 (whole-branch review): before this, there was ZERO
+        # visitor-facing text anywhere -- not this card, not the panel
+        # itself, not the gallery -- explaining what the highlighted patch
+        # of ribbon means or naming its cutoff. Spec section 7 is explicit
+        # that the copy must describe this as "the residues nearest the
+        # ligand", a stated, checkable geometric fact, and never as "the
+        # binding site", which a distance cutoff alone cannot establish --
+        # see ui/pocket.py's own module docstring for the same rule applied
+        # to the code that computes it. `POCKET_CUTOFF_ANGSTROM` is
+        # imported, not retyped as a literal "5", so this sentence can never
+        # quietly disagree with the number `pocket_residues` actually uses.
+        #
+        # Present unconditionally, the same way the Tensix paragraph
+        # documents `T` even on a box where WebKit (and so the Tensix panel
+        # itself) may not be available: this describes what the feature
+        # DOES when present, not a claim that this specific box has it.
+        "Affinity questions (right rail) — a small, fixed set of questions "
+        "this booth asks and answers with a real tt-bio computation: does "
+        "this ligand bind this protein? The answer is nesso1's own score, "
+        "plus a highlight on the ribbon showing the residues nearest the "
+        f"ligand — within {POCKET_CUTOFF_ANGSTROM:g} Å of any ligand atom, "
+        "a stated, checkable distance, not a claim about the \"true\" "
+        "binding site a cutoff alone cannot establish.",
+    )
+
+
+# Frozen 4-chip snapshots, kept ONLY for tests that check general content
+# (which keys are documented, which forbidden words never appear, ...) and
+# do not care about a specific chip count -- the running booth never reads
+# these two names; `_build_help_keys`/`_build_help_panels`/
+# `_sync_help_copy` all call `_key_help(len(self.cards))`/
+# `_help_panels(len(self.cards))` directly, which is what makes the copy
+# track the REAL fold-chip count instead of silently drifting back to this
+# hardcoded default.
+_KEY_HELP = _key_help(4)
+_HELP_PANELS = _help_panels(4)
 
 _APP_CSS_INSTALLED = False
 
@@ -1696,6 +1771,13 @@ class DemoApp(Gtk.Application):
         self._diagnostics_toggle_label = None
         self._tensix_toggle_label = None
         self._help_box = None
+        # The two chip-count-dependent spots on the `?` card (Important 3,
+        # whole-branch review) -- kept so `_sync_help_copy` can update their
+        # text in place whenever the real fold-chip count changes, rather
+        # than rebuilding the whole card. None/empty until the card is
+        # actually built (headless tests never call do_activate at all).
+        self._help_q_meaning_label = None
+        self._help_panel_labels = []
 
         # Visibility is tracked as plain booleans, NOT read back off the
         # widgets: `_handle_key`'s decisions have to be testable without a
@@ -1915,6 +1997,7 @@ class DemoApp(Gtk.Application):
         self._resolve_auto_quad()
         self._ensure_quad(cards)
         self._sync_viewer_hold()
+        self._sync_help_copy()
 
     def _note_card(self, card):
         """Give a chip the booth has just heard of its own cell.
@@ -2836,13 +2919,19 @@ class DemoApp(Gtk.Application):
         column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         column.append(self._help_label("KEYS", "help-section"))
         grid = Gtk.Grid(column_spacing=20, row_spacing=8)
-        for row_index, (keys, meaning) in enumerate(_KEY_HELP):
+        for row_index, (keys, meaning) in enumerate(_key_help(len(self.cards))):
             key_label = self._help_label(keys, "help-key")
             key_label.set_valign(Gtk.Align.START)
             meaning_label = self._help_label(meaning, "help-desc", wrap=True)
             meaning_label.set_max_width_chars(34)
             grid.attach(key_label, 0, row_index, 1, 1)
             grid.attach(meaning_label, 1, row_index, 1, 1)
+            if keys.strip().lower() == "q":
+                # Kept so `_sync_help_copy` can update just this one row's
+                # text later, without rebuilding the whole card -- see that
+                # method's docstring for why the chip count in this row can
+                # change after the card is first built.
+                self._help_q_meaning_label = meaning_label
         column.append(grid)
         return column
 
@@ -2850,10 +2939,15 @@ class DemoApp(Gtk.Application):
         column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         column.append(self._help_label("THE QUAD, AND THE PANELS ON THE RIGHT",
                                        "help-section"))
-        for paragraph in _HELP_PANELS:
+        self._help_panel_labels = []
+        for paragraph in _help_panels(len(self.cards)):
             label = self._help_label(paragraph, "help-desc", wrap=True)
             label.set_max_width_chars(52)
             column.append(label)
+            # Same reason as `_help_q_meaning_label` above: `_sync_help_copy`
+            # updates these labels' text in place when the real fold-chip
+            # count changes, rather than rebuilding the whole help card.
+            self._help_panel_labels.append(label)
 
         # Per RESIDUE, not per atom. ui/geometry.py's `load_backbone_trace`
         # reads one pLDDT per residue -- its anchor atom's B-factor -- and that is
@@ -2878,6 +2972,37 @@ class DemoApp(Gtk.Application):
                                         "help-desc", wrap=True))
             column.append(row)
         return column
+
+    def _sync_help_copy(self):
+        """Keep the `?` card's chip-count claims matched to the REAL number
+        of chips this booth folds on right now (whole-branch review,
+        Important 3).
+
+        `_build_help_keys`/`_build_help_panels` compute their text from
+        `len(self.cards)` at BUILD time, but the help card is built once
+        (from `do_activate`, before any `hello` has necessarily arrived --
+        `self.cards` may still be its `[0]` placeholder then), while the
+        real fold-chip count can change afterwards: a `hello` naming a
+        different card list (a reconnect), or the affinity-questions
+        feature's permanent one-chip Q&A reservation
+        (`runner.workers.split_for_qa`) taking the booth from 4 fold chips
+        to 3. Called from `attach_cards`, which is the one place that
+        already reacts to exactly that change.
+
+        A no-op before the card exists at all (headless tests, and the
+        instant before `do_activate` runs) -- `_help_q_meaning_label`/
+        `_help_panel_labels` are only ever populated once the real widgets
+        are built.
+        """
+        n_chips = len(self.cards)
+        if self._help_q_meaning_label is not None:
+            for keys, meaning in _key_help(n_chips):
+                if keys.strip().lower() == "q":
+                    self._help_q_meaning_label.set_label(meaning)
+                    break
+        for label, paragraph in zip(self._help_panel_labels,
+                                    _help_panels(n_chips)):
+            label.set_label(paragraph)
 
     def _connect_visitor_input(self, window):
         """Any tap, click or keypress reaches the booth through here.

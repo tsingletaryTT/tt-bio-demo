@@ -33,7 +33,7 @@ quad, so it lives on the quad.
 The toggle key
 --------------
 `QUAD_KEYS` below is this view's decided key, and the copy for the `?` card
-travels with it (`QUAD_HELP_LINE`) so the two cannot drift apart. Task 15
+travels with it (`quad_help_line`) so the two cannot drift apart. Task 15
 wired them into `ui/app.py`'s `_handle_key` and `_HELP_PANELS`; nothing in
 this module reads a keyboard.
 
@@ -97,16 +97,58 @@ _NOTICE_ROW = MAX_SLOTS // _COLUMNS
 # not have to be told about it in person.
 QUAD_KEYS = frozenset({"q"})
 
-# The `?` card's line for it. Says what the key does and what the view shows,
-# in the same register as the rest of the card: what it is, plainly, with no
-# claim the booth cannot back up. Four cells means four chips REALLY folding
-# four different proteins at the same time -- which is true only because
-# Tasks 6-9 made it true, and is the whole point of saying it.
-QUAD_HELP_LINE = (
-    "Press Q for the quad view: all four Tenstorrent chips at once, one "
-    "protein per chip, each folding on its own silicon. Press Q again for "
-    "the single large view."
-)
+# Number words for the small range of chip counts this booth ever actually
+# has (MAX_SLOTS caps at 4) -- "all three chips" reads as a booth, "all 3
+# chips" reads as a spec sheet. Falls back to the digit for anything outside
+# that range rather than raising: a count this module was not written to
+# expect should still produce SOME sentence, not a crash on a help card.
+_CHIP_COUNT_WORDS = {1: "one", 2: "two", 3: "three", 4: "four"}
+
+
+def chip_count_word(n_chips):
+    return _CHIP_COUNT_WORDS.get(n_chips, str(n_chips))
+
+
+def quad_help_line(n_chips):
+    """The `?` card's line for Q -- the quad view. Says what the key does
+    and what the view shows, in the same register as the rest of the card:
+    what it is, plainly, with no claim the booth cannot back up.
+
+    `n_chips` (whole-branch review, Important 3) is however many chips THIS
+    booth actually folds on right now -- `len(DemoApp.cards)`, the daemon's
+    own `hello.cards`, not the physical chip count on the box. The two agree
+    on an ordinary box, but the affinity-questions feature permanently
+    reserves one chip for Q&A when 2+ are detected
+    (`runner.workers.split_for_qa`), so a 4-physical-chip box with Q&A
+    enabled folds on 3 -- and a hardcoded "four" here would be false on
+    exactly that configuration, the same class of defect this project's own
+    CLAUDE.md already treats as a real, blocking bug ("the turnkey launcher
+    advertised four targets over a daemon that could fold one").
+
+    Previously a module-level constant (`QUAD_HELP_LINE`); a fixed string
+    cannot be correct across a booth's whole lifetime once the fold-chip
+    count can change under it (Q&A reservation, or a reconnect naming a
+    different card list), so it is a function of the one thing that
+    actually varies.
+    """
+    word = chip_count_word(max(n_chips, 1))
+    plural = "chip" if n_chips == 1 else "chips"
+    at_once = "" if n_chips == 1 else " at once"
+    return (
+        f"Press Q for the quad view: all {word} Tenstorrent {plural}"
+        f"{at_once}, one protein per chip, each folding on its own "
+        "silicon. Press Q again for the single large view."
+    )
+
+
+# A frozen 4-chip snapshot, kept ONLY for tests that check general content
+# (the toggle key is named, the sentence says "again", no overclaim words)
+# and do not care about a specific chip count. `ui/app.py`'s
+# `_build_help_panels`/`_sync_help_copy` never read this name -- they call
+# `quad_help_line(len(self.cards))` directly, which is what makes the copy
+# track the real fold-chip count instead of silently drifting back to this
+# hardcoded default.
+QUAD_HELP_LINE = quad_help_line(4)
 
 # The keys this module knows are already spoken for elsewhere in the booth,
 # so `test_the_toggle_key_is_not_one_already_taken` is a real check against a
