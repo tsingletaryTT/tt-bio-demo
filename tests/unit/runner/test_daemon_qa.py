@@ -568,6 +568,86 @@ def test_build_pool_reserves_no_chip_on_a_single_chip_box(tmp_path, monkeypatch)
     assert [s.card for s in daemon.pool.specs] == [0]
 
 
+# ---------------------------------------------------------------------------
+# _build_pool: --no-questions (questions_enabled=False) skips split_for_qa
+# entirely, even with 2+ chips detected
+# ---------------------------------------------------------------------------
+
+def test_build_pool_with_questions_disabled_folds_on_every_chip(tmp_path, monkeypatch):
+    """The whole point of `--no-questions`: no chip held back even at four
+    chips -- the exact pre-Q&A "classic" behavior (every detected chip
+    folds, no reservation)."""
+    import runner.daemon as mod
+
+    monkeypatch.setattr(mod, "worker_specs",
+                        lambda *a, **k: [_spec(c) for c in (0, 1, 2, 3)])
+    monkeypatch.setattr(mod, "WorkerPool", _RecordingPoolNoStart)
+
+    config = DaemonConfig(socket_path=str(tmp_path / "sock"), weights_dir=str(tmp_path),
+                          playlist_dir=str(tmp_path / "playlist"),
+                          log_root=str(tmp_path / "logs"),
+                          questions_enabled=False)
+    daemon = Daemon(config)
+    assert daemon._build_pool() is True
+    assert daemon._qa_spec is None
+    assert sorted(s.card for s in daemon.pool.specs) == [0, 1, 2, 3]
+
+
+def test_build_pool_with_questions_disabled_never_calls_split_for_qa(tmp_path, monkeypatch):
+    """Not "call it and discard the result": split_for_qa's own docstring
+    says it exists to make a PERMANENT, deterministic reservation decision
+    at startup, so `--no-questions` must skip the call outright rather than
+    invoke it and override what it returns -- calling it and discarding the
+    reservation would still be making the decision, just hiding it from a
+    reader who would have to trace all the way into WorkerPool's
+    construction to discover it was overridden.
+    """
+    import runner.daemon as mod
+
+    def _must_not_be_called(specs):
+        raise AssertionError("split_for_qa must not be called when "
+                              "questions_enabled is False")
+
+    monkeypatch.setattr(mod, "worker_specs",
+                        lambda *a, **k: [_spec(c) for c in (0, 1, 2, 3)])
+    monkeypatch.setattr(mod, "split_for_qa", _must_not_be_called)
+    monkeypatch.setattr(mod, "WorkerPool", _RecordingPoolNoStart)
+
+    config = DaemonConfig(socket_path=str(tmp_path / "sock"), weights_dir=str(tmp_path),
+                          playlist_dir=str(tmp_path / "playlist"),
+                          log_root=str(tmp_path / "logs"),
+                          questions_enabled=False)
+    daemon = Daemon(config)
+    # Would have raised _must_not_be_called's AssertionError already if
+    # _build_pool called split_for_qa at all.
+    assert daemon._build_pool() is True
+
+
+def test_hello_reports_not_qa_capable_with_questions_disabled_at_four_chips(
+        tmp_path, monkeypatch):
+    """This is what makes `--no-questions` free to have built: ui/app.py
+    already hides the question queue panel, the gallery "ask" strip and the
+    attract-loop question cue whenever `hello` reports `qa_capable: false`
+    -- exactly what a chip-less booth already reports, and exactly what
+    THIS booth (four real chips, questions just turned off) reports too.
+    No UI change needed.
+    """
+    import runner.daemon as mod
+
+    monkeypatch.setattr(mod, "worker_specs",
+                        lambda *a, **k: [_spec(c) for c in (0, 1, 2, 3)])
+    monkeypatch.setattr(mod, "WorkerPool", _RecordingPoolNoStart)
+
+    config = DaemonConfig(socket_path=str(tmp_path / "sock"), weights_dir=str(tmp_path),
+                          playlist_dir=str(tmp_path / "playlist"),
+                          log_root=str(tmp_path / "logs"),
+                          questions_enabled=False)
+    daemon = Daemon(config)
+    assert daemon._build_pool() is True
+    assert len(daemon.pool.cards) == 4
+    assert daemon._hello()["qa_capable"] is False
+
+
 class _RecordingPoolNoStart(_FakePool):
     """Captures the specs run()/_build_pool() constructed a real pool with,
     without spawning anything -- mirrors test_daemon_multichip.py's own

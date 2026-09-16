@@ -473,3 +473,87 @@ def test_the_devices_flag_defaults_to_every_chip(tmp_path):
     from runner.daemon import DaemonConfig
     assert DaemonConfig(socket_path="s", weights_dir="w", playlist_dir="p",
                         log_root="l").device_ids is None
+
+
+def test_questions_enabled_defaults_to_true(tmp_path):
+    """The pre-existing (and still default) behavior: a booth with 2+ chips
+    reserves one for Q&A unless an operator explicitly opts out."""
+    from runner.daemon import DaemonConfig
+    assert DaemonConfig(socket_path="s", weights_dir="w", playlist_dir="p",
+                        log_root="l").questions_enabled is True
+
+
+def test_the_no_questions_flag_reaches_the_daemon_config(tmp_path, monkeypatch):
+    """`--no-questions` is the CLI half of `DaemonConfig.questions_enabled`.
+    A flag that parses but never reaches DaemonConfig is exactly the inert
+    `--device` shape `test_the_devices_flag_reaches_the_daemon_config`
+    already guards against, one field over.
+    """
+    from runner import cards as cards_mod
+    from runner import daemon as mod
+    from runner import preflight as preflight_mod
+
+    monkeypatch.setattr(preflight_mod, "check_tap_supported", lambda: None)
+    monkeypatch.setattr(cards_mod, "sample_tt_smi", lambda timeout=5.0: [])
+    monkeypatch.setattr(mod, "run_preflight",
+                        lambda *a, **k: types.SimpleNamespace(ok=True, missing=[]))
+    monkeypatch.setattr(mod.signal, "signal", lambda *a, **k: None)
+
+    built = {}
+
+    class _CapturingDaemon:
+        def __init__(self, config):
+            built["config"] = config
+
+        def run(self):
+            pass
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(mod, "Daemon", _CapturingDaemon)
+    code = main([
+        "--socket", str(tmp_path / "r.sock"),
+        "--weights", str(tmp_path / "weights"),
+        "--playlist", str(tmp_path / "playlist"),
+        "--log-root", str(tmp_path / "logs"),
+        "--no-questions",
+    ])
+    assert code == 0
+    assert built["config"].questions_enabled is False
+
+
+def test_omitting_the_no_questions_flag_leaves_questions_enabled(tmp_path, monkeypatch):
+    """The other half of the pin: NOT passing `--no-questions` must reach
+    DaemonConfig as `questions_enabled=True`, not merely "unset"."""
+    from runner import cards as cards_mod
+    from runner import daemon as mod
+    from runner import preflight as preflight_mod
+
+    monkeypatch.setattr(preflight_mod, "check_tap_supported", lambda: None)
+    monkeypatch.setattr(cards_mod, "sample_tt_smi", lambda timeout=5.0: [])
+    monkeypatch.setattr(mod, "run_preflight",
+                        lambda *a, **k: types.SimpleNamespace(ok=True, missing=[]))
+    monkeypatch.setattr(mod.signal, "signal", lambda *a, **k: None)
+
+    built = {}
+
+    class _CapturingDaemon:
+        def __init__(self, config):
+            built["config"] = config
+
+        def run(self):
+            pass
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(mod, "Daemon", _CapturingDaemon)
+    code = main([
+        "--socket", str(tmp_path / "r.sock"),
+        "--weights", str(tmp_path / "weights"),
+        "--playlist", str(tmp_path / "playlist"),
+        "--log-root", str(tmp_path / "logs"),
+    ])
+    assert code == 0
+    assert built["config"].questions_enabled is True

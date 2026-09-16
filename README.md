@@ -291,6 +291,7 @@ the authoritative list. The ones you are most likely to want:
 | `--devices 0,2` | every detected chip | Which physical chips the booth folds on |
 | `--quad` | auto | Force the 2×2 grid, even on a one-chip booth; <kbd>Q</kbd> still toggles at runtime |
 | `--solo` | auto | Force one large protein on a booth that would otherwise come up in the grid |
+| `--no-questions` | off | Opt out of affinity Q&A entirely: no chip is reserved, every detected chip folds |
 | `--windowed` | off | Come up in a normal window instead of fullscreen; <kbd>Ctrl</kbd>+<kbd>F</kbd> still toggles |
 | `--log-root PATH` | `<runtime-dir>/logs` | Where tt-metal's own log output is pinned |
 | `--log-budget-gb` | 2 | Sweep budget for tt-metal logs between folds |

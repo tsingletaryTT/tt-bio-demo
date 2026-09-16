@@ -112,6 +112,22 @@
 #                                 what the booth comes up in. Only means
 #                                 anything with more than one chip.
 #
+#   --no-questions                Opt OUT of the affinity-Q&A feature: no
+#                                 chip is permanently reserved for it, so
+#                                 every detected chip folds -- the exact
+#                                 pre-Q&A "classic" behavior. Forwarded
+#                                 straight to the daemon's own
+#                                 --no-questions (runner/daemon.py); the UI
+#                                 needs no flag of its own, because it
+#                                 already hides the question queue panel,
+#                                 the gallery "ask" strip and the
+#                                 attract-loop question cue whenever the
+#                                 daemon's `hello` reports `qa_capable:
+#                                 false` -- exactly what a chip-less booth
+#                                 (or, with this flag, ANY booth) reports.
+#                                 Default: reserve a chip for Q&A whenever
+#                                 2+ chips are detected, same as today.
+#
 #   --weights DIR                 tt-bio's weights cache. (TT_BIO_DEMO_WEIGHTS)
 #                                 Default: $TT_BIO_CACHE, else
 #                                 $BOLTZ_CACHE, else ~/.boltz --
@@ -191,6 +207,7 @@ while [[ $# -gt 0 ]]; do
     --windowed)             WINDOWED=1; shift ;;
     --quad)                 QUAD=1; shift ;;
     --solo)                 SOLO=1; shift ;;
+    --no-questions)         NO_QUESTIONS=1; shift ;;
     --weights)              WEIGHTS="$2"; shift 2 ;;
     --log-budget-gb)        LOG_BUDGET_GB="$2"; shift 2 ;;
     --structures-budget-gb) STRUCTURES_BUDGET_GB="$2"; shift 2 ;;
@@ -334,6 +351,14 @@ DEVICE_ARGS=()
 if [[ -n "$DEVICES" ]]; then
   DEVICE_ARGS=(--devices "$DEVICES")
 fi
+# --no-questions is a bare boolean, same shape as --preflight-only on the
+# daemon's own side: appended only when the operator asked for it, so the
+# daemon's own default (reserve a chip for Q&A whenever 2+ chips are
+# detected) is what a plain run-demo.sh invocation still gets.
+QUESTIONS_ARGS=()
+if [[ "${NO_QUESTIONS:-0}" == "1" ]]; then
+  QUESTIONS_ARGS=(--no-questions)
+fi
 "${VENV_RUNNER}/bin/python3" -m runner.daemon \
   --socket "$SOCKET" \
   --weights "$WEIGHTS" \
@@ -342,6 +367,7 @@ fi
   ${DEVICE_ARGS[@]+"${DEVICE_ARGS[@]}"} \
   --log-budget-gb "$LOG_BUDGET_GB" \
   --structures-budget-gb "$STRUCTURES_BUDGET_GB" \
+  ${QUESTIONS_ARGS[@]+"${QUESTIONS_ARGS[@]}"} \
   >"$DAEMON_LOG" 2>&1 &
 DAEMON_PID=$!
 echo "run-demo.sh: daemon pid ${DAEMON_PID}; tailing its own log at ${DAEMON_LOG}" >&2

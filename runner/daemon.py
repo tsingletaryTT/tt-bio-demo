@@ -302,6 +302,18 @@ class DaemonConfig:
     max_temp_c: float = 85.0
     log_budget_bytes: int = DEFAULT_LOG_BUDGET_BYTES
     structures_budget_bytes: int = DEFAULT_STRUCTURES_BUDGET_BYTES
+    # False opts a booth OUT of the affinity-Q&A feature entirely: no chip
+    # is permanently reserved (`_build_pool` skips `split_for_qa`
+    # altogether -- see the comment there), so all detected chips fold and
+    # `qa_capable` comes back False in `_hello` exactly the way it already
+    # does on a one-chip box. That is deliberate reuse, not a special case:
+    # this field only ever changes what `_build_pool` hands `split_for_qa`
+    # the OPPORTUNITY to do, so the single-chip code path and this one are
+    # the same path, and the UI's existing `qa_capable` gate (ui/app.py)
+    # needs no changes at all to hide the queue panel, the gallery "ask"
+    # strip and the attract-loop question cue.
+    # Exposed as `--no-questions` (see main()).
+    questions_enabled: bool = True
 
 
 class Daemon:
@@ -1380,7 +1392,25 @@ class Daemon:
             # list is what keeps it out of dispatch_once's scheduling loop
             # and out of the thermal guard's bookkeeping -- both by
             # construction, not by a separate exclusion check anywhere else.
-            fold_specs, self._qa_spec = split_for_qa(specs)
+            #
+            # `--no-questions` (config.questions_enabled=False) skips this
+            # call rather than calling it and discarding the reservation.
+            # split_for_qa's own docstring says what it exists to do: make a
+            # PERMANENT chip-reservation decision, deterministically, once,
+            # at startup. Calling it and then overriding the result would
+            # still make that decision -- and then hide it, which is exactly
+            # the kind of code a future reader has to trace all the way into
+            # WorkerPool's construction to discover is a no-op. Skipping the
+            # call is the honest spelling of "this booth never reserves a
+            # chip": every detected spec folds, unconditionally, and
+            # `self._qa_spec` stays None the same way it already does on a
+            # one-chip box -- so `_hello`'s `qa_capable` (which reads nothing
+            # but `self._qa_spec is not None`) comes back False here too,
+            # with no changes needed anywhere downstream.
+            if self.config.questions_enabled:
+                fold_specs, self._qa_spec = split_for_qa(specs)
+            else:
+                fold_specs, self._qa_spec = specs, None
             # `total_workers=len(specs)`, the count BEFORE split_for_qa moved
             # one spec into `self._qa_spec` -- not `len(fold_specs)`. The two
             # only agree on a one-chip box (no chip reserved at all); on
@@ -1684,6 +1714,16 @@ def main(argv=None):
                         help="cap on each chip's .cif output; oldest pruned first")
     parser.add_argument("--preflight-only", action="store_true",
                         help="check readiness and exit; opens no device")
+    # Opt OUT of the affinity-Q&A feature's permanent chip reservation
+    # (runner/workers.py's split_for_qa): with this set, `_build_pool`
+    # never calls split_for_qa at all, so every detected chip folds and no
+    # chip is held back for questions -- the exact pre-Q&A "classic"
+    # behavior, restored deliberately rather than as a side effect. A
+    # 4-chip booth otherwise gives up 25% of its fold throughput to a
+    # feature it may never be asked to use.
+    parser.add_argument("--no-questions", action="store_true",
+                        help="never reserve a chip for affinity Q&A; fold "
+                             "on every detected chip (pre-Q&A behavior)")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO,
@@ -1735,7 +1775,8 @@ def main(argv=None):
         device_ids=args.devices,
         max_temp_c=args.max_temp,
         log_budget_bytes=int(args.log_budget_gb * 1024**3),
-        structures_budget_bytes=int(args.structures_budget_gb * 1024**3)))
+        structures_budget_bytes=int(args.structures_budget_gb * 1024**3),
+        questions_enabled=not args.no_questions))
     signal.signal(signal.SIGTERM, lambda *_: daemon.stop())
     signal.signal(signal.SIGINT, lambda *_: daemon.stop())
     daemon.run()

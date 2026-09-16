@@ -314,3 +314,31 @@ def test_the_ui_is_not_told_which_chips_to_expect(tmp_path):
     """
     _launch(tmp_path, "--devices", "0,2", "--targets", "trpcage")
     assert "--devices" not in _argv(tmp_path, "venv-ui")
+
+
+# --- --no-questions ---------------------------------------------------------
+# Opting a booth OUT of the affinity-Q&A feature's permanent chip
+# reservation (runner/workers.py's split_for_qa), forwarded straight to the
+# daemon. The UI needs no flag at all here -- it already hides the whole
+# feature on `qa_capable: false`, which `--no-questions` is what makes the
+# daemon report.
+
+
+def test_the_no_questions_flag_reaches_the_daemon(tmp_path):
+    _launch(tmp_path, "--no-questions", "--targets", "trpcage")
+    assert "--no-questions" in _argv(tmp_path, "venv-runner")
+
+
+def test_without_the_flag_the_daemon_gets_no_no_questions_argument(tmp_path):
+    """The daemon's own default (reserve a chip for Q&A at 2+ chips) is what
+    a plain run-demo.sh invocation must still get -- appending the flag
+    unconditionally would silently opt every booth out."""
+    _launch(tmp_path, "--targets", "trpcage")
+    assert "--no-questions" not in _argv(tmp_path, "venv-runner")
+
+
+def test_the_no_questions_flag_is_not_echoed_to_the_ui(tmp_path):
+    """Not a UI concern at all: ui/app.py's gate is `qa_capable` from
+    `hello`, never a command-line flag of its own."""
+    _launch(tmp_path, "--no-questions", "--targets", "trpcage")
+    assert "--no-questions" not in _argv(tmp_path, "venv-ui")
