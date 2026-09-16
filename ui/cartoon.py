@@ -39,6 +39,16 @@ import logging
 
 import numpy as np
 
+# Hoisted to module scope (item 11 of the deferred-nits batch) because both
+# `_colored` and `cartoon_from_cif` below need it in their own, separate
+# function scopes -- each importing it locally would be the same redundant
+# import twice, not two different imports. Safe to hoist: nothing in
+# `ui.geometry` imports `ui.cartoon` back (no circularity), and it is
+# already an unconditional module-scope dependency of `ui.pocket` and
+# `ui.geometry` itself, so this costs nothing this module wasn't already
+# pulling in transitively the moment either ran.
+from ui.geometry import resample_scalar
+
 from ui.secstruct import COIL, HELIX, STRAND
 
 log = logging.getLogger(__name__)
@@ -352,7 +362,7 @@ def _colored(plddt_values, seqids, chain_id, n_samples, highlight_residues):
     highlight at all, in which case this returns exactly what
     `plddt_colors` alone would have.
     """
-    from ui.geometry import plddt_colors, resample_scalar
+    from ui.geometry import plddt_colors
 
     base = plddt_colors(resample_scalar(np.asarray(plddt_values), n_samples))
 
@@ -390,11 +400,18 @@ def cartoon_from_cif(cif_path, samples_per_residue=6, highlight_residues=None):
     colour: see `POCKET_HIGHLIGHT_BOOST`. `None` (the default) is identical
     to every call made before this parameter existed -- an empty set changes
     nothing, for a caller that has computed a pocket and found it empty.
+
+    The highlight mask is resampled the same continuous way pLDDT itself is
+    (`_colored`), so it ramps smoothly between samples rather than stepping
+    at a hard per-residue boundary: a residue immediately NEAR a highlighted
+    one picks up a partial gradient boost rather than a clean on/off edge.
+    This is deliberate, not a rounding artefact -- see
+    tests/unit/test_cartoon.py's `test_highlighted_residues_keep_their_
+    plddt_color_but_gain_emphasis` for the geometry that makes it visible.
     """
     import gemmi
 
-    from ui.geometry import (GeometryError, _best_anchor_atom, catmull_rom,
-                             resample_scalar, tube_mesh)
+    from ui.geometry import GeometryError, _best_anchor_atom, catmull_rom, tube_mesh
     from ui.secstruct import assign
 
     highlight_residues = highlight_residues or set()
