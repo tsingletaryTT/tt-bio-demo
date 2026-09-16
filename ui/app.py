@@ -4642,13 +4642,15 @@ class DemoApp(Gtk.Application):
             if view is not None:
                 # No staleness check here against anything -- unlike
                 # `_ribbon_worker_main`'s generation compare, THE stale
-                # check for a highlight is "does the target still match",
-                # and that can only be answered once `shown_target_id` is
-                # readable without racing `_draw_frame`'s own writes to it
-                # -- i.e. on the main loop, in `_apply_highlight`. Recording
-                # unconditionally here just means at most one pending
-                # highlight per cell waits to be judged there.
-                view.pending_highlight = (target_id, outcome)
+                # check for a highlight is "does the target still match, AND
+                # is this still the exact ribbon that target is showing",
+                # and that can only be answered once `shown_target_id` and
+                # `shown_cif_path` are readable without racing `_draw_frame`'s
+                # own writes to them -- i.e. on the main loop, in
+                # `_apply_highlight`. Recording unconditionally here just
+                # means at most one pending highlight per cell waits to be
+                # judged there.
+                view.pending_highlight = (target_id, cif_path, outcome)
         GLib.idle_add(self._drain_pending_highlight)
 
     def _drain_pending_highlight(self):
@@ -4667,11 +4669,11 @@ class DemoApp(Gtk.Application):
                 if view.pending_highlight is not None:
                     pending.append((slot, view.pending_highlight))
                     view.pending_highlight = None
-        for slot, (target_id, outcome) in pending:
-            self._apply_highlight(slot, target_id, outcome)
+        for slot, (target_id, cif_path, outcome) in pending:
+            self._apply_highlight(slot, target_id, cif_path, outcome)
         return False
 
-    def _apply_highlight(self, slot, target_id, outcome):
+    def _apply_highlight(self, slot, target_id, cif_path, outcome):
         """Put a rebuilt, highlighted ribbon on screen, or decide not to.
 
         Re-checks `shown_target_id` here, not just at spawn time -- the
@@ -4684,13 +4686,22 @@ class DemoApp(Gtk.Application):
         this project's hold-until-superseded work exists to prevent,
         reintroduced from a different call site.
 
+        Also re-checks `shown_cif_path` against the exact path this rebuild
+        was BUILT FROM, not just the target id: a same-target race is still
+        possible when this cell's own fold repeats (or a new one lands for
+        the same target) while an older rebuild for an earlier ribbon of
+        that target is still in flight. `shown_target_id` alone cannot see
+        that -- it would still read the same target -- but `shown_cif_path`
+        will have moved to the newer ribbon's own file by then.
+
         Guarded the same broad way `_apply_ribbon` is: this must never show
         a stack trace or die on e.g. a viewer already torn down.
         """
         try:
             view = self._slot_view(slot)
             if (view is None or view.shown_target_id != target_id
-                    or not view.has_structure):
+                    or not view.has_structure
+                    or view.shown_cif_path != cif_path):
                 log.info("pocket highlight for %s arrived after its cell "
                          "moved on; dropping it", target_id)
                 return
@@ -5289,6 +5300,19 @@ class DemoApp(Gtk.Application):
                 # what stops one fold's noise rescaling another's ribbon.
                 viewer.clear_structure()
                 view.has_structure = False
+                # `shown_cif_path` names the ribbon this cell is showing, and
+                # this is the instant that ribbon genuinely leaves the screen
+                # -- the same handover `has_structure` just recorded. Left
+                # alone it stays pointed at the OUTGOING fold's .cif while
+                # `shown_target_id` (below) is about to be renamed to the
+                # INCOMING fold: `_maybe_highlight_pocket`'s guard reads both
+                # fields, so an answer landing in that window would rebuild
+                # and paint the outgoing fold's stale ribbon over this cell's
+                # live diffusion, snapping the camera to the wrong geometry
+                # (spec section 6 forbids exactly this camera jump). Clearing
+                # it here keeps it in lockstep with `has_structure` for
+                # every reader downstream.
+                view.shown_cif_path = None
             viewer.set_points(coords)
             view.has_structure = True
             if view.awaiting_first_frame:

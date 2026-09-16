@@ -318,6 +318,140 @@ def test_a_highlight_arriving_after_the_cell_moved_on_is_dropped(monkeypatch):
     assert viewer.shown == before, "a stale highlight was drawn after the cell moved on"
 
 
+def test_shown_cif_path_is_cleared_the_instant_a_new_folds_frames_start(monkeypatch):
+    """The narrower half of the stale-cif defect, pinned directly: once a
+    new fold's frames start drawing on a cell, `shown_cif_path` must not
+    still be pointing at the OUTGOING fold's `.cif` -- it goes to `None` in
+    lockstep with `has_structure` going `False`, at the exact handover point
+    in `_draw_frame` (`viewer.clear_structure()` / `view.has_structure =
+    False`). Before this fix, `shown_cif_path` was left untouched there,
+    while `shown_target_id` (a few lines later, once the frame lands) WAS
+    renamed to the incoming fold -- so a reader checking `shown_target_id`
+    and `shown_cif_path` together saw a self-consistent-looking but wrong
+    pair: the new target's id next to the old target's file.
+    """
+    import ui.app as mod
+    monkeypatch.setattr(mod, "_compute_pocket_residues",
+                        lambda cif_path: {("A", 1)})
+    monkeypatch.setattr(mod, "structure_mesh", _SlowMesh(delay=0.0))
+
+    app = _questions_app()
+    _fold_and_finish(app, job_id="j-dhfr", target_id="dhfr",
+                     cif_path="/fold1/dhfr.cif")
+    view = app._slot_view(0)
+    assert view.shown_cif_path == "/fold1/dhfr.cif"
+    assert view.has_structure is True
+
+    # Let the showcase dwell expire, the same way the daemon's own next
+    # fold would arrive well after it (the daemon never pauses between
+    # folds; the dwell is what makes room for the NEXT job_start below).
+    app._tick_state_at(0.0)
+    app._tick_state_at(99.0)
+
+    # Trypsin starts folding in the SAME cell; its first frame lands.
+    app._handle_event(_start("j-trypsin", card=0, target_id="trypsin"))
+    app._on_event(_frame("j-trypsin", n_atoms=4, spread=90.0))
+    app._drain_frames()
+
+    assert view.shown_target_id == "trypsin"
+    assert view.has_structure is True
+    assert view.shown_cif_path is None, (
+        "shown_cif_path still names an older fold's .cif once a new fold's "
+        "frames have started drawing on this cell")
+
+
+def test_answer_done_does_not_paint_a_stale_ribbon_over_a_different_folds_diffusion(
+        monkeypatch):
+    """The Critical defect, reproduced end to end: DHFR's ribbon is shown,
+    trypsin starts folding in the same cell and its first frame lands (so
+    the cell is genuinely showing trypsin's live diffusion point cloud, with
+    no ribbon of its own yet), and then an answer for TRYPSIN lands. Without
+    the fix, the guard in `_maybe_highlight_pocket` reads `shown_target_id
+    == "trypsin"`, `has_structure`, and a truthy (but stale) `shown_cif_path`
+    -- all true -- and rebuilds a highlighted ribbon from DHFR's `.cif`,
+    which `_apply_highlight` then paints directly over trypsin's live
+    diffusion, snapping the camera to DHFR's geometry (the exact camera cut
+    spec section 6 forbids).
+    """
+    import ui.app as mod
+    monkeypatch.setattr(mod, "_compute_pocket_residues",
+                        lambda cif_path: {("A", 1)})
+    mesh = _SlowMesh(delay=0.0)
+    monkeypatch.setattr(mod, "structure_mesh", mesh)
+
+    app = _questions_app()
+    viewer = _fold_and_finish(app, job_id="j-dhfr", target_id="dhfr",
+                              cif_path="/fold1/dhfr.cif")
+    assert mesh.calls == [None]  # the ordinary ribbon build, no highlight
+
+    # Let the showcase dwell expire so the next fold is not deferred.
+    app._tick_state_at(0.0)
+    app._tick_state_at(99.0)
+    app._handle_event(_start("j-trypsin", card=0, target_id="trypsin"))
+    app._on_event(_frame("j-trypsin", n_atoms=4, spread=90.0))
+    app._drain_frames()
+    assert viewer.shown[0] == "points", (
+        "precondition: the cell should be showing trypsin's own live "
+        "diffusion, not a ribbon")
+    before = viewer.shown
+
+    app._handle_event({"type": "answer_done", "question_id": "q1",
+                       "target_id": "trypsin", "score": 0.9})
+    assert app._join_ribbon_workers(timeout=5.0)
+    app._drain_pending_highlight()
+
+    assert mesh.calls == [None], (
+        "a highlight rebuild was spawned from a stale .cif path even "
+        "though trypsin has no ribbon of its own on screen yet")
+    assert viewer.shown == before, (
+        "trypsin's live diffusion was replaced by a ribbon rebuilt from an "
+        "older fold's stale .cif path"
+    )
+
+
+def test_a_highlight_for_an_older_ribbon_of_the_same_target_is_dropped(monkeypatch):
+    """The narrower in-flight variant `_apply_highlight`'s own re-check
+    closes: a highlight rebuild is spawned from ribbon A of some target,
+    and while it is still in flight a NEWER ribbon (B) of the SAME target
+    lands on the same cell. `shown_target_id` alone cannot see this race --
+    it reads the same target the whole time -- so the fix also re-checks
+    `shown_cif_path` against the exact path the in-flight rebuild was built
+    from."""
+    import ui.app as mod
+    monkeypatch.setattr(mod, "_compute_pocket_residues",
+                        lambda cif_path: {("A", 1)})
+    mesh = _SlowMesh(delay=0.15)
+    monkeypatch.setattr(mod, "structure_mesh", mesh)
+
+    app = _questions_app()
+    viewer = _fold_and_finish(app, job_id="j1", target_id="dhfr",
+                              cif_path="/fold1/dhfr.cif")
+
+    app._handle_event({"type": "answer_done", "question_id": "q1",
+                       "target_id": "dhfr", "score": 0.9})
+    # While that rebuild is still sleeping, a SECOND fold of the same
+    # target lands a NEWER ribbon on this cell -- same target id, different
+    # .cif.
+    app._handle_event(_start("j2", card=0, target_id="dhfr"))
+    app._on_event(_frame("j2", n_atoms=4, spread=1.0))
+    app._drain_frames()
+    app._handle_event({"type": "job_done", "job_id": "j2",
+                       "cif_path": "/fold2/dhfr.cif", "wall_s": 1.0,
+                       "mean_plddt": 91.0})
+    assert app._join_ribbon_workers(timeout=5.0)
+    app._drain_pending_ribbon()
+    after_second_fold = viewer.shown
+    assert after_second_fold == ("ribbon", ["mesh:plain"])
+
+    # Now the first (stale) highlight rebuild lands.
+    app._drain_pending_highlight()
+
+    assert viewer.shown == after_second_fold, (
+        "a highlight rebuilt from an OLDER ribbon of the same target was "
+        "painted over a newer ribbon of that same target"
+    )
+
+
 def test_a_highlight_never_calls_begin_crossfade(monkeypatch):
     """Spec section 6: no camera fly-to/cut when a highlight arrives. This
     is the narrowest observable proxy available headlessly -- the real
