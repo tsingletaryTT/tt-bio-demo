@@ -26,6 +26,8 @@ from ui.questions import (
     error_text,
     expected_time_text,
     in_flight_text,
+    no_question_answered_text,
+    no_question_in_flight_text,
     pending_text,
 )
 
@@ -299,6 +301,29 @@ def test_empty_pending_queue_says_so_explicitly():
     panel.set_qa_capable(True)
     assert pending_text([]) == "No questions queued"
     assert "No questions queued" in panel.get_display_text()
+
+
+def test_no_question_in_flight_pure_function():
+    """Item 10 of the deferred-nits batch: this fallback used to be an
+    inline literal in `_render`, against the module's own stated design
+    ("keep the drawing thin and the decisions pure") that every other
+    rendered string here already follows."""
+    assert no_question_in_flight_text() == "No question in flight"
+
+
+def test_no_question_answered_pure_function():
+    assert no_question_answered_text() == "No question answered yet"
+
+
+def test_a_fresh_panel_shows_both_idle_fallbacks_before_anything_happens():
+    """The panel-level twin of the two pure-function tests above: a freshly
+    constructed panel, before any on_answer_*/on_answer_start call, must
+    actually render what the pure functions produce -- not some other
+    literal that happens to say something similar."""
+    panel = QuestionQueuePanel()
+    panel.set_qa_capable(True)
+    assert no_question_in_flight_text() in panel.get_display_text()
+    assert no_question_answered_text() in panel.get_display_text()
 
 
 # ---------------------------------------------------------------------------

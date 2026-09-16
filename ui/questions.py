@@ -132,6 +132,23 @@ def in_flight_text(target_id, question_text=None):
     return f"Checking — {_question_label(question_text, target_id)}"
 
 
+def no_question_in_flight_text():
+    """The in-flight row's text when nothing is currently being scored --
+    pulled into its own pure function for the same reason `pending_text`'s
+    own "No questions queued" fallback is: the module's stated design keeps
+    every string this panel can show as a pure function, and this one was
+    the last inline literal left in `_render`."""
+    return "No question in flight"
+
+
+def no_question_answered_text():
+    """The answered row's text before any question has ever been answered
+    (or after `on_answer_error` clears back to this state -- it doesn't;
+    see `_render`, this is the construction-time default only). Same
+    reasoning as `no_question_in_flight_text` above."""
+    return "No question answered yet"
+
+
 # A short, fixed, factual gloss -- spec section 7's "a one-line factual
 # gloss, not a fabricated confidence category". States only what tt-bio's
 # nesso1 API is documented to return (docs/spike-nesso1-affinity.md section
@@ -491,7 +508,7 @@ class QuestionQueuePanel(Gtk.Box):
                                self._in_flight["question_text"]))
             self._spinner.start()
         else:
-            self._in_flight_label.set_label("No question in flight")
+            self._in_flight_label.set_label(no_question_in_flight_text())
             self._spinner.stop()
 
         if self._answered is not None:
@@ -507,4 +524,4 @@ class QuestionQueuePanel(Gtk.Box):
             self._answered_label.set_label(text)
         else:
             self._answered_label.remove_css_class("question-queue-answered-error")
-            self._answered_label.set_label("No question answered yet")
+            self._answered_label.set_label(no_question_answered_text())
