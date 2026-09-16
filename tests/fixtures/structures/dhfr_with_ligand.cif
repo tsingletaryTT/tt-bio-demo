@@ -1,5 +1,21 @@
 data_structure
 #
+# SYNTHETIC TEST FIXTURE -- not a real DHFR fold.
+#
+# ATOM records 1-154 (chain A, 20 residues) are a REAL captured Trp-cage
+# backbone from this project's mock-fold trajectory fixtures -- reused here
+# only for its coordinates, not because it is dihydrofolate reductase.
+# HETATM records 155-160 (chain B, residue MTX) are SIX synthetic ligand
+# atoms hand-placed near the backbone so ui.pocket.pocket_residues() finds a
+# real, non-trivial pocket to highlight.
+#
+# The paired tests/fixtures/streams/with_question.jsonl labels this fold
+# target_id: "dhfr" and question_id "dhfr_mtx" -- a deliberate, reasoned
+# choice (see commit 511974f, "test: mock runner replays a question/answer
+# pair end to end (Task 12)") to exercise the DHFR+MTX affinity-question
+# wiring end to end without a real DHFR structure or a real nesso1 score.
+# Nothing here should be read as an actual DHFR/methotrexate structure.
+#
 loop_
 _atom_site.group_PDB 
 _atom_site.type_symbol 
