@@ -1606,6 +1606,85 @@ than the thing it is checking" shape `test_weights_cache_is_derived_
 once.py` already guards against for the weights-cache variables, applied
 here as a new cross-language regex-parsed test.
 
+### The quad's own empty cell, a Copilot review round, and a help card that had stopped fitting the screen (2026-09-17)
+
+Prompted with "it seems to be hard to see and we have that whole 4th 'chip'
+space now empty when we're using the mode" -- the space `runner.workers.
+split_for_qa`'s chip reservation leaves in the quad when 2+ chips are
+detected. Shown three mocked-up options first (a spotlight card cycling
+one statement at a time, an enlarged copy of the rail panel, a static
+split card); **the spotlight was picked**, both for legibility and because
+its cross-fade between "asking" and "answered" matches the booth's
+existing hold-until-superseded honesty pattern.
+
+**`ui/qa_spotlight.py`'s `QASpotlightCell`** reuses `ui.questions`'s own
+pure text functions (`question_label`, `in_flight_text`, `error_text`,
+`format_score`, `SCORE_GLOSS`, `no_question_answered_text` -- the last
+three made public for exactly this reuse) rather than a second hand-typed
+copy of the content-honesty wording, the same drift this project has paid
+for more than once. `ui/quad.py`'s `QuadView.set_extra_cell` places it in
+the grid slot a shorter-than-4 card list leaves empty, in its own wrapper
+`Gtk.Box` so solo-mode visibility (owned by the quad) and qa-capability
+visibility (owned by the cell itself) never fight over one widget's
+`visible` property.
+
+**A live `<ci-monitor-event>` mid-build surfaced a Copilot review on the
+same PR, six findings, all real:** a packaged/systemd install enumerated
+**zero fold targets** -- `/opt/tt-bio-demo/playlist/` ships only
+`manifest.yaml`/`questions.yaml` (the real inputs live in the sibling
+`examples/`), so once those two are excluded by name the daemon's own
+glob found nothing at all, a total regression on the deployment path this
+booth is actually packaged for. Fixed by extracting `run-demo.sh`'s
+per-target symlink farm into `scripts/materialize-playlist.sh` and having
+`tt-bio-demo-daemon-launcher.sh` build the same farm into a runtime
+directory it can write to (the installed one is root-owned). A Q&A worker
+that failed to spawn on its VERY FIRST attempt was never retried and never
+marked retired -- unlike a worker that died after running, which already
+had that path -- so `all_retired()` stayed false forever and every queued
+question hung with no `answer_error` ever reaching the UI; fixed by
+handing a failed initial spawn to the same retry-then-retire mechanism.
+`qa_capable=True` with no questions loaded (a missing/malformed
+`questions.yaml`) showed an empty "No questions queued" panel implying a
+capability the run cannot deliver; a custom `--playlist` could offer the
+shipped question against a same-ID-but-different target, since
+`ui.playlist.load_questions()` is documented to always validate against
+the DEFAULT manifest regardless of what path was actually loaded -- Q&A
+now disables itself outright for a custom playlist rather than risk that.
+Every fix has a regression test confirmed to fail against the pre-fix code
+by hand (a stash-and-revert round trip, not just a green run) before being
+restored.
+
+**The most interesting bug was found by a person watching the actual
+booth, not by review or test.** Mid-build, the user reported: "I don't see
+the question mode on the help screen. And the help screen isn't staying
+contained within the window." The card's OWN regression test
+(`test_the_help_card_still_fits_the_booth_s_own_screen`) was green the
+whole time -- it measured the card's height at `for_size=1920`, the
+SCREEN's width. But the card is `halign=CENTER`, so it takes its own
+preferred width regardless of how wide the screen is; measuring at 1920
+let GTK wrap every paragraph across far more room than the card would
+ever actually get, undercounting every wrapped line. The real number,
+measured at the card's real ~1000px width: **1460px on a 1080px screen** --
+confirmed by literally building the card and measuring it at both widths.
+Fixed on both sides: the card widened (1400px, still well short of the
+screen) and its copy trimmed (the Q&A paragraph, the Tensix paragraph, the
+chips paragraph, most of the intro), and the test now measures at a named
+constant (`_HELP_CARD_WIDTH_PX`) shared with the real layout code instead
+of the screen's own width -- the same "one name so two things cannot
+quietly disagree" shape this file keeps recording. Confirmed live: pressed
+`?` on the running booth and photographed it.
+
+**A hardware incident during the same session, unrelated to any of the
+above.** A screenshot session (`--quad --questions`, real folds) wedged
+chip 1 mid-DHFR-fold about three minutes in -- dispatched once, never
+seen again, the daemon's own shutdown log showing `card 1: worker still
+alive after terminate(); killing it`. Not a code bug: the other two fold
+chips kept working the whole time, which is exactly what the user
+noticed ("not showing 3 simultaneous folds"). Recovered the same way
+every prior wedge on this box has been: `gozer release` (which resets),
+`gozer status` to confirm all four chips FREE, before touching hardware
+again.
+
 ## Conventions
 
 - **Keep the README's screenshots current.** The README claims every image on it is the
