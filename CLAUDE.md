@@ -1545,6 +1545,67 @@ affinity.py` imports `torch`/`tt_bio.nesso1` at module scope rather than
 inside `load()`, against `runner/folder.py`'s own documented pattern; a
 handful of other Minor findings from the final review.
 
+### Q&A off by default, Ctrl+A to restart into it live -- and a review round (2026-09-16)
+
+Two things, one worktree: the change itself, and a thorough review of it
+that found one real Critical bug and several Important/Minor gaps, all
+fixed in the same branch.
+
+**The change.** Affinity Q&A permanently reserves one chip whenever 2+
+chips are detected -- 25% of a 4-chip booth's fold throughput, paid whether
+or not anyone ever asks a question. That used to be the default (the
+feature shipped as `--no-questions` to opt OUT); flipped to opt-in
+(`--questions` replaces `--no-questions`, `DaemonConfig.questions_enabled`
+defaults to `False`). An operator who did not think to pass the flag at
+launch is not stuck with the wrong booth for the rest of the session:
+`Ctrl`+`A` in the running UI exits with a sentinel exit code
+(`QUESTIONS_RESTART_EXIT_CODE = 42`) that `scripts/run-demo.sh` catches and
+turns into a teardown-and-relaunch with `--questions` added -- one-way,
+deliberately, since the reverse (drop Q&A live) would need the same live
+chip-reallocation this key is scoped to never attempt.
+
+**The review found one Critical bug: the restart silently discarded every
+other flag.** `run-demo.sh`'s argument-parsing loop `shift`s every
+positional argument away, so by the time execution reached the restart
+branch, `"$@"` was always empty -- `exec "$0" "$@" --questions` was ALWAYS
+just `exec "$0" --questions`. `--devices` was the sharpest edge: a booth
+sharing this box via `--devices 0,1` would come back after Ctrl+A claiming
+every detected chip. Fixed by capturing the original arguments into an
+array (`RUN_DEMO_ARGV`) before the parsing loop touches them, and exec'ing
+with that instead -- confirmed red against the pre-fix script (a
+`--devices` value that vanished across a simulated restart) and green
+after. The restart's `exec` also moved from `$0` to a path computed once
+from `BASH_SOURCE[0]`, before any `cd`, for the same reason `--log-root`
+and `--socket` are already resolved to absolute paths early in this
+script: `$0` stops meaning anything useful the moment this script `cd`s to
+`$REPO_ROOT`.
+
+**Three Important gaps, all in the connective tissue rather than the
+feature's own logic.** The docs had the packaged-vs-systemd distinction
+backwards -- the NORMAL desktop-entry path (`Exec=.../run-demo.sh`) does
+get the restart; the systemd-*supervised* mode is the one that does not,
+because there the daemon is not one `run-demo.sh` started at all (see
+`docs/followups.md`, moved out of "Deliberately not doing" since it is a
+real, still-open gap). Pressing Ctrl+A and having it decline produced zero
+visible feedback: the decline paths only ever called `log.warning`, which
+never reaches the on-screen diagnostics rail, so an operator watching that
+panel saw nothing -- indistinguishable from a frozen app. And nothing in
+the test suite called `ui.app.main()` at all, so the one line bridging
+`DemoApp.exit_code` back out to the shell -- the entire mechanism
+connecting a key press to `scripts/run-demo.sh` seeing exit code 42 --
+could have been silently replaced with `return result` and the whole
+suite would have stayed green. All three fixed, each with a test that
+fails against the specific regression it guards (confirmed by re-breaking
+each one and watching the new test go red).
+
+**A recurring finding, worth naming again:** the exit code and the env var
+name that ties this mechanism together were each independently duplicated
+as literals in `ui/app.py` (Python) and `scripts/run-demo.sh` (shell), with
+nothing checking they still agree -- the same "a check that knows less
+than the thing it is checking" shape `test_weights_cache_is_derived_
+once.py` already guards against for the weights-cache variables, applied
+here as a new cross-language regex-parsed test.
+
 ## Conventions
 
 - **Keep the README's screenshots current.** The README claims every image on it is the
