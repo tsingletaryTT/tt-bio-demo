@@ -888,23 +888,77 @@ def test_the_daemon_restarts_if_it_dies():
     assert "Restart=no" not in u
 
 
+def _daemon_launcher():
+    return (REPO / "scripts" / "tt-bio-demo-daemon-launcher.sh").read_text()
+
+
 def test_the_unit_pins_the_log_root_and_budgets():
     """tt-metal writes gigabytes RELATIVE TO CWD unless pinned, and a service
     has no obvious CWD. Not hypothetical: this project measured tt-metal
     writing 13-14 MB/s into a file it had already unlinked -- invisible to a
-    directory walk -- which would have exhausted a tmpfs in ~31 minutes."""
+    directory walk -- which would have exhausted a tmpfs in ~31 minutes.
+
+    This logic now lives in scripts/tt-bio-demo-daemon-launcher.sh, which
+    ExecStart= runs (see the Critical-2 fix, docs/followups.md's "the systemd
+    unit's Environment= is unconditional" entry) -- the unit itself only
+    forwards the socket/log-root paths as argv so systemd's `%t` specifier
+    still gets expanded in the one place that can expand it."""
     u = (REPO / "debian" / "tt-bio-demo.user.service").read_text()
-    assert "--log-root" in u
-    assert "--log-budget-gb" in u
+    assert "%t/tt-bio-demo/logs" in u, "unit must still forward the log root to the launcher"
+    launcher = _daemon_launcher()
+    assert "--log-root" in launcher
+    assert "--log-budget-gb" in launcher
 
 
 def test_the_unit_runs_the_daemon_from_the_runner_venv():
     """The UI venv has no torch and the runner venv has no GTK. A unit that
-    invoked a bare `python3` would import neither."""
+    invoked a bare `python3` would import neither -- and since the
+    Critical-2 fix, the unit no longer invokes python3 directly at all; it
+    runs scripts/tt-bio-demo-daemon-launcher.sh, which does."""
     u = (REPO / "debian" / "tt-bio-demo.user.service").read_text()
-    assert "venv-runner/bin/python3" in u, "unit must use venv-runner's interpreter"
-    assert "runner.daemon" in u
+    assert "tt-bio-demo-daemon-launcher.sh" in u, \
+        "ExecStart= must run the launcher script"
     assert not re.search(r"ExecStart=/usr/bin/python3\b", u), "bare system python3"
+    assert not re.search(r"ExecStart=.*venv-runner/bin/python3", u), (
+        "the venv-runner invocation belongs in the launcher script now, not "
+        "inlined in the unit -- see test_the_launcher_runs_the_daemon_from_"
+        "the_runner_venv")
+
+
+def test_the_launcher_runs_the_daemon_from_the_runner_venv():
+    """The other half of the assertion above: the launcher itself must be
+    the thing that actually invokes venv-runner's interpreter against
+    runner.daemon, not silently drop it during the Critical-2 refactor."""
+    launcher = _daemon_launcher()
+    assert "venv-runner/bin/python3" in launcher, \
+        "launcher must use venv-runner's interpreter"
+    assert "runner.daemon" in launcher
+    assert not re.search(r"exec /usr/bin/python3\b", launcher), "bare system python3"
+
+
+def test_the_launcher_is_executable():
+    """ExecStart= runs this file directly (no `bash` prefix), so dpkg must
+    ship it with its execute bit set -- the same convention run-demo.sh and
+    doctor.sh already follow."""
+    path = REPO / "scripts" / "tt-bio-demo-daemon-launcher.sh"
+    assert path.stat().st_mode & 0o111, f"{path} is not executable"
+
+
+def test_the_launcher_parses():
+    r = subprocess.run(
+        ["bash", "-n", str(REPO / "scripts" / "tt-bio-demo-daemon-launcher.sh")],
+        capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+
+
+def test_the_launcher_requires_the_weights_flag_the_daemon_actually_requires():
+    """runner/daemon.py's argument parser has `--weights` as a REQUIRED
+    argument. The unit's ExecStart= used to omit it entirely -- a
+    pre-existing bug, found while fixing Critical 2, that would have made
+    the daemon exit immediately (argparse's "the following arguments are
+    required: --weights") every time systemd tried to start it."""
+    launcher = _daemon_launcher()
+    assert "--weights" in launcher
 
 
 def test_the_desktop_entry_is_valid_and_names_the_ui():
@@ -1267,29 +1321,109 @@ def test_the_postinst_calls_the_packaged_resolver_before_computing_cache():
         "before CACHE is computed from it"
 
 
-def test_the_unit_pins_the_same_weights_cache_the_resolver_declares():
-    """The guard itself: the systemd unit's `Environment=` line must name the
-    IDENTICAL literal path scripts/weights-cache.sh declares. A drift here
-    is invisible to every other test -- each file parses and behaves
-    correctly in isolation -- and only shows up as a booth whose weights
-    postinst reports success while the daemon that is supposed to use them
-    looks in a different directory entirely."""
-    resolver_path = _fixed_weights_cache_path()
-    unit = (REPO / "debian" / "tt-bio-demo.user.service").read_text()
-    m = re.search(r'Environment=TT_BIO_CACHE=(/\S+)', unit)
-    assert m, "debian/tt-bio-demo.user.service does not pin TT_BIO_CACHE"
-    assert m.group(1) == resolver_path, (
-        f"scripts/weights-cache.sh pins {resolver_path!r} but the systemd "
-        f"unit pins {m.group(1)!r} -- these must be identical")
+def test_the_postinst_makes_the_cache_directory_writable_not_just_readable():
+    """IMPORTANT-3 FIX. `install -d -m 0755` made the cache readable by the
+    desktop user but not WRITABLE -- and runner/folder.py's Folder.load()
+    self-repair (unpacking mols.tar into mols/ on the first fold if it was
+    never unpacked) and tt_bio.weights.fetch's own re-fetch of a corrupt
+    artifact both WRITE into this directory at runtime, as that desktop
+    user. 0755 turned that self-repair into a silent PermissionError deep
+    inside Folder.load()'s own try block. See docs/followups.md's
+    "/opt/tt-bio-demo/weights is root-owned and not writable by the daemon"
+    entry (FIXED)."""
+    p = _weights("postinst")
+    assert "install -d -m 0777 \"$CACHE\"" in p, (
+        "the cache directory must be created world-writable (0777) -- a "
+        "single-purpose booth appliance with no per-user account "
+        "separation, and no SUDO_USER/logind-based operator detection "
+        "anywhere in this codebase to chown it to instead"
+    )
+    assert "install -d -m 0755 \"$CACHE\"" not in p, \
+        "0755 is readable but not writable -- this is the exact regression"
 
 
-def test_the_unit_environment_line_is_well_formed():
-    """`Environment=NAME=value` -- not `Environment="NAME=value"` or a typo
-    that silently leaves the daemon without the pin at all."""
+def test_installing_the_cache_directory_actually_yields_a_writable_mode(tmp_path):
+    """Not a textual check this time: actually run the same `install -d -m
+    0777` invocation the postinst uses and confirm the resulting directory
+    is genuinely writable, not merely readable -- 0755 vs 0777 is exactly
+    the distinction the regression hinged on, and a textual grep alone
+    cannot tell a real writable directory from a comment claiming one."""
+    target = tmp_path / "weights"
+    subprocess.run(["install", "-d", "-m", "0777", str(target)], check=True)
+    mode = target.stat().st_mode & 0o777
+    assert mode == 0o777, f"expected 0777, got {oct(mode)}"
+    assert os.access(target, os.W_OK), f"{target} is not writable"
+
+
+def test_the_unit_no_longer_pins_the_cache_unconditionally():
+    """CRITICAL-2 FIX. A static `Environment=TT_BIO_CACHE=...` line in a
+    systemd unit ALWAYS wins over anything the user manager's own
+    environment would otherwise supply, and outranks $BOLTZ_CACHE in
+    tt-bio's own resolution order -- there is no way to spell "only if
+    unset" in unit-file syntax. So an operator who had set $BOLTZ_CACHE
+    themselves (the postinst's own guard would have honoured it) still got
+    a daemon that ALWAYS loaded from the packaged default, silently, on
+    every start. See docs/followups.md's "the systemd unit's Environment=
+    is unconditional" entry (FIXED). The pin now lives in
+    scripts/tt-bio-demo-daemon-launcher.sh instead, which CAN run the same
+    guarded check every other packaged caller uses."""
     unit = (REPO / "debian" / "tt-bio-demo.user.service").read_text()
-    lines = [l for l in unit.splitlines() if l.startswith("Environment=TT_BIO_CACHE=")]
-    assert len(lines) == 1, \
-        f"expected exactly one Environment=TT_BIO_CACHE= line, found {len(lines)}"
+    # Non-comment lines only: the unit's own comment DESCRIBES the old,
+    # rejected `Environment=TT_BIO_CACHE=...` directive in prose (explaining
+    # why it was removed), which is not the same as the directive existing.
+    live_lines = [l for l in unit.splitlines() if not l.strip().startswith("#")]
+    assert not any(l.startswith("Environment=TT_BIO_CACHE=") for l in live_lines), (
+        "a static Environment=TT_BIO_CACHE= line always overrides an "
+        "operator's own BOLTZ_CACHE/TT_BIO_CACHE -- the pin must be guarded, "
+        "in the launcher script, not unconditional in the unit")
+
+
+def test_the_launcher_calls_the_same_guarded_resolver_the_postinst_does():
+    """The guard itself, restated for the launcher script: it must call
+    the SHARED guarded resolver (which only pins $TT_BIO_CACHE when NEITHER
+    it nor $BOLTZ_CACHE is already set) rather than hardcode the literal
+    path itself -- the exact shape of drift this project's tests already
+    guard against for the postinst and scripts/doctor.sh."""
+    launcher = _daemon_launcher()
+    assert "tt_bio_demo_weights_cache_packaged" in launcher, (
+        "the launcher must call the shared packaged resolver, not derive "
+        "or hardcode the fixed path itself")
+    # Non-comment lines only: the launcher's own header comment DESCRIBES the
+    # path in prose while explaining the history, which is not the same as
+    # the script deriving it itself instead of calling the resolver.
+    live_lines = [l for l in launcher.splitlines() if not l.strip().startswith("#")]
+    fixed_path = _fixed_weights_cache_path()
+    assert not any(fixed_path in l for l in live_lines), (
+        "the launcher should not repeat the literal fixed path in its own "
+        "code -- it should only ever reach it by calling the shared resolver")
+
+
+def test_the_launcher_primes_before_it_captures():
+    """Same "prime once, capture again" shape the postinst and
+    doctor_prime_weights_cache use: the FIRST call is a bare top-level
+    statement (for its exporting side effect, so `exec`'s replaced process
+    still has $TT_BIO_CACHE), and only the SECOND, inside `$(...)`, captures
+    the resolved path for `--weights`."""
+    launcher = _daemon_launcher()
+    first_call_at = launcher.index("tt_bio_demo_weights_cache_packaged")
+    weights_computed_at = launcher.index('WEIGHTS="$(tt_bio_demo_weights_cache_packaged)"')
+    assert first_call_at < weights_computed_at, (
+        "the packaged resolver must be called (for its pinning side effect) "
+        "before WEIGHTS is computed from it")
+
+
+def test_the_launcher_execs_rather_than_spawning_a_child():
+    """`exec` replaces this shell's own process image, so systemd's
+    Restart=/TimeoutStopSec=/signal delivery talk to the actual daemon PID
+    -- a bare invocation (no `exec`) would leave the launcher's shell
+    sitting in front of it as an extra process systemd has to reach
+    through."""
+    launcher = _daemon_launcher()
+    exec_at = launcher.index('exec "${PREFIX}')
+    daemon_at = launcher.index("runner.daemon", exec_at)
+    assert exec_at < daemon_at < exec_at + 200, (
+        "the daemon invocation must be `exec`'d, not spawned as a child "
+        "(look for a bare invocation with no leading `exec`)")
 
 
 def test_doctor_uses_the_same_packaged_resolver_the_postinst_does():
@@ -1307,8 +1441,7 @@ def test_doctor_uses_the_same_packaged_resolver_the_postinst_does():
 
 def test_doctor_only_uses_the_packaged_resolver_for_a_packaged_install():
     """The fix is scoped to the packaged deployment path. A source checkout
-    must keep behaving exactly as it did before this change -- that gap is
-    tracked separately (docs/followups.md) as lower priority."""
+    must keep behaving exactly as it did before this change."""
     doctor = (REPO / "scripts" / "doctor.sh").read_text()
     for fn_name in ("doctor_weights_cache", "doctor_prime_weights_cache"):
         fn = doctor.split(f"{fn_name}() {{")[1]
@@ -1318,13 +1451,26 @@ def test_doctor_only_uses_the_packaged_resolver_for_a_packaged_install():
             'doctor_install_mode reporting "package"')
 
 
+def test_run_demo_sh_only_uses_the_packaged_resolver_for_a_packaged_install():
+    """The same scoping, for scripts/run-demo.sh -- the fourth caller this
+    project's history names (docs/followups.md's "run-demo.sh resolved
+    home-relative even from a packaged install" entry, FIXED). A source
+    checkout must keep resolving the plain, $HOME-relative default."""
+    run_demo = (REPO / "scripts" / "run-demo.sh").read_text()
+    assert 'tt_bio_demo_install_mode "$REPO_ROOT")" = "package"' in run_demo, (
+        "run-demo.sh must condition the packaged resolver call on "
+        'tt_bio_demo_install_mode reporting "package"')
+
+
 def test_nothing_outside_the_shared_resolver_reads_the_cache_variables_either():
     """The same invariant tests/unit/test_weights_cache_is_derived_once.py
     already enforces for $TT_BIO_CACHE/$BOLTZ_CACHE, restated here for the
-    three files this fix specifically touched -- so a regression in any one
-    of them is caught by two tests describing it from different angles."""
+    files this fix and its follow-up specifically touched -- so a
+    regression in any one of them is caught by two tests describing it from
+    different angles."""
     for rel in ("debian/tt-bio-demo-weights.postinst", "scripts/doctor.sh",
-                "debian/helpers.sh"):
+                "debian/helpers.sh", "scripts/run-demo.sh",
+                "scripts/tt-bio-demo-daemon-launcher.sh"):
         text = (REPO / rel).read_text()
         for n, line in enumerate(text.splitlines(), 1):
             stripped = line.strip()
