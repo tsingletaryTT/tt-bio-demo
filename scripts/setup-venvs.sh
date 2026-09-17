@@ -935,10 +935,15 @@ weights_cache_dir() {
 # tt-bio-demo-weights.postinst, behind a debconf question); a git checkout had
 # nothing, so the first fold either pulled gigabytes silently or, at a venue,
 # failed. A user hit exactly that and reported it: "I had to discover a model
-# downloading command". The nesso1/ESM-2 rows are the same gap one layer up:
-# the affinity-questions feature shipped with `qa_capable: true` and no
-# provisioning at all -- see docs/followups.md's "From the affinity-questions
-# feature" entry -- so every question a visitor asked would silently error.
+# downloading command". The nesso1/ESM-2 rows closed the same gap one layer
+# up: the affinity-questions feature had shipped with `qa_capable: true` and
+# no provisioning at all -- see docs/followups.md's "From the affinity-
+# questions feature" entry -- so every question a visitor asked would
+# silently error. Fetched by both install paths now (this script by default,
+# the .deb's postinst behind the same debconf question) and checked by
+# scripts/doctor.sh; the remaining risk (PR review, Copilot) is that the
+# fetch below can still be skipped (`--skip-weights`), fail, or land in a
+# cache the daemon cannot reach -- not that nothing here ever tries.
 #
 # WHY IT SHELLS OUT TO `tt-bio weights --download` rather than importing
 # tt_bio.weights and calling fetch(). It is the same command the docs,
@@ -1102,7 +1107,13 @@ PYEOF
   else
     warn "weights: the ESM-2 encoder download did not complete. Everything above is fine;"
     warn "weights: this is resumable. Re-run this script, or directly:"
-    warn "weights:     ${py} -c 'from huggingface_hub import snapshot_download; snapshot_download(\"${ESM2_MODEL}\")'"
+    # SAME ignore_patterns as the snapshot_download call above (PR review,
+    # Copilot): without them, this printed recovery command downloads
+    # *.bin and *.h5 alongside *.safetensors -- about 7.3 GB instead of the
+    # ~2.6 GB the featurizer actually reads -- on exactly the resource-
+    # constrained path (a failed/incomplete download) this message exists
+    # to help recover from.
+    warn "weights:     ${py} -c 'from huggingface_hub import snapshot_download; snapshot_download(\"${ESM2_MODEL}\", ignore_patterns=[\"*.bin\", \"*.h5\", \"*.msgpack\"])'"
     ESM2_STATUS="INCOMPLETE — re-run; affinity Q&A cannot featurize offline yet"
   fi
   return 0

@@ -61,10 +61,34 @@ PREFIX="/opt/tt-bio-demo"
 tt_bio_demo_weights_cache_packaged >/dev/null
 WEIGHTS="$(tt_bio_demo_weights_cache_packaged)"
 
+# `${PREFIX}/playlist` (what `--playlist` used to name directly) ships ONLY
+# manifest.yaml/questions.yaml -- debian/tt-bio-demo.install puts the real
+# fold-input YAMLs in the SIBLING `${PREFIX}/examples`, which manifest.yaml's
+# own `input:` entries point `../examples/...` into. Globbing that directory
+# for fold targets (runner/daemon.py's `_playlist_files()`) therefore always
+# found the two metadata files and nothing else -- and once those two are
+# excluded by name (`_NON_FOLD_PLAYLIST_FILENAMES`), a packaged/systemd booth
+# enumerated ZERO fold targets and idled forever. (PR review, Copilot.)
+#
+# The fix: materialize the same per-target symlink farm run-demo.sh already
+# builds for the source/dev path, into a RUNTIME directory this service can
+# actually write to -- `${PREFIX}/playlist` is root-owned at install time,
+# and an unprivileged `systemd --user` service has no business writing
+# symlinks into it even where permissions happen to allow it. `%t` (this
+# script's own `${LOG_ROOT}` argument's parent) is the same runtime
+# directory the socket and logs already live under.
+# shellcheck source=materialize-playlist.sh
+. "${PREFIX}/scripts/materialize-playlist.sh"
+RUNTIME_PLAYLIST_DIR="$(dirname "${LOG_ROOT}")/playlist"
+mkdir -p "${RUNTIME_PLAYLIST_DIR}"
+tt_bio_demo_materialize_playlist \
+    "${PREFIX}/.venvs/venv-ui/bin/python3" "${PREFIX}/playlist/manifest.yaml" \
+    "" "${RUNTIME_PLAYLIST_DIR}"
+
 exec "${PREFIX}/.venvs/venv-runner/bin/python3" -m runner.daemon \
     --socket "${SOCKET}" \
     --weights "${WEIGHTS}" \
-    --playlist "${PREFIX}/playlist" \
+    --playlist "${RUNTIME_PLAYLIST_DIR}" \
     --log-root "${LOG_ROOT}" \
     --log-budget-gb 2.0 \
     --structures-budget-gb 0.2

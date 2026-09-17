@@ -1394,19 +1394,17 @@ def _help_intro(n_chips):
     protein_word = "protein" if n_chips == 1 else "proteins"
     return (
         "A protein structure prediction, running right now on Tenstorrent "
-        "Blackhole chips a few feet away. This is not a recording or an "
-        "animation: the cloud of points collapsing on screen is the model's own "
-        "working, streamed off the chip as it computes, and the ribbon at the "
-        "end is the structure it just predicted.",
+        "chips a few feet away — not a recording. The collapsing point cloud "
+        "is the model's own work, streamed live; the ribbon at the end is "
+        "what it just predicted.",
 
-        "A protein is a chain of amino acids that only does its job once it "
-        "folds into a particular three-dimensional shape. Predicting that shape "
-        "from the sequence of the chain alone is the problem this model solves "
-        "— here, in about four and a half seconds per protein.",
+        "A protein only works once it folds into one particular 3D shape. "
+        "Predicting that shape from its sequence alone is the problem this "
+        "model solves — in about four and a half seconds, here.",
 
-        "It works by denoising: the model starts from a cloud of random atom "
-        "positions and pulls it, over roughly 200 small steps, into a real "
-        "structure. Touch the screen to see everything this booth folds.",
+        "It works by denoising: starting from random atom positions, it "
+        "pulls them into a real structure over roughly 200 steps. Touch the "
+        "screen to see everything this booth folds.",
 
         # The disclosure, in the visitor's own words. The booth folds its
         # playlist in its own order and a tap cannot change that: the socket
@@ -1427,13 +1425,15 @@ def _help_intro(n_chips):
         # stated as the feature it is -- not interrupting is exactly why the
         # other three cells keep moving.
         #
-        # Kept to the same number of wrapped lines as the copy it replaced: the
-        # `?` card is 913px of the booth's 1080 and every line added to it costs
-        # the operator keys at the bottom of the KEYS column (see
-        # `test_the_help_card_still_fits_the_booth_s_own_screen`).
-        f"The booth folds {word} {protein_word} at a time, one on each chip, "
-        "all day. Tap any of them to put it next: it starts on the next chip "
-        "to come free, because the folds already running are left to finish.",
+        # Kept short deliberately: the `?` card's real constraint is not
+        # lines-per-se but the card's measured height against the booth's
+        # own 1080px screen (see `test_the_help_card_still_fits_the_booth_
+        # s_own_screen` -- and that test's own history note on why it must
+        # be measured at the card's REAL allocated width, not the screen's,
+        # or it silently stops being able to fail).
+        f"The booth folds {word} {protein_word} at once, all day. Tap one "
+        "to put it next — it starts when a chip frees up; the folds "
+        "already running are left to finish.",
     )
 
 
@@ -1444,6 +1444,18 @@ def _help_intro(n_chips):
 # directly, which is what makes the copy track the real fold-chip count
 # instead of silently drifting back to this hardcoded default.
 _HELP_INTRO = _help_intro(4)
+
+# The help card's fixed width (`_build_help_overlay`'s `card.set_size_
+# request`) -- named so the regression test that pins the card's height
+# against the booth's real 1080px screen can measure at the card's REAL
+# allocated width rather than the screen's. Measuring at the screen's width
+# (1920) is what let this card silently grow to 1460px tall while the test
+# stayed green: `halign=CENTER` means the card takes its OWN width, not the
+# window's, so a `for_size` wider than that lets GTK wrap paragraphs across
+# far more horizontal room than they will ever actually get, undercounting
+# every wrapped line. One name, so the test and the real layout cannot
+# quietly disagree about which width that is.
+_HELP_CARD_WIDTH_PX = 1400
 
 # Every key the booth answers to, and what it does. This table is the ONE
 # place the bindings are described to a visitor, and the test
@@ -1469,20 +1481,18 @@ _HELP_INTRO = _help_intro(4)
 # well after the help card was first built).
 def _key_help(n_chips):
     return (
-        ("?  or  F1", "this card — from any screen, at any time"),
-        ("Q", "the quad view: all " + chip_count_word(n_chips) +
+        ("?  or  F1", "this card, any time"),
+        ("Q", "quad view: all " + chip_count_word(n_chips) +
               (" chip" if n_chips == 1 else " chips") +
-              " at once, one protein per chip — press it again for the "
-              "single large view"),
-        ("T", "Tensix activity: the live core-grid animation, one grid per chip"),
-        ("D", "diagnostics: the live protocol log in the right-hand rail"),
-        ("Esc", "close this card, or close whichever rail panel is open"),
+              " at once — press again for one large view"),
+        ("T", "Tensix core-grid animation, one per chip"),
+        ("D", "live protocol log"),
+        ("Esc", "close this card or panel"),
         ("any other key,\nor a tap anywhere",
-         "wake the booth and look through the proteins it folds"),
-        ("Ctrl + F", "leave or return to fullscreen — for the booth operator"),
-        ("Ctrl + A", "restart the booth with affinity Q&A enabled (no-op if "
-                     "already on) — for the booth operator"),
-        ("Ctrl + Q", "quit the booth — for the booth operator"),
+         "wake the booth; browse what it folds"),
+        ("Ctrl + F", "toggle fullscreen — operator"),
+        ("Ctrl + A", "restart with Q&A enabled (no-op if already on) — operator"),
+        ("Ctrl + Q", "quit — operator"),
     )
 
 
@@ -1499,9 +1509,9 @@ def _help_panels(n_chips):
         # rather than what sits in the rail beside it.
         quad_help_line(n_chips),
 
-        "Pipeline — one row per stage of a fold: msa, prep, trunk, diffusion, "
-        "confidence, saving. The bright row is the stage running right now; "
-        "diffusion owns most of the bar because it does most of the work.",
+        "Pipeline — one row per fold stage (msa, prep, trunk, diffusion, "
+        "confidence, saving). The bright row is running now; diffusion "
+        "takes the longest.",
 
         # The cadence here is `ui/telemetry.py`'s TelemetrySampler(period_s=2.0)
         # -- one `tt-smi` snapshot every two seconds, on its own thread. This
@@ -1518,11 +1528,9 @@ def _help_panels(n_chips):
         # hardware-inventory fact, unaffected by `split_for_qa` -- unlike the
         # quad/Tensix lines below, which describe how many chips are
         # actually FOLDING right now.
-        "Chips — temperature, power draw and clock speed for every Tenstorrent "
-        "chip in this machine, taken from a tt-smi snapshot every two seconds. A "
-        "Blackhole p300c board carries two chips, so the four chips here are two "
-        "boards. It is independent of the fold, so the silicon keeps breathing "
-        "even if a fold stalls.",
+        "Chips — temperature, power and clock speed for every chip on this "
+        "machine, sampled every two seconds. Independent of the fold, so "
+        "the readouts keep moving even if one stalls.",
 
         # Every claim in this paragraph was checked against the rendered pixels
         # before it was written. An earlier draft said each grid was "driven by
@@ -1544,16 +1552,12 @@ def _help_panels(n_chips):
         # reserved for Q&A (see the comment above this function), so this
         # panel's own cell count (`ui/app.py`'s `_sync_chipviz`, driven by
         # `self.cards`) is `n_chips` too, and the two must agree.
-        "Tensix activity (press T) — one animated Tensix core grid per chip, in "
-        "the same left-to-right order as the readouts above it. Each grid follows "
-        "its own chip's fold: a spreading ring while that chip is denoising atom "
-        "positions, a steady glow while it is reasoning about which residues "
-        f"touch, and quiet when it is between folds. {word.capitalize()} {plural} "
-        f"{verb} at the same time, so the header says how many are working right "
-        "now — or names the one, if only one is. The number beside it is the "
-        "fastest clock any of these chips is running at, read from the driver "
-        "every second. It is a picture of the work, not a trace of individual "
-        "cores.",
+        "Tensix activity (press T) — one animated core grid per chip, same "
+        "order as the readouts above. Each follows its own fold: a "
+        "spreading ring while denoising, a steady glow while reasoning "
+        f"about residue contacts, quiet between folds. {word.capitalize()} "
+        f"{plural} {verb} at once; the header names how many are working, "
+        "and the number beside it is the fastest clock among them.",
 
         # Important 5 (whole-branch review): before this, there was ZERO
         # visitor-facing text anywhere -- not this card, not the panel
@@ -1571,14 +1575,12 @@ def _help_panels(n_chips):
         # documents `T` even on a box where WebKit (and so the Tensix panel
         # itself) may not be available: this describes what the feature
         # DOES when present, not a claim that this specific box has it.
-        "Affinity questions (right rail, and the quad's own empty cell "
-        "when Q&A reserves a chip) — a small, fixed set of questions this "
-        "booth asks and answers with a real tt-bio computation: does this "
-        "ligand bind this protein? The answer is nesso1's own score, plus "
-        "a highlight on the ribbon showing the residues nearest the "
-        f"ligand — within {POCKET_CUTOFF_ANGSTROM:g} Å of any ligand atom, "
-        "a stated, checkable distance, not a claim about the \"true\" "
-        "binding site a cutoff alone cannot establish.",
+        "Affinity questions (right rail, and the quad's own spare cell) — "
+        "a small set of questions this booth answers with a real "
+        "computation: does this ligand bind this protein? The answer is "
+        "nesso1's own score, plus a highlight of the residues nearest the "
+        f"ligand — within {POCKET_CUTOFF_ANGSTROM:g} Å of it, a checkable "
+        "distance, never a claim about where it truly binds.",
     )
 
 
@@ -2484,8 +2486,8 @@ class DemoApp(Gtk.Application):
         # spotlight twin: whatever `hello` has already told this booth (or
         # nothing yet, on a fresh activate) is both panels' settled state
         # from the moment they exist.
-        self.question_panel.set_qa_capable(self.qa_capable)
-        self.qa_spotlight.set_qa_capable(self.qa_capable)
+        self.question_panel.set_qa_capable(self.qa_capable and bool(self.questions))
+        self.qa_spotlight.set_qa_capable(self.qa_capable and bool(self.questions))
 
         # Below the progress legend and the chip readout, in the space the
         # rail was leaving empty (see .superpowers/.../booth-wired.png): the
@@ -2615,6 +2617,12 @@ class DemoApp(Gtk.Application):
         # still scrolls.
         self.gallery.set_hexpand(False)
         self.gallery.set_halign(Gtk.Align.CENTER)
+        # Bare self.qa_capable, not `and bool(self.questions)`: `Gallery.
+        # set_ask_capable` already applies that same gate internally, and
+        # applying it again here would just be a second, needlessly
+        # duplicated copy of the same rule (see `_set_qa_capable`'s own
+        # comment on why the rail panel and spotlight cell -- which do NOT
+        # gate themselves -- need it applied at their call site instead).
         self.gallery.set_ask_capable(self.qa_capable)
         self.screens.add_named(self.gallery, "gallery")
 
@@ -2631,7 +2639,39 @@ class DemoApp(Gtk.Application):
         question naming a target this playlist does not fold is caught
         here, loudly, rather than silently failing to highlight anything
         later.
+
+        **Disabled outright for a custom `--playlist` (PR review, Copilot).**
+        `ui.playlist.load_questions()` is documented to validate every
+        question's `target_id` against the SHIPPED default manifest
+        ALWAYS, "regardless of what `path` was passed for the questions
+        file itself" -- a deliberate simplification (there is exactly one
+        `questions.yaml` to load), not a bug in that function. But
+        `_build_gallery` right below this method loads `self.playlist_path`
+        when an operator passed `run-demo.sh --playlist <custom>`, and this
+        method has no way to validate the shipped `questions.yaml` against
+        THAT manifest instead. Two ways that goes wrong: a custom manifest
+        entry that reuses a shipped id (say `dhfr`) for a DIFFERENT actual
+        complex would offer the shipped methotrexate question against
+        whatever that custom entry actually folds; a custom manifest using
+        different ids drops every question silently, with nothing telling
+        the operator why. Disabling Q&A whenever the operator's own
+        playlist differs from the shipped one is the safe default the
+        review itself names as an acceptable alternative to threading a
+        second manifest path through `load_questions()` -- and it is
+        already exactly what `runner/daemon.py` does NOT need to be told
+        about separately: the daemon has no `questions.yaml` of its own to
+        disagree with, since it only ever receives a `target_id` and an
+        `input_path` this UI already resolved.
         """
+        if (self.playlist_path is not None
+                and pathlib.Path(self.playlist_path).resolve() != _DEFAULT_PLAYLIST):
+            log.info("custom --playlist in use (%s); affinity Q&A stays "
+                     "off rather than risk a question naming the wrong "
+                     "target -- see ui.playlist.load_questions()'s own "
+                     "docstring on why it cannot validate against a "
+                     "manifest it was not told about", self.playlist_path)
+            self.questions = []
+            return
         try:
             self.questions = load_questions()
         except PlaylistError:
@@ -3004,7 +3044,12 @@ class DemoApp(Gtk.Application):
         # existed. Expanding first gives it the whole column to centre in.
         card.set_vexpand(True)
         card.set_valign(Gtk.Align.CENTER)
-        card.set_size_request(980, -1)
+        # `_HELP_CARD_WIDTH_PX`, not a bare 980: at 980 the two-column
+        # layout wraps narrowly enough that the card's real on-screen height
+        # blows past the booth's own 1080px screen even after the
+        # affinity-questions copy was trimmed (measured: 1180px at 980 wide,
+        # 992px at 1400) -- see that constant's own comment.
+        card.set_size_request(_HELP_CARD_WIDTH_PX, -1)
         for margin in ("set_margin_top", "set_margin_bottom",
                        "set_margin_start", "set_margin_end"):
             getattr(card, margin)(40)
@@ -4883,16 +4928,32 @@ class DemoApp(Gtk.Application):
 
     def _set_qa_capable(self, capable):
         """Record whether this daemon has a chip reserved for Q&A, and tell
-        both surfaces that offer to ask one (the rail panel, the gallery's
-        ask strip) -- called once from `hello`, the one event that carries
-        `qa_capable`.
+        every surface that offers to ask one (the rail panel, the quad's own
+        spotlight cell, the gallery's ask strip) -- called once from `hello`,
+        the one event that carries `qa_capable`.
 
         Stored on `self` (not read back off a widget) for the usual reason
         this file keeps making that split: a headless test must be able to
         drive and read the decision with no display.
+
+        `self.qa_capable and bool(self.questions)` (PR review, Copilot), not
+        bare `self.qa_capable`: a daemon can genuinely reserve a chip for
+        Q&A while THIS process loaded no questions to ask with it --
+        `_load_questions` ships with an empty `self.questions` on a missing
+        or malformed `questions.yaml`, or (deliberately, see that method's
+        own docstring) whenever a custom `--playlist` is in use. Without
+        this gate, the rail panel and the spotlight cell would show up
+        advertising a capability with nothing behind it -- an empty "No
+        questions queued" / "No question answered yet" implying Q&A is live
+        when it cannot ever answer anything this session. `Gallery.
+        set_ask_capable` already makes exactly this check internally
+        (`bool(capable) and bool(self.questions)`); this applies the same
+        rule at the one other call site rather than trusting a widget to
+        reinvent it correctly on its own.
         """
         self.qa_capable = bool(capable)
-        self._call_question_panel("set_qa_capable", self.qa_capable)
+        self._call_question_panel("set_qa_capable",
+                                  self.qa_capable and bool(self.questions))
         if self.gallery is not None:
             try:
                 self.gallery.set_ask_capable(self.qa_capable)

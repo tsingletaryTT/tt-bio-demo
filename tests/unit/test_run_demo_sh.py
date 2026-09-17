@@ -555,7 +555,7 @@ def _fake_packaged_tree(tmp_path):
     run-demo.sh to actually work end to end."""
     fake_root = tmp_path / "fake-opt-tt-bio-demo"
     (fake_root / "scripts").mkdir(parents=True)
-    for name in ("run-demo.sh", "weights-cache.sh"):
+    for name in ("run-demo.sh", "weights-cache.sh", "materialize-playlist.sh"):
         (fake_root / "scripts" / name).symlink_to(REPO_ROOT / "scripts" / name)
     for name in ("ui", "protocol", "playlist", "examples"):
         (fake_root / name).symlink_to(REPO_ROOT / name)

@@ -168,7 +168,11 @@ def _fold_and_finish(app, *, slot=0, card=0, job_id="j1", target_id="fkbp12",
 # ---------------------------------------------------------------------------
 
 def test_hello_with_qa_capable_shows_the_panel_and_the_ask_strip():
-    app = _questions_app(qa_capable=False)
+    """Real questions loaded (`_questions_app`'s own default is an EMPTY
+    list -- see the sibling test below for why that case must NOT show the
+    panel), so this is the ordinary case: a daemon that reserved a chip AND
+    a booth that actually has something to ask it."""
+    app = _questions_app(qa_capable=False, questions=[_question()])
     app._handle_event(_hello(cards=[0], qa_capable=True))
     assert app.qa_capable is True
     assert app.question_panel.qa_capable_calls[-1] is True
@@ -176,7 +180,7 @@ def test_hello_with_qa_capable_shows_the_panel_and_the_ask_strip():
 
 
 def test_hello_with_qa_capable_false_hides_both():
-    app = _questions_app(qa_capable=True)
+    app = _questions_app(qa_capable=True, questions=[_question()])
     app._handle_event(_hello(cards=[0], qa_capable=False))
     assert app.qa_capable is False
     assert app.question_panel.qa_capable_calls[-1] is False
@@ -187,10 +191,31 @@ def test_a_daemon_with_no_qa_worker_never_shows_the_capability():
     """The ordinary case for every booth without a second reserved chip:
     `qa_capable` is simply absent or False, and neither surface should ever
     have been told otherwise."""
-    app = _questions_app(qa_capable=False)
+    app = _questions_app(qa_capable=False, questions=[_question()])
     app._handle_event(_hello(cards=[0]))  # qa_capable=False by default
     assert True not in app.question_panel.qa_capable_calls
     assert True not in app.gallery.ask_capable_calls
+
+
+# ---------------------------------------------------------------------------
+# 1b. qa_capable alone is not enough (PR review, Copilot): a daemon can
+# reserve a chip for Q&A while THIS process loaded no questions to ask with
+# it (a missing/malformed questions.yaml, or a custom --playlist --
+# ui.app.DemoApp._load_questions's own docstring). The rail panel and the
+# spotlight cell must not show up advertising a capability with nothing
+# behind it, mirroring the gate `Gallery.set_ask_capable` already applies
+# to the ask strip.
+# ---------------------------------------------------------------------------
+
+def test_qa_capable_with_no_questions_loaded_never_shows_the_rail_panel():
+    app = _questions_app(qa_capable=False, questions=[])
+    app._handle_event(_hello(cards=[0], qa_capable=True))
+    assert app.qa_capable is True, (
+        "the daemon's own capability is still recorded truthfully")
+    assert True not in app.question_panel.qa_capable_calls, (
+        "no questions were loaded, so nothing must ever tell the rail "
+        "panel it is capable -- an empty 'No questions queued' panel "
+        "would imply a capability this run cannot deliver")
 
 
 # ---------------------------------------------------------------------------

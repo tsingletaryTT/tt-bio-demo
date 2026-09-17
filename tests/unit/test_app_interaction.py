@@ -806,13 +806,19 @@ def test_the_help_card_still_fits_the_booth_s_own_screen():
     than the glass silently loses its last rows -- the operator keys are at
     the bottom of the KEYS column, so `Ctrl + Q` is the first thing to go.
 
-    Measured at the booth's real fullscreen size, which is the only size that
-    matters: 1920x1080 (see `_SIDE_RAIL_WIDTH_PX`'s own comment and the
-    windowed default of 1280x800, which this card has never fitted and does
-    not have to).
-
-    Found by looking at it: adding the quad's key row and its paragraph took
-    the card from 838px to 913px.
+    Measured at the card's REAL allocated width (`_HELP_CARD_WIDTH_PX`), not
+    the screen's 1920 -- that was this test's own bug, not a footnote: the
+    card is `halign=CENTER`, so it takes its OWN preferred width regardless
+    of how wide the screen is, and measuring at 1920 let GTK wrap every
+    paragraph across far more room than the card will ever actually have,
+    undercounting every wrapped line. It reported 1015px right up until the
+    affinity-questions feature added enough text to make the gap between
+    "wrapped at 1920" and "wrapped at the real ~1400" visible on a live
+    booth -- the real number, measured the same way this test now does, was
+    1460px on a 1080px screen, with the operator's own Ctrl+Q the first
+    casualty. Fixed on both sides: the copy was trimmed and the card widened
+    (`_HELP_CARD_WIDTH_PX`), and this test now measures the width that can
+    actually fail it again.
     """
     app = _app()
     card = app_module.DemoApp._build_help_overlay(app)
@@ -826,7 +832,8 @@ def test_the_help_card_still_fits_the_booth_s_own_screen():
             child = child.get_next_sibling()
 
     show(card)
-    _minimum, natural, _, _ = card.measure(Gtk.Orientation.VERTICAL, 1920)
+    _minimum, natural, _, _ = card.measure(Gtk.Orientation.VERTICAL,
+                                           app_module._HELP_CARD_WIDTH_PX)
     assert natural <= 1080, (
         f"the help card wants {natural}px of a 1080px screen; its last rows "
         f"(the operator's Ctrl+Q among them) are off the bottom")

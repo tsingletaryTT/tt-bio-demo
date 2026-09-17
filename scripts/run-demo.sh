@@ -403,40 +403,19 @@ cd "$REPO_ROOT"
 # (the diagnostics panel used to print "visitor picked trypsin" directly
 # above "▶ fold affinity_tryp").
 #
-# ui/playlist.py is the parser for both sides, so a manifest the UI would
-# refuse is one this script refuses too, here, before anything starts --
-# with the module's one-line message, never a traceback.
-if ! PLAYLIST_LINES="$("${VENV_UI}/bin/python3" -m ui.playlist "$MANIFEST" \
-                        ${TARGETS//,/ } 2>&1)"; then
-  echo "ERROR: ${PLAYLIST_LINES}" >&2
-  echo "run-demo.sh: --playlist must name a playlist MANIFEST (see ${REPO_ROOT}/playlist/manifest.yaml)," >&2
-  echo "and every --targets id must appear in it." >&2
+# `tt_bio_demo_materialize_playlist` (scripts/materialize-playlist.sh) is
+# what actually does this now -- factored out so the packaged/systemd
+# deployment's own launcher can build the SAME farm into ITS OWN runtime
+# directory, rather than enumerating the installed (and never-populated-
+# with-real-inputs) `/opt/tt-bio-demo/playlist/` directly. See that file's
+# own header for the packaged-deployment bug this replaces.
+# shellcheck source=materialize-playlist.sh
+. "${SCRIPT_DIR}/materialize-playlist.sh"
+if ! tt_bio_demo_materialize_playlist \
+    "${VENV_UI}/bin/python3" "$MANIFEST" "$TARGETS" "$PLAYLIST_DIR"; then
   exit 1
 fi
-
-# Wipe first: a target dropped from --targets between two runs must not keep
-# folding because last run's symlink is still lying there. Only symlinks are
-# removed, and only from a directory this script owns (see PLAYLIST_DIR).
-find "$PLAYLIST_DIR" -maxdepth 1 -type l -name '*.yaml' -delete
-PLAYLIST_COUNT=0
-while IFS=$'\t' read -r target_id input_path; do
-  [[ -n "$target_id" ]] || continue
-  if [[ ! -f "$input_path" ]]; then
-    echo "ERROR: playlist target '${target_id}' names an input that does not exist:" >&2
-    echo "  ${input_path}" >&2
-    echo "The gallery must never offer something the daemon cannot fold." >&2
-    exit 1
-  fi
-  # -f (not -n): re-point every run rather than trusting a stale link left
-  # over from an older checkout.
-  ln -sf "$input_path" "${PLAYLIST_DIR}/${target_id}.yaml"
-  PLAYLIST_COUNT=$((PLAYLIST_COUNT + 1))
-done <<< "$PLAYLIST_LINES"
-
-if [[ "$PLAYLIST_COUNT" -eq 0 ]]; then
-  echo "ERROR: ${MANIFEST} selected no targets; there would be nothing to fold." >&2
-  exit 1
-fi
+PLAYLIST_COUNT="$(find "$PLAYLIST_DIR" -maxdepth 1 -type l -name '*.yaml' | wc -l)"
 
 DAEMON_LOG="${RUNTIME_DIR}/daemon.log"
 

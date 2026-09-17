@@ -692,6 +692,38 @@ def test_all_retired_is_computed_from_real_worker_death_state(tmp_path):
         "merely report a stored flag")
 
 
+def test_all_retired_becomes_true_even_when_the_very_first_spawn_fails(tmp_path):
+    """ADDED (PR review, Copilot): a card whose worker could not be spawned
+    at ALL on `start()` -- a `Popen`/environment failure, before any process
+    ever ran -- used to be left forever outside both `ready_cards()` and
+    `all_retired()`: no `_worker_exited` EOF was ever coming to trigger the
+    existing retry-then-retire bookkeeping, because no worker had ever
+    existed to exit. For the Q&A pool (always one spec)
+    `Daemon._dispatch_qa_once` relies on exactly this predicate to convert
+    a permanently unavailable card into `answer_error` for whatever is
+    queued -- so a card stuck in that limbo left every queued question
+    waiting forever, with no `answer_start` or `answer_error` ever reaching
+    the UI.
+
+    `restart_delay_s` is tiny so the retry-then-retire loop this now hands
+    the failure to (`_respawn_later`, already exercised by the sibling test
+    above for a worker that died AFTER running) completes well inside
+    `_wait`'s default timeout.
+    """
+    def spawn(spec, env):
+        raise OSError("no such device")
+
+    p = WorkerPool([_spec(3)], on_event=lambda c, e: None,
+                   log_root=str(tmp_path), spawn=spawn, restart_delay_s=0.01)
+    p.start()
+    assert p.all_retired() is False, (
+        "not yet -- the retry loop has not exhausted WORKER_RETIRE_AFTER")
+    assert _wait(lambda: p.all_retired() is True), (
+        "a card whose worker could never be spawned at all must still "
+        "reach all_retired(), or a permanently unavailable Q&A card hangs "
+        "every queued question forever instead of failing it")
+
+
 # ---------------------------------------------------------------------------
 # The easter egg's dispatch (runner/egg.py). It borrows a chip for about a
 # second and a half, so it must reserve one exactly as a fold does -- and

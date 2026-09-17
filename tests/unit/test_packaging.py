@@ -13,6 +13,7 @@ import re
 import os
 import shutil
 import subprocess
+import sys
 import pathlib
 import pytest
 
@@ -959,6 +960,64 @@ def test_the_launcher_requires_the_weights_flag_the_daemon_actually_requires():
     required: --weights") every time systemd tried to start it."""
     launcher = _daemon_launcher()
     assert "--weights" in launcher
+
+
+# ---------------------------------------------------------------------------
+# The packaged playlist: `debian/tt-bio-demo.install` ships the real fold-
+# input YAMLs into a SIBLING `examples/` directory, never into
+# `/opt/tt-bio-demo/playlist/` itself (that directory carries only
+# manifest.yaml/questions.yaml) -- so a launcher that pointed `--playlist`
+# straight at the installed directory handed `runner.daemon._playlist_files
+# ()` a glob that (once `_NON_FOLD_PLAYLIST_FILENAMES` correctly excludes
+# those two metadata files) always found ZERO fold targets. (PR review,
+# Copilot.) The fix is `scripts/materialize-playlist.sh`, the SAME
+# per-target symlink farm `scripts/run-demo.sh` already builds for the
+# source/dev path, called from the launcher into a runtime directory it can
+# actually write to.
+# ---------------------------------------------------------------------------
+
+def test_the_launcher_materializes_the_playlist_rather_than_globbing_the_installed_one():
+    """Static guard against reverting straight back to the bug: the launcher
+    must no longer hand `--playlist` the bare installed directory, and must
+    go through the shared materializer instead."""
+    launcher = _daemon_launcher()
+    assert "materialize-playlist.sh" in launcher
+    assert "tt_bio_demo_materialize_playlist" in launcher
+    assert '--playlist "${PREFIX}/playlist"' not in launcher, (
+        "this is the installed, metadata-only directory -- real fold "
+        "targets never live there")
+
+
+def test_materialize_playlist_turns_the_real_manifest_into_real_fold_inputs(tmp_path):
+    """The functional half: actually source `materialize-playlist.sh` and
+    call its one function against the REAL repo manifest (the same one the
+    packaged install ships), the way the daemon-launcher does. What a
+    packaged daemon's `--playlist` glob sees afterward must be real,
+    existing fold-input files -- not the two metadata files this bug left
+    it with, and not merely "some files, unverified"."""
+    dest = tmp_path / "playlist"
+    dest.mkdir()
+    script = f'''
+set -euo pipefail
+. "{REPO}/scripts/materialize-playlist.sh"
+tt_bio_demo_materialize_playlist \
+    "{sys.executable}" "{REPO}/playlist/manifest.yaml" "" "{dest}"
+'''
+    r = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                       cwd=str(REPO))
+    assert r.returncode == 0, f"stdout:\n{r.stdout}\nstderr:\n{r.stderr}"
+
+    yaml_files = sorted(dest.glob("*.yaml"))
+    assert yaml_files, "materialized directory has no fold-input YAMLs at all"
+    names = {p.name for p in yaml_files}
+    assert "manifest.yaml" not in names and "questions.yaml" not in names, (
+        "the farm must symlink per-target inputs, not the metadata files "
+        "themselves")
+    for path in yaml_files:
+        assert path.is_symlink(), f"{path.name} is not a symlink"
+        assert path.resolve().is_file(), (
+            f"{path.name} -> {path.resolve()} does not exist -- exactly "
+            "what this fix exists to prevent a visitor's pick from hitting")
 
 
 def test_the_desktop_entry_is_valid_and_names_the_ui():

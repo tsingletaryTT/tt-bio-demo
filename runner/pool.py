@@ -360,12 +360,34 @@ class WorkerPool:
         booth: it is logged, left not-ready, and the other three start
         normally. Failing closed here would mean one missing device node
         takes the whole demo down.
+
+        A card whose FIRST spawn attempt fails here used to be left in
+        permanent limbo -- not ready, not busy, and (PR review, Copilot)
+        not `_retired` either, because only a worker that had run and then
+        died went through `_worker_exited`'s retry-then-retire bookkeeping.
+        For most cards that is merely a chip that never folds; for the
+        one-spec Q&A pool specifically, `Daemon._dispatch_qa_once` relies
+        on `all_retired()` to convert a permanently unavailable card into
+        `answer_error` for whatever is queued -- so a card stuck outside
+        both "ready" and "retired" left every queued question waiting
+        forever, with no `answer_start` or `answer_error` ever emitted.
+        Handed to `_respawn_later` instead (on its own thread, never inside
+        `self._lock` -- that method acquires it itself), the SAME bounded
+        retry-then-retire path an already-running worker's death already
+        gets, rather than a second, separately-reasoned-about failure mode.
         """
+        retry = []
         with self._lock:
             for spec in self._specs.values():
                 if spec.card in self._workers:
                     continue          # already running; never two per chip
-                self._spawn_worker(spec)
+                if (self._spawn_worker(spec) is None
+                        and not self._retired.get(spec.card)):
+                    retry.append(spec.card)
+        for card in retry:
+            threading.Thread(target=self._respawn_later, args=(card,),
+                             daemon=True,
+                             name=f"worker-respawn-card-{card}").start()
 
     def _spawn_worker(self, spec):
         """Spawn one worker and its reader thread. Call with `_lock` held.
