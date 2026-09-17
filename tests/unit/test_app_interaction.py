@@ -443,6 +443,41 @@ def test_ctrl_a_does_not_pretend_to_restart_when_nothing_is_watching(monkeypatch
     assert app.exit_code is None
 
 
+def test_ctrl_a_no_op_still_says_something_on_the_diagnostics_rail(monkeypatch):
+    """Review finding: `_request_qa_restart`'s decline branches used to log
+    only through `logging`, which never reaches `ui/diagnostics.py`'s `D`
+    panel -- so an operator watching that rail for confirmation the booth
+    heard Ctrl+A saw nothing at all, indistinguishable from a frozen app or
+    an unbound key. Both decline paths must also land a line in
+    `app.diagnostics`. This is the already-enabled no-op path."""
+    app = _app()
+    monkeypatch.setenv(app_module.RUN_DEMO_SH_ENV_VAR, "1")
+    app.qa_capable = True
+    before = len(app.diagnostics)
+
+    app._handle_key("a", ctrl=True)
+
+    assert len(app.diagnostics) > before
+    _, _, text = app.diagnostics.tail(1)[0]
+    assert "ctrl+a" in text.lower()
+
+
+def test_ctrl_a_with_no_restart_mechanism_says_so_on_the_diagnostics_rail(monkeypatch):
+    """The other decline path: not launched by run-demo.sh at all (a bare
+    `python3 -m ui.app`, or the packaged deployment). Same requirement --
+    the rail must show something, not silence."""
+    app = _app()
+    monkeypatch.delenv(app_module.RUN_DEMO_SH_ENV_VAR, raising=False)
+    app.qa_capable = False
+    before = len(app.diagnostics)
+
+    app._handle_key("a", ctrl=True)
+
+    assert len(app.diagnostics) > before
+    _, _, text = app.diagnostics.tail(1)[0]
+    assert "ctrl+a" in text.lower()
+
+
 def test_a_bare_a_does_not_touch_qa_restart_state():
     """The reason it is a CHORD: a visitor mashing the keyboard must not be
     able to trigger a booth restart. Bare `a` is an ordinary visitor touch."""

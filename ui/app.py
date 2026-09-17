@@ -3453,9 +3453,23 @@ class DemoApp(Gtk.Application):
         from a bare `python3 -m ui.app` or the packaged deployment, neither
         of which has a restart mechanism at all (docs/followups.md). In
         either of those, say so rather than pretending a restart happened.
+
+        Both decline branches ALSO feed a line into `self.diagnostics`
+        (`ui/diagnostics.py`, the `D` panel), not only `log.*`: a plain
+        Python log line only ever reaches stderr/the journal, so an
+        operator who is actually watching the diagnostics rail for
+        confirmation the booth heard them would otherwise see nothing at
+        all when this documented, `?`-card-advertised key declines --
+        indistinguishable from a frozen app or an unbound key. The
+        successful (restarting) branch does not bother: the process is
+        about to exit, so there is no rail left to read it on.
         """
         if self.qa_capable:
             log.info("ctrl+a: affinity Q&A is already enabled; nothing to do")
+            self._note_diagnostics(
+                self.diagnostics.note,
+                "ctrl+a: affinity Q&A is already on; nothing to do",
+                KIND_MARK)
             return
         if os.environ.get(RUN_DEMO_SH_ENV_VAR) != "1":
             log.warning(
@@ -3463,6 +3477,11 @@ class DemoApp(Gtk.Application):
                 "restart mechanism to drive (not launched by "
                 "scripts/run-demo.sh) -- restart the booth manually with "
                 "--questions to enable it")
+            self._note_diagnostics(
+                self.diagnostics.note,
+                "ctrl+a: no restart mechanism here -- restart manually "
+                "with --questions",
+                KIND_MARK)
             return
         log.info("ctrl+a: exiting to restart the booth with --questions")
         self.exit_code = QUESTIONS_RESTART_EXIT_CODE
@@ -5767,12 +5786,19 @@ def main(argv=None):
     args = parser.parse_args(argv)
     target_ids = [part.strip() for part in (args.targets or "").split(",")
                   if part.strip()]
-    app = DemoApp(socket_path=args.socket,
-                 playlist_path=args.playlist,
-                 target_ids=target_ids,
-                 windowed=args.windowed,
-                 quad=args.quad)
     try:
+        # Construction lives INSIDE this try, not before it: "a clean stop
+        # must not end in a traceback" (this project's standing rule) means
+        # a Ctrl-C raised while GTK/GObject construction is still in flight
+        # must hit the same KeyboardInterrupt handling as one raised inside
+        # `run()`, rather than propagating out of `main()` as a bare stack
+        # trace. The `except` below returns 130 directly WITHOUT touching
+        # `app` -- it may not exist yet if the interrupt landed here.
+        app = DemoApp(socket_path=args.socket,
+                      playlist_path=args.playlist,
+                      target_ids=target_ids,
+                      windowed=args.windowed,
+                      quad=args.quad)
         result = app.run([])
     except KeyboardInterrupt:
         # A CLEAN STOP MUST NOT END IN A TRACEBACK. Ctrl-C (and the
