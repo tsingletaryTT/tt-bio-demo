@@ -160,12 +160,44 @@ case "$1" in
         # changed umask, or a distro default this project has not seen, would
         # silently leave the desktop user -- who has to READ this directory
         # back later, as an entirely different user -- unable to see into it.
+        #
+        # 0777, NOT 0755 -- and this is deliberately WRITABLE, not merely
+        # readable. This directory is root-owned (this postinst runs as
+        # root; there is no SUDO_USER/logind-based booth-operator detection
+        # anywhere in this codebase to chown it to instead -- see docs/
+        # followups.md's "root's postinst-time HOME vs desktop-user's
+        # systemd-service-time HOME" entry for why that was rejected as a
+        # fix direction generally), yet `runner/folder.py`'s `Folder.load()`
+        # WRITES into it at runtime as the desktop user: a cache holding
+        # `mols.tar` but not yet the extracted `mols/` unpacks it in place on
+        # the first fold (`download_mols(cache)`), and `tt_bio.weights.fetch`
+        # can re-fetch a corrupt/incomplete artifact. 0755 made the directory
+        # READABLE by the desktop user but not WRITABLE, which silently
+        # turned that self-repair into a `PermissionError` inside `Folder.
+        # load()`'s own try block -- a booth that used to fix a missing
+        # `mols/` in twenty seconds instead got stuck on "preparing" with no
+        # diagnostic anyone would see. See docs/followups.md's "/opt/tt-bio-
+        # demo/weights is root-owned and not writable by the daemon" entry
+        # (FIXED) for the full history.
+        #
+        # world-writable rather than a dedicated group is the pragmatic
+        # choice for a single-operator conference-booth appliance: this
+        # project has never had per-user account separation on the booth
+        # machine (the desktop session IS the operator), and inventing a
+        # dedicated group here would need the SAME missing user-detection
+        # this project has already rejected as a fix direction once. The
+        # security tradeoff is real and worth stating plainly: any local
+        # account on this machine can write into this one directory. That is
+        # an acceptable trade for a machine whose only job is to run this
+        # booth, and not one to make on a shared multi-user box without
+        # reconsidering it.
+        #
         # `install -d` sets the mode atomically at creation time rather than
         # creating-then-chmodding, which matters if a stricter umask is ever
         # in effect here. Done only in this branch (not unconditionally above
         # the `case`), so an abort-upgrade/abort-remove/abort-deconfigure
         # call never creates a directory for a fetch that is not happening.
-        install -d -m 0755 "$CACHE"
+        install -d -m 0777 "$CACHE"
 
         tt_bio_demo_log "fetching weights via tt-bio's own resolver (resumable)..."
         # Resolution, not a copy: weights.fetch returns the cached path and

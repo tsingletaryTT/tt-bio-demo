@@ -683,6 +683,53 @@ doctor_check_display() {
     return 0
 }
 
+# The --fix repair for a missing weights-cache directory. Split out into its
+# own function (rather than left inline in doctor_main) the same way every
+# other check/repair in this file is, so a test can call it directly.
+#
+# A bare `mkdir -p "$_c" && ok ...` used to sit here: under `set -uo
+# pipefail` (no `-e`) a failed mkdir just short-circuited the `&&`, so a
+# non-root operator saw mkdir's own raw "Permission denied" on stderr and
+# NOTHING from this script -- no fail(), no hint(), from the one command
+# whose whole job is turning a bare shell error into a doctor-formatted one.
+# That is exactly the failure mode for a PACKAGED cache: the directory is
+# under /opt/tt-bio-demo, root-owned, and creating it needs root.
+doctor_fix_weights_dir() {
+    _c="$(doctor_weights_cache)"
+    [ -d "$_c" ] && return 0
+    if [ "$(doctor_install_mode)" = "package" ]; then
+        # -m 0777, matching debian/tt-bio-demo-weights.postinst's own mode --
+        # see docs/followups.md's "/opt/tt-bio-demo/weights is root-owned and
+        # not writable by the daemon" entry (FIXED): the daemon WRITES into
+        # this directory at runtime (download_mols' self-repair of a
+        # mols.tar that was never unpacked, a re-fetch of a corrupt
+        # artifact), so a directory this repair creates without an explicit
+        # mode -- landing at whatever the invoking shell's umask says --
+        # could silently reintroduce that exact bug.
+        #
+        # `install -d`, not `mkdir -p`, for the same reason the postinst
+        # uses it: -m only applies to the DEEPEST directory either command
+        # creates (shellcheck SC2174), which matters not at all here -- the
+        # parent /opt/tt-bio-demo always already exists by the time this
+        # runs (it is the base package's own install directory, and this
+        # package depends on it), so $_c's single missing leaf component IS
+        # the deepest directory created.
+        if install -d -m 0777 "$_c" 2>/dev/null; then
+            ok "created $_c"
+            return 0
+        fi
+        fail "could not create $_c"
+        hint "this is under /opt/tt-bio-demo, which needs root:"
+        hint "sudo install -d -m 0777 $_c"
+        return 1
+    fi
+    if mkdir -p "$_c" 2>/dev/null; then
+        ok "created $_c"
+        return 0
+    fi
+    fail "could not create $_c"
+    return 1
+}
 
 # ── main ────────────────────────────────────────────────────────────────────
 
@@ -725,10 +772,7 @@ doctor_main() {
     # and because this box is shared.
     if [ "$_fix" = "1" ]; then
         head_ "--fix"
-        _c="$(doctor_weights_cache)"
-        if [ ! -d "$_c" ]; then
-            mkdir -p "$_c" && ok "created $_c"
-        fi
+        doctor_fix_weights_dir
         say "  nothing else is repaired automatically: building venvs and"
         say "  downloading weights are large, networked, and this box may be"
         say "  shared. The exact commands are printed above."

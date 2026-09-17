@@ -708,3 +708,57 @@ def test_the_shared_install_mode_function_works_directly(tmp_path):
     (fake / ".git").mkdir()
     assert _sh(f'tt_bio_demo_install_mode "{fake}"').stdout.strip() == "source"
 
+
+# ---------------------------------------------------------------------------
+# doctor --fix's weights-directory repair (Important 3's other half): a bare
+# `mkdir -p "$_c" && ok ...` used to sit inline in doctor_main. Under
+# `set -uo pipefail` (no `-e`) a failed mkdir just short-circuited the `&&`,
+# so a non-root operator diagnosing a packaged install (where the cache is
+# under root-owned /opt/tt-bio-demo) saw mkdir's own raw "Permission denied"
+# on stderr and NOTHING from this script -- no fail(), no hint(). Split out
+# into doctor_fix_weights_dir so it is directly testable like every other
+# check/repair in this file.
+# ---------------------------------------------------------------------------
+
+def test_fix_creates_a_missing_cache_directory_in_source_mode(tmp_path):
+    home = tmp_path / "somebody"
+    home.mkdir()
+    r = _sh("doctor_fix_weights_dir", TT_BIO_CACHE="", BOLTZ_CACHE="", HOME=str(home))
+    assert r.returncode == 0, r.stderr
+    assert (home / ".boltz").is_dir()
+
+
+def test_fix_creates_a_missing_cache_directory_writable_in_package_mode(tmp_path):
+    """The packaged repair must use the SAME writable mode
+    debian/tt-bio-demo-weights.postinst uses (0777) -- not merely readable,
+    since runner/folder.py's Folder.load() self-repair writes into this
+    directory at runtime, as whichever desktop user runs the daemon."""
+    prefix = _fake_package_prefix(tmp_path)
+    cache_dir = tmp_path / "opt" / "tt-bio-demo" / "weights"
+    r = _sh("doctor_fix_weights_dir", TT_BIO_DEMO_PREFIX=str(prefix),
+            TT_BIO_CACHE=str(cache_dir), BOLTZ_CACHE="")
+    assert r.returncode == 0, r.stderr
+    assert cache_dir.is_dir()
+    mode = cache_dir.stat().st_mode & 0o777
+    assert mode == 0o777, f"expected 0777, got {oct(mode)}"
+
+
+def test_fix_reports_a_permission_failure_instead_of_a_raw_mkdir_error(tmp_path):
+    """The regression this replaces: a failed mkdir under `set -uo pipefail`
+    used to print nothing from this script at all -- just mkdir's own raw
+    stderr line, with no fail()/hint() to tell an operator what to do about
+    it. Forced here with a directory this test process genuinely cannot
+    write into (this sandbox is not root), the same shape of failure a
+    non-root operator hits under /opt/tt-bio-demo."""
+    prefix = _fake_package_prefix(tmp_path)
+    locked = tmp_path / "locked"
+    locked.mkdir(mode=0o000)
+    try:
+        cache_dir = locked / "weights"
+        r = _sh("doctor_fix_weights_dir", TT_BIO_DEMO_PREFIX=str(prefix),
+                TT_BIO_CACHE=str(cache_dir), BOLTZ_CACHE="")
+        assert r.returncode != 0
+        assert "[FAIL]" in r.stdout, r.stdout + r.stderr
+        assert "->" in r.stdout, "expected a hint() line naming what to do"
+    finally:
+        locked.chmod(0o755)
