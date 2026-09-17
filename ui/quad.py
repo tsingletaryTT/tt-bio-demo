@@ -42,6 +42,16 @@ showing one big protein. That is `set_solo_mode` below -- one widget tree,
 with the cells that are not the focus hidden -- and `Q` is what turns the
 other three on. See the comment above `set_solo_mode` for why the hero is a
 cell of this grid rather than a fifth viewer of its own.
+
+The empty cell, when there is one
+----------------------------------
+Affinity Q&A permanently reserves one chip whenever 2+ are detected, so a
+4-physical-chip booth with it enabled folds on three -- and a `QuadView`
+built from that shorter card list has one grid slot with nothing attached
+to it at all (`slot_count < MAX_SLOTS`). `set_extra_cell` is what a caller
+puts there instead of leaving it blank; this module does not know or care
+what the widget IS (in practice, `ui.qa_spotlight.QASpotlightCell`) --
+placement and solo-mode visibility are this class's job, content is not.
 """
 
 import logging
@@ -406,6 +416,15 @@ class QuadView(Gtk.Grid):
 
         self._focus_slot = None
 
+        # The extra cell: whatever `set_extra_cell` was last given (the
+        # affinity Q&A spotlight, `ui.qa_spotlight.QASpotlightCell`, in
+        # practice), placed in the grid slot just past the last real chip
+        # cell -- the one this class otherwise leaves empty. See
+        # `set_extra_cell`'s own docstring for why it lives in its own
+        # wrapper rather than being attached directly.
+        self._extra_cell = None
+        self._extra_wrapper = None
+
         # Solo mode: the booth's DEFAULT, and what `Q` toggles off. See
         # `set_solo_mode`.
         self._solo_mode = True
@@ -546,14 +565,69 @@ class QuadView(Gtk.Grid):
 
         With no focus marked, solo mode falls back to cell 0 rather than
         hiding every cell: an unfocused booth must still show a protein.
+
+        The extra cell (see `set_extra_cell`) is never the hero -- it holds
+        no fold of its own -- so it is hidden in solo mode exactly like
+        every chip cell that is not the focus, and shown whenever they are.
         """
         if not self._solo_mode:
             for cell in self._cells:
                 cell.frame.set_visible(True)
+            if self._extra_wrapper is not None:
+                self._extra_wrapper.set_visible(True)
             return
         hero = self._focus_slot if self._cell(self._focus_slot) is not None else 0
         for slot, cell in enumerate(self._cells):
             cell.frame.set_visible(slot == hero)
+        if self._extra_wrapper is not None:
+            self._extra_wrapper.set_visible(False)
+
+    # ── the extra cell (affinity Q&A spotlight) ─────────────────────────
+
+    def set_extra_cell(self, widget):
+        """Place `widget` in the grid slot just past the last real chip
+        cell -- the one a shorter-than-4 card list otherwise leaves empty
+        -- or do nothing if there is no such slot (a full 2x2 of chips
+        leaves no room, and this booth has nowhere else to put it).
+
+        `widget` is reparented into a plain wrapper box THIS view owns,
+        rather than attached directly, so two independent things can each
+        own their own half of "is it visible" without fighting over one
+        widget's `visible` property: `_apply_solo` (above) owns the
+        wrapper's visibility (hidden in solo mode, exactly like every
+        non-hero cell), and the widget's OWN visibility stays whatever its
+        caller last set it to (`ui.qa_spotlight.QASpotlightCell.
+        set_qa_capable`, in practice) -- GTK already ANDs a child's
+        visibility with its ancestors', so neither has to know about the
+        other.
+
+        Safe to call again with the SAME widget across a card-list rebuild
+        (`ui/app.py`'s `_ensure_quad` builds a brand new `QuadView` on
+        every card-list change, but keeps one long-lived spotlight widget
+        instance across all of them): `Gtk.Widget.unparent()` detaches it
+        from whatever the OLD `QuadView`'s wrapper was first.
+        """
+        self._extra_cell = widget
+        if widget is None:
+            return
+        slot = len(self._cells)
+        if slot >= MAX_SLOTS:
+            log.debug("no free grid slot for the extra cell (%d cells "
+                      "already fill the quad)", len(self._cells))
+            return
+        if self._extra_wrapper is None:
+            wrapper = Gtk.Box()
+            wrapper.set_hexpand(True)
+            wrapper.set_vexpand(True)
+            column, row = grid_position(slot)
+            self.attach(wrapper, column, row, 1, 1)
+            self._extra_wrapper = wrapper
+        parent = widget.get_parent()
+        if parent is not None and parent is not self._extra_wrapper:
+            widget.unparent()
+        if widget.get_parent() is None:
+            self._extra_wrapper.append(widget)
+        self._apply_solo()
 
     @property
     def visible_slots(self):

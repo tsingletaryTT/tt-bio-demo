@@ -191,6 +191,7 @@ from ui.pocket import POCKET_CUTOFF_ANGSTROM, pocket_residues
 from ui.structure_view import structure_mesh
 from ui.panels import PipelinePanel, TelemetryPanel
 from ui.playlist import PlaylistError, load_playlist, load_questions, select_targets
+from ui.qa_spotlight import QASpotlightCell
 from ui.questions import QuestionQueuePanel
 from ui.attract import (ASK_QUESTION, CLOSE_DIAGNOSTICS, CLOSE_TENSIX,
                         HIDE_GALLERY, OPEN_DIAGNOSTICS, OPEN_TENSIX,
@@ -1570,10 +1571,11 @@ def _help_panels(n_chips):
         # documents `T` even on a box where WebKit (and so the Tensix panel
         # itself) may not be available: this describes what the feature
         # DOES when present, not a claim that this specific box has it.
-        "Affinity questions (right rail) — a small, fixed set of questions "
-        "this booth asks and answers with a real tt-bio computation: does "
-        "this ligand bind this protein? The answer is nesso1's own score, "
-        "plus a highlight on the ribbon showing the residues nearest the "
+        "Affinity questions (right rail, and the quad's own empty cell "
+        "when Q&A reserves a chip) — a small, fixed set of questions this "
+        "booth asks and answers with a real tt-bio computation: does this "
+        "ligand bind this protein? The answer is nesso1's own score, plus "
+        "a highlight on the ribbon showing the residues nearest the "
         f"ligand — within {POCKET_CUTOFF_ANGSTROM:g} Å of any ligand atom, "
         "a stated, checkable distance, not a claim about the \"true\" "
         "binding site a cutoff alone cannot establish.",
@@ -1680,6 +1682,13 @@ class DemoApp(Gtk.Application):
         # Task 11). May legitimately stay None the same way `chipviz_panel`
         # may: headless tests, and the moment before do_activate runs.
         self.question_panel = None
+        # The quad's own spotlight cell (ui.qa_spotlight.QASpotlightCell) --
+        # the SAME facts as `question_panel` above, shown large in the
+        # quad's own empty fourth cell instead of the sidebar. One
+        # long-lived instance, same as `question_panel`: `_ensure_quad`
+        # reparents it into each freshly-built `QuadView` rather than this
+        # module ever constructing a second one.
+        self.qa_spotlight = None
         # The Tensix activity panel (ui/chipviz.py). May legitimately stay
         # None (headless tests, and the moment before do_activate runs) and
         # may legitimately exist-but-be-unavailable (no WebKit, no chips);
@@ -2149,6 +2158,15 @@ class DemoApp(Gtk.Application):
             quad.set_connection_state(self._connection_state)
         except Exception:
             log.exception("connection state not applied to the new quad")
+        if self.qa_spotlight is not None:
+            # Reparents the SAME long-lived spotlight widget into this
+            # fresh grid (a no-op if this quad has no free cell for it --
+            # see `QuadView.set_extra_cell`) -- never a new one, so whatever
+            # question/answer it was showing survives a card-list rebuild.
+            try:
+                quad.set_extra_cell(self.qa_spotlight)
+            except Exception:
+                log.exception("qa spotlight not attached to the new quad")
         self._viewer_page.set_child(quad)
         self.quad = quad
         for viewer in quad.viewers:
@@ -2444,6 +2462,13 @@ class DemoApp(Gtk.Application):
         # follows, applied to a daemon-level capability instead of a
         # host-level one.
         self.question_panel = QuestionQueuePanel(self.questions)
+        # The same Q&A facts, large, in the quad's own empty fourth cell
+        # (see ui/qa_spotlight.py). Built here rather than inside
+        # `_ensure_quad` because it must be the SAME instance across every
+        # card-list rebuild that method does (`_ensure_quad` reparents it
+        # into whichever `QuadView` is current); it is not appended to
+        # `side` below, since it lives in the quad, not the rail.
+        self.qa_spotlight = QASpotlightCell(self.questions)
         for panel in (self.pipeline_panel, self.telemetry_panel,
                       self.chipviz_panel, self.question_panel):
             panel.set_hexpand(False)
@@ -2455,10 +2480,12 @@ class DemoApp(Gtk.Application):
         # means -- including the part the key cannot do, which is leaving an
         # UNAVAILABLE panel (no WebKit, no chips) hidden regardless.
         self._set_chipviz_visible(self.chipviz_visible)
-        # Same idea as the line above, for the question panel: whatever
-        # `hello` has already told this booth (or nothing yet, on a fresh
-        # activate) is the panel's settled state from the moment it exists.
+        # Same idea as the line above, for the question panel and its quad
+        # spotlight twin: whatever `hello` has already told this booth (or
+        # nothing yet, on a fresh activate) is both panels' settled state
+        # from the moment they exist.
         self.question_panel.set_qa_capable(self.qa_capable)
+        self.qa_spotlight.set_qa_capable(self.qa_capable)
 
         # Below the progress legend and the chip readout, in the space the
         # rail was leaving empty (see .superpowers/.../booth-wired.png): the
@@ -4833,12 +4860,26 @@ class DemoApp(Gtk.Application):
     # its rendering.
 
     def _call_question_panel(self, method, *args):
-        if self.question_panel is None:
-            return
-        try:
-            getattr(self.question_panel, method)(*args)
-        except Exception:
-            log.exception("question panel %s dropped", method)
+        """Forward one call to every widget that shows the Q&A queue's
+        state -- the rail panel AND the quad's own spotlight cell
+        (`ui/qa_spotlight.py`). The two are independent widgets showing the
+        SAME facts at two sizes, so every caller of this method (`_handle_
+        answer_event`, `_set_qa_capable`) drives both from one call site
+        rather than remembering to call two -- the same "one place that
+        knows" shape `_call_pipeline_panel` already uses for a single
+        target, extended to a short fixed list of them.
+
+        Each target gets its own try/except: one panel's update exploding
+        must not cost the other panel its own render, any more than it
+        should cost the rest of `_handle_event` its own work.
+        """
+        for target in (self.question_panel, self.qa_spotlight):
+            if target is None:
+                continue
+            try:
+                getattr(target, method)(*args)
+            except Exception:
+                log.exception("%s.%s dropped", type(target).__name__, method)
 
     def _set_qa_capable(self, capable):
         """Record whether this daemon has a chip reserved for Q&A, and tell

@@ -78,7 +78,7 @@ _HAIRLINE = "rgba(199, 217, 216, 0.18)"  # _BG_ALT at 18% opacity
 # of these, never inventing wording of its own.
 # ---------------------------------------------------------------------------
 
-def _question_label(question_text, target_id):
+def question_label(question_text, target_id):
     """The text a row shows for one question.
 
     Degrades honestly when the real question text isn't known -- e.g. an
@@ -87,6 +87,13 @@ def _question_label(question_text, target_id):
     brief's own tests construct a bare panel and call these with no prior
     question list at all). The fallback still names the real target being
     checked, which is always known -- it never invents a question.
+
+    Public (no leading underscore) because `ui.qa_spotlight`'s spotlight
+    cell needs the exact same fallback sentence for the quad's own empty
+    cell -- reusing this function is what keeps that fallback from
+    becoming a second hand-typed copy of the same sentence, the drift this
+    project's CLAUDE.md has paid for more than once (the manifest/site-copy
+    drift, the exit-code/env-var duplication).
     """
     if question_text:
         return question_text
@@ -118,8 +125,8 @@ def pending_text(pending):
         return "No questions queued"
     lines = []
     for question in pending:
-        text = _question_label(getattr(question, "question", None),
-                                question.target_id)
+        text = question_label(getattr(question, "question", None),
+                               question.target_id)
         expected = expected_time_text(getattr(question, "expected_s", None))
         lines.append(f"{text} ({expected})")
     return "\n".join(lines)
@@ -129,7 +136,7 @@ def in_flight_text(target_id, question_text=None):
     """The in-flight row's text: what is being checked right now, with no
     claim about how far along it is (see the module docstring on why this
     panel has no progress bar at all)."""
-    return f"Checking — {_question_label(question_text, target_id)}"
+    return f"Checking — {question_label(question_text, target_id)}"
 
 
 def no_question_in_flight_text():
@@ -158,11 +165,13 @@ def no_question_answered_text():
 # cannot drift between call sites the way the manifest/site-copy drift this
 # project has paid for more than once (CLAUDE.md's "nine model families"
 # section, the DNA/tRNA blurbs) always starts as two hand-typed copies of
-# the same sentence.
-_SCORE_GLOSS = "nesso1's predicted probability the ligand binds"
+# the same sentence. Public for the same reason `question_label` is: a
+# second surface (`ui.qa_spotlight`) shows this exact score, and it must
+# read the one constant rather than carry a second hand-typed copy of it.
+SCORE_GLOSS = "nesso1's predicted probability the ligand binds"
 
 
-def _format_score(score):
+def format_score(score):
     """Round a raw nesso1 score to 2 decimal places for display, or `None`
     if `score` isn't a real number at all.
 
@@ -180,6 +189,12 @@ def _format_score(score):
     an `answer_done` with a missing/non-numeric `score` must render as an
     honest "not available", never literally the word `None` or a
     traceback.
+
+    Public for the same reason `question_label`/`SCORE_GLOSS` are: the quad
+    spotlight cell (`ui.qa_spotlight`) needs the same rounded number, laid
+    out on its own line rather than folded into `answered_text`'s single
+    string -- reusing this function is what keeps the two surfaces agreeing
+    on precision without either re-deriving it.
     """
     try:
         value = float(score)
@@ -193,30 +208,30 @@ def _format_score(score):
 def answered_text(target_id, score, question_text=None):
     """The answered row's text: the content-honesty rule, as code.
 
-    The model's own score, rounded for display (`_format_score`) and
-    followed by `_SCORE_GLOSS` -- a fixed, factual statement of what the
+    The model's own score, rounded for display (`format_score`) and
+    followed by `SCORE_GLOSS` -- a fixed, factual statement of what the
     number IS (spec section 7) -- and nothing else said about it. No
     invented verdict adjective ("binds tightly", "weak binder", ...) that
     nesso1's own output does not supply; see the module docstring for why
     this is load-bearing rather than a style preference.
 
-    A `score` that isn't a real number (see `_format_score`) renders as
+    A `score` that isn't a real number (see `format_score`) renders as
     "not available" rather than the literal string "None" -- the same
     "never show wire-shaped data verbatim" rule this file already applies
     to `answer_error`.
     """
-    label = _question_label(question_text, target_id)
-    formatted = _format_score(score)
+    label = question_label(question_text, target_id)
+    formatted = format_score(score)
     if formatted is None:
         return f"{label}\nscore: not available"
-    return f"{label}\nscore: {formatted} — {_SCORE_GLOSS}"
+    return f"{label}\nscore: {formatted} — {SCORE_GLOSS}"
 
 
 def error_text(target_id, question_text=None):
     """The answered row's text when scoring failed. Honest about what
     happened (nothing was answered) rather than fabricating a score or a
     verdict to fill the space."""
-    return f"{_question_label(question_text, target_id)} — not answered (error)"
+    return f"{question_label(question_text, target_id)} — not answered (error)"
 
 
 # ---------------------------------------------------------------------------
@@ -332,7 +347,7 @@ class QuestionQueuePanel(Gtk.Box):
         # Keyed by Question.id, for on_answer_start/_done/_error to look up
         # the real question text (and expected_s) a bare `question_id` alone
         # doesn't carry. Empty when no questions were supplied -- every
-        # lookup then honestly falls through to `_question_label`'s target-
+        # lookup then honestly falls through to `question_label`'s target-
         # only fallback rather than raising.
         self._by_id = {question.id: question for question in (questions or [])}
         # The full, fixed set this booth knows how to ask -- in the order
