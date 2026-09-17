@@ -161,3 +161,28 @@ tt_bio_demo_weights_cache_impl_packaged() {
 tt_bio_demo_weights_cache_packaged() {
     tt_bio_demo_weights_cache_impl_packaged
 }
+
+# For a caller that has its OWN explicit cache directory in hand (an
+# operator's --weights/$TT_BIO_DEMO_WEIGHTS on scripts/run-demo.sh) and needs
+# every OTHER consumer of $TT_BIO_CACHE in the same process tree -- the
+# folding workers' runner_environ(), and any hf-repo artifact resolved via
+# tt_bio.weights.configure_hf_cache() -- to agree with it, not with the fixed
+# packaged default. Pins $TT_BIO_CACHE to exactly `$1` and prints it back,
+# so a caller can both export the agreement and capture the same value in
+# one call. Deliberately in THIS file rather than inlined as a plain
+# `export TT_BIO_CACHE=...` at the call site: this project has a repo-wide
+# guard (tests/unit/test_weights_cache_is_derived_once.py) restricting which
+# files may read or write $TT_BIO_CACHE/$BOLTZ_CACHE directly, specifically
+# because a second (now third, fourth...) place doing so is exactly how this
+# project's cache-location bugs have shipped before. An operator's own
+# already-exported $TT_BIO_CACHE/$BOLTZ_CACHE still wins over `$1` --
+# tt_bio_demo_weights_cache_impl checks both before anything this function
+# sets, the same "explicit always wins over a pin" rule every other function
+# in this file follows.
+tt_bio_demo_weights_cache_pin_to() {
+    if [ -z "${TT_BIO_CACHE:-}" ] && [ -z "${BOLTZ_CACHE:-}" ]; then
+        TT_BIO_CACHE="$1"
+        export TT_BIO_CACHE
+    fi
+    tt_bio_demo_weights_cache_impl
+}

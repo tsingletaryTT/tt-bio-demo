@@ -95,10 +95,15 @@ doctor_install_mode() {
 . "$(dirname "${BASH_SOURCE[0]:-$0}")/weights-cache.sh"
 
 # A PACKAGED install diagnosed here must see the SAME fixed, non-home-
-# relative cache path debian/tt-bio-demo-weights.postinst and
-# debian/tt-bio-demo.user.service's `Environment=` line pin -- see docs/
-# followups.md's "root's postinst-time HOME vs desktop-user's
-# systemd-service-time HOME" entry (FIXED) for the full history. An
+# relative cache path every other packaged caller pins --
+# debian/tt-bio-demo-weights.postinst, scripts/run-demo.sh (the packaged
+# install's actual operator-facing launcher), and
+# scripts/tt-bio-demo-daemon-launcher.sh (what debian/tt-bio-demo.user.
+# service's ExecStart= actually runs; the unit itself no longer carries a
+# static `Environment=` line -- see docs/followups.md's "the systemd unit's
+# Environment= is unconditional" entry, FIXED) -- see docs/followups.md's
+# "root's postinst-time HOME vs desktop-user's systemd-service-time HOME"
+# entry (FIXED) for the full history. An
 # INTERACTIVE operator running this script has neither the postinst's
 # environment (root, at `dpkg`/`apt install` time) nor the unit's (the
 # desktop user, at service-start time), so without this, checking a

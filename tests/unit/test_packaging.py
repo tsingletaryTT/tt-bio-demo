@@ -1266,14 +1266,23 @@ def test_helpers_does_not_recurse_when_the_resolver_defines_nothing(tmp_path):
 #    The literal fixed path is declared in exactly ONE place --
 #    scripts/weights-cache.sh's `TT_BIO_DEMO_PACKAGED_WEIGHTS_CACHE` -- the
 #    same file tests/unit/test_weights_cache_is_derived_once.py already
-#    treats as one of the two allowed resolvers. The postinst and
-#    scripts/doctor.sh both reach it by CALLING that resolver
-#    (`tt_bio_demo_weights_cache_packaged`, exposed to the postinst through
-#    debian/helpers.sh's wrapper of the same name) rather than repeating the
-#    literal path themselves, so there is only one thing that could drift.
-#    The systemd unit is the one place that HAS to repeat the literal value
-#    -- a static `Environment=` line cannot call a shell function -- so that
-#    is the one drift this section still has to guard against directly.
+#    treats as one of the two allowed resolvers. FOUR callers reach it by
+#    CALLING that resolver (`tt_bio_demo_weights_cache_packaged`) rather than
+#    repeating the literal path themselves: the postinst (via
+#    debian/helpers.sh's wrapper of the same name), scripts/doctor.sh,
+#    scripts/run-demo.sh (the packaged install's actual operator-facing
+#    launcher), and scripts/tt-bio-demo-daemon-launcher.sh (what
+#    debian/tt-bio-demo.user.service's ExecStart= actually runs). The
+#    systemd unit ITSELF used to be the one place that had to repeat the
+#    literal value, in a static `Environment=` line that could not call a
+#    shell function and so could not honour an operator's own override --
+#    see docs/followups.md's "the systemd unit's Environment= is
+#    unconditional" entry (FIXED). Moving that pin into the launcher script
+#    above removed the one caller that could drift from this resolver at
+#    all; nothing left in this tree repeats the literal value, so there is
+#    no longer a second drift this section has to guard against directly --
+#    only that the four callers keep calling the shared resolver instead of
+#    reinventing their own copy.
 #    ──────────────────────────────────────────────────────────────────────
 
 def _fixed_weights_cache_path():

@@ -26,10 +26,19 @@ PREFIX="$(tt_bio_demo_prefix)"
 # `tt_bio_demo_weights_cache_packaged` (debian/helpers.sh, sourced above --
 # which itself just hands off to scripts/weights-cache.sh's own
 # `tt_bio_demo_weights_cache_impl_packaged`) pins the cache variable the
-# shared resolver checks first to one fixed, non-home-relative path -- the
-# IDENTICAL literal path debian/tt-bio-demo.user.service's `Environment=`
-# line sets (tests/unit/test_packaging.py checks the two never drift apart)
-# -- unless an operator has already set it themselves. This removes HOME
+# shared resolver checks first to one fixed, non-home-relative path -- unless
+# an operator has already set it themselves. That literal path lives in
+# exactly ONE place (scripts/weights-cache.sh's
+# TT_BIO_DEMO_PACKAGED_WEIGHTS_CACHE); every other packaged caller --
+# scripts/doctor.sh, scripts/run-demo.sh, and
+# scripts/tt-bio-demo-daemon-launcher.sh (what debian/tt-bio-demo.user.
+# service's ExecStart= actually runs -- the unit itself no longer repeats the
+# path in a static `Environment=` line; see docs/followups.md's "the systemd
+# unit's Environment= is unconditional" entry, FIXED) -- reaches it the same
+# way, by CALLING this same guarded resolver, so there is nothing left to
+# drift apart. tests/unit/test_packaging.py's "the resolver declares a fixed
+# ... path" section checks that none of these callers keep their own copy of
+# the literal value. This removes HOME
 # from the equation entirely for every weight this postinst fetches: not
 # just the flat protenix-v2.pt/mols.tar artifacts (whose `root=`/`--cache`
 # argument already redirects them per-call), but also nesso1/nesso1-ccd/the

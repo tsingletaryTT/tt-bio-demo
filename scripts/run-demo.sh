@@ -137,7 +137,12 @@
 #                                 populated (still overridden if $TT_BIO_CACHE
 #                                 or $BOLTZ_CACHE is already set). Whatever is
 #                                 used is pinned for the folding workers too,
-#                                 not just the readiness check.
+#                                 not just the readiness check -- an explicit
+#                                 --weights/$TT_BIO_DEMO_WEIGHTS on a packaged
+#                                 install re-pins $TT_BIO_CACHE to that SAME
+#                                 directory (rather than to the fixed default)
+#                                 so preflight and the workers can never
+#                                 disagree about which cache is in play.
 #   --log-budget-gb N             Forwarded to the daemon's own
 #                                 --log-budget-gb (tt-metal log containment;
 #                                 see runner/env.py). Default: 2.0
@@ -168,21 +173,37 @@ SOCKET="${TT_BIO_DEMO_SOCKET:-${RUNTIME_DIR}/runner.sock}"
 LOG_ROOT="${TT_BIO_DEMO_LOG_ROOT:-${RUNTIME_DIR}/logs}"
 # shellcheck source=weights-cache.sh
 . "${SCRIPT_DIR}/weights-cache.sh"
-# The DEFAULT comes from the shared resolver -- but which resolver depends on
-# whether THIS checkout is a source tree or the packaged /opt/tt-bio-demo
-# tree, same distinction scripts/doctor.sh already draws (doctor_install_mode,
-# now backed by the shared tt_bio_demo_install_mode above). Before this, this
-# script always used the plain, home-relative resolver even from a packaged
-# install -- and this script is not a dev convenience, it is the packaged
-# install's actual operator-facing launcher: debian/com.tenstorrent.ttbio.
-# demo.desktop's Exec= runs it directly, and INSTALL.md calls it "the normal
-# path". So a real `.deb` install had the postinst fetching to the fixed
-# /opt/tt-bio-demo/weights (see scripts/weights-cache.sh's own big comment on
+# The weights DEFAULT comes from the shared resolver -- but which resolver
+# depends on whether THIS checkout is a source tree or the packaged
+# /opt/tt-bio-demo tree, same distinction scripts/doctor.sh already draws
+# (doctor_install_mode, now backed by the shared tt_bio_demo_install_mode
+# above). Before this, this script always used the plain, home-relative
+# resolver even from a packaged install -- and this script is not a dev
+# convenience, it is the packaged install's actual operator-facing launcher:
+# debian/com.tenstorrent.ttbio.demo.desktop's Exec= runs it directly, and
+# INSTALL.md calls it "the normal path". So a real `.deb` install had the
+# postinst fetching to the fixed /opt/tt-bio-demo/weights (see
+# scripts/weights-cache.sh's own big comment on
 # TT_BIO_DEMO_PACKAGED_WEIGHTS_CACHE) while launching the booth via the
 # desktop entry resolved the desktop user's own $HOME/.boltz instead --
 # worse than before that fix, because the postinst and this launcher used to
 # at least agree (both home-relative). See docs/followups.md's "run-demo.sh
 # resolved home-relative even from a packaged install" entry (FIXED).
+#
+# The ACTUAL resolution (and, in packaged mode, the $TT_BIO_CACHE pin) is
+# deferred until AFTER argument parsing -- see the block right after the
+# `while` loop below -- rather than decided here. It used to be decided
+# here, unconditionally, before the loop had even seen whether the operator
+# passed their own --weights: that pinned $TT_BIO_CACHE to the fixed
+# packaged path regardless, so `run-demo.sh --weights /mnt/usb` on a
+# packaged install had preflight (which reads the daemon's own --weights
+# argv directly) approve /mnt/usb while the folding WORKERS -- whose
+# runner_environ() only fills in $BOLTZ_CACHE from --weights when NEITHER
+# $TT_BIO_CACHE NOR $BOLTZ_CACHE is already present in the environment --
+# inherited $TT_BIO_CACHE=/opt/tt-bio-demo/weights from this script instead,
+# and loaded from there. Preflight and the fold silently disagreed. See
+# tests/unit/test_run_demo_sh.py's
+# test_an_explicit_weights_override_is_what_the_workers_actually_load_from.
 #
 # $REPO_ROOT, not this script's OWN $TT_BIO_DEMO_PREFIX (which chooses where
 # the VENVS live -- see the PREFIX assignment above -- a different question):
@@ -190,26 +211,13 @@ LOG_ROOT="${TT_BIO_DEMO_LOG_ROOT:-${RUNTIME_DIR}/logs}"
 # answers "source or package" exactly the way doctor.sh's doctor_prefix()
 # does for a real /opt/tt-bio-demo install (both resolve to the identical
 # directory there).
-if [ "$(tt_bio_demo_install_mode "$REPO_ROOT")" = "package" ]; then
-  # Bare top-level call, not inside `$(...)`: the export has to land in
-  # THIS shell, not a subshell that evaporates on exit, so the daemon
-  # process started below (which does `import tt_bio` itself) inherits
-  # $TT_BIO_CACHE too -- not just the flat --weights argv value. That is
-  # what makes nesso1/nesso1-ccd/the ESM-2 encoder ("hf-repo" artifacts that
-  # SILENTLY IGNORE --weights/root= entirely -- see scripts/weights-cache.sh's
-  # own TT_BIO_DEMO_PACKAGED_WEIGHTS_CACHE comment) resolve to the SAME fixed
-  # cache the postinst populated, rather than to whatever $HOME the desktop
-  # session launching this script happens to have. Same "prime once, capture
-  # again" shape debian/tt-bio-demo-weights.postinst and scripts/doctor.sh's
-  # doctor_prime_weights_cache already use.
-  tt_bio_demo_weights_cache_packaged >/dev/null
-  WEIGHTS_DEFAULT="$(tt_bio_demo_weights_cache_packaged)"
-else
-  WEIGHTS_DEFAULT="$(tt_bio_demo_weights_cache)"
-fi
-# --weights and TT_BIO_DEMO_WEIGHTS still win over either default -- this
-# only fixes what they fall back to.
-WEIGHTS="${TT_BIO_DEMO_WEIGHTS:-$WEIGHTS_DEFAULT}"
+WEIGHTS="${TT_BIO_DEMO_WEIGHTS:-}"
+# Set as soon as we know an operator asked for a specific cache -- via
+# $TT_BIO_DEMO_WEIGHTS here, or via --weights in the argument loop below --
+# so the deferred block after that loop knows whether to pin $TT_BIO_CACHE to
+# the packaged DEFAULT or to whatever the operator actually gave us.
+WEIGHTS_EXPLICIT=0
+[ -n "$WEIGHTS" ] && WEIGHTS_EXPLICIT=1
 MANIFEST="${TT_BIO_DEMO_PLAYLIST:-${REPO_ROOT}/playlist/manifest.yaml}"
 TARGETS="${TT_BIO_DEMO_TARGETS-}"   # empty == every target in the manifest
 DEVICES="${TT_BIO_DEMO_DEVICES-}"   # empty == every chip the daemon detects
@@ -248,13 +256,59 @@ while [[ $# -gt 0 ]]; do
     --quad)                 QUAD=1; shift ;;
     --solo)                 SOLO=1; shift ;;
     --no-questions)         NO_QUESTIONS=1; shift ;;
-    --weights)              WEIGHTS="$2"; shift 2 ;;
+    --weights)              WEIGHTS="$2"; WEIGHTS_EXPLICIT=1; shift 2 ;;
     --log-budget-gb)        LOG_BUDGET_GB="$2"; shift 2 ;;
     --structures-budget-gb) STRUCTURES_BUDGET_GB="$2"; shift 2 ;;
     -h|--help)              usage; exit 0 ;;
     *) echo "run-demo.sh: unknown argument: $1" >&2; usage; exit 1 ;;
   esac
 done
+
+# Resolve the weights cache now that argument parsing has decided whether
+# the operator supplied their own --weights/$TT_BIO_DEMO_WEIGHTS -- see the
+# long comment above WEIGHTS_EXPLICIT for why this cannot happen earlier.
+if [ "$WEIGHTS_EXPLICIT" -eq 1 ]; then
+  if [ "$(tt_bio_demo_install_mode "$REPO_ROOT")" = "package" ]; then
+    # Pin $TT_BIO_CACHE to the SAME directory the operator just gave us --
+    # not to the fixed packaged default -- so preflight (which checks
+    # $WEIGHTS directly) and the folding workers (whose runner_environ()
+    # reads $TT_BIO_CACHE from the environment this daemon process
+    # inherits, and backs off from also setting $BOLTZ_CACHE the instant
+    # $TT_BIO_CACHE is already present) resolve the EXACT same directory.
+    # This also makes the hf-repo artifacts (nesso1/nesso1-ccd/the ESM-2
+    # encoder -- see scripts/weights-cache.sh's own
+    # TT_BIO_DEMO_PACKAGED_WEIGHTS_CACHE comment) honour the override too,
+    # since those ignore --weights/root= entirely and only ever look at
+    # $TT_BIO_CACHE. Through tt_bio_demo_weights_cache_pin_to, not a bare
+    # `export TT_BIO_CACHE=...` here -- this project restricts which files
+    # may read/write these two variables directly
+    # (tests/unit/test_weights_cache_is_derived_once.py), specifically
+    # because a caller pinning its own copy is how this project's
+    # cache-location bugs have shipped before; the pin function is a plain
+    # top-level call (not `$(...)`) so the export lands in THIS shell, not a
+    # subshell that evaporates on exit.
+    tt_bio_demo_weights_cache_pin_to "$WEIGHTS" >/dev/null
+  fi
+else
+  if [ "$(tt_bio_demo_install_mode "$REPO_ROOT")" = "package" ]; then
+    # Bare top-level call, not inside `$(...)`: the export has to land in
+    # THIS shell, not a subshell that evaporates on exit, so the daemon
+    # process started below (which does `import tt_bio` itself) inherits
+    # $TT_BIO_CACHE too -- not just the flat --weights argv value. That is
+    # what makes nesso1/nesso1-ccd/the ESM-2 encoder ("hf-repo" artifacts
+    # that SILENTLY IGNORE --weights/root= entirely -- see
+    # scripts/weights-cache.sh's own TT_BIO_DEMO_PACKAGED_WEIGHTS_CACHE
+    # comment) resolve to the SAME fixed cache the postinst populated,
+    # rather than to whatever $HOME the desktop session launching this
+    # script happens to have. Same "prime once, capture again" shape
+    # debian/tt-bio-demo-weights.postinst and scripts/doctor.sh's
+    # doctor_prime_weights_cache already use.
+    tt_bio_demo_weights_cache_packaged >/dev/null
+    WEIGHTS="$(tt_bio_demo_weights_cache_packaged)"
+  else
+    WEIGHTS="$(tt_bio_demo_weights_cache)"
+  fi
+fi
 
 if [[ ! -x "${VENV_RUNNER}/bin/python3" ]]; then
   echo "ERROR: venv-runner not found at ${VENV_RUNNER}." >&2
