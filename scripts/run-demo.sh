@@ -183,6 +183,18 @@ RUN_DEMO_SH_ENV_VAR="TT_BIO_DEMO_RUN_DEMO_SH"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
+# Absolute path to this script itself, for the Ctrl+A restart's `exec` near
+# the bottom of this file. `$0` would work for the common case, but this
+# script `cd`s to `$REPO_ROOT` before it ever reaches that exec (see the
+# `cd "$REPO_ROOT"` below), so `$0` stops resolving the instant the operator
+# invoked this script with a RELATIVE path from some other directory --
+# and by the time that exec fails, the old daemon is already dead and the
+# EXIT/INT/TERM traps are already cleared, so the failure vanishes the whole
+# booth with nothing left to clean up. `SCRIPT_DIR` was already made
+# absolute above, from `BASH_SOURCE[0]` before any `cd`, so anchoring to it
+# here survives the later `cd` regardless of how this script was invoked.
+SELF="${SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]}")"
+
 # Matches scripts/test.sh's own PREFIX handling (and setup-venvs.sh's
 # --prefix): production builds these under /opt/tt-bio-demo, and the
 # launcher's own test harness points it at a pair of stub interpreters that
@@ -267,6 +279,20 @@ usage() {
   # documentation landed past line 45 and nobody had a reason to notice.
   awk 'NR==1 {next} /^#/ {sub(/^# ?/, ""); print; next} {exit}' "${BASH_SOURCE[0]}"
 }
+
+# Captured BEFORE the parsing loop below consumes every positional argument
+# via its own `shift`s. Without this, by the time execution reaches the
+# Ctrl+A restart branch near the bottom of this file, `$#` is 0 and `"$@"`
+# is empty -- so `exec "$0" "$@" --questions` was ALWAYS just `exec "$0"
+# --questions`, silently discarding every flag the operator originally
+# passed (--quad, --solo, --devices, --targets, --windowed, ...) across the
+# restart. `--devices` was the sharpest edge: a booth launched with
+# `--devices 0,1` to share this machine would come back after Ctrl+A
+# claiming EVERY detected chip. tests/unit/test_run_demo_sh.py's
+# test_the_restart_loop_relaunches_once_with_questions_added is the
+# regression test for this -- it passes --devices through a simulated
+# restart and asserts it survives.
+RUN_DEMO_ARGV=("$@")
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -549,22 +575,33 @@ if [[ "$UI_EXIT" -eq "$QUESTIONS_RESTART_EXIT_CODE" ]]; then
   # to be replaced wholesale reads as a bug to the next person who greps
   # for `trap` here. Cleared explicitly so it is obviously not one.
   trap - EXIT INT TERM
-  # Invariant: --questions is never already present in "$@" here. The only
-  # way to reach this branch is the UI's sentinel exit code, and the UI
-  # itself (`_request_qa_restart`) refuses to produce that code once Q&A is
-  # already enabled (`qa_capable`) -- so a booth already started with
-  # --questions can never ask to restart into --questions a second time,
-  # and this loop cannot fire twice in a row growing the argument list.
-  # Guarded anyway, defensively, rather than trusting that invariant
-  # blindly across whatever this script becomes later.
-  for arg in "$@"; do
+  # Invariant: --questions is never already present in the ORIGINAL argument
+  # list here. The only way to reach this branch is the UI's sentinel exit
+  # code, and the UI itself (`_request_qa_restart`) refuses to produce that
+  # code once Q&A is already enabled (`qa_capable`) -- so a booth already
+  # started with --questions can never ask to restart into --questions a
+  # second time, and this loop cannot fire twice in a row growing the
+  # argument list. Guarded anyway, defensively, rather than trusting that
+  # invariant blindly across whatever this script becomes later.
+  #
+  # Scans `RUN_DEMO_ARGV` (captured before the parsing loop, at the top of
+  # this file), NOT `"$@"` -- by this point in the script `"$@"` has been
+  # `shift`ed down to nothing by that same loop, which is exactly the bug
+  # this guard used to be dead code against: it could never find
+  # "--questions" in an already-empty list, so it always fell through to the
+  # `exec` below regardless. `${RUN_DEMO_ARGV[@]+"${RUN_DEMO_ARGV[@]}"}` (not
+  # a bare `"${RUN_DEMO_ARGV[@]}"`) is the same guard `DEVICE_ARGS`/
+  # `QUESTIONS_ARGS` use elsewhere in this file, for the identical reason:
+  # under `set -u`, some bash versions treat expanding an unset/empty array
+  # as an unbound-variable error.
+  for arg in ${RUN_DEMO_ARGV[@]+"${RUN_DEMO_ARGV[@]}"}; do
     if [[ "$arg" == "--questions" ]]; then
       echo "run-demo.sh: --questions is already set; restarting without" \
            "adding it again" >&2
-      exec "$0" "$@"
+      exec "$SELF" ${RUN_DEMO_ARGV[@]+"${RUN_DEMO_ARGV[@]}"}
     fi
   done
-  exec "$0" "$@" --questions
+  exec "$SELF" ${RUN_DEMO_ARGV[@]+"${RUN_DEMO_ARGV[@]}"} --questions
 fi
 
 exit "$UI_EXIT"

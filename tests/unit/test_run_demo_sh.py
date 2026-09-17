@@ -458,6 +458,16 @@ def test_the_restart_loop_relaunches_once_with_questions_added(tmp_path):
     the first daemon and re-exec itself with --questions -- never a second
     daemon launched alongside a still-live first one, and never a loop that
     keeps re-adding --questions.
+
+    Also the regression test for the Critical bug the review round found:
+    the argument-parsing `while` loop `shift`s every positional argument
+    away, so by the time execution reached the restart branch, `"$@"` was
+    ALWAYS empty and `exec "$0" "$@" --questions` silently discarded every
+    flag the operator originally passed -- `--devices` being the sharpest
+    edge, since a restarted daemon that forgot it would claim EVERY
+    detected chip on a shared machine. This launches with `--devices 0,1`
+    (a flag with no env-var fallback, so it has no other way to survive a
+    restart) and asserts it is still there on the SECOND daemon launch.
     """
     prefix = tmp_path / "prefix"
     runtime = tmp_path / "xdg"
@@ -481,21 +491,28 @@ def test_the_restart_loop_relaunches_once_with_questions_added(tmp_path):
                 "BOLTZ_CACHE", "TT_BIO_DEMO_WEIGHTS", "TT_BIO_DEMO_ALL_TARGETS"):
         env.pop(var, None)
 
-    proc = subprocess.run(["bash", str(RUN_DEMO)], env=env,
+    proc = subprocess.run(["bash", str(RUN_DEMO), "--devices", "0,1"], env=env,
                           capture_output=True, text=True, timeout=60)
     assert proc.returncode == 0, (
         f"restart loop did not end cleanly: {proc.returncode}\n"
         f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}")
 
-    daemon_runs = daemon_argv_log.read_text().splitlines()
+    daemon_runs = [line.split() for line in
+                   daemon_argv_log.read_text().splitlines()]
     assert len(daemon_runs) == 2, (
         "expected exactly two daemon launches (before and after the "
         f"restart), got {len(daemon_runs)}: {daemon_runs!r}")
-    assert "--questions" not in daemon_runs[0].split(), (
+    assert "--questions" not in daemon_runs[0], (
         "the FIRST daemon launch must not already carry --questions -- "
         "that would mean the restart fired before Ctrl+A")
-    assert "--questions" in daemon_runs[1].split(), (
+    assert "--questions" in daemon_runs[1], (
         "the SECOND daemon launch (after the restart) must carry --questions")
+
+    for which, run in (("first", daemon_runs[0]), ("second", daemon_runs[1])):
+        assert "--devices" in run, (
+            f"the {which} daemon launch lost --devices entirely: {run!r}")
+        assert run[run.index("--devices") + 1] == "0,1", (
+            f"the {which} daemon launch's --devices value drifted: {run!r}")
 
 
 def test_the_restart_loop_exports_the_run_demo_sh_env_var_to_the_ui(tmp_path):
