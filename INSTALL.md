@@ -101,7 +101,7 @@ the opposite of what this packaging is for.
 | Prompt | Default | What to answer on a post-`tt-installer` box |
 |---|---|---|
 | `Run "tt-bio install-deps" now?` | No | **No.** `tt-installer` has already installed the Tenstorrent system packages and kernel modules this would fetch. Saying yes re-runs a kernel-module installer you do not need. |
-| `Download the model weights now (6.9 GB)?` | No | **No here, yes in step 3.** The download is better run deliberately, where you can watch it, than under the dpkg lock. (A *source* install has no such lock, so `scripts/setup-venvs.sh` fetches them by default; `--skip-weights` opts out.) The 6.9 GB is protenix-v2 + CCD (3.7 GB, required to fold) plus nesso1 + its own CCD dict + the ESM-2 encoder (3.2 GB, only needed for affinity Q&A — a booth running `--no-questions` or with one chip never touches them, and a failure fetching them does not fail the install). |
+| `Download the model weights now (6.9 GB)?` | No | **No here, yes in step 3.** The download is better run deliberately, where you can watch it, than under the dpkg lock. (A *source* install has no such lock, so `scripts/setup-venvs.sh` fetches them by default; `--skip-weights` opts out.) The 6.9 GB is protenix-v2 + CCD (3.7 GB, required to fold) plus nesso1 + its own CCD dict + the ESM-2 encoder (3.2 GB, only needed for affinity Q&A — off by default, and a single-chip booth never touches them regardless, and a failure fetching them does not fail the install). |
 
 The install finishes by printing `ONE STEP LEFT` and the exact command for step 2. That is
 expected — the postinst deliberately does not build the Python environments while apt holds
@@ -185,12 +185,13 @@ The download is **resumable**: an interrupted attempt continues rather than rest
 postinst verifies what landed and prints `weights present and verified. The booth can fold
 offline.` — treat any other final line for the first two as a failure.
 
-**The last three are optional and their failure does not fail the install.** A booth running
-`--no-questions`, or with only one Tenstorrent chip (which never reserves a Q&A worker — see
-the README's [Asking the booth a question](README.md#asking-the-booth-a-question)), never
-touches nesso1 at all, so a dropped connection on that ~3.2 GB must not block a booth that can
-already fold perfectly well. If they warn, `scripts/doctor.sh` names the exact command to
-resume with — it checks nesso1/ESM-2 too, but as a warning, never a failure.
+**The last three are optional and their failure does not fail the install.** Affinity Q&A is
+off by default (opt in with `--questions` — see the README's
+[Asking the booth a question](README.md#asking-the-booth-a-question)), and a booth not opted
+in, or with only one Tenstorrent chip (which never reserves a Q&A worker), never touches
+nesso1 at all, so a dropped connection on that ~3.2 GB must not block a booth that can already
+fold perfectly well. If they warn, `scripts/doctor.sh` names the exact command to resume with
+— it checks nesso1/ESM-2 too, but as a warning, never a failure.
 
 ### The same thing, without dpkg
 

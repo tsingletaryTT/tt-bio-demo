@@ -724,8 +724,8 @@ def test_the_weights_postinst_uses_the_tt_bio_api_that_actually_exists():
 # booth's own process. These mirror the protenix-v2 tests above, one
 # artifact set over, plus the one new rule that set has and protenix-v2/mols
 # does not: failure here must NOT fail the install (see runner/daemon.py's
-# graceful-degrade design -- --no-questions or a one-chip box never needs
-# any of this at all).
+# graceful-degrade design -- a booth not started with --questions (the
+# default) or a one-chip box never needs any of this at all).
 
 def test_the_postinst_also_fetches_nesso1_and_nesso1_ccd():
     p = _weights("postinst")
@@ -835,9 +835,9 @@ def test_every_nesso1_artifact_the_package_fetches_is_checksum_verified():
 def test_a_failed_affinity_weights_fetch_does_not_fail_the_install():
     """THE RULE THIS SECTION EXISTS TO ENFORCE. Unlike protenix-v2/mols
     (whose verification failure calls `exit 1`), nesso1/nesso1-ccd/ESM-2 are
-    optional: `--no-questions` or a single-chip box never reserves a Q&A
-    worker at all, so a package "configure" step must not fail over ~3.2 GB
-    of weights that specific booth will never touch."""
+    optional: not passing `--questions` (the default) or a single-chip box
+    never reserves a Q&A worker at all, so a package "configure" step must
+    not fail over ~3.2 GB of weights that specific booth will never touch."""
     p = _weights("postinst")
     # The marker-file branch that reports the affinity-weights outcome must
     # not itself call exit 1 -- only the protenix-v2/mols branch above it may.

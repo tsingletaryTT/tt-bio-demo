@@ -10,10 +10,10 @@ Description: Download the model weights now (6.9 GB)?
  ("does this ligand bind this protein?"): nesso1's affinity head
  (165 MB), its own CCD molecule dict (413 MB), and the ESM-2 protein
  encoder its featurizer runs (2.6 GB) -- about 3.2 GB more, for 6.9 GB
- total. A booth running with --no-questions, or with only one
- Tenstorrent chip (which never reserves a Q&A worker), does not need
- these three at all, but a failure fetching them will not fail this
- install either way -- see the log for what landed.
+ total. Affinity Q&A is off by default (opt in with --questions), and a
+ booth with only one Tenstorrent chip (which never reserves a Q&A worker)
+ does not need these three regardless, but a failure fetching them will
+ not fail this install either way -- see the log for what landed.
  .
  THE VENUE IS OFFLINE. This has to happen before the machine leaves for the
  conference, which is why it is offered at install time -- but 6.9 GB is not

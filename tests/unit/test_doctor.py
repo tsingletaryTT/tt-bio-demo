@@ -355,9 +355,10 @@ def test_tt_bios_present_verdict_clears_a_path_the_doctor_cannot_see(tmp_path):
 # ---------------------------------------------------------------------------
 # nesso1 / nesso1-ccd / the ESM-2 encoder -- the affinity-questions
 # provisioning gap (docs/followups.md, "From the affinity-questions
-# feature"). Deliberately WARN-ONLY: a booth running --no-questions, or a
-# single-chip box (which never reserves a Q&A worker), legitimately never
-# needs any of this, and the doctor cannot tell which case it is looking at.
+# feature"). Deliberately WARN-ONLY: a booth not started with --questions
+# (the default), or a single-chip box (which never reserves a Q&A worker),
+# legitimately never needs any of this, and the doctor cannot tell which
+# case it is looking at.
 # ---------------------------------------------------------------------------
 
 def _stub_runner_for_affinity(tmp_path, *, nesso1="present", nesso1_ccd="present",
@@ -396,9 +397,9 @@ def test_affinity_weights_present_reports_ok_and_never_fails(tmp_path):
 
 
 def test_missing_nesso1_is_a_warning_not_a_failure(tmp_path):
-    """THE CORE RULE. A booth running --no-questions or with one chip never
-    needs nesso1 at all, and this check cannot tell -- so absence is
-    reported, loudly, but the exit code must stay 0."""
+    """THE CORE RULE. A booth not started with --questions (the default) or
+    with one chip never needs nesso1 at all, and this check cannot tell --
+    so absence is reported, loudly, but the exit code must stay 0."""
     prefix = _stub_runner_for_affinity(tmp_path, nesso1="missing", nesso1_ccd="missing")
     r = _sh("doctor_check_affinity_weights", TT_BIO_DEMO_PREFIX=str(prefix))
     out = r.stdout + r.stderr
@@ -533,7 +534,7 @@ def test_no_venv_runner_warns_gracefully_instead_of_erroring(tmp_path):
     out = r.stdout + r.stderr
     assert r.returncode == 0, out
     assert "[warn]" in out, f"a missing venv-runner should warn, not go silent:\n{out}"
-    assert "no-questions" in out or "--no-questions" in out, (
+    assert "questions" in out or "--questions" in out, (
         f"should point out this only matters for affinity Q&A:\n{out}")
 
 

@@ -529,9 +529,11 @@ than patched quickly — see its own entry, now itself marked FIXED
   real featurizer will read from later). `doctor.sh`'s new
   `doctor_check_affinity_weights` asks the same question `doctor_check_weights`
   already asks tt-bio about protenix-v2, but WARN-only, never FAIL: a booth
-  running `--no-questions`, or with one chip (which never reserves a Q&A
-  worker), legitimately needs none of it, and the doctor cannot tell which
-  case it is looking at. The `.deb` postinst fetches and checksum-verifies
+  not started with `--questions` (the feature's default flipped to off in a
+  later change — see "Q&A off by default" below; at the time this entry was
+  written the flag was `--no-questions` and the feature defaulted to on), or
+  one with one chip (which never reserves a Q&A worker), legitimately needs
+  none of it, and the doctor cannot tell which case it is looking at. The `.deb` postinst fetches and checksum-verifies
   nesso1/nesso1-ccd too, behind the same debconf question as protenix-v2/mols,
   but — unlike that pair — a failure there does not fail the install (a
   marker file, not piped output, carries the verdict back to the shell so
@@ -947,6 +949,25 @@ pin hiding inside the "fixed" unit. All items below are now closed.
   wrong here it is the spec's prose (">90 / 70–90 / …"), not the code.
 - **`unpack_coords` catches broad `Exception` around `b64decode`**, which raises
   several types depending on input. The broad catch is correct.
+- **`Ctrl+A` (opt in to affinity Q&A live) has no restart mechanism for the
+  packaged/systemd deployment, on purpose.** `scripts/run-demo.sh` launches
+  the daemon and the UI as one parent shell and its one foreground child, so
+  a sentinel exit code from the UI is enough for that shell to tear the
+  daemon down and re-exec itself with `--questions` added. The packaged
+  install has no such parent: the daemon runs as a systemd `--user` service
+  and the UI is launched independently from a `.desktop` entry, so there is
+  no single process this key could restart from inside the UI, and building
+  one means either a `systemctl --user restart` triggered from the UI (which
+  needs a way to inject `--questions` into that service's own environment
+  first — `scripts/tt-bio-demo-daemon-launcher.sh`, from the cache-pinning
+  work, is a plausible place a future fix could read an environment file the
+  key-press would update) or some other cross-process coordination — a
+  separate, real piece of work, not a natural extension of the run-demo.sh
+  case. Rather than silently doing nothing, the key checks
+  `TT_BIO_DEMO_RUN_DEMO_SH` (set by run-demo.sh on the UI's own environment)
+  and, when it is absent — the packaged deployment, or a bare
+  `python3 -m ui.app` — logs that the booth must be restarted manually with
+  `--questions`, instead of pretending a restart happened.
 
 ## Gotchas worth knowing before touching this code
 

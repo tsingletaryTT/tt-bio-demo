@@ -220,8 +220,8 @@ molecule dict (413 MB) via `tt-bio weights --download nesso1` — one call fetch
 plus the ESM-2 protein-language-model encoder nesso1's featurizer runs (2.6 GB), pre-warmed
 straight through `huggingface_hub` because it has no `tt_bio.weights` row of its own. Unlike
 protenix-v2/mols, a failure fetching any of these three is reported but does not stop the
-script or fail anything: `--no-questions`, or a single-chip booth that never reserves a Q&A
-worker, never needs them at all.
+script or fail anything: affinity Q&A is off by default (opt in with `--questions`), and a
+single-chip booth that never reserves a Q&A worker never needs them at all regardless.
 
 Useful flags:
 
@@ -278,8 +278,8 @@ they can actually *import* their stacks, the tt-bio pin versus what is
 installed, the 3.7 GB of weights the booth cannot fold without (**by size,
 not existence** — a truncated download is the realistic failure and looks
 healthy to an existence check), nesso1/ESM-2's 3.2 GB for affinity Q&A (as a
-warning, not a failure — a booth running `--no-questions` or with one chip
-never needs them), every playlist input, visible chips, free disk, the
+warning, not a failure — off by default, and a booth with one chip never
+needs them regardless), every playlist input, visible chips, free disk, the
 systemd unit, and a display.
 
 **It works the same from a git checkout or from `/opt/tt-bio-demo`** installed
@@ -309,7 +309,7 @@ the authoritative list. The ones you are most likely to want:
 | `--devices 0,2` | every detected chip | Which physical chips the booth folds on |
 | `--quad` | auto | Force the 2×2 grid, even on a one-chip booth; <kbd>Q</kbd> still toggles at runtime |
 | `--solo` | auto | Force one large protein on a booth that would otherwise come up in the grid |
-| `--no-questions` | off | Opt out of affinity Q&A entirely: no chip is reserved, every detected chip folds |
+| `--questions` | off | Opt in to affinity Q&A: one chip is permanently reserved for it whenever 2+ chips are detected. Also toggleable live — <kbd>Ctrl</kbd>+<kbd>A</kbd> restarts the booth with this added (no-op if already on) |
 | `--windowed` | off | Come up in a normal window instead of fullscreen; <kbd>Ctrl</kbd>+<kbd>F</kbd> still toggles |
 | `--log-root PATH` | `<runtime-dir>/logs` | Where tt-metal's own log output is pinned |
 | `--log-budget-gb` | 2 | Sweep budget for tt-metal logs between folds |
@@ -528,19 +528,31 @@ target — where the highlight showed as a clear bright patch against the ribbon
 a glance rather than the subtle case a high-confidence target alone would have left
 untested.
 
-**The cost is real and it is paid whether or not anyone asks.** Whenever 2+ chips are
-detected, one chip is permanently reserved for Q&A rather than folding — 25% less fold
-throughput on a 4-chip box, always, the same way this project states the RSS cost of four
-resident fold workers rather than leaving it implicit. `--no-questions` (see
-[Usage](#usage)) opts a booth entirely out: no chip is reserved, every detected
-chip folds, and the question queue, the gallery's ask strip and the attract loop's question
+**The cost is real and it is paid whether or not anyone asks, which is why it is opt-in.**
+Whenever 2+ chips are detected, one chip is permanently reserved for Q&A rather than folding
+— 25% less fold throughput on a 4-chip box, always, the same way this project states the RSS
+cost of four resident fold workers rather than leaving it implicit. **Off by default.** Two
+ways to opt in:
+
+- **At launch** — `--questions` (see [Usage](#usage)) reserves the chip from the start.
+- **Live, without editing the launch command** — `Ctrl`+`A` in the running booth restarts it
+  with `--questions` added (a few dark seconds, the same as any other startup-time config
+  change in this project). A no-op if Q&A is already on; there is no live "reserve a chip
+  now" path and there will not be one, since that means taking a chip away from a fold loop
+  the daemon may already be running — reserving or releasing a device while the daemon keeps
+  running — a materially bigger and riskier feature than a restart. Only works when the booth
+  was launched via `scripts/run-demo.sh`; the packaged (systemd + `.desktop`) deployment has
+  no single parent process to restart and the key logs/notices this rather than pretending to
+  restart (see [`docs/followups.md`](docs/followups.md)).
+
+Without either, the question queue, the gallery's ask strip and the attract loop's question
 cue all stay hidden — byte-for-byte the pre-Q&A booth.
 
 nesso1's weights (the affinity head, its own CCD molecule dict, and the ESM-2 encoder its
 featurizer runs) are fetched by both install paths now — `setup-venvs.sh` by default,
 alongside protenix-v2, and the `.deb`'s postinst behind the same debconf question — and
-checked by `scripts/doctor.sh`, as a warning rather than a failure: a booth running
-`--no-questions`, or with only one chip, never needs any of it. See
+checked by `scripts/doctor.sh`, as a warning rather than a failure: a booth not opted in to
+Q&A, or with only one chip, never needs any of it. See
 [Installing a booth machine](#installing-a-booth-machine).
 
 ## What is on screen
@@ -587,6 +599,7 @@ checked by `scripts/doctor.sh`, as a warning rather than a failure: a booth runn
 | `Esc` | close the help card, or either rail panel |
 | any other key, or a tap anywhere | wake the booth and show what it folds |
 | `Ctrl` + `F` | leave/return to fullscreen — for the operator |
+| `Ctrl` + `A` | restart the booth with affinity Q&A enabled (no-op if already on) — for the operator |
 | `Ctrl` + `Q` | quit — for the operator |
 
 ## Not yet built
@@ -602,7 +615,7 @@ up). `setup-venvs.sh`'s weight fetch and the `.deb`'s postinst both fetch nesso1
 head, its own CCD molecule dict, and the ESM-2 encoder its featurizer runs, alongside
 protenix-v2 and under the same opt-out (`--skip-weights`, or the packaged install's single
 debconf question); `doctor.sh` checks all three too, as a warning rather than a failure,
-since a booth running `--no-questions` or with one chip never needs any of it. The one
+since a booth not opted in to Q&A (the default), or with one chip, never needs any of it. The one
 command that fetches nesso1's own two artifacts by hand, if you skipped the default fetch:
 
 ```bash

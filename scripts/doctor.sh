@@ -500,11 +500,12 @@ ESM2_CHECK_EOF
 # still-open gap (docs/followups.md, "From the affinity-questions feature")
 # means a fetch that reports success does not guarantee the booth's own
 # process can find what it fetched, so this check still earns its keep.
-# Deliberately WARN-ONLY, never FAIL: a
-# booth running `--no-questions`, or with only one chip (which never reserves
-# a Q&A worker -- see runner/daemon.py's qa_capable gate), legitimately never
-# needs any of this, and this check has no way to know which case it is
-# looking at from here. runner/daemon.py already degrades a missing/broken
+# Deliberately WARN-ONLY, never FAIL: a booth NOT started with `--questions`
+# (the default -- see runner/daemon.py's `questions_enabled`), or with only
+# one chip (which never reserves a Q&A worker -- see runner/daemon.py's
+# qa_capable gate), legitimately never needs any of this, and this check has
+# no way to know which case it is looking at from here. runner/daemon.py
+# already degrades a missing/broken
 # nesso1 gracefully (every question errors, nothing crashes) -- see its
 # MAX_PENDING_QUESTIONS comment -- so the doctor's job is to say "this will
 # not work" in advance, not to gate the booth on it.
@@ -515,8 +516,8 @@ doctor_check_affinity_weights() {
 
     if [ ! -x "$_rn" ]; then
         warn "cannot check nesso1/ESM-2 yet -- venv-runner is not built"
-        hint "only matters if this booth answers affinity questions; see"
-        hint "--no-questions in run-demo.sh if it does not"
+        hint "only matters if this booth answers affinity questions, which"
+        hint "is off by default -- see --questions in run-demo.sh"
         return 0
     fi
 

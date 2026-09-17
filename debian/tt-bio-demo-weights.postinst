@@ -221,9 +221,10 @@ case "$1" in
         # single question -- the exact gap docs/followups.md's
         # "affinity-questions feature" entry names. Their failure is
         # DELIBERATELY NOT fatal to this install: unlike protenix-v2/mols,
-        # the booth runs fine without them (`--no-questions`, or a
-        # single-chip box that never reserves a Q&A worker at all -- see
-        # runner/daemon.py's qa_capable gate), so a dropped connection on
+        # the booth runs fine without them (affinity Q&A is off by default,
+        # opt in with `--questions`; a single-chip box never reserves a Q&A
+        # worker at all regardless -- see runner/daemon.py's qa_capable
+        # gate), so a dropped connection on
         # ~578 MB + 2.6 GB of optional weights must not fail a package
         # configure step over the required 3.7 GB that already downloaded
         # fine. A marker file (not piped output -- protenix-v2/mols's own
