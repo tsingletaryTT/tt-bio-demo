@@ -146,8 +146,25 @@ TT_BIO_DEMO_PACKAGED_WEIGHTS_CACHE="/opt/tt-bio-demo/weights"
 # in a subshell that evaporates on exit -- see the callers' own comments for
 # why that distinction matters here.
 tt_bio_demo_weights_cache_impl_packaged() {
-    if [ -z "${TT_BIO_CACHE:-}" ] && [ -z "${BOLTZ_CACHE:-}" ]; then
-        TT_BIO_CACHE="$TT_BIO_DEMO_PACKAGED_WEIGHTS_CACHE"
+    # An operator who set ONLY $BOLTZ_CACHE used to leave $TT_BIO_CACHE
+    # unset entirely here (PR review, Copilot): the guard below only ever
+    # filled the gap when NEITHER variable was set, so the flat protenix
+    # artifacts (which resolve through $BOLTZ_CACHE) followed the
+    # operator's chosen directory while nesso1/the ESM-2 encoder (which
+    # resolve through tt_bio.weights.configure_hf_cache(), reading
+    # $TT_BIO_CACHE specifically -- see this file's own comment on
+    # TT_BIO_DEMO_PACKAGED_WEIGHTS_CACHE) silently fell back to the
+    # process's default Hugging Face cache instead. The installer
+    # documentation says either variable relocates the COMPLETE weight
+    # set, so $BOLTZ_CACHE now propagates into $TT_BIO_CACHE whenever the
+    # latter is absent -- an explicit $TT_BIO_CACHE still always wins,
+    # unchanged.
+    if [ -z "${TT_BIO_CACHE:-}" ]; then
+        if [ -n "${BOLTZ_CACHE:-}" ]; then
+            TT_BIO_CACHE="$BOLTZ_CACHE"
+        else
+            TT_BIO_CACHE="$TT_BIO_DEMO_PACKAGED_WEIGHTS_CACHE"
+        fi
         export TT_BIO_CACHE
     fi
     tt_bio_demo_weights_cache_impl

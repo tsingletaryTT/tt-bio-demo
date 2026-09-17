@@ -963,6 +963,42 @@ def test_the_launcher_requires_the_weights_flag_the_daemon_actually_requires():
 
 
 # ---------------------------------------------------------------------------
+# Forwarding extra daemon args (PR review, Copilot): the README documents
+# `systemctl --user edit tt-bio-demo` to append `--questions` to this
+# unit's own ExecStart= line as the systemd-mode way to opt into affinity
+# Q&A -- but the launcher required EXACTLY two arguments and had nowhere
+# for a third to go, so that documented step made it exit immediately with
+# an argument-count error. Real end-to-end execution isn't practical to
+# test here (the script hardcodes `PREFIX=/opt/tt-bio-demo` and `exec`s a
+# real venv-runner interpreter, unlike run-demo.sh's own launcher tests,
+# which run against a `_fake_packaged_tree` because that script takes its
+# root from an overridable env var) -- consistent with every other test in
+# this section, this is a static guard against reverting the fix.
+# ---------------------------------------------------------------------------
+
+def test_the_launcher_accepts_more_than_two_arguments():
+    """The old `[ "$#" -ne 2 ]` guard rejected a 3rd argument outright --
+    exactly what `systemctl --user edit` appending `--questions` to
+    ExecStart= produces."""
+    launcher = _daemon_launcher()
+    assert '[ "$#" -ne 2 ]' not in launcher, (
+        "still rejects anything past the socket/log-root pair")
+    assert re.search(r'\[\s*"\$#"\s*-lt\s*2\s*\]', launcher), (
+        "expected a 'fewer than two is an error' guard that allows more"
+    )
+
+
+def test_the_launcher_forwards_extra_arguments_to_the_daemon():
+    """The other half: captured extra args must actually reach the `exec`
+    line, not just be accepted and silently dropped."""
+    launcher = _daemon_launcher()
+    assert 'shift 2' in launcher
+    assert "EXTRA_DAEMON_ARGS" in launcher
+    exec_block = launcher[launcher.index("exec "):]
+    assert "${EXTRA_DAEMON_ARGS[@]}" in exec_block
+
+
+# ---------------------------------------------------------------------------
 # The packaged playlist: `debian/tt-bio-demo.install` ships the real fold-
 # input YAMLs into a SIBLING `examples/` directory, never into
 # `/opt/tt-bio-demo/playlist/` itself (that directory carries only
@@ -1018,6 +1054,45 @@ tt_bio_demo_materialize_playlist \
         assert path.resolve().is_file(), (
             f"{path.name} -> {path.resolve()} does not exist -- exactly "
             "what this fix exists to prevent a visitor's pick from hitting")
+
+
+def test_materialize_playlist_refuses_a_target_id_with_a_path_separator(tmp_path):
+    """PR review (Copilot): `ui.playlist.load_playlist` validates a
+    manifest entry's `id` only for presence, never for shape, so an id of
+    `../outside` reaches `tt_bio_demo_materialize_playlist` unchanged --
+    and `ln -sf ... "${dest_dir}/${target_id}.yaml"` would then write a
+    symlink OUTSIDE the directory this function's own contract says is the
+    only thing it touches. A malicious or merely malformed custom manifest
+    must be refused, not followed."""
+    outside = tmp_path / "outside-marker.yaml"
+    real_input = tmp_path / "evil.yaml"
+    real_input.write_text("version: 1\n")
+    manifest = tmp_path / "manifest.yaml"
+    manifest.write_text(
+        "- id: ../outside-marker\n"
+        f"  input: {real_input}\n"
+        "  name: Evil\n"
+        "  blurb: b\n"
+    )
+    dest = tmp_path / "playlist"
+    dest.mkdir()
+
+    script = f'''
+set -uo pipefail
+. "{REPO}/scripts/materialize-playlist.sh"
+tt_bio_demo_materialize_playlist \
+    "{sys.executable}" "{manifest}" "" "{dest}"
+'''
+    r = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                       cwd=str(REPO))
+    assert r.returncode != 0, (
+        f"a target id with a path separator must be refused, not "
+        f"followed\nstdout:\n{r.stdout}\nstderr:\n{r.stderr}")
+    assert not outside.exists(), (
+        f"a symlink escaped {dest} to {outside} -- the exact path "
+        "traversal this test exists to catch")
+    assert not list(dest.glob("*")), (
+        "nothing should have been written into dest_dir either")
 
 
 def test_the_desktop_entry_is_valid_and_names_the_ui():
@@ -1363,15 +1438,59 @@ def test_the_resolver_declares_a_fixed_non_home_relative_packaged_path():
         f"the pinned path is home-relative: {path}"
 
 
-def test_the_resolver_only_pins_when_neither_cache_variable_is_already_set():
-    """This project's standing rule: an operator who set a cache variable
-    deliberately keeps their choice. The packaged resolver must check BOTH
-    $TT_BIO_CACHE and $BOLTZ_CACHE are unset before ever assigning."""
-    wc = (REPO / "scripts" / "weights-cache.sh").read_text()
-    fn = wc.split("tt_bio_demo_weights_cache_impl_packaged() {")[1]
-    fn = fn.split("\n}\n", 1)[0]
-    assert '-z "${TT_BIO_CACHE:-}"' in fn
-    assert '-z "${BOLTZ_CACHE:-}"' in fn
+def _packaged_resolver_tt_bio_cache(env_overrides):
+    """Source weights-cache.sh, call `tt_bio_demo_weights_cache_impl_
+    packaged` under the given extra environment, and return the resulting
+    $TT_BIO_CACHE -- a real functional check of the resolver's actual
+    behavior, not a substring match against its source text."""
+    env = {**os.environ}
+    for var in ("TT_BIO_CACHE", "BOLTZ_CACHE"):
+        env.pop(var, None)
+    env.update(env_overrides)
+    script = (
+        f'. "{REPO}/scripts/weights-cache.sh"\n'
+        'tt_bio_demo_weights_cache_impl_packaged >/dev/null\n'
+        'printf "%s" "$TT_BIO_CACHE"\n'
+    )
+    r = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                       env=env)
+    assert r.returncode == 0, f"stderr:\n{r.stderr}"
+    return r.stdout
+
+
+def test_the_resolver_pins_the_fixed_path_when_neither_variable_is_set():
+    cache = _packaged_resolver_tt_bio_cache({})
+    assert cache == _fixed_weights_cache_path()
+
+
+def test_the_resolver_propagates_boltz_cache_into_tt_bio_cache():
+    """PR review (Copilot): setting ONLY $BOLTZ_CACHE used to leave
+    $TT_BIO_CACHE unset, so the flat protenix artifacts followed the
+    operator's chosen directory while nesso1/the ESM-2 encoder (which read
+    $TT_BIO_CACHE specifically, via tt_bio.weights.configure_hf_cache())
+    silently fell back to the default Hugging Face cache instead -- the
+    installer documentation says either variable relocates the COMPLETE
+    weight set, so this must not be true any more.
+
+    Functional, not textual: the test this replaces asserted `-z
+    "${BOLTZ_CACHE:-}"` appears somewhere in the function body, which
+    stayed green throughout the exact bug this test now catches -- that
+    substring says nothing about which BRANCH it guards or what happens in
+    the other one.
+    """
+    cache = _packaged_resolver_tt_bio_cache({"BOLTZ_CACHE": "/mnt/relocated"})
+    assert cache == "/mnt/relocated"
+
+
+def test_the_resolver_still_prefers_an_explicit_tt_bio_cache_over_boltz_cache():
+    """This project's standing rule, unchanged by the fix above: an
+    operator's own $TT_BIO_CACHE always wins, even with $BOLTZ_CACHE also
+    set to something else."""
+    cache = _packaged_resolver_tt_bio_cache({
+        "TT_BIO_CACHE": "/mnt/explicit",
+        "BOLTZ_CACHE": "/mnt/relocated",
+    })
+    assert cache == "/mnt/explicit"
 
 
 def test_the_postinst_calls_the_packaged_resolver_before_computing_cache():

@@ -37,14 +37,26 @@
 # ever expanded inside the unit file's own text -- a script's own $XDG_
 # RUNTIME_DIR would usually agree, but "usually" is not the guarantee `%t`
 # is. The unit passes them pre-expanded; see debian/tt-bio-demo.user.service.
+#
+# Anything AFTER the first two is forwarded verbatim to `runner.daemon`
+# (PR review, Copilot): the README documents `systemctl --user edit
+# tt-bio-demo` to append `--questions` to this unit's own ExecStart= line
+# as the systemd-mode way to opt into affinity Q&A, and until this fix that
+# documented step just made the launcher exit with an argument-count error
+# -- this script required EXACTLY two arguments and had nowhere for a
+# third to go. `--questions` is the one flag this is written for today, but
+# nothing here is questions-specific: any daemon flag an operator's own
+# ExecStart= override adds now reaches `runner.daemon` the same way.
 set -euo pipefail
 
-if [ "$#" -ne 2 ]; then
-    printf 'tt-bio-demo-daemon-launcher.sh: expected <socket> <log-root>, got %d arg(s)\n' "$#" >&2
+if [ "$#" -lt 2 ]; then
+    printf 'tt-bio-demo-daemon-launcher.sh: expected <socket> <log-root> [daemon args...], got %d arg(s)\n' "$#" >&2
     exit 1
 fi
 SOCKET="$1"
 LOG_ROOT="$2"
+shift 2
+EXTRA_DAEMON_ARGS=("$@")
 
 PREFIX="/opt/tt-bio-demo"
 # shellcheck source=weights-cache.sh
@@ -91,4 +103,5 @@ exec "${PREFIX}/.venvs/venv-runner/bin/python3" -m runner.daemon \
     --playlist "${RUNTIME_PLAYLIST_DIR}" \
     --log-root "${LOG_ROOT}" \
     --log-budget-gb 2.0 \
-    --structures-budget-gb 0.2
+    --structures-budget-gb 0.2 \
+    "${EXTRA_DAEMON_ARGS[@]}"
