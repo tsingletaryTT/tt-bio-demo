@@ -1,3 +1,17 @@
+tt-bio-demo (0.6.1) noble; urgency=medium
+
+  * v0.6.0 was tagged and released with an empty CI gate failure: the
+    version bump left debian/changelog and the onepager PDF stamped with
+    the previous version, so its own build-and-install gate failed before
+    the release job ever ran, and the v0.6.0 GitHub Release was published
+    with zero assets. Same code, same feature (affinity questions); this
+    version exists only to carry real packages. v0.6.0 is left published
+    and empty rather than backfilled, matching this project's own
+    standing rule that a published version's contents never change after
+    the fact -- the same call made for v0.5.5.
+
+ -- Taylor Singletary <tsingletary@tenstorrent.com>  Thu, 17 Sep 2026 16:45:00 -0700
+
 tt-bio-demo (0.6.0) noble; urgency=medium
 
   * Affinity questions: the booth now answers a real question about two
