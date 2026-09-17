@@ -65,11 +65,11 @@ is the exact sequence, verified end to end against a clean Ubuntu 24.04 with not
 
 ```bash
 mkdir -p ~/tt-bio-demo-pkgs && cd ~/tt-bio-demo-pkgs
-BASE=https://github.com/tsingletaryTT/tt-bio-demo/releases/download/v0.4.0
-for f in tt-bio-demo_0.4.0_all.deb \
-         tt-bio-demo-runtime_0.4.0_amd64.deb \
-         tt-bio-demo-weights_0.4.0_all.deb \
-         tt-bio-demo-all_0.4.0_all.deb; do
+BASE=https://github.com/tsingletaryTT/tt-bio-demo/releases/download/v0.6.1
+for f in tt-bio-demo_0.6.1_all.deb \
+         tt-bio-demo-runtime_0.6.1_amd64.deb \
+         tt-bio-demo-weights_0.6.1_all.deb \
+         tt-bio-demo-all_0.6.1_all.deb; do
     curl -fsSLO "$BASE/$f"
 done
 sudo apt install ./*.deb
@@ -145,7 +145,7 @@ sharing a `site-packages`:
 | venv | Built how | Holds |
 |---|---|---|
 | `venv-ui` | system `python3` **with** `--system-site-packages` | PyGObject (GTK4), gemmi, PyOpenGL, numpy |
-| `venv-runner` | isolated, no system packages | torch, ttnn, tt-bio **0.7.0** (pinned release), vendored SFPI |
+| `venv-runner` | isolated, no system packages | torch, ttnn, tt-bio **0.8.0** (pinned release), vendored SFPI |
 
 Note `--dev` is **not** passed. That flag adds pytest to `venv-runner`, and test tooling is
 dead weight and extra supply-chain surface on a booth machine.
@@ -264,8 +264,8 @@ that counts. `Ctrl-C` in the terminal tears the daemon down cleanly.
 > cache: Trp-cage's first fold takes **94.5 s** (of which ~83 s is kernel compilation) against
 > **9.4 s** warm. Full numbers and method in [`docs/cold-start.md`](docs/cold-start.md).
 >
-> That is per *target*, and the six playlist targets share kernels unevenly, so the cost of
-> warming the whole playlist is not simply six times it — and has not been measured. Do not do
+> That is per *target*, and the seven playlist targets share kernels unevenly, so the cost of
+> warming the whole playlist is not simply seven times it — and has not been measured. Do not do
 > your first fold in front of visitors.
 >
 > The `tt-bio-demo-weights` package description claims it "pre-warms the tt-metal kernel
@@ -359,11 +359,11 @@ the daemon without `--log-root`.
 
 ## What is verified, and what is not
 
-Written against release **v0.4.0**.
+Written against release **v0.6.1**.
 
 **Step 1 is verified end to end.** The exact `curl` sequence above was run against a clean
 `ubuntu:24.04` container with nothing preinstalled: the four assets downloaded from the
-release, `apt install ./*.deb` succeeded, and all four packages reached
+v0.6.1 release, `apt install ./*.deb` succeeded, and all four packages reached
 `install ok installed`. CI re-proves the equivalent on every push, and a release cannot be
 published unless it passes.
 

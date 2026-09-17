@@ -138,7 +138,7 @@ Everything above, printed — two sides of one sheet.
 
 | [<img src="docs/screenshots/onepager-front.jpg" width="100%">](docs/tt-bio-demo-onepager.pdf) | [<img src="docs/screenshots/onepager-back.jpg" width="100%">](docs/tt-bio-demo-onepager.pdf) |
 |:--|:--|
-| **Front — what you are watching**<br>For anyone who has just walked up to the booth: why a protein's shape matters, what the dots actually are, the confidence colors, and the six molecules with their measured fold times. | **Back — how to run it**<br>The operator's card: starting and stopping, every key binding, what each rail panel means, quick fixes, and a checklist for before the doors open. |
+| **Front — what you are watching**<br>For anyone who has just walked up to the booth: why a protein's shape matters, what the dots actually are, the confidence colors, and the seven molecules with their measured fold times. | **Back — how to run it**<br>The operator's card: starting and stopping, every key binding, what each rail panel means, quick fixes, and a checklist for before the doors open. |
 
 Rebuild it after changing fold times, key bindings or `VERSION` with
 [`docs/onepager/build.sh`](docs/onepager/build.sh) — it re-renders from
