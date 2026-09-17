@@ -57,15 +57,18 @@ echo "recording to $(basename "$AFTER"); bringing the booth up over it"
 
 # 2. Now the booth, fullscreen, on top.
 #
-# --no-questions: this recording's whole point is the classic four-chip
-# quad view, and the affinity-questions feature reserves one chip for Q&A
-# by default whenever 2+ chips are detected -- leaving only three fold
-# workers, not four. Without this flag the wait below for four distinct
-# "on chip N" lines would run to its full timeout and then proceed anyway,
-# recording three folding chips under a script whose name and log lines
-# both claim four -- exactly the "capture that reports success but shows
-# the wrong thing" failure this project's own history warns about.
-setsid ./scripts/run-demo.sh --quad --no-questions > "$S/demo.log" 2>&1 < /dev/null &
+# No --questions here: this recording's whole point is the classic
+# four-chip quad view, and the affinity-questions feature (opt-in only,
+# since it reserves one chip for Q&A and leaves only three fold workers)
+# would cost this recording exactly the fourth chip the wait below checks
+# for. Plain run-demo.sh's own default (Q&A off, every detected chip
+# folds) is already what this recording wants -- this used to need
+# --no-questions to get there when Q&A defaulted to ON; it does not need
+# the opposite flag now that the default flipped, and passing --questions
+# here would be the same "capture that reports success but shows the
+# wrong thing" failure this project's own history warns about, just
+# reached from the other direction.
+setsid ./scripts/run-demo.sh --quad > "$S/demo.log" 2>&1 < /dev/null &
 sleep 1
 
 echo "waiting for all four chips..."

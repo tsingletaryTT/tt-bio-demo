@@ -386,6 +386,76 @@ def test_a_stray_control_chord_is_not_a_visitor_touch():
 
 
 # ---------------------------------------------------------------------------
+# Ctrl+A: restart the booth with affinity Q&A enabled.
+# ---------------------------------------------------------------------------
+
+def test_ctrl_a_is_a_no_op_once_qa_is_already_enabled(monkeypatch):
+    """There is no live "reserve a chip now" path, and Ctrl+A must never
+    build one by falling through to the exit/restart branch when the
+    daemon already reports `qa_capable`. Set up as if run-demo.sh launched
+    this process (the ENV var present) so a bug here cannot hide behind
+    "well it would have been a no-op anyway for the other reason"."""
+    app = _app()
+    monkeypatch.setenv(app_module.RUN_DEMO_SH_ENV_VAR, "1")
+    app.qa_capable = True
+    quits = []
+    app.quit = lambda: quits.append(True)
+
+    app._handle_key("a", ctrl=True)
+
+    assert quits == []
+    assert app.exit_code is None
+
+
+def test_ctrl_a_restarts_when_launched_by_run_demo_sh(monkeypatch):
+    """The one path that actually does something: not yet Q&A-capable, and
+    the environment run-demo.sh sets on its own UI child is present. Exiting
+    through `self.quit()` with the sentinel stashed on the instance is the
+    entire mechanism -- scripts/run-demo.sh's own test coverage
+    (test_run_demo_sh.py) is what proves the shell side catches it."""
+    app = _app()
+    monkeypatch.setenv(app_module.RUN_DEMO_SH_ENV_VAR, "1")
+    app.qa_capable = False
+    quits = []
+    app.quit = lambda: quits.append(True)
+
+    app._handle_key("a", ctrl=True)
+
+    assert quits == [True]
+    assert app.exit_code == app_module.QUESTIONS_RESTART_EXIT_CODE
+
+
+def test_ctrl_a_does_not_pretend_to_restart_when_nothing_is_watching(monkeypatch):
+    """Mutation this catches: exiting with the sentinel unconditionally.
+    A bare `python3 -m ui.app` (no run-demo.sh parent) has nothing that
+    knows to catch `QUESTIONS_RESTART_EXIT_CODE` and re-launch with
+    --questions -- exiting there would just silently kill the booth, which
+    is worse than declining and saying why."""
+    app = _app()
+    monkeypatch.delenv(app_module.RUN_DEMO_SH_ENV_VAR, raising=False)
+    app.qa_capable = False
+    quits = []
+    app.quit = lambda: quits.append(True)
+
+    app._handle_key("a", ctrl=True)
+
+    assert quits == []
+    assert app.exit_code is None
+
+
+def test_a_bare_a_does_not_touch_qa_restart_state():
+    """The reason it is a CHORD: a visitor mashing the keyboard must not be
+    able to trigger a booth restart. Bare `a` is an ordinary visitor touch."""
+    app = _app()
+    app.qa_capable = False
+
+    app._handle_key("a")
+
+    assert app.exit_code is None
+    assert app.states.state == "gallery"
+
+
+# ---------------------------------------------------------------------------
 # An overlay a visitor walked away from must not persist forever.
 # ---------------------------------------------------------------------------
 
@@ -681,7 +751,7 @@ def test_every_key_the_booth_answers_to_is_listed_in_the_help_card():
                 | app_module._TENSIX_KEYS):
         assert key in printed_as, f"{key!r} is bound but not documented anywhere"
         assert printed_as[key] in listed, f"{key!r} is missing from the card"
-    for phrase in ("esc", "ctrl + f", "ctrl + q", "any other key"):
+    for phrase in ("esc", "ctrl + f", "ctrl + q", "ctrl + a", "any other key"):
         assert phrase in listed, f"{phrase} undocumented"
 
 

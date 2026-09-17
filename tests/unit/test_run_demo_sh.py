@@ -82,7 +82,14 @@ def _write_stub(path, argv_log, real_python, *, sentinel, wait_for_sentinel):
     env_log = argv_log.with_suffix(".env")
     capture_env = (
         f'{{ printf "TT_BIO_CACHE=%s\\n" "${{TT_BIO_CACHE:-}}"; '
-        f'printf "BOLTZ_CACHE=%s\\n" "${{BOLTZ_CACHE:-}}"; }} >> {env_log!s}\n'
+        f'printf "BOLTZ_CACHE=%s\\n" "${{BOLTZ_CACHE:-}}"; '
+        # Also captured here (not just for the UI stub) so
+        # test_the_restart_loop_exports_the_run_demo_sh_env_var_to_the_ui can
+        # read back what the UI process actually INHERITED, the same "argv
+        # claims vs. real environment" distinction the two lines above exist
+        # for -- see ui/app.py's RUN_DEMO_SH_ENV_VAR.
+        f'printf "TT_BIO_DEMO_RUN_DEMO_SH=%s\\n" "${{TT_BIO_DEMO_RUN_DEMO_SH:-}}"; '
+        f'}} >> {env_log!s}\n'
     )
     path.write_text(
         "#!/usr/bin/env bash\n"
@@ -360,32 +367,145 @@ def test_the_ui_is_not_told_which_chips_to_expect(tmp_path):
     assert "--devices" not in _argv(tmp_path, "venv-ui")
 
 
-# --- --no-questions ---------------------------------------------------------
-# Opting a booth OUT of the affinity-Q&A feature's permanent chip
-# reservation (runner/workers.py's split_for_qa), forwarded straight to the
-# daemon. The UI needs no flag at all here -- it already hides the whole
-# feature on `qa_capable: false`, which `--no-questions` is what makes the
-# daemon report.
+# --- --questions -------------------------------------------------------------
+# Opting a booth IN to the affinity-Q&A feature's permanent chip reservation
+# (runner/workers.py's split_for_qa), forwarded straight to the daemon. The
+# UI needs no flag at all here -- it already hides the whole feature on
+# `qa_capable: false`, which is what a daemon started WITHOUT --questions
+# (the default) reports.
 
 
-def test_the_no_questions_flag_reaches_the_daemon(tmp_path):
-    _launch(tmp_path, "--no-questions", "--targets", "trpcage")
-    assert "--no-questions" in _argv(tmp_path, "venv-runner")
+def test_the_questions_flag_reaches_the_daemon(tmp_path):
+    _launch(tmp_path, "--questions", "--targets", "trpcage")
+    assert "--questions" in _argv(tmp_path, "venv-runner")
 
 
-def test_without_the_flag_the_daemon_gets_no_no_questions_argument(tmp_path):
-    """The daemon's own default (reserve a chip for Q&A at 2+ chips) is what
-    a plain run-demo.sh invocation must still get -- appending the flag
-    unconditionally would silently opt every booth out."""
+def test_without_the_flag_the_daemon_gets_no_questions_argument(tmp_path):
+    """The daemon's own default (never reserve a chip for Q&A) is what a
+    plain run-demo.sh invocation must still get -- appending the flag
+    unconditionally would silently opt every booth in and cost it 25% of its
+    fold throughput on a 4-chip box."""
     _launch(tmp_path, "--targets", "trpcage")
-    assert "--no-questions" not in _argv(tmp_path, "venv-runner")
+    assert "--questions" not in _argv(tmp_path, "venv-runner")
 
 
-def test_the_no_questions_flag_is_not_echoed_to_the_ui(tmp_path):
+def test_the_questions_flag_is_not_echoed_to_the_ui(tmp_path):
     """Not a UI concern at all: ui/app.py's gate is `qa_capable` from
     `hello`, never a command-line flag of its own."""
-    _launch(tmp_path, "--no-questions", "--targets", "trpcage")
-    assert "--no-questions" not in _argv(tmp_path, "venv-ui")
+    _launch(tmp_path, "--questions", "--targets", "trpcage")
+    assert "--questions" not in _argv(tmp_path, "venv-ui")
+
+
+# --- the Ctrl+A restart loop -------------------------------------------------
+#
+# ui/app.py's `_request_qa_restart` (Ctrl+A) exits the UI with
+# `QUESTIONS_RESTART_EXIT_CODE` when the operator asks, live, to enable Q&A.
+# This script is what turns that sentinel into an actual restart: tear down
+# the OLD daemon, then re-exec itself with --questions added. The two stub
+# interpreters below are bespoke (not `_write_stub`/`_launch`) because this
+# is the one behavior in the file that needs the UI to exit NONZERO and the
+# whole script to run to completion TWICE in one process tree.
+
+
+def _write_restart_daemon_stub(path, argv_log):
+    """Records one line per launch (`$*`, space-joined -- simpler to split
+    back into two runs than `_write_stub`'s one-argument-per-line log) and
+    exits immediately. There is nothing to synchronize with: `cleanup` only
+    needs the argv already flushed to disk, which a plain `printf` guarantees
+    before this script's next line runs."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "#!/usr/bin/env bash\n"
+        f'printf "%s\\n" "$*" >> {argv_log!s}\n'
+    )
+    path.chmod(0o755)
+
+
+def _write_restart_ui_stub(path, argv_log, real_python, restart_marker):
+    """`-m ui.playlist` is delegated to the real interpreter, same as
+    `_write_stub` -- run-demo.sh's own manifest-expansion step has to
+    actually run or nothing downstream gets a playlist directory. `-m ui.app`
+    exits with `QUESTIONS_RESTART_EXIT_CODE` exactly ONCE (`restart_marker`)
+    and 0 on every launch after that.
+
+    The "exactly once" shape mirrors the real UI, not an arbitrary
+    simplification: `_request_qa_restart` refuses to produce the sentinel
+    once `qa_capable` is true, and a real restart's daemon reports
+    `qa_capable=True` from that point on -- so the real mechanism this test
+    is modeling can also only ever fire once per booth-up. A stub that
+    always returned the sentinel would spin run-demo.sh's restart loop
+    forever and this test would time out instead of failing cleanly.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [[ "${1:-}" == "-m" && "${2:-}" == "ui.playlist" ]]; then\n'
+        f'  exec {real_python!s} "$@"\n'
+        "fi\n"
+        f'printf "%s\\n" "$@" >> {argv_log!s}\n'
+        f'if [[ -e {restart_marker!s} ]]; then\n'
+        "  exit 0\n"
+        "fi\n"
+        f': > {restart_marker!s}\n'
+        "exit 42\n"
+    )
+    path.chmod(0o755)
+
+
+def test_the_restart_loop_relaunches_once_with_questions_added(tmp_path):
+    """End to end: the UI's sentinel exit code (42, matching
+    `QUESTIONS_RESTART_EXIT_CODE` in ui/app.py) makes this script tear down
+    the first daemon and re-exec itself with --questions -- never a second
+    daemon launched alongside a still-live first one, and never a loop that
+    keeps re-adding --questions.
+    """
+    prefix = tmp_path / "prefix"
+    runtime = tmp_path / "xdg"
+    runtime.mkdir(parents=True, exist_ok=True)
+    daemon_argv_log = tmp_path / "daemon.argv"
+    ui_argv_log = tmp_path / "ui.argv"
+    restart_marker = tmp_path / "ui.restarted-once"
+
+    _write_restart_daemon_stub(prefix / "venv-runner" / "bin" / "python3",
+                               daemon_argv_log)
+    _write_restart_ui_stub(prefix / "venv-ui" / "bin" / "python3", ui_argv_log,
+                           Path(sys.executable), restart_marker)
+
+    env = dict(os.environ)
+    env.update({
+        "TT_BIO_DEMO_PREFIX": str(prefix),
+        "XDG_RUNTIME_DIR": str(runtime),
+        "TT_BIO_DEMO_TARGETS": "trpcage",
+    })
+    for var in ("TT_BIO_DEMO_PLAYLIST", "TT_BIO_DEMO_DEVICES", "TT_BIO_CACHE",
+                "BOLTZ_CACHE", "TT_BIO_DEMO_WEIGHTS", "TT_BIO_DEMO_ALL_TARGETS"):
+        env.pop(var, None)
+
+    proc = subprocess.run(["bash", str(RUN_DEMO)], env=env,
+                          capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, (
+        f"restart loop did not end cleanly: {proc.returncode}\n"
+        f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}")
+
+    daemon_runs = daemon_argv_log.read_text().splitlines()
+    assert len(daemon_runs) == 2, (
+        "expected exactly two daemon launches (before and after the "
+        f"restart), got {len(daemon_runs)}: {daemon_runs!r}")
+    assert "--questions" not in daemon_runs[0].split(), (
+        "the FIRST daemon launch must not already carry --questions -- "
+        "that would mean the restart fired before Ctrl+A")
+    assert "--questions" in daemon_runs[1].split(), (
+        "the SECOND daemon launch (after the restart) must carry --questions")
+
+
+def test_the_restart_loop_exports_the_run_demo_sh_env_var_to_the_ui(tmp_path):
+    """ui/app.py's `_request_qa_restart` only trusts the sentinel exit path
+    when `RUN_DEMO_SH_ENV_VAR` is present in its own environment -- this is
+    what lets it tell "run-demo.sh launched me" apart from a bare
+    `python3 -m ui.app` or the packaged deployment, neither of which has a
+    restart mechanism watching for the exit code at all."""
+    _launch(tmp_path, "--targets", "trpcage")
+    assert _stub_env(tmp_path, "venv-ui", "TT_BIO_DEMO_RUN_DEMO_SH") == "1"
 
 
 # --- weights-cache resolution: source vs. packaged (Critical 1) ------------

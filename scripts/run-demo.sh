@@ -112,21 +112,31 @@
 #                                 what the booth comes up in. Only means
 #                                 anything with more than one chip.
 #
-#   --no-questions                Opt OUT of the affinity-Q&A feature: no
-#                                 chip is permanently reserved for it, so
-#                                 every detected chip folds -- the exact
-#                                 pre-Q&A "classic" behavior. Forwarded
-#                                 straight to the daemon's own
-#                                 --no-questions (runner/daemon.py); the UI
-#                                 needs no flag of its own, because it
-#                                 already hides the question queue panel,
-#                                 the gallery "ask" strip and the
-#                                 attract-loop question cue whenever the
-#                                 daemon's `hello` reports `qa_capable:
-#                                 false` -- exactly what a chip-less booth
-#                                 (or, with this flag, ANY booth) reports.
-#                                 Default: reserve a chip for Q&A whenever
-#                                 2+ chips are detected, same as today.
+#   --questions                    Opt IN to the affinity-Q&A feature: one
+#                                 chip is permanently reserved for it
+#                                 whenever 2+ chips are detected, taken out
+#                                 of the fold rotation. Forwarded straight
+#                                 to the daemon's own --questions
+#                                 (runner/daemon.py); the UI needs no flag
+#                                 of its own, because it already hides the
+#                                 question queue panel, the gallery "ask"
+#                                 strip and the attract-loop question cue
+#                                 whenever the daemon's `hello` reports
+#                                 `qa_capable: false` -- exactly what a
+#                                 chip-less booth, or one started WITHOUT
+#                                 this flag, reports.
+#                                 Default: OFF -- every detected chip folds
+#                                 and no chip is reserved for Q&A, because
+#                                 reserving one costs a 4-chip booth 25% of
+#                                 its fold throughput for a feature it may
+#                                 never be asked to use. An operator can
+#                                 also opt in LIVE, without restarting this
+#                                 script by hand: Ctrl+A in the running UI
+#                                 (ui/app.py) exits with a sentinel exit
+#                                 code that this script catches below and
+#                                 turns into a restart with --questions
+#                                 added -- see the comment near the UI
+#                                 invocation, at the bottom of this file.
 #
 #   --weights DIR                 tt-bio's weights cache. (TT_BIO_DEMO_WEIGHTS)
 #                                 Default: $TT_BIO_CACHE, else $BOLTZ_CACHE,
@@ -155,6 +165,20 @@
 # next run, and CLAUDE.md rules out `tt-smi -r` as a way to recover from one.
 #
 set -euo pipefail
+
+# Ctrl+A in the running UI (ui/app.py's `_request_qa_restart`) exits with
+# this sentinel when it wants the booth restarted with --questions added --
+# see the comment near the UI invocation below for the restart mechanism
+# itself. Must match `QUESTIONS_RESTART_EXIT_CODE` in ui/app.py exactly;
+# tests/unit/test_run_demo_sh.py pins the two against each other so this
+# cannot silently drift.
+QUESTIONS_RESTART_EXIT_CODE=42
+# Set on the UI child's own environment (only) so it can tell "launched by
+# this script, which knows how to catch the sentinel above and restart"
+# apart from a bare `python3 -m ui.app` or the packaged systemd/.desktop
+# deployment -- see ui/app.py's own comment above `RUN_DEMO_SH_ENV_VAR` for
+# why that distinction matters. Must match the name ui/app.py reads.
+RUN_DEMO_SH_ENV_VAR="TT_BIO_DEMO_RUN_DEMO_SH"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -255,7 +279,7 @@ while [[ $# -gt 0 ]]; do
     --windowed)             WINDOWED=1; shift ;;
     --quad)                 QUAD=1; shift ;;
     --solo)                 SOLO=1; shift ;;
-    --no-questions)         NO_QUESTIONS=1; shift ;;
+    --questions)            QUESTIONS=1; shift ;;
     --weights)              WEIGHTS="$2"; WEIGHTS_EXPLICIT=1; shift 2 ;;
     --log-budget-gb)        LOG_BUDGET_GB="$2"; shift 2 ;;
     --structures-budget-gb) STRUCTURES_BUDGET_GB="$2"; shift 2 ;;
@@ -445,13 +469,14 @@ DEVICE_ARGS=()
 if [[ -n "$DEVICES" ]]; then
   DEVICE_ARGS=(--devices "$DEVICES")
 fi
-# --no-questions is a bare boolean, same shape as --preflight-only on the
-# daemon's own side: appended only when the operator asked for it, so the
-# daemon's own default (reserve a chip for Q&A whenever 2+ chips are
-# detected) is what a plain run-demo.sh invocation still gets.
+# --questions is a bare boolean, same shape as --preflight-only on the
+# daemon's own side: appended only when the operator asked for it (directly,
+# or via the restart loop below after Ctrl+A), so the daemon's own default
+# (never reserve a chip for Q&A) is what a plain run-demo.sh invocation
+# still gets.
 QUESTIONS_ARGS=()
-if [[ "${NO_QUESTIONS:-0}" == "1" ]]; then
-  QUESTIONS_ARGS=(--no-questions)
+if [[ "${QUESTIONS:-0}" == "1" ]]; then
+  QUESTIONS_ARGS=(--questions)
 fi
 "${VENV_RUNNER}/bin/python3" -m runner.daemon \
   --socket "$SOCKET" \
@@ -490,8 +515,56 @@ UI_ARGS=""
 [ "${QUAD:-0}" = "1" ] && UI_ARGS="${UI_ARGS} --quad"
 [ "${SOLO:-0}" = "1" ] && UI_ARGS="${UI_ARGS} --solo"
 
+# Tell the UI it was launched by THIS script, so its own Ctrl+A handler
+# (`_request_qa_restart`) knows the sentinel exit code below actually means
+# something here -- see ui/app.py's comment above `RUN_DEMO_SH_ENV_VAR`.
+# Exported (not just set for the one command) so it reaches the UI process
+# the ordinary way a child inherits its parent's environment.
+export "${RUN_DEMO_SH_ENV_VAR}"=1
+
+# Captured explicitly rather than left to `set -e`: under `set -e` a bare
+# nonzero exit from the last command in the script would abort here with no
+# chance to look at the code first. `|| UI_EXIT=$?` on its own is an
+# or-list, so the STATEMENT's exit status is that of the assignment (0),
+# not of the UI -- same reasoning as the DEVICE_ARGS `if` above.
+UI_EXIT=0
 "${VENV_UI}/bin/python3" -m ui.app \
   --socket "$SOCKET" \
   --playlist "$MANIFEST" \
   --targets "$TARGETS" \
-  ${UI_ARGS}
+  ${UI_ARGS} || UI_EXIT=$?
+
+if [[ "$UI_EXIT" -eq "$QUESTIONS_RESTART_EXIT_CODE" ]]; then
+  echo "run-demo.sh: UI asked to restart with --questions enabled (Ctrl+A)..." >&2
+  # Tear down the OLD daemon before handing off. This is NOT redundant with
+  # `trap cleanup EXIT` below: `exec` replaces this process image outright
+  # and never fires a bash trap on the way out, so without this explicit
+  # call the old daemon's socket and device handle would leak across the
+  # restart -- exactly the "leaked device handle blocks the next run"
+  # failure `cleanup`'s own comment warns about, just triggered by a
+  # different exit path than the ones that comment already covers.
+  cleanup
+  # Not load-bearing for correctness (an exec never runs these either way),
+  # but leaving `trap ... EXIT` armed against a script image that is about
+  # to be replaced wholesale reads as a bug to the next person who greps
+  # for `trap` here. Cleared explicitly so it is obviously not one.
+  trap - EXIT INT TERM
+  # Invariant: --questions is never already present in "$@" here. The only
+  # way to reach this branch is the UI's sentinel exit code, and the UI
+  # itself (`_request_qa_restart`) refuses to produce that code once Q&A is
+  # already enabled (`qa_capable`) -- so a booth already started with
+  # --questions can never ask to restart into --questions a second time,
+  # and this loop cannot fire twice in a row growing the argument list.
+  # Guarded anyway, defensively, rather than trusting that invariant
+  # blindly across whatever this script becomes later.
+  for arg in "$@"; do
+    if [[ "$arg" == "--questions" ]]; then
+      echo "run-demo.sh: --questions is already set; restarting without" \
+           "adding it again" >&2
+      exec "$0" "$@"
+    fi
+  done
+  exec "$0" "$@" --questions
+fi
+
+exit "$UI_EXIT"

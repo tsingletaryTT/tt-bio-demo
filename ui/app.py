@@ -167,6 +167,7 @@ three on. Both are the same four viewers.
 import argparse
 import collections
 import logging
+import os
 import pathlib
 import sys
 import threading
@@ -878,6 +879,56 @@ _QUAD_KEYS = QUAD_KEYS
 # a decision rather than leaving it as an omission somebody later "fixes".
 _EGG_KEYS = frozenset({"g"})
 
+# ── Ctrl+A: opt in to affinity Q&A, live ────────────────────────────────────
+#
+# Q&A is off by default (runner/daemon.py's `DaemonConfig.questions_enabled`)
+# because permanently reserving a chip for it costs a 4-chip booth 25% of its
+# fold throughput -- an operator who wants the feature says so explicitly.
+# `--questions` at launch (scripts/run-demo.sh) is the setup-time way to say
+# that; this chord is the LIVE one, for an operator who did not think to set
+# the flag before the booth went up, or who decides mid-run that a booth is
+# worth the tradeoff after all.
+#
+# There is no live "reserve a chip now" path, and this key does not attempt
+# one -- that would mean taking a chip away from a fold loop the daemon may
+# already be running (or a fold already in flight on it), i.e. reserving or
+# releasing a device while the daemon keeps running. That is a materially
+# bigger and riskier feature than anyone asked for, and was decided against
+# explicitly rather than by omission: the only thing this key does is exit
+# the process with a documented sentinel exit code
+# (`QUESTIONS_RESTART_EXIT_CODE`, below) -- scripts/run-demo.sh is what turns
+# that into an actual restart with `--questions` added, near its own
+# invocation of the UI. A restart costs the booth a few dark seconds, the
+# same as any other startup-time config change in this project's history.
+#
+# `Ctrl+A`, for "Ask"/"Affinity" -- checked against every existing binding
+# before picking it: the operator chords already claimed are Ctrl+Q (quit),
+# Ctrl+F (fullscreen) and Ctrl+G (the egg); the visitor-facing plain keys are
+# Q, T, D, `?`/F1 and Esc, none of them a chord at all. Unlike Ctrl+G's egg,
+# this one IS documented on the `?` card (`_key_help` below): it is a real
+# operator feature an operator needs to be able to find, not a hidden one.
+_QA_RESTART_KEYS = frozenset({"a"})
+
+# Set by scripts/run-demo.sh (only) on the UI subprocess's own environment,
+# so `_request_qa_restart` can tell that flow apart from every other way this
+# app starts: a bare `python3 -m ui.app` run by hand, or the packaged
+# systemd-unit + `.desktop`-entry deployment, where the daemon and the UI are
+# two independently-managed processes with no single parent able to restart
+# both (see docs/followups.md for that follow-up). Neither of those has
+# anything watching for `QUESTIONS_RESTART_EXIT_CODE`, so exiting with it
+# there would just quit the booth with no explanation -- worse than doing
+# nothing.
+RUN_DEMO_SH_ENV_VAR = "TT_BIO_DEMO_RUN_DEMO_SH"
+
+# Distinct from every other exit path this process has (0 = a normal/clean
+# quit or `main()`'s KeyboardInterrupt-free return, 130 = SIGINT -- see
+# `main()`). scripts/run-demo.sh checks the UI child's exit code for exactly
+# this value and, only then, skips its normal cleanup-and-exit path in favor
+# of tearing the daemon down and re-invoking itself with `--questions`
+# added. Never used for anything else, and never produced except by
+# `_request_qa_restart` below.
+QUESTIONS_RESTART_EXIT_CODE = 42
+
 # One frame per tick, at the same cadence `_drain_frames` runs a real fold's
 # frames at -- so the egg's collapse is paced like the diffusion trajectory it
 # is imitating rather than being a separate kind of motion. One tick is one
@@ -1428,6 +1479,8 @@ def _key_help(n_chips):
         ("any other key,\nor a tap anywhere",
          "wake the booth and look through the proteins it folds"),
         ("Ctrl + F", "leave or return to fullscreen — for the booth operator"),
+        ("Ctrl + A", "restart the booth with affinity Q&A enabled (no-op if "
+                     "already on) — for the booth operator"),
         ("Ctrl + Q", "quit the booth — for the booth operator"),
     )
 
@@ -1643,6 +1696,13 @@ class DemoApp(Gtk.Application):
         # capability advertised that isn't really there" default the rail
         # panel and the gallery's ask strip both start hidden under.
         self.qa_capable = False
+        # Set by `_request_qa_restart` (Ctrl+A) to
+        # `QUESTIONS_RESTART_EXIT_CODE` when the operator asks to restart
+        # the booth with Q&A enabled; None otherwise. `main()` reads this
+        # back after `run()` returns and uses it in place of Gio's own
+        # (always 0) result, since `Gio.Application.quit()` has no notion of
+        # a custom process exit code of its own.
+        self.exit_code = None
         # Round-robin cursor into `self.questions` for the attract loop's
         # ASK_QUESTION cue (`_ask_next_question`) -- a plain int, not read
         # back off anything, so a headless test can drive it directly.
@@ -3296,8 +3356,9 @@ class DemoApp(Gtk.Application):
         Order matters, and each step is here for a reason:
 
         1. The operator's Ctrl chords work from ANY screen, including with
-           the help card up -- if the booth needs to be quit or unfullscreened
-           at a venue, no visitor-facing state may stand in the way.
+           the help card up -- if the booth needs to be quit, unfullscreened
+           or restarted with Q&A enabled at a venue, no visitor-facing state
+           may stand in the way.
         2. With the help card up, ANY key closes it and nothing else
            happens. `?` and `Esc` are the documented ways out (per the
            user's request), but a visitor pressing something random while a
@@ -3333,6 +3394,9 @@ class DemoApp(Gtk.Application):
             return True
         if ctrl and lowered in _EGG_KEYS:
             self._toggle_egg()
+            return True
+        if ctrl and lowered in _QA_RESTART_KEYS:
+            self._request_qa_restart()
             return True
         if ctrl:
             # An unbound chord is swallowed rather than treated as a touch:
@@ -3375,6 +3439,34 @@ class DemoApp(Gtk.Application):
 
         self._on_touch()
         return True
+
+    def _request_qa_restart(self):
+        """Ctrl+A: opt in to affinity Q&A. See the module comment above
+        `_QA_RESTART_KEYS` for the full reasoning; this is the mechanism.
+
+        Already-enabled is a no-op -- deliberately a one-way switch, not a
+        toggle: building the reverse (drop Q&A live) would need the exact
+        same live chip-reallocation this key is scoped to never attempt,
+        from the other direction. Otherwise, exiting with
+        `QUESTIONS_RESTART_EXIT_CODE` only helps if something is watching
+        for it -- `RUN_DEMO_SH_ENV_VAR` is how this process tells that apart
+        from a bare `python3 -m ui.app` or the packaged deployment, neither
+        of which has a restart mechanism at all (docs/followups.md). In
+        either of those, say so rather than pretending a restart happened.
+        """
+        if self.qa_capable:
+            log.info("ctrl+a: affinity Q&A is already enabled; nothing to do")
+            return
+        if os.environ.get(RUN_DEMO_SH_ENV_VAR) != "1":
+            log.warning(
+                "ctrl+a: affinity Q&A is off, and this process has no "
+                "restart mechanism to drive (not launched by "
+                "scripts/run-demo.sh) -- restart the booth manually with "
+                "--questions to enable it")
+            return
+        log.info("ctrl+a: exiting to restart the booth with --questions")
+        self.exit_code = QUESTIONS_RESTART_EXIT_CODE
+        self.quit()
 
     # ── chrome: the two rail panels and the help card ────────────────────
     #
@@ -5675,12 +5767,13 @@ def main(argv=None):
     args = parser.parse_args(argv)
     target_ids = [part.strip() for part in (args.targets or "").split(",")
                   if part.strip()]
+    app = DemoApp(socket_path=args.socket,
+                 playlist_path=args.playlist,
+                 target_ids=target_ids,
+                 windowed=args.windowed,
+                 quad=args.quad)
     try:
-        return DemoApp(socket_path=args.socket,
-                       playlist_path=args.playlist,
-                       target_ids=target_ids,
-                       windowed=args.windowed,
-                       quad=args.quad).run([])
+        result = app.run([])
     except KeyboardInterrupt:
         # A CLEAN STOP MUST NOT END IN A TRACEBACK. Ctrl-C (and the
         # `kill -INT -<pgid>` the README recommends, which is the same thing
@@ -5694,6 +5787,13 @@ def main(argv=None):
         # 130 is the shell's convention for "terminated by SIGINT".
         log.info("interrupted; booth stopped")
         return 130
+    # Ctrl+A's restart path (`DemoApp._request_qa_restart`) exits through
+    # `Gio.Application.quit()`, which stops the main loop but has no notion
+    # of a custom process exit code -- `Gio.Application.run()` always
+    # returns 0 on a clean quit. `app.exit_code` is where that sentinel is
+    # stashed instead; read it back here, overriding the 0 `run()` gave us,
+    # so scripts/run-demo.sh's exit-code check downstream actually sees it.
+    return app.exit_code if app.exit_code is not None else result
 
 
 if __name__ == "__main__":
