@@ -309,7 +309,7 @@ the authoritative list. The ones you are most likely to want:
 | `--devices 0,2` | every detected chip | Which physical chips the booth folds on |
 | `--quad` | auto | Force the 2×2 grid, even on a one-chip booth; <kbd>Q</kbd> still toggles at runtime |
 | `--solo` | auto | Force one large protein on a booth that would otherwise come up in the grid |
-| `--questions` | off | Opt in to affinity Q&A: one chip is permanently reserved for it whenever 2+ chips are detected. Also toggleable live — <kbd>Ctrl</kbd>+<kbd>A</kbd> restarts the booth with this added (no-op if already on) |
+| `--questions` | off | Opt in to affinity Q&A: one chip is permanently reserved for it whenever 2+ chips are detected. Also settable live, one-way only — <kbd>Ctrl</kbd>+<kbd>A</kbd> restarts the booth with this added (no-op if already on; there is no key that turns it back off) |
 | `--windowed` | off | Come up in a normal window instead of fullscreen; <kbd>Ctrl</kbd>+<kbd>F</kbd> still toggles |
 | `--log-root PATH` | `<runtime-dir>/logs` | Where tt-metal's own log output is pinned |
 | `--log-budget-gb` | 2 | Sweep budget for tt-metal logs between folds |
@@ -540,10 +540,18 @@ ways to opt in:
   change in this project). A no-op if Q&A is already on; there is no live "reserve a chip
   now" path and there will not be one, since that means taking a chip away from a fold loop
   the daemon may already be running — reserving or releasing a device while the daemon keeps
-  running — a materially bigger and riskier feature than a restart. Only works when the booth
-  was launched via `scripts/run-demo.sh`; the packaged (systemd + `.desktop`) deployment has
-  no single parent process to restart and the key logs/notices this rather than pretending to
-  restart (see [`docs/followups.md`](docs/followups.md)).
+  running — a materially bigger and riskier feature than a restart. Works for the normal
+  desktop-entry path (`/opt/tt-bio-demo/scripts/run-demo.sh`, which starts both the daemon
+  and the UI as one parent shell and one foreground child — see [INSTALL.md](INSTALL.md)'s
+  "Desktop entry" section): the key tears that shell's own daemon down and re-execs the
+  script with `--questions` added. It does **not** work correctly for the systemd-supervised
+  mode (`systemctl --user enable --now tt-bio-demo`) — the daemon there is a service systemd
+  owns directly, not one `run-demo.sh` started, so the key would restart `run-demo.sh`'s own
+  redundant daemon instance while the real supervised daemon keeps running, untouched, still
+  without Q&A. A real, tracked follow-up, not something this key currently detects or refuses
+  (see [`docs/followups.md`](docs/followups.md)) — restart the systemd service by hand
+  (`systemctl --user edit tt-bio-demo` to add `--questions`, then `systemctl --user restart
+  tt-bio-demo`) instead of pressing `Ctrl`+`A` in that mode.
 
 Without either, the question queue, the gallery's ask strip and the attract loop's question
 cue all stay hidden — byte-for-byte the pre-Q&A booth.

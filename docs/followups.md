@@ -500,6 +500,51 @@ against — the UI can be more than a second behind the socket in reading a
 - **Point size is an absolute pixel value**, so sprites look proportionally
   smaller on a display much denser than the 1280×800 dev default. Scale by
   `get_scale_factor()` in Phase 3, when the booth display is known.
+- **`Ctrl+A` (opt in to affinity Q&A live) has no restart mechanism for the
+  systemd-supervised deployment mode.** Moved here from "Deliberately not
+  doing" (2026-09-16 review round) because the entry that used to sit there
+  was wrong about which deployment actually lacks the mechanism, and a
+  genuine gap filed under "not doing" reads as decided-against rather than
+  open.
+
+  `scripts/run-demo.sh` launches the daemon and the UI as one parent shell
+  and its one foreground child, so a sentinel exit code from the UI is
+  enough for that shell to tear the daemon down and re-exec itself with
+  `--questions` added. The corrected fact: **this covers the normal,
+  documented desktop-entry path**, not only a developer running the script
+  by hand — `debian/com.tenstorrent.ttbio.demo.desktop`'s `Exec=` is
+  literally `/opt/tt-bio-demo/scripts/run-demo.sh`, and INSTALL.md calls
+  that "the normal path". So the standard packaged/desktop-entry deployment
+  DOES get the restart mechanism; the previous version of this entry said
+  the opposite, in both README.md and here, and both were corrected in the
+  same pass that moved this entry.
+
+  The case that genuinely lacks it is INSTALL.md's OTHER documented mode:
+  `systemctl --user enable --now tt-bio-demo`, where the daemon is a
+  supervised systemd `--user` service, not one `run-demo.sh` started at
+  all. In that mode, pressing Ctrl+A would tear down and restart
+  `run-demo.sh`'s OWN (redundant, wrong) daemon instance — if an operator
+  is even running `run-demo.sh` at all in that mode, e.g. to bring up the
+  UI — while the REAL supervised daemon keeps running untouched. The key
+  would appear to work (the log says it restarted, and now so does the
+  diagnostics rail — see the "no observable feedback" fix below) but Q&A
+  would still be off on the daemon actually serving the booth. Building the
+  real fix means either a `systemctl --user restart` triggered from the UI
+  (which needs a way to inject `--questions` into that service's own
+  environment first — `scripts/tt-bio-demo-daemon-launcher.sh`, from the
+  cache-pinning work, is a plausible place a future fix could read an
+  environment file the key-press would update) or some other cross-process
+  coordination, or — cheaper — detecting the supervised case at runtime
+  (e.g. `systemctl --user is-active tt-bio-demo`) and having the key
+  decline with a clear message instead of silently doing the wrong thing.
+  None of that is built yet. Rather than doing nothing today, the key
+  checks `TT_BIO_DEMO_RUN_DEMO_SH` (set by run-demo.sh on the UI's own
+  environment) and, when it is absent — a bare `python3 -m ui.app`, or the
+  packaged deployment launched some OTHER way — logs (and now also notes on
+  the diagnostics rail) that the booth must be restarted manually with
+  `--questions`, instead of pretending a restart happened. It does NOT yet
+  distinguish "launched by run-demo.sh under systemd-supervised mode" from
+  "launched by run-demo.sh normally" — that is this entry's open half.
 
 ## From the affinity-questions feature (2026-09-15/16) — all three fixed
 
@@ -949,25 +994,6 @@ pin hiding inside the "fixed" unit. All items below are now closed.
   wrong here it is the spec's prose (">90 / 70–90 / …"), not the code.
 - **`unpack_coords` catches broad `Exception` around `b64decode`**, which raises
   several types depending on input. The broad catch is correct.
-- **`Ctrl+A` (opt in to affinity Q&A live) has no restart mechanism for the
-  packaged/systemd deployment, on purpose.** `scripts/run-demo.sh` launches
-  the daemon and the UI as one parent shell and its one foreground child, so
-  a sentinel exit code from the UI is enough for that shell to tear the
-  daemon down and re-exec itself with `--questions` added. The packaged
-  install has no such parent: the daemon runs as a systemd `--user` service
-  and the UI is launched independently from a `.desktop` entry, so there is
-  no single process this key could restart from inside the UI, and building
-  one means either a `systemctl --user restart` triggered from the UI (which
-  needs a way to inject `--questions` into that service's own environment
-  first — `scripts/tt-bio-demo-daemon-launcher.sh`, from the cache-pinning
-  work, is a plausible place a future fix could read an environment file the
-  key-press would update) or some other cross-process coordination — a
-  separate, real piece of work, not a natural extension of the run-demo.sh
-  case. Rather than silently doing nothing, the key checks
-  `TT_BIO_DEMO_RUN_DEMO_SH` (set by run-demo.sh on the UI's own environment)
-  and, when it is absent — the packaged deployment, or a bare
-  `python3 -m ui.app` — logs that the booth must be restarted manually with
-  `--questions`, instead of pretending a restart happened.
 
 ## Gotchas worth knowing before touching this code
 
