@@ -330,9 +330,10 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
   <span class="eyebrow">tt-bio</span>
   <h1>Protein structure prediction, on Tenstorrent hardware</h1>
   <p class="lede">
-    tt-bio runs Boltz-2 and eight other biomolecular models on Tenstorrent
+    tt-bio runs Boltz-2 and thirteen other biomolecular models on Tenstorrent
     accelerators. This page is about what those models do, the research they
-    come from, and how a demo that folds six known structures makes any of it
+    come from, and how a demo that folds seven known structures &mdash; and
+    answers a real question about two of them &mdash; makes any of it
     visible.
   </p>
   <!-- BOTH repositories, at the top, named by their actual repo names. This
@@ -482,14 +483,14 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
   </div>
 </section>
 
-<!-- ═══ §3 — THE FIVE MOLECULES ════════════════════════════════════════ -->
+<!-- ═══ §3 — THE SEVEN MOLECULES ═══════════════════════════════════════ -->
 <section id="molecules">
   <div class="wrap">
     <div class="col">
       <span class="eyebrow">What the booth folds</span>
-      <h2>Six molecules, and why each one is there</h2>
+      <h2>Seven molecules, and why each one is there</h2>
       <p>
-        The demo folds the same six structures on a loop. None of them is a
+        The demo folds the same seven structures on a loop. None of them is a
         discovery &mdash; every one has been solved in a laboratory, and that is
         the point: the known answer is what makes the prediction checkable.
       </p>
@@ -843,7 +844,7 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
     </blockquote>
 
     <p>
-      <strong>The booth does not do any of this.</strong> It folds six known
+      <strong>The booth does not do any of this.</strong> It folds seven known
       structures on a loop. Designing a candidate molecule is not a thing to
       watch for thirty seconds at a conference stand &mdash; it is a campaign,
       run against a target someone has a reason to care about, and the result
@@ -953,6 +954,57 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
   </div>
 </section>
 
+<!-- ═══ §9b — ASKING THE BOOTH A QUESTION ══════════════════════════════ -->
+<section id="qa">
+  <div class="wrap col">
+    <span class="eyebrow">Beyond folding</span>
+    <h2>Folding is not the only question tt-bio answers here</h2>
+
+    <p>
+      Everything above answers one question: given this sequence, what shape
+      does it take? tt-bio can also answer a different one, about two
+      molecules together &mdash; does this ligand bind this protein &mdash;
+      and the booth asks it for real, on a second chip held in reserve for
+      exactly that.
+    </p>
+
+    <p>
+      The model is <strong>nesso1</strong>, not the one folding: binding
+      affinity only, no structure, and it needs no prior fold at all &mdash;
+      it scores straight from a sequence and a ligand in a few seconds.
+      Three questions ship, each reusing a complex the booth already folds:
+    </p>
+
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Question</th><th>Reuses</th></tr></thead>
+        <tbody>
+          <tr><td>Does methotrexate block dihydrofolate reductase?</td><td>DHFR</td></tr>
+          <tr><td>Does benzamidine block trypsin?</td><td>Trypsin</td></tr>
+          <tr><td>Does SB3 bind FKBP12?</td><td>FKBP12</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      A visitor meets this two ways: the booth cycles through the three on
+      its own, unattended, or a tap on the gallery asks one directly. Either
+      way the answer is never a number alone &mdash; nesso1's own score,
+      plainly stated (never an invented &ldquo;binds tightly&rdquo; verdict
+      tt-bio's documentation does not define), plus the residues within 5
+      &Aring; of the ligand outlined on the ribbon, computed from the same
+      structure already on screen.
+    </p>
+
+    <p>
+      It costs something to have on, which is why it defaults off: answering
+      a question needs its own chip, held back from folding rather than put
+      to work &mdash; a quarter of a four-chip booth's own throughput, spent
+      whether or not anyone ever asks.
+    </p>
+  </div>
+</section>
+
 <!-- ═══ §10 — EASTER EGGS ══════════════════════════════════════════════ -->
 <section id="eggs">
   <div class="wrap col">
@@ -1011,10 +1063,10 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
     <div class="sheets">
       <a class="sheet" href="tt-bio-demo-onepager.pdf">
         <img src="screenshots/onepager-front.jpg"
-             alt="Page one of the handout: a headline reading &ldquo;Watch a protein fold&rdquo;, the four-chip quad screenshot, the confidence color ramp, and a table of the six molecules with their fold times.">
+             alt="Page one of the handout: a headline reading &ldquo;Watch a protein fold&rdquo;, the four-chip quad screenshot, the confidence color ramp, and a table of the seven molecules with their fold times.">
         <span class="lbl">
           <b>Front &mdash; what you are watching</b>
-          <span>Why a protein's shape matters, what the dots are, the six
+          <span>Why a protein's shape matters, what the dots are, the seven
                 molecules and their measured times.</span>
         </span>
       </a>

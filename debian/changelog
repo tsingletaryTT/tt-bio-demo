@@ -1,3 +1,31 @@
+tt-bio-demo (0.6.0) noble; urgency=medium
+
+  * Affinity questions: the booth now answers a real question about two
+    molecules together -- does this ligand bind this protein -- with
+    tt-bio's nesso1 model on a chip held in reserve for it. The answer is
+    the model's own score plus a highlight of the residues nearest the
+    ligand, never a number alone. Off by default (opt in with
+    --questions, or live with Ctrl+A); a booth left alone cycles through
+    the three shipped questions on its own, or a visitor taps one from
+    the gallery.
+  * The quad's own fourth cell -- the one Q&A's chip reservation leaves
+    empty on a 4-chip booth -- shows the question and its answer at booth
+    scale, instead of sitting blank next to the small rail panel.
+  * A packaged (.deb / systemd) install could enumerate zero fold
+    targets, and the documented way to enable Q&A on that install path
+    did not reach the daemon at all; both fixed, and verified against a
+    real install on a QB2-factory-layout image, not only unit tests.
+  * The `?` help card and the gallery's own caption are shorter and no
+    longer claim a hardcoded chip count that Q&A's chip reservation can
+    make false.
+  * The docs site's molecule count and model-family count are corrected:
+    "six molecules" had been stale since yeast tRNA-Phe joined the
+    playlist several releases ago and was never caught, and the model
+    count now matches the fourteen families the site's own runs-today
+    table already listed.
+
+ -- Taylor Singletary <tsingletary@tenstorrent.com>  Thu, 17 Sep 2026 14:00:00 -0700
+
 tt-bio-demo (0.5.7) noble; urgency=medium
 
   * Pinned tt-bio moves to 0.7.3. 0.7.1/0.7.2 fixed a real attention-masking
