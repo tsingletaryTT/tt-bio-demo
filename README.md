@@ -528,6 +528,21 @@ target — where the highlight showed as a clear bright patch against the ribbon
 a glance rather than the subtle case a high-confidence target alone would have left
 untested.
 
+**The quad has its own cell for this, not just the rail.** Q&A's chip reservation leaves
+one cell of the 2×2 grid with no fold of its own — put to use instead of left blank, showing
+the same question/score at booth scale.
+
+![The quad's own Q&A cell, before an answer lands](docs/screenshots/07-quad-qa-spotlight.png)
+
+Three chips folding, the fourth cell honestly saying "No question answered yet" plus how many
+are still queued — never implying an answer that hasn't arrived.
+
+![The same cell once nesso1 has scored a real question](docs/screenshots/08-quad-qa-answered.png)
+
+FKBP12's trunk, two more folds mid-diffusion, and the spotlight cell showing nesso1's own
+score for "Does methotrexate block dihydrofolate reductase?" — legible from across the room,
+not just in the small rail panel on the right.
+
 **The cost is real and it is paid whether or not anyone asks, which is why it is opt-in.**
 Whenever 2+ chips are detected, one chip is permanently reserved for Q&A rather than folding
 — 25% less fold throughput on a 4-chip box, always, the same way this project states the RSS
