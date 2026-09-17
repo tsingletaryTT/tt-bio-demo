@@ -213,10 +213,27 @@ To see what is on the machine without downloading anything, drop the flag:
 `tt-bio weights protenix-v2` prints one line per artifact with `present` / `missing` /
 `corrupt` and the path it checked.
 
-**Where they land**: `$TT_BIO_CACHE`, else `$BOLTZ_CACHE`, else `~/.boltz` — tt-bio's own
-order. Everything in this project that touches that path (the doctor, preflight, the
-launcher, this postinst) resolves it through one place, so relocating the cache with
-either variable moves all of them together.
+**Where they land**: for a **packaged** install (this document), a fixed, non-home-relative
+`/opt/tt-bio-demo/weights` — unless you have already set `$TT_BIO_CACHE` or `$BOLTZ_CACHE`
+yourself, in which case that always wins. The fixed path exists because this postinst runs
+as **root** (`$HOME=/root`) while the booth's compute daemon later runs as a `systemd --user`
+service under the **desktop user**'s own `$HOME` — two different home-relative defaults that
+would otherwise disagree, letting the postinst report every weight fetched successfully while
+the daemon looks in an empty directory. From **source** (`scripts/setup-venvs.sh`,
+`scripts/run-demo.sh` run directly from a git checkout) it is the plain, tt-bio-native order:
+`$TT_BIO_CACHE`, else `$BOLTZ_CACHE`, else `~/.boltz`. Everything in this project that touches
+either path (the doctor, preflight, `scripts/run-demo.sh`, this postinst, and the systemd
+unit's own launcher script) resolves it through the one shared resolver in
+`scripts/weights-cache.sh`, so relocating the cache with either variable moves all of them
+together, and `scripts/doctor.sh` always reports the path your install actually uses.
+
+**Relocating a packaged install's cache** (e.g. to a bigger disk) needs `$TT_BIO_CACHE` or
+`$BOLTZ_CACHE` set wherever the daemon actually starts — for the `systemd --user` service that
+means the user manager's own environment, not the unit file (a `systemctl --user edit
+tt-bio-demo` override would work too, but is not required): drop a
+`~/.config/environment.d/tt-bio-demo.conf` containing `TT_BIO_CACHE=/your/path`, or run
+`systemctl --user set-environment TT_BIO_CACHE=/your/path` before the service starts, then
+re-run `sudo dpkg-reconfigure tt-bio-demo-weights` so the postinst fetches to the same place.
 
 > **There is no Docker install path.** `scripts/deb-container.sh` runs a throwaway Ubuntu
 > container for *package-install testing* only, and it deliberately passes no `--device`

@@ -205,10 +205,14 @@ device handles and cannot be taken down by a wedged chip.
 
 It then fetches the **model weights** — `protenix-v2.pt` (1.86 GB) and the CCD molecule
 library `mols` (1.85 GB unpacked) — by running venv-runner's own
-`tt-bio weights --download protenix-v2`. They land in `$TT_BIO_CACHE`, else `$BOLTZ_CACHE`,
-else `~/.boltz`, which is tt-bio's own order and the one thing in this repo that decides
-where weights live ([`scripts/weights-cache.sh`](scripts/weights-cache.sh) and
-[`runner/env.py`](runner/env.py), pinned to each other by tests).
+`tt-bio weights --download protenix-v2`. From this source checkout they land in
+`$TT_BIO_CACHE`, else `$BOLTZ_CACHE`, else `~/.boltz`, which is tt-bio's own order and the one
+thing in this repo that decides where weights live
+([`scripts/weights-cache.sh`](scripts/weights-cache.sh) and [`runner/env.py`](runner/env.py),
+pinned to each other by tests). **A packaged (`.deb`) install is different**: it defaults to
+a fixed, non-home-relative `/opt/tt-bio-demo/weights` instead, for the reason
+[`INSTALL.md`](INSTALL.md#3-fetch-the-model-weights) explains — see that document if you
+installed from packages rather than from this checkout.
 
 It then does the same for **affinity Q&A**: nesso1's affinity head (165 MB) and its own CCD
 molecule dict (413 MB) via `tt-bio weights --download nesso1` — one call fetches both, since
