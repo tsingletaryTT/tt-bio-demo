@@ -574,7 +574,8 @@ def test_build_pool_reserves_the_highest_card_for_qa(tmp_path, monkeypatch):
 
     config = DaemonConfig(socket_path=str(tmp_path / "sock"), weights_dir=str(tmp_path),
                           playlist_dir=str(tmp_path / "playlist"),
-                          log_root=str(tmp_path / "logs"))
+                          log_root=str(tmp_path / "logs"),
+                          questions_enabled=True)
     daemon = Daemon(config)
     assert daemon._build_pool() is True
     assert daemon._qa_spec.card == 3
@@ -597,14 +598,14 @@ def test_build_pool_reserves_no_chip_on_a_single_chip_box(tmp_path, monkeypatch)
 
 
 # ---------------------------------------------------------------------------
-# _build_pool: --no-questions (questions_enabled=False) skips split_for_qa
-# entirely, even with 2+ chips detected
+# _build_pool: questions_enabled=False (the default -- no `--questions`)
+# skips split_for_qa entirely, even with 2+ chips detected
 # ---------------------------------------------------------------------------
 
 def test_build_pool_with_questions_disabled_folds_on_every_chip(tmp_path, monkeypatch):
-    """The whole point of `--no-questions`: no chip held back even at four
-    chips -- the exact pre-Q&A "classic" behavior (every detected chip
-    folds, no reservation)."""
+    """The default behavior: no chip held back even at four chips -- every
+    detected chip folds, no reservation, unless an operator opts in with
+    `--questions`."""
     import runner.daemon as mod
 
     monkeypatch.setattr(mod, "worker_specs",
@@ -624,8 +625,9 @@ def test_build_pool_with_questions_disabled_folds_on_every_chip(tmp_path, monkey
 def test_build_pool_with_questions_disabled_never_calls_split_for_qa(tmp_path, monkeypatch):
     """Not "call it and discard the result": split_for_qa's own docstring
     says it exists to make a PERMANENT, deterministic reservation decision
-    at startup, so `--no-questions` must skip the call outright rather than
-    invoke it and override what it returns -- calling it and discarding the
+    at startup, so `questions_enabled=False` (no `--questions`, the default)
+    must skip the call outright rather than invoke it and override what it
+    returns -- calling it and discarding the
     reservation would still be making the decision, just hiding it from a
     reader who would have to trace all the way into WorkerPool's
     construction to discover it was overridden.
@@ -653,12 +655,12 @@ def test_build_pool_with_questions_disabled_never_calls_split_for_qa(tmp_path, m
 
 def test_hello_reports_not_qa_capable_with_questions_disabled_at_four_chips(
         tmp_path, monkeypatch):
-    """This is what makes `--no-questions` free to have built: ui/app.py
-    already hides the question queue panel, the gallery "ask" strip and the
-    attract-loop question cue whenever `hello` reports `qa_capable: false`
-    -- exactly what a chip-less booth already reports, and exactly what
-    THIS booth (four real chips, questions just turned off) reports too.
-    No UI change needed.
+    """This is what makes the off-by-default `questions_enabled` free to
+    have built: ui/app.py already hides the question queue panel, the
+    gallery "ask" strip and the attract-loop question cue whenever `hello`
+    reports `qa_capable: false` -- exactly what a chip-less booth already
+    reports, and exactly what THIS booth (four real chips, questions never
+    turned on) reports too. No UI change needed.
     """
     import runner.daemon as mod
 
@@ -724,9 +726,12 @@ def test_run_builds_a_dedicated_qa_pool_when_a_chip_is_reserved(tmp_path, monkey
                         lambda *a, **k: [_spec(c) for c in (0, 1)])
     monkeypatch.setattr(mod, "WorkerPool", _RecordingPool)
 
+    # questions_enabled=True: the default is now OFF, and this test is
+    # specifically about the reserved-Q&A-pool path, not the default.
     config = DaemonConfig(socket_path=str(tmp_path / "sock"), weights_dir=str(tmp_path),
                           playlist_dir=str(tmp_path / "playlist"),
-                          log_root=str(tmp_path / "logs"))
+                          log_root=str(tmp_path / "logs"),
+                          questions_enabled=True)
     daemon = Daemon(config)
     holder["daemon"] = daemon
     daemon.server = _CollectingServer()
@@ -800,9 +805,12 @@ def test_stopping_the_daemon_stops_the_qa_pool_too(tmp_path, monkeypatch):
                         lambda *a, **k: [_spec(c) for c in (0, 1)])
     monkeypatch.setattr(mod, "WorkerPool", _RecordingPool)
 
+    # questions_enabled=True: the default is now OFF, and this test is
+    # specifically about the reserved-Q&A-pool path, not the default.
     config = DaemonConfig(socket_path=str(tmp_path / "sock"), weights_dir=str(tmp_path),
                           playlist_dir=str(tmp_path / "playlist"),
-                          log_root=str(tmp_path / "logs"))
+                          log_root=str(tmp_path / "logs"),
+                          questions_enabled=True)
     daemon = Daemon(config)
     holder["daemon"] = daemon
     daemon.server = _CollectingServer()

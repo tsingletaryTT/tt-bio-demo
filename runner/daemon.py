@@ -350,18 +350,22 @@ class DaemonConfig:
     # DEFAULT_AFFINITY_BUDGET_BYTES's own comment for why it reuses that
     # number rather than inventing a new one.
     affinity_budget_bytes: int = DEFAULT_AFFINITY_BUDGET_BYTES
-    # False opts a booth OUT of the affinity-Q&A feature entirely: no chip
-    # is permanently reserved (`_build_pool` skips `split_for_qa`
-    # altogether -- see the comment there), so all detected chips fold and
-    # `qa_capable` comes back False in `_hello` exactly the way it already
-    # does on a one-chip box. That is deliberate reuse, not a special case:
-    # this field only ever changes what `_build_pool` hands `split_for_qa`
-    # the OPPORTUNITY to do, so the single-chip code path and this one are
-    # the same path, and the UI's existing `qa_capable` gate (ui/app.py)
-    # needs no changes at all to hide the queue panel, the gallery "ask"
-    # strip and the attract-loop question cue.
-    # Exposed as `--no-questions` (see main()).
-    questions_enabled: bool = True
+    # False (the default) keeps a booth OUT of the affinity-Q&A feature
+    # entirely: no chip is permanently reserved (`_build_pool` skips
+    # `split_for_qa` altogether -- see the comment there), so all detected
+    # chips fold and `qa_capable` comes back False in `_hello` exactly the
+    # way it already does on a one-chip box. That is deliberate reuse, not a
+    # special case: this field only ever changes what `_build_pool` hands
+    # `split_for_qa` the OPPORTUNITY to do, so the single-chip code path and
+    # this one are the same path, and the UI's existing `qa_capable` gate
+    # (ui/app.py) needs no changes at all to hide the queue panel, the
+    # gallery "ask" strip and the attract-loop question cue. Opting IN costs
+    # a chip's fold throughput permanently (25% on a 4-chip booth), which is
+    # why this defaults off rather than on -- a booth operator who wants the
+    # feature says so explicitly, at setup (`--questions`) or live (the
+    # Ctrl+A key command in ui/app.py, which restarts the booth with it on).
+    # Exposed as `--questions` (see main()).
+    questions_enabled: bool = False
 
 
 class Daemon:
@@ -550,9 +554,10 @@ class Daemon:
         own per-root loop shape exactly.
 
         `[]` when no chip is reserved for Q&A (`self._qa_spec is None`) -- a
-        one-chip booth, `--no-questions`, or a daemon/test that never built
-        a Q&A pool has nothing here to sweep, the same "empty is the honest
-        default" reasoning `worker_log_paths` above already uses.
+        one-chip booth, a booth started without `--questions` (the default),
+        or a daemon/test that never built a Q&A pool has nothing here to
+        sweep, the same "empty is the honest default" reasoning
+        `worker_log_paths` above already uses.
 
         Derived by default and assignable, exactly like `structures_dirs`,
         so a test can point the janitor at a tmp_path instead of the real
@@ -658,8 +663,9 @@ class Daemon:
                 # protocol/events.py only checks `type`), so an optional key
                 # on an existing event needs no PROTOCOL_VERSION bump, unlike
                 # a new required field or a new event/client-message type
-                # would. `None` on a one-chip booth or one started with
-                # `--no-questions`, exactly when `qa_capable` is False.
+                # would. `None` on a one-chip booth or one started without
+                # `--questions` (the default), exactly when `qa_capable` is
+                # False.
                 "qa_card": (self._qa_spec.card
                            if self._qa_spec is not None else None)}
 
@@ -1497,8 +1503,9 @@ class Daemon:
             # and out of the thermal guard's bookkeeping -- both by
             # construction, not by a separate exclusion check anywhere else.
             #
-            # `--no-questions` (config.questions_enabled=False) skips this
-            # call rather than calling it and discarding the reservation.
+            # Not passing `--questions` (config.questions_enabled=False, the
+            # default) skips this call rather than calling it and discarding
+            # the reservation.
             # split_for_qa's own docstring says what it exists to do: make a
             # PERMANENT chip-reservation decision, deterministically, once,
             # at startup. Calling it and then overriding the result would
@@ -1848,16 +1855,17 @@ def main(argv=None):
                         help="cap on each chip's .cif output; oldest pruned first")
     parser.add_argument("--preflight-only", action="store_true",
                         help="check readiness and exit; opens no device")
-    # Opt OUT of the affinity-Q&A feature's permanent chip reservation
-    # (runner/workers.py's split_for_qa): with this set, `_build_pool`
-    # never calls split_for_qa at all, so every detected chip folds and no
-    # chip is held back for questions -- the exact pre-Q&A "classic"
-    # behavior, restored deliberately rather than as a side effect. A
-    # 4-chip booth otherwise gives up 25% of its fold throughput to a
-    # feature it may never be asked to use.
-    parser.add_argument("--no-questions", action="store_true",
-                        help="never reserve a chip for affinity Q&A; fold "
-                             "on every detected chip (pre-Q&A behavior)")
+    # Opt IN to the affinity-Q&A feature's permanent chip reservation
+    # (runner/workers.py's split_for_qa): with this set, `_build_pool` calls
+    # split_for_qa and holds one chip back to answer questions instead of
+    # folding. Off by default -- a 4-chip booth otherwise gives up 25% of
+    # its fold throughput to a feature it may never be asked to use, so an
+    # operator who wants it says so explicitly, either here at launch or
+    # live via the Ctrl+A key command (ui/app.py), which restarts the booth
+    # with this flag added (see scripts/run-demo.sh's restart loop).
+    parser.add_argument("--questions", action="store_true",
+                        help="reserve one chip for affinity Q&A "
+                             "(default: every detected chip folds, no Q&A)")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO,
@@ -1910,7 +1918,7 @@ def main(argv=None):
         max_temp_c=args.max_temp,
         log_budget_bytes=int(args.log_budget_gb * 1024**3),
         structures_budget_bytes=int(args.structures_budget_gb * 1024**3),
-        questions_enabled=not args.no_questions))
+        questions_enabled=args.questions))
     signal.signal(signal.SIGTERM, lambda *_: daemon.stop())
     signal.signal(signal.SIGINT, lambda *_: daemon.stop())
     daemon.run()

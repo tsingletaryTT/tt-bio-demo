@@ -515,16 +515,18 @@ def test_the_devices_flag_defaults_to_every_chip(tmp_path):
                         log_root="l").device_ids is None
 
 
-def test_questions_enabled_defaults_to_true(tmp_path):
-    """The pre-existing (and still default) behavior: a booth with 2+ chips
-    reserves one for Q&A unless an operator explicitly opts out."""
+def test_questions_enabled_defaults_to_false(tmp_path):
+    """The current (flipped) default: a booth never reserves a chip for Q&A
+    unless an operator explicitly opts in, because permanently holding one
+    chip back costs a 4-chip booth 25% of its fold throughput for a feature
+    it may never be asked to use."""
     from runner.daemon import DaemonConfig
     assert DaemonConfig(socket_path="s", weights_dir="w", playlist_dir="p",
-                        log_root="l").questions_enabled is True
+                        log_root="l").questions_enabled is False
 
 
-def test_the_no_questions_flag_reaches_the_daemon_config(tmp_path, monkeypatch):
-    """`--no-questions` is the CLI half of `DaemonConfig.questions_enabled`.
+def test_the_questions_flag_reaches_the_daemon_config(tmp_path, monkeypatch):
+    """`--questions` is the CLI half of `DaemonConfig.questions_enabled`.
     A flag that parses but never reaches DaemonConfig is exactly the inert
     `--device` shape `test_the_devices_flag_reaches_the_daemon_config`
     already guards against, one field over.
@@ -557,15 +559,15 @@ def test_the_no_questions_flag_reaches_the_daemon_config(tmp_path, monkeypatch):
         "--weights", str(tmp_path / "weights"),
         "--playlist", str(tmp_path / "playlist"),
         "--log-root", str(tmp_path / "logs"),
-        "--no-questions",
+        "--questions",
     ])
     assert code == 0
-    assert built["config"].questions_enabled is False
+    assert built["config"].questions_enabled is True
 
 
-def test_omitting_the_no_questions_flag_leaves_questions_enabled(tmp_path, monkeypatch):
-    """The other half of the pin: NOT passing `--no-questions` must reach
-    DaemonConfig as `questions_enabled=True`, not merely "unset"."""
+def test_omitting_the_questions_flag_leaves_questions_disabled(tmp_path, monkeypatch):
+    """The other half of the pin: NOT passing `--questions` must reach
+    DaemonConfig as `questions_enabled=False`, not merely "unset"."""
     from runner import cards as cards_mod
     from runner import daemon as mod
     from runner import preflight as preflight_mod
@@ -596,4 +598,4 @@ def test_omitting_the_no_questions_flag_leaves_questions_enabled(tmp_path, monke
         "--log-root", str(tmp_path / "logs"),
     ])
     assert code == 0
-    assert built["config"].questions_enabled is True
+    assert built["config"].questions_enabled is False

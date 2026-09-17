@@ -377,10 +377,10 @@ def test_affinity_scratch_is_pruned_when_over_budget(tmp_path):
 
 
 def test_affinity_scratch_prune_is_a_noop_with_no_qa_chip_reserved(tmp_path):
-    """A one-chip booth, or one started with --no-questions, never reserves
-    a Q&A chip -- `daemon._qa_spec` stays `None` -- so there is no scratch
-    directory to derive at all. Must not raise, and must not invent a path
-    out of thin air."""
+    """A one-chip booth, or one not started with --questions (the default),
+    never reserves a Q&A chip -- `daemon._qa_spec` stays `None` -- so there
+    is no scratch directory to derive at all. Must not raise, and must not
+    invent a path out of thin air."""
     daemon = _daemon(tmp_path, _FakePool())
     assert daemon._qa_spec is None
     assert daemon.affinity_scratch_dirs == []
