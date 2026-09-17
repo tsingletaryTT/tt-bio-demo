@@ -40,6 +40,67 @@
 # until upstream fixes it -- at which point this entry comes back, since the
 # blurb and thumbnail machinery for it are unchanged in git history.
 #
+# MEASURED ON tt-bio 0.8.0, 2026-09-15. Same method as the 0.7.3 pass below
+# it: ONE chip (device 0 of a leased pair), one resident Folder, each target
+# folded 3 times back to back, first fold of each shape discarded as
+# JIT-cold, the two folds after it averaged into `expected_s`.
+#
+#   target     chip 0 warm   mean pLDDT     vs 0.7.3 (chip 0)    why
+#   trpcage      4.6 s        95.33-95.34    4.6 s    (0%)       flat
+#   dna          4.8 s        95.93-95.94    4.9 s   (-2%)       flat
+#   trna         6.9 s        88.80-88.82    6.9 s    (0%)       flat
+#   fkbp12       9.7 s        50.19-51.68    9.7 s    (0%)       flat, same wide spread as ever
+#   dhfr        14.5 s        53.23-54.19   14.5 s    (0%)       flat
+#   trypsin     17.4 s        39.03-39.32   17.4 s    (0%)       flat
+#   hsa         95.5 s        79.48-79.51   95.8 s   (-0.3%)     flat
+#
+# THIS IS THE FINDING: nothing moved, and that is consistent with what the
+# upgrade actually changed. tt-bio 0.8.0's real fixes for Protenix-v2/OpenDDE
+# are `modifications:`/`templates:`/`--max_msa_seqs` being honoured instead of
+# silently dropped, a hang bug above ~640 residues on Wormhole (980->1024
+# residue ceiling, derived from L1 budget instead of token count), and
+# `ttnn.close_device()` actually releasing the driver-level card claim. None
+# of this playlist's seven targets use `modifications:`/`templates:`, none
+# reaches anywhere near the 640-residue hang threshold (HSA is the largest at
+# 585), and this measurement folds one target at a time in one process, so
+# close_device()'s fix has nothing to exercise here either. Zero pin churn on
+# top (`requires-python`, `ttnn==0.68.0` both unchanged), so the vendored SFPI
+# toolchain needed no changes -- same as 0.7.0 and 0.7.3 before it.
+#
+# THE COLD-FOLD GAP IS SMALLER THIS TIME, and that is itself worth recording.
+# The 0.7.3 pass's first fold of each shape was inflated 4-5x by JIT kernel
+# compilation (trpcage: 25.3s cold vs 4.6s warm) because 0.7.1/0.7.2's
+# token-bucketing fix introduced padded shapes (20->32, 585->608, ...) that
+# had never been compiled before. 0.8.0 changes none of that bucketing, so
+# the persistent kernel cache from the 0.7.3 pass covers the same shapes:
+# trpcage's first fold this pass was 8.18s against a 4.6s warm mean (~1.8x,
+# not ~5.5x), and HSA's first fold (95.93s) landed INSIDE its own warm band
+# (95.40-95.55s) -- essentially no JIT tax at all for the largest target on
+# the playlist. Still discarded as a matter of method, not because it moved
+# the mean: the next release that touches bucketing will pay this cost again.
+#
+# THE REAL DEFECT THIS BUMP EXPOSED WAS NOT IN THE NUMBERS ABOVE, IT WAS IN
+# GETTING TO THEM AT ALL. `tt_bio.main._read_bio_chains` grew a 5th tuple
+# element in 0.8.0 (`modifications`, parallel to the new `modifications:`
+# YAML support) -- (chain_id, sequence, msa_spec, mol_type) became
+# (chain_id, sequence, msa_spec, mol_type, modifications). `runner/folder.py`
+# _run_fold, `runner/daemon.py` _residue_count, and two docs/upstream +
+# tests/fixtures scripts all still unpacked 4 values. The first measurement
+# attempt on this bump FAILED EVERY SINGLE FOLD -- all seven targets, all
+# three folds each, immediately, before any device work -- with "too many
+# values to unpack (expected 4)", and no unit test caught it: every existing
+# test either monkeypatches `_run_fold` away entirely or only exercises
+# `Folder.load()`, never the feature-building path in between. Only a real
+# hardware fold surfaced it. Fixed by widening the unpacking to 5 (and, in
+# daemon.py's case, keeping `modifications` unused and discarded -- no
+# playlist target uses `modifications:`, so wiring it through
+# `build_complex_features` would be an untested code path exercised by
+# nothing on this booth). `tests/unit/runner/test_folder_events.py` now
+# exercises `_run_fold` directly against both the real 5-tuple shape and the
+# pre-0.8.0 4-tuple shape, so this exact regression cannot recur silently.
+#
+# ---------------------------------------------------------------------------
+#
 # MEASURED ON tt-bio 0.7.3, 2026-09-09. Narrower than the 0.7.0 pass below it:
 # ONE chip (device 0 of a leased pair), one resident Folder, each target
 # folded 3 times back to back. The first fold of EVERY shape was inflated by
@@ -225,11 +286,10 @@
     Twenty amino acids — one of the smallest proteins that folds itself,
     and it does it in microseconds.
   blurb: >-
-    At just 20 amino acids, Trp-cage is one of the smallest proteins known
-    to reliably fold into a stable shape on its own, snapping into place in
-    only a few microseconds -- fast enough that scientists use it as a
-    stripped-down test case for studying how any protein finds its shape at
-    all.
+    One of the smallest proteins known to fold into a stable shape on its
+    own, snapping into place in only a few microseconds -- fast enough that
+    scientists use it as a stripped-down test case for how any protein
+    finds its shape at all.
   # Measured on this booth's own hardware (docs/followups.md, 30-fold soak):
   # 5.7s cold (first fold after the model loads), 4.35-4.45s warm once the
   # model is resident on the card. The attract loop keeps a fold running
@@ -240,6 +300,12 @@
   # process paid JIT compilation for the new 20->32 token-bucket shape --
   # 25.3s, discarded -- then two warm folds at 4.6s each, pLDDT 95.32/95.35.
   # first_frame_s was not re-measured this pass (see header); left as-is.
+  #
+  # tt-bio 0.8.0, chip 0 (see this file's header): first fold 8.18s
+  # (discarded -- much less inflated than 0.7.3's 25.3s, since this bump
+  # didn't change token-bucketing and the kernel cache carried over), then
+  # two warm folds at 4.68 / 4.60s, pLDDT 95.34 / 95.33. Flat vs 0.7.3.
+  # first_frame_s not re-measured this pass; left as-is.
   expected_s: 4.6
   first_frame_s: 1.9
 
@@ -253,16 +319,21 @@
   # ~1.7 from 0.7.0's 80.96-81.14, consistent with the token-bucketing
   # correctness fix changing real numerics slightly on a target this size).
   # first_frame_s was not re-measured this pass; left as-is.
-  expected_s: 95.8
+  #
+  # tt-bio 0.8.0, chip 0 (see this file's header): first fold 95.93s --
+  # landed INSIDE the warm band below rather than paying a JIT tax, because
+  # this bump introduced no new token-bucket shapes (kept anyway, as a
+  # matter of method) -- then two warm folds at 95.40 / 95.55s, pLDDT
+  # 79.51 / 79.48. Flat vs 0.7.3. first_frame_s not re-measured this pass.
+  expected_s: 95.5
   first_frame_s: 82.7
   tagline: >-
     The blood's delivery van — the most abundant protein in plasma, and how most drugs travel.
   blurb: >-
-    Albumin is the most abundant protein in blood plasma, made by the liver,
-    and it is the blood's general-purpose carrier -- it ferries fatty acids,
-    hormones and calcium, and a great many drugs ride it to where they act.
-    It is also what holds fluid inside the vessels rather than letting it
-    leak into tissue, and the "albumin" on a routine blood test.
+    The most abundant protein in blood plasma, made by the liver -- it
+    ferries fatty acids, hormones, calcium and many drugs to where they
+    act, and keeps fluid inside the vessels rather than leaking into
+    tissue. The "albumin" on a routine blood test.
   # THE LONG ONE, and why it is on the playlist at all.
   #
   # This entry was an explicit EXCLUSION in this file's header from Phase 3b
@@ -306,11 +377,10 @@
     The molecular lock that anti-rejection drugs are shaped to pick, so a
     transplanted organ survives.
   blurb: >-
-    FKBP12 is the molecular lock that a whole class of anti-rejection drugs
-    was built to pick: organ-transplant patients take a daily drug called
-    tacrolimus specifically because it clicks onto FKBP12 and, together,
-    the two jam shut a signal that would otherwise tell the immune system
-    to attack the new organ.
+    The molecular lock anti-rejection drugs are built to pick: transplant
+    patients take a daily drug called tacrolimus because it clicks onto
+    FKBP12, and together they jam shut the signal that would otherwise
+    tell the immune system to attack the new organ.
   expected_s: 9.7
   first_frame_s: 5.3
   # IT LEFT AND CAME BACK, and the number is lower than it ever was.
@@ -357,6 +427,11 @@
   # showed on 0.7.0 -- consistent with the wide spread being this target's
   # own property (an `msa: empty` fold of a small protein) rather than
   # something the version bump changed.
+  #
+  # tt-bio 0.8.0, chip 0 (see this file's header): first fold 10.26s pLDDT
+  # 49.79 (discarded), then two warm folds at 9.70 / 9.74s, pLDDT 51.68 /
+  # 50.19 -- inside the same wide band this target has shown on every past
+  # version. Flat vs 0.7.3.
 
 - id: dhfr
   name: Dihydrofolate Reductase
@@ -366,10 +441,10 @@
     Every dividing cell needs it to build new DNA — which is why a classic
     cancer drug jams it shut.
   blurb: >-
-    Every dividing cell relies on this enzyme, DHFR, to help build the raw
-    material for new DNA -- which is exactly why one of the oldest cancer
-    drugs, methotrexate, is shaped to jam it shut instead, starving
-    fast-dividing cancer cells of what they need to keep copying themselves.
+    Every dividing cell relies on DHFR to help build the raw material for
+    new DNA -- which is why methotrexate, one of the oldest cancer drugs,
+    is shaped to jam it shut, starving fast-dividing cancer cells of what
+    they need to keep copying themselves.
   # THE SLOW END, and why this entry carries a range. Two of this box's four
   # chips (1 and 3) drop to as low as 906 MHz about fifteen minutes into a
   # session and stay there -- they also run 3-4 C hotter at idle, so it is
@@ -394,6 +469,10 @@
   # paid JIT compilation for the 187->192 token-bucket shape -- 32.3s,
   # discarded -- then two warm folds at 14.5 / 14.5s, pLDDT 53.22 / 53.78
   # (up ~1.4 from 0.7.0's 51.52-52.39). first_frame_s not re-measured.
+  #
+  # tt-bio 0.8.0, chip 0 (see this file's header): first fold 15.04s pLDDT
+  # 53.77 (discarded), then two warm folds at 14.56 / 14.53s, pLDDT
+  # 53.23 / 54.19. Flat vs 0.7.3. first_frame_s not re-measured this pass.
   expected_s: 14.5
   first_frame_s: 10.4
 
@@ -415,12 +494,10 @@
   # Both are the kind of thing a biochemist at the booth catches in the
   # first sentence, which is exactly the audience this playlist is for.
   blurb: >-
-    Your pancreas builds trypsin switched off, then releases it into the
-    small intestine where it is armed -- and it spends the next few hours
-    cutting the protein in your meal into pieces small enough to absorb.
-    This is the cow's version, one of the most-studied protein shapes in
-    science and often the very first real structure a biochemistry student
-    ever examines up close.
+    Your pancreas builds trypsin switched off, then arms it in the small
+    intestine to cut up the protein in your meal. This is the cow's
+    version -- one of the most-studied protein shapes in science, often
+    the first structure a biochemistry student examines up close.
   # THE SLOW END, and why this entry carries a range. Two of this box's four
   # chips (1 and 3) drop to as low as 906 MHz about fifteen minutes into a
   # session and stay there -- they also run 3-4 C hotter at idle, so it is
@@ -445,6 +522,10 @@
   # paid JIT compilation for the 223->224 token-bucket shape -- 36.0s,
   # discarded -- then two warm folds at ~17.4s (17.5/17.4 rounded), pLDDT 38.73 / 39.36,
   # unchanged within this target's own 0.7.0 spread (38.36-39.73).
+  #
+  # tt-bio 0.8.0, chip 0 (see this file's header): first fold 17.88s pLDDT
+  # 38.87 (discarded), then two warm folds at 17.39 / 17.34s, pLDDT
+  # 39.32 / 39.03. Flat vs 0.7.3. first_frame_s not re-measured this pass.
   expected_s: 17.4
   first_frame_s: 11.7
 
@@ -463,16 +544,11 @@
     folds that are not proteins.
   blurb: >-
     Twelve rungs of the double helix. Both strands spell the same twelve
-    letters, CGCGAATTCGCG, because each one read backwards is the other --
-    which is exactly what lets them clip together -- and the six in the
-    middle, GAATTC, are the mark that EcoRI, one of the first gene-cutting
-    enzymes ever put to work, searches a genome for. Solved in 1980, this
-    twelve-letter piece was the first atom-by-atom look at a full turn of
-    DNA and is still the picture the textbooks are drawn from. Watch the
-    color: the four proteins here come back mostly yellow and orange,
-    because the model is asked to fold them with no evolutionary data to
-    lean on. DNA needs none -- the two strands pair by chemistry -- and it
-    comes back blue.
+    letters, CGCGAATTCGCG -- each read backwards is the other, which is
+    what lets them clip together. Solved in 1980, this piece was the first
+    atom-by-atom look at a full turn of DNA. Watch the color: the proteins
+    here come back mostly yellow and orange, with no evolutionary data to
+    lean on -- DNA pairs by chemistry alone, and comes back blue.
   # The measured facts behind that last sentence, so nobody has to take the
   # copy on trust. Six warm folds on card 0, 2026-08-13, protenix-v2:
   # mean pLDDT 95.7 every time (per-atom B-factors 84.2-97.3, i.e. the
@@ -501,7 +577,12 @@
   # (24 tokens round up to 32, +33%), which is the whole reason it is one of
   # only two entries here (with Trp-cage) that got slower rather than flat
   # or faster.
-  expected_s: 4.9
+  #
+  # tt-bio 0.8.0, chip 0 (see this file's header): first fold 5.12s pLDDT
+  # 95.95 (discarded), then two warm folds at 4.84 / 4.76s, pLDDT
+  # 95.93 / 95.94. Flat to slightly faster vs 0.7.3 (4.9s -> 4.8s).
+  # first_frame_s not re-measured this pass.
+  expected_s: 4.8
   first_frame_s: 1.1
 
 - id: trna
@@ -512,16 +593,13 @@
     The go-between: it reads three letters of the genetic message and
     carries the matching amino acid.
   blurb: >-
-    DNA holds the message and proteins do the work -- this is the molecule
+    DNA holds the message, proteins do the work -- this is the molecule
     that gets from one to the other, and the booth folds all three. Three
-    bases at one end read one word of the genetic code (these three are
-    GAA, which matches the code word for phenylalanine) and the far end of
-    the molecule, the whole length of it away, is where that amino acid
-    rides. Yeast tRNA-Phe was the first RNA whose three-dimensional shape
-    was ever worked out, in 1974, and the surprise then is the thing to
-    watch for now: the flat cloverleaf of base pairs biochemists had drawn
-    on paper folds back on itself in space, putting its two working ends at
-    opposite corners of a compact hinged shape.
+    bases at one end read one word of the genetic code; the other end, the
+    whole length away, is where the matching amino acid rides. Yeast
+    tRNA-Phe was the first RNA whose shape was ever solved, in 1974 -- and
+    the flat cloverleaf biochemists had drawn on paper turns out to fold
+    back on itself into a compact hinged shape.
   # WHAT THE MODEL ACTUALLY PRODUCED, measured on the fold this entry ships
   # a thumbnail of, because the blurb above makes a claim about the SHAPE
   # and this playlist's rule is that a blurb is accurate to the molecule on
@@ -555,5 +633,10 @@
   # paid JIT compilation for the 76->96 token-bucket shape -- 27.6s, discarded
   # -- then two warm folds at 6.9 / 6.9s, pLDDT 88.77 / 88.80 -- still the
   # tightest spread of any target here, same as on 0.7.0.
+  #
+  # tt-bio 0.8.0, chip 0 (see this file's header): first fold 7.73s pLDDT
+  # 88.81 (discarded), then two warm folds at 6.92 / 6.83s, pLDDT
+  # 88.80 / 88.82 -- still the tightest spread of any target here. Flat vs
+  # 0.7.3. first_frame_s not re-measured this pass.
   expected_s: 6.9
   first_frame_s: 2.8

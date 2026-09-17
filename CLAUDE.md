@@ -1324,6 +1324,367 @@ known-environmental red set aside), 18 hardware sanity tests
 `test_new_targets_timing.py` harness, all on real Blackhole silicon under a
 gozer lease.
 
+### tt-bio 0.8.0: a 4-tuple that should have been a 5-tuple, and every fold went dark (2026-09-15)
+
+Prompted with a bump-and-remeasure task for the single release cut since 0.7.3
+(2026-09-10, five days out). A research pass first confirmed: zero pin churn
+(`requires-python`, `ttnn==0.68.0` both unchanged, so the vendored SFPI
+toolchain needed no changes -- same as every prior bump); real Protenix-v2/
+OpenDDE fixes (`modifications:`/`templates:`/`--max_msa_seqs` now honoured
+instead of silently dropped; a hang above ~640 residues on Wormhole fixed by
+deriving the shape-split decision from L1 budget instead of token count,
+raising the ceiling 980->1024; `ttnn.close_device()` now actually releases
+the driver-level card claim); and a new `tt_bio/capabilities.py` +
+`docs/model-capabilities.md` capability matrix, upstream documentation this
+project does not consume as code. `dump_fn` was re-verified by direct
+import, the same habit every past bump has followed: still a parameter of
+`edm_sample` and of `OpenDDE.fold`, still absent from `Protenix.fold`.
+`tt_bio.weights` (`fetch`/`resolve`/`artifacts_for`/`status`) also
+re-verified unchanged by signature.
+
+**The bump itself was one variable. Getting a single fold to complete on it
+was not.** The first hardware measurement attempt FAILED EVERY TARGET, all
+seven, all three folds each, instantly, before any device work: `"fold
+failed for <target>: too many values to unpack (expected 4)"`. The cause:
+`tt_bio.main._read_bio_chains` grew a 5th tuple element in 0.8.0
+(`modifications`, parallel to the new `modifications:` YAML support) --
+`(chain_id, sequence, msa_spec, mol_type)` became `(chain_id, sequence,
+msa_spec, mol_type, modifications)`. Three call sites in this repo still
+unpacked 4: `runner/folder.py`'s `_run_fold` (the one that matters --
+every real fold goes through it), `runner/daemon.py`'s `_residue_count`
+(degrades to `n_residues=0` with a logged warning rather than crashing, so
+it would have shipped silently wrong rather than loudly broken), and two
+reference scripts (`docs/upstream/protenix-dump-fn/reproduce.py`,
+`tests/fixtures/streams/capture_real_fold.py`). Every one of them checked
+out clean under "does `tt_bio.main._read_bio_chains` still exist and import"
+-- the step this project's own convention calls for before touching version
+numbers -- because the function's NAME didn't change, only the SHAPE of what
+it returns. Checking an import resolves is not the same claim as checking
+its contract held.
+
+**No unit test caught it, and the reason is structural, not an oversight.**
+`test_folder_events.py`'s own module docstring already named `_run_fold` "the
+one seam this module controls without hardware" and every existing test
+either monkeypatches it away entirely or exercises `Folder.load()` only --
+nothing exercised the feature-building path _run_fold owns in between. Only
+a real hardware fold surfaced this. Fixed by widening every unpacking site to
+5 (daemon.py and the two reference scripts discard `modifications` --
+nothing on this playlist uses `modifications:`, so threading it through
+`build_complex_features` would be an untested code path exercised by nothing
+this booth runs); `test_folder_events.py` now has
+`test_run_fold_against_the_real_read_bio_chains_tuple_shape`, parametrized
+over the real 5-tuple (must pass) and the pre-0.8.0 4-tuple (must raise --
+kept specifically as the demonstration that this exact regression would have
+gone undetected before this fake existed), and `test_daemon.py`'s residue-
+count fixture was updated off the same stale 4-tuple shape it had been
+quietly carrying.
+
+**Once fixed, the finding is that nothing moved -- and that is exactly what
+the research pass predicted.** Same method as the 0.7.3 pass: one chip, one
+resident Folder, three folds per target, first fold of each shape discarded.
+
+| target | 0.7.3 (chip 0) | 0.8.0 (chip 0, warm) | mean pLDDT: 0.7.3 -> 0.8.0 |
+|---|---|---|---|
+| Trp-cage | 4.6 s | 4.6 s | 95.32-95.35 -> 95.33-95.34 |
+| DNA duplex | 4.9 s | 4.8 s | 95.94-95.95 -> 95.93-95.94 |
+| tRNA | 6.9 s | 6.9 s | 88.77-88.80 -> 88.80-88.82 |
+| FKBP12 | 9.7 s | 9.7 s | 50.38-52.84 -> 50.19-51.68 |
+| DHFR | 14.5 s | 14.5 s | 53.22-53.81 -> 53.23-54.19 |
+| Trypsin | 17.4 s | 17.4 s | 38.73-39.46 -> 39.03-39.32 |
+| HSA | 95.8 s | 95.5 s | 79.24-79.37 -> 79.48-79.51 |
+
+Flat everywhere, inside each target's own noise band. Consistent with what
+actually changed upstream: none of these seven targets use `modifications:`/
+`templates:`, none is within reach of the 640-residue hang threshold (HSA is
+largest at 585), and this measurement folds one target at a time in one
+process, so `close_device()`'s fix has nothing here to exercise either.
+`playlist/manifest.yaml`'s header carries the full table and reasoning;
+`expected_s` was refreshed on every entry regardless of whether the number
+moved, same "refresh to THIS run's number rather than let a coincidence
+stand in for a measurement" principle as every prior pass. Only DNA (4.9s ->
+4.8s) and HSA (95.8s -> 95.5s) actually changed the printed digit, so those
+are the only two numbers touched in README.md, `docs/index.html`'s card meta
+lines and the one-pager's table -- the PDF was rebuilt and eyeballed.
+
+**The cold-fold gap was much smaller this pass, and that is worth recording
+as its own small finding.** The 0.7.3 pass's first fold of each shape was
+inflated 4-5x by JIT compilation (trpcage: 25.3s cold against 4.6s warm)
+because 0.7.1/0.7.2's token-bucketing fix introduced padded shapes that had
+never been compiled before. 0.8.0 changes none of that bucketing, so the
+persistent kernel cache from the 0.7.3 pass covered the same shapes: trpcage's
+first fold this pass was 8.18s against a 4.64s warm mean (~1.8x, not ~5x),
+and HSA's first fold (95.93s) landed INSIDE its own warm band -- essentially
+no JIT tax at all for the largest target on the playlist. Still discarded as
+a matter of method, not because it moved the mean.
+
+**The full hardware suite hit the board-reset fault this file has already
+named twice** (2026-08-17, 2026-08-24): board `0000046131924055` (chips 2/3)
+threw `TT_THROW: Device 2: Timed out while waiting for active ethernet core
+(x=29,y=25) to become active again` mid-run, which took the whole pytest
+process down with a hard `Fatal Python error: Aborted` during device
+teardown in `test_new_targets_timing.py`'s fixture -- not a code regression;
+that board had sat unused (FREE) since before this session started. Isolated
+by rerunning `test_egg_on_device.py` alone (6 errors, same eth-core timeout),
+fixed by `gozer release` (which resets on release) and re-acquiring fresh --
+the isolated file then passed 6/6, and the full `--hw` suite passed clean on
+the retry. Worth restating since it keeps happening: a board that has sat
+idle needs a reset before it needs a bug report.
+
+Suite green: **1,608 total** (1,177 UI + 430 runner/integration + the
+four-chip pool test), the one known-environmental `test_the_pin_is_the_one_
+setup_venvs_actually_declares` false alarm set aside (confirmed again with
+`TT_BIO_DEMO_PREFIX=/nonexistent`: the repo's own pin resolves to 0.8.0
+correctly; the `/opt/tt-bio-demo` install this reads by default is still the
+same real Aug-31 package, now three versions stale).
+
+### Affinity questions: the booth answers a question, not just reveals a shape (2026-09-15/16)
+
+Prompted with "how can we add the idea of 'asking questions' and 'getting
+answers' to the demo -- part of tt-bio's value is that it goes beyond just
+connecting dots and revealing." Asked which question TYPE to build first
+(binding/affinity, structural/property, or generative design) and got "1 and
+3" -- both affinity and design. Scoped down deliberately: affinity now,
+design written up as a named, deferred follow-up (spec section 8) -- the same
+"excluded, not forgotten" shape as HSA-before-0.6.3 and FKBP12-during-0.6.3,
+because no design-model checkpoint exists, no hardware timing exists for it,
+and the generic protocol/UI this phase builds is loose enough that a second
+question kind can ride the same queue later without redesigning it.
+
+**The reuse that made the architecture cheap.** Three playlist targets
+(DHFR, trypsin, FKBP12) are protein+ligand complexes in their *upstream*
+form, and each input file has carried a `properties: affinity:` block since
+Phase 3b that `runner/folder.py`'s `Folder.fold()` reads past and silently
+ignores -- confirmed in each file's own header comment at the time. This
+feature is what finally reads that block. No new molecules, no new vetting.
+
+**Why the daemon never calls nesso1 in its own process.** A hardware spike
+(Task 1, before any other task's code was written) confirmed nesso1 --
+`tt_bio.nesso1.screen()`, or the lower-level `Nesso1.from_pretrained()` /
+`prepare()` / `collate()` / `.predict()` path for model residency -- needs NO
+prior fold: verified in a fresh process with `tt_bio.protenix`/`tt_bio.
+opendde` never imported. That single fact is why the feature could be built
+as two independently-satisfiable halves: a real score from a dedicated,
+permanently-reserved chip (`runner/workers.py`'s `split_for_qa`, in a second,
+subprocess-isolated `WorkerPool` -- `runner/daemon.py` itself never imports
+`runner.affinity`/`tt_bio.nesso1`, the same deadlock-avoidance rule Phase 5
+Task 18 already paid for), and a pocket highlight computed entirely
+client-side from geometry the UI already has (`ui/pocket.py`, reusing
+`ui/ligand.py`'s existing ligand-classification rather than the unverified
+`het_flag` guess a research pass had suggested).
+
+**Built via subagent-driven-development in a worktree, 12 tasks plus a
+13-commit final-review fix wave.** The review loop earned its keep again:
+task-scoped reviews found and fixed a data race introduced by the FIX for
+an unbounded-queue bug (`_qa_queue`'s compound mutation wasn't atomic against
+real multi-client reader threads -- caught by a re-review, not the first
+pass), a host-thread-cap bug where two `WorkerPool` instances each sized
+themselves against their own spec count instead of the true combined total
+(`cores + cores` claimed against `cores` available), and a log-janitor blind
+spot that would have reintroduced the exact "unlink a file a worker still
+holds open" failure this project fixed once already for fold workers. All
+three were found in *fix rounds*, after the "obviously right" first pass --
+worth remembering next time a fix round feels like a formality.
+
+**The whole-branch review found the one bug no single task's reviewer could
+have seen, because it lived in the gap between two tasks.** The pocket
+highlight was applied only reactively on `answer_done`, only if the ribbon
+was *already* on screen -- and the one fixture that ever visually verified
+this feature (Task 12's mock stream) happened to order `job_done` before the
+answer, which is the one ordering that works. In production nesso1 (~8-12s)
+usually finishes before the fold+ribbon does, so the answer almost always
+arrived first and the highlight was silently lost, forever, on nearly every
+real question. Spec section 1's binding promise -- "a visual result, never a
+number alone" -- was not delivered in the ordering the daemon actually
+produces. Fixed by remembering the answered pocket and applying it whichever
+of ribbon-ready/answer-ready lands second, whatever order that turns out to
+be.
+
+**A "tool use rejected" message is not proof an agent never ran.** The
+dispatch for that whole fix wave came back with a rejection notice, and the
+next few minutes were spent explaining to the user that nothing had
+happened -- except it had: `git log` showed four real, committed fixes, and
+`gozer status` showed a live lease still held by that exact dispatch's
+reason string, because the agent had gotten as far as taking real hardware
+for the final verification step before the interrupt landed. The daemon it
+left running turned out to be genuinely **wedged** -- ten-plus hours hung
+mid-`to_torch` device readback, confirmed with `py-spy`, not merely idle --
+so the recovery was a real one: `SIGTERM` then `SIGKILL` escalation exactly
+as `pool.stop()` is designed to do, then a `gozer acquire`/`release` to force
+an actual silicon reset before standing up a fresh daemon on the same chips.
+The lesson generalizes past this one incident: check `git log`/`gozer
+status`/`ps` for what a tool's own status message claims happened, the same
+"verify the instrument" habit this file has recorded for tests and
+measurements, now once for a controller's own dispatch history.
+
+**Real-hardware verification, done twice.** Once early (Task 12), confirming
+the panel, score, and highlight render at all -- on a high-confidence
+fixture (Trp-cage), the one case that couldn't expose the ordering bug.
+Once at the very end, after the fix, on **trypsin** -- pLDDT ~38-39, one of
+the low-confidence, mostly-orange targets the highlight was never checked
+against. The pocket showed as a clear, unmistakable bright yellow-green
+patch against the orange/copper ribbon: legible at a glance, not the
+subtle-and-hoped-for boost the one high-confidence measurement had left
+untested. Score format confirmed three times in the same run: "score:
+0.94/0.92/0.98 -- nesso1's predicted probability the ligand binds."
+
+**A `--no-questions` flag, added on request, for free.** The single-chip
+degrade path (`qa_capable: false`, built in Task 6/11 for a dev box with no
+chip to spare) already hides every piece of Q&A UI with zero special-casing
+-- so a classic-mode flag is just teaching the daemon to skip
+`split_for_qa` and hand every chip to the fold pool, and the exact same
+degrade path does the rest. `scripts/run-demo.sh --no-questions` runs the
+pre-Q&A booth, byte-for-byte, on any chip count.
+
+Suite green: **1,314 UI + 440 runner** at final count, the same
+`/opt/tt-bio-demo`-pin false alarm set aside. Deliberately not fixed this
+round, carried into [`docs/followups.md`](docs/followups.md): nesso1's
+weights have no postinst/`doctor.sh` provisioning yet (same shape as every
+prior weights-gap in this project's history -- shipped capability before its
+provisioning story, flagged rather than silently absent); `runner/
+affinity.py` imports `torch`/`tt_bio.nesso1` at module scope rather than
+inside `load()`, against `runner/folder.py`'s own documented pattern; a
+handful of other Minor findings from the final review.
+
+### Q&A off by default, Ctrl+A to restart into it live -- and a review round (2026-09-16)
+
+Two things, one worktree: the change itself, and a thorough review of it
+that found one real Critical bug and several Important/Minor gaps, all
+fixed in the same branch.
+
+**The change.** Affinity Q&A permanently reserves one chip whenever 2+
+chips are detected -- 25% of a 4-chip booth's fold throughput, paid whether
+or not anyone ever asks a question. That used to be the default (the
+feature shipped as `--no-questions` to opt OUT); flipped to opt-in
+(`--questions` replaces `--no-questions`, `DaemonConfig.questions_enabled`
+defaults to `False`). An operator who did not think to pass the flag at
+launch is not stuck with the wrong booth for the rest of the session:
+`Ctrl`+`A` in the running UI exits with a sentinel exit code
+(`QUESTIONS_RESTART_EXIT_CODE = 42`) that `scripts/run-demo.sh` catches and
+turns into a teardown-and-relaunch with `--questions` added -- one-way,
+deliberately, since the reverse (drop Q&A live) would need the same live
+chip-reallocation this key is scoped to never attempt.
+
+**The review found one Critical bug: the restart silently discarded every
+other flag.** `run-demo.sh`'s argument-parsing loop `shift`s every
+positional argument away, so by the time execution reached the restart
+branch, `"$@"` was always empty -- `exec "$0" "$@" --questions` was ALWAYS
+just `exec "$0" --questions`. `--devices` was the sharpest edge: a booth
+sharing this box via `--devices 0,1` would come back after Ctrl+A claiming
+every detected chip. Fixed by capturing the original arguments into an
+array (`RUN_DEMO_ARGV`) before the parsing loop touches them, and exec'ing
+with that instead -- confirmed red against the pre-fix script (a
+`--devices` value that vanished across a simulated restart) and green
+after. The restart's `exec` also moved from `$0` to a path computed once
+from `BASH_SOURCE[0]`, before any `cd`, for the same reason `--log-root`
+and `--socket` are already resolved to absolute paths early in this
+script: `$0` stops meaning anything useful the moment this script `cd`s to
+`$REPO_ROOT`.
+
+**Three Important gaps, all in the connective tissue rather than the
+feature's own logic.** The docs had the packaged-vs-systemd distinction
+backwards -- the NORMAL desktop-entry path (`Exec=.../run-demo.sh`) does
+get the restart; the systemd-*supervised* mode is the one that does not,
+because there the daemon is not one `run-demo.sh` started at all (see
+`docs/followups.md`, moved out of "Deliberately not doing" since it is a
+real, still-open gap). Pressing Ctrl+A and having it decline produced zero
+visible feedback: the decline paths only ever called `log.warning`, which
+never reaches the on-screen diagnostics rail, so an operator watching that
+panel saw nothing -- indistinguishable from a frozen app. And nothing in
+the test suite called `ui.app.main()` at all, so the one line bridging
+`DemoApp.exit_code` back out to the shell -- the entire mechanism
+connecting a key press to `scripts/run-demo.sh` seeing exit code 42 --
+could have been silently replaced with `return result` and the whole
+suite would have stayed green. All three fixed, each with a test that
+fails against the specific regression it guards (confirmed by re-breaking
+each one and watching the new test go red).
+
+**A recurring finding, worth naming again:** the exit code and the env var
+name that ties this mechanism together were each independently duplicated
+as literals in `ui/app.py` (Python) and `scripts/run-demo.sh` (shell), with
+nothing checking they still agree -- the same "a check that knows less
+than the thing it is checking" shape `test_weights_cache_is_derived_
+once.py` already guards against for the weights-cache variables, applied
+here as a new cross-language regex-parsed test.
+
+### The quad's own empty cell, a Copilot review round, and a help card that had stopped fitting the screen (2026-09-17)
+
+Prompted with "it seems to be hard to see and we have that whole 4th 'chip'
+space now empty when we're using the mode" -- the space `runner.workers.
+split_for_qa`'s chip reservation leaves in the quad when 2+ chips are
+detected. Shown three mocked-up options first (a spotlight card cycling
+one statement at a time, an enlarged copy of the rail panel, a static
+split card); **the spotlight was picked**, both for legibility and because
+its cross-fade between "asking" and "answered" matches the booth's
+existing hold-until-superseded honesty pattern.
+
+**`ui/qa_spotlight.py`'s `QASpotlightCell`** reuses `ui.questions`'s own
+pure text functions (`question_label`, `in_flight_text`, `error_text`,
+`format_score`, `SCORE_GLOSS`, `no_question_answered_text` -- the last
+three made public for exactly this reuse) rather than a second hand-typed
+copy of the content-honesty wording, the same drift this project has paid
+for more than once. `ui/quad.py`'s `QuadView.set_extra_cell` places it in
+the grid slot a shorter-than-4 card list leaves empty, in its own wrapper
+`Gtk.Box` so solo-mode visibility (owned by the quad) and qa-capability
+visibility (owned by the cell itself) never fight over one widget's
+`visible` property.
+
+**A live `<ci-monitor-event>` mid-build surfaced a Copilot review on the
+same PR, six findings, all real:** a packaged/systemd install enumerated
+**zero fold targets** -- `/opt/tt-bio-demo/playlist/` ships only
+`manifest.yaml`/`questions.yaml` (the real inputs live in the sibling
+`examples/`), so once those two are excluded by name the daemon's own
+glob found nothing at all, a total regression on the deployment path this
+booth is actually packaged for. Fixed by extracting `run-demo.sh`'s
+per-target symlink farm into `scripts/materialize-playlist.sh` and having
+`tt-bio-demo-daemon-launcher.sh` build the same farm into a runtime
+directory it can write to (the installed one is root-owned). A Q&A worker
+that failed to spawn on its VERY FIRST attempt was never retried and never
+marked retired -- unlike a worker that died after running, which already
+had that path -- so `all_retired()` stayed false forever and every queued
+question hung with no `answer_error` ever reaching the UI; fixed by
+handing a failed initial spawn to the same retry-then-retire mechanism.
+`qa_capable=True` with no questions loaded (a missing/malformed
+`questions.yaml`) showed an empty "No questions queued" panel implying a
+capability the run cannot deliver; a custom `--playlist` could offer the
+shipped question against a same-ID-but-different target, since
+`ui.playlist.load_questions()` is documented to always validate against
+the DEFAULT manifest regardless of what path was actually loaded -- Q&A
+now disables itself outright for a custom playlist rather than risk that.
+Every fix has a regression test confirmed to fail against the pre-fix code
+by hand (a stash-and-revert round trip, not just a green run) before being
+restored.
+
+**The most interesting bug was found by a person watching the actual
+booth, not by review or test.** Mid-build, the user reported: "I don't see
+the question mode on the help screen. And the help screen isn't staying
+contained within the window." The card's OWN regression test
+(`test_the_help_card_still_fits_the_booth_s_own_screen`) was green the
+whole time -- it measured the card's height at `for_size=1920`, the
+SCREEN's width. But the card is `halign=CENTER`, so it takes its own
+preferred width regardless of how wide the screen is; measuring at 1920
+let GTK wrap every paragraph across far more room than the card would
+ever actually get, undercounting every wrapped line. The real number,
+measured at the card's real ~1000px width: **1460px on a 1080px screen** --
+confirmed by literally building the card and measuring it at both widths.
+Fixed on both sides: the card widened (1400px, still well short of the
+screen) and its copy trimmed (the Q&A paragraph, the Tensix paragraph, the
+chips paragraph, most of the intro), and the test now measures at a named
+constant (`_HELP_CARD_WIDTH_PX`) shared with the real layout code instead
+of the screen's own width -- the same "one name so two things cannot
+quietly disagree" shape this file keeps recording. Confirmed live: pressed
+`?` on the running booth and photographed it.
+
+**A hardware incident during the same session, unrelated to any of the
+above.** A screenshot session (`--quad --questions`, real folds) wedged
+chip 1 mid-DHFR-fold about three minutes in -- dispatched once, never
+seen again, the daemon's own shutdown log showing `card 1: worker still
+alive after terminate(); killing it`. Not a code bug: the other two fold
+chips kept working the whole time, which is exactly what the user
+noticed ("not showing 3 simultaneous folds"). Recovered the same way
+every prior wedge on this box has been: `gozer release` (which resets),
+`gozer status` to confirm all four chips FREE, before touching hardware
+again.
+
 ## Conventions
 
 - **Keep the README's screenshots current.** The README claims every image on it is the

@@ -62,7 +62,8 @@ measured it. Budget generously and measure it before it matters.
 
 **Anything about a freshly imaged machine.** This measured an empty *kernel cache* on a box
 that already had weights, a built `venv-runner`, and a warm page cache. A real first boot also
-pays the 3.7 GB weight download and the venv build.
+pays the ~6.9 GB weight download (`scripts/setup-venvs.sh` fetches protenix-v2 + CCD, nesso1 +
+its own CCD dict, and the ESM-2 encoder by default) and the venv build.
 
 ## Method, so it can be repeated
 

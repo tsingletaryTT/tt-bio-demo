@@ -32,12 +32,27 @@ predecessor is negative is negated. Without that a beta-sheet renders as a
 twisted mess, which is exactly how you can tell a cartoon renderer was never
 tested on one.
 
-Pure: numpy in, arrays out. No gemmi, no GL.
+Pure: numpy in, arrays out. No GL. `resample_scalar` (from `ui.geometry`) is
+imported at module scope, which pulls in `ui.geometry`'s own `gemmi`
+dependency transitively -- every caller of `cartoon_from_cif` needs gemmi
+anyway, so this costs nothing in practice, but it means the historical claim
+above ("no gemmi") stopped being literally true the day this import moved
+from local to module scope.
 """
 
 import logging
 
 import numpy as np
+
+# Hoisted to module scope (item 11 of the deferred-nits batch) because both
+# `_colored` and `cartoon_from_cif` below need it in their own, separate
+# function scopes -- each importing it locally would be the same redundant
+# import twice, not two different imports. Safe to hoist: nothing in
+# `ui.geometry` imports `ui.cartoon` back (no circularity), and it is
+# already an unconditional module-scope dependency of `ui.pocket` and
+# `ui.geometry` itself, so this costs nothing this module wasn't already
+# pulling in transitively the moment either ran.
+from ui.geometry import resample_scalar
 
 from ui.secstruct import COIL, HELIX, STRAND
 
@@ -87,6 +102,37 @@ ARROW_TIP = 0.12           # ...tapering to this at the point
 #: 4 gives a rounded rectangle -- a ribbon with edges you can see, without the
 #: hard corners that catch specular highlights and read as faceting.
 _SQUARENESS = 4.0
+
+#: Additive brightness boost applied to every RGB channel of a residue's
+#: pLDDT colour when `cartoon_from_cif`'s `highlight_residues` names it.
+#:
+#: WHY ADDITIVE, AND WHY HERE RATHER THAN A SHADER UNIFORM. `ui/shaders.py`'s
+#: RIBBON_VERT/RIBBON_FRAG take exactly one colour per vertex and have no
+#: spare attribute, uniform, or outline pass to carry a second "is this
+#: emphasised" signal -- adding one would mean a new vertex attribute, a new
+#: VBO layout, and a shader recompile for what is, underneath, a per-vertex
+#: number this module already owns. `plddt_colors` already turns a per-
+#: residue scalar into the vertex colour array every renderer uploads
+#: as-is, so the least invasive way to add emphasis is to brighten THAT
+#: array before it leaves this module -- no GL-side change at all, and the
+#: existing fragment shader's lighting/rim/opacity math runs unmodified on
+#: top of it.
+#:
+#: The pLDDT colour is not replaced: this is added to it and clipped to
+#: [0, 1], so a residue's confidence colour stays legible underneath the
+#: emphasis rather than being swapped for an unrelated highlight colour --
+#: two different claims (confidence, proximity to a ligand) that must both
+#: stay visible at once (spec section 6).
+#:
+#: 0.12 is small enough that every PLDDT_STOPS colour except the two
+#: channels already at 1.0 in the "low" (0.50) stop stays under 1.0 after
+#: the boost -- i.e. the boost is losslessly subtractable for a residue in
+#: the "very high" or "confident" bands, which is what
+#: tests/unit/test_cartoon.py's highlight fixture exercises. A "low"-band
+#: highlighted residue still visibly brightens; it just cannot be
+#: subtracted back to bit-exact equality once a channel has clipped, which
+#: is a property of clipping near white, not a defect in the boost itself.
+POCKET_HIGHLIGHT_BOOST = 0.12
 
 
 def _unit(v, fallback=None):
@@ -304,7 +350,39 @@ def sweep(centerline, sides, half_widths, half_heights):
     return verts, norms, np.asarray(idx, dtype=np.uint32)
 
 
-def cartoon_from_cif(cif_path, samples_per_residue=6):
+def _colored(plddt_values, seqids, chain_id, n_samples, highlight_residues):
+    """Per-sample RGB for one chain: the pLDDT ramp, plus an additive
+    brightness boost for any residue named in `highlight_residues`.
+
+    `plddt_values` and `seqids` are per-RESIDUE, one entry per anchored
+    residue of this chain in file order -- both are resampled onto the
+    same `n_samples` the rest of this chain's geometry already uses, the
+    same way `plddt_colors(resample_scalar(...))` always was before this
+    helper existed (see `ribbon_from_cif`'s own comment on why a chain must
+    be resampled against its OWN sample count, never the whole structure's
+    or another chain's).
+
+    `highlight_residues` is a set of `(chain_id, seqid)` pairs -- the exact
+    shape `ui.pocket.pocket_residues` returns -- or `None`/empty for no
+    highlight at all, in which case this returns exactly what
+    `plddt_colors` alone would have.
+    """
+    from ui.geometry import plddt_colors
+
+    base = plddt_colors(resample_scalar(np.asarray(plddt_values), n_samples))
+
+    if not highlight_residues:
+        return base
+
+    mask = np.asarray(
+        [1.0 if (chain_id, seqid) in highlight_residues else 0.0
+         for seqid in seqids], dtype=np.float64)
+    boost = resample_scalar(mask, n_samples) * POCKET_HIGHLIGHT_BOOST
+
+    return np.clip(base + boost[:, None], 0.0, 1.0).astype(np.float32)
+
+
+def cartoon_from_cif(cif_path, samples_per_residue=6, highlight_residues=None):
     """Read a CIF and build the cartoon mesh the renderer uploads.
 
     Returns (vertices, normals, colors, indices) -- the same four arrays
@@ -319,12 +397,29 @@ def cartoon_from_cif(cif_path, samples_per_residue=6):
     A chain with no C-alphas at all -- a nucleic acid, a ligand -- has no
     secondary structure and no peptide plane, so it is swept as plain round
     tube using the anchors `ui.geometry` already chooses for it.
+
+    `highlight_residues`, when given, is a set of `(chain_id, residue_seqid)`
+    pairs -- exactly `ui.pocket.pocket_residues`'s output shape -- naming
+    residues (an affinity question's pocket) to emphasise on top of their
+    existing pLDDT colour. The emphasis is ADDITIVE, never a replacement
+    colour: see `POCKET_HIGHLIGHT_BOOST`. `None` (the default) is identical
+    to every call made before this parameter existed -- an empty set changes
+    nothing, for a caller that has computed a pocket and found it empty.
+
+    The highlight mask is resampled the same continuous way pLDDT itself is
+    (`_colored`), so it ramps smoothly between samples rather than stepping
+    at a hard per-residue boundary: a residue immediately NEAR a highlighted
+    one picks up a partial gradient boost rather than a clean on/off edge.
+    This is deliberate, not a rounding artefact -- see
+    tests/unit/test_cartoon.py's `test_highlighted_residues_keep_their_
+    plddt_color_but_gain_emphasis` for the geometry that makes it visible.
     """
     import gemmi
 
-    from ui.geometry import (GeometryError, _best_anchor_atom, catmull_rom,
-                             plddt_colors, resample_scalar, tube_mesh)
+    from ui.geometry import GeometryError, _best_anchor_atom, catmull_rom, tube_mesh
     from ui.secstruct import assign
+
+    highlight_residues = highlight_residues or set()
 
     st = gemmi.read_structure(str(cif_path))
     st.setup_entities()
@@ -333,7 +428,7 @@ def cartoon_from_cif(cif_path, samples_per_residue=6):
     offset = 0
 
     for chain in st[0]:
-        ca, c_at, o_at, plddt = [], [], [], []
+        ca, c_at, o_at, plddt, seqids = [], [], [], [], []
         for res in chain:
             a_ca = res.find_atom("CA", "*")
             a_c = res.find_atom("C", "*")
@@ -344,6 +439,7 @@ def cartoon_from_cif(cif_path, samples_per_residue=6):
             c_at.append([a_c.pos.x, a_c.pos.y, a_c.pos.z])
             o_at.append([a_o.pos.x, a_o.pos.y, a_o.pos.z])
             plddt.append(a_ca.b_iso)
+            seqids.append(res.seqid.num)
 
         if len(ca) < 2:
             # No peptide plane here, so no ribbon -- but this may still be a
@@ -353,24 +449,21 @@ def cartoon_from_cif(cif_path, samples_per_residue=6):
             # none of the three -- yields nothing and is correctly skipped
             # here. Ligands are drawn separately (see ui/ligand.py); a ligand
             # swept as a tube through its own atoms would be a scribble.
-            anchors, anchor_plddt = [], []
+            anchors, anchor_plddt, anchor_seqids = [], [], []
             for res in chain:
                 atom = _best_anchor_atom(res)
                 if atom is not None:
                     anchors.append([atom.pos.x, atom.pos.y, atom.pos.z])
                     anchor_plddt.append(atom.b_iso)
+                    anchor_seqids.append(res.seqid.num)
             if len(anchors) < 2:
                 continue
 
             centre = catmull_rom(np.asarray(anchors), samples_per_residue)
             v, nrm, idx = tube_mesh(centre, radius=NUCLEIC_RADIUS, sides=RING)
-            # Resampled against THIS chain's own sample count, for the reason
-            # ribbon_from_cif spells out: a global resample leaves every
-            # chain's colours shifted against its own residues, and no shape
-            # or dtype check can see it.
             cols = np.repeat(
-                plddt_colors(resample_scalar(np.asarray(anchor_plddt),
-                                             len(centre))),
+                _colored(anchor_plddt, anchor_seqids, chain.name,
+                         len(centre), highlight_residues),
                 RING, axis=0)
             vp.append(v)
             np_.append(nrm)
@@ -397,8 +490,9 @@ def cartoon_from_cif(cif_path, samples_per_residue=6):
         h = resample_scalar(h, len(centre))
 
         v, nrm, idx = sweep(centre, sx, w, h)
-        cols = np.repeat(plddt_colors(resample_scalar(np.asarray(plddt), len(centre))),
-                         RING, axis=0)
+        cols = np.repeat(
+            _colored(plddt, seqids, chain.name, len(centre), highlight_residues),
+            RING, axis=0)
 
         vp.append(v)
         np_.append(nrm)

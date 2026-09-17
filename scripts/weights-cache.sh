@@ -64,3 +64,142 @@ tt_bio_demo_weights_cache_impl() {
 tt_bio_demo_weights_cache() {
     tt_bio_demo_weights_cache_impl
 }
+
+# ---------------------------------------------------------------------------
+# "source" or "package" -- shared so scripts/doctor.sh and scripts/run-demo.sh
+# do not each carry their own copy of the same .git/tests sniff test. Before
+# this existed, doctor.sh had its own doctor_install_mode (calling this) and
+# run-demo.sh had NO equivalent at all -- it always used the plain,
+# home-relative resolver, even from a real packaged install. See docs/
+# followups.md's "run-demo.sh resolved home-relative even from a packaged
+# install" entry (FIXED) for the full history: a `.deb`'s desktop entry runs
+# `/opt/tt-bio-demo/scripts/run-demo.sh` directly (INSTALL.md calls this "the
+# normal path"), so a packaged booth's postinst fetched weights to the fixed
+# path below while its actual launcher kept resolving the desktop user's own
+# $HOME -- the postinst/unit/doctor triangle agreed with each other and
+# disagreed with the one script an operator actually runs.
+#
+# Takes the CALLER's own notion of the application-tree root as $1, rather
+# than computing one itself, because the two callers already have two
+# slightly different ways of finding it: doctor.sh's doctor_prefix() (which
+# honours an explicit $TT_BIO_DEMO_PREFIX override naming the WHOLE app
+# tree) and run-demo.sh's $REPO_ROOT (always the checkout this script itself
+# lives in -- unaffected by run-demo.sh's OWN $TT_BIO_DEMO_PREFIX, which
+# means something different there: where the venvs live, not the app tree).
+# Both resolve to the identical real directory for an installed
+# /opt/tt-bio-demo booth, so passing either one in here answers the same
+# question the same way.
+tt_bio_demo_install_mode() {
+    _prefix="$1"
+    if [ -d "$_prefix/.git" ] || [ -d "$_prefix/tests" ]; then
+        printf 'source\n'
+    else
+        printf 'package\n'
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# THE PACKAGED VARIANT. See docs/followups.md's "root's postinst-time HOME vs
+# desktop-user's systemd-service-time HOME" entry (FIXED) for the full
+# history: debian/tt-bio-demo-weights.postinst runs as ROOT during
+# `dpkg`/`apt install` ($HOME=/root); the booth's compute daemon runs later
+# as a `systemd --user` service under the DESKTOP USER's own $HOME. Those are
+# two different $HOME-relative defaults that do not agree, so a `.deb`
+# install could report every weight fetched successfully while the daemon
+# that is supposed to use them looked in an empty directory.
+#
+# The fix is to sidestep $HOME entirely for a packaged deployment: pin
+# $TT_BIO_CACHE to one fixed, non-home-relative path, by CALLING this
+# function -- never by repeating the literal value -- from every packaged
+# caller: the postinst (below), scripts/doctor.sh's diagnosis of an
+# installed booth, scripts/run-demo.sh (the packaged install's actual
+# operator-facing launcher -- see docs/followups.md's "run-demo.sh resolved
+# home-relative even from a packaged install" entry, FIXED), and
+# scripts/tt-bio-demo-daemon-launcher.sh (what the systemd unit's
+# ExecStart= actually runs -- a static `Environment=` line in the unit
+# ITSELF used to repeat the literal value instead, which is what made it
+# unconditional; see docs/followups.md's "the systemd unit's Environment=
+# is unconditional" entry, FIXED, for why that could not honour an
+# operator's own override and had to move into something that could call
+# this function instead). tests/unit/test_packaging.py checks that none of
+# these callers keep their own copy of the literal path.
+#
+# This lives HERE, in the resolver, rather than in the postinst or doctor.sh
+# themselves, so that $TT_BIO_CACHE/$BOLTZ_CACHE are read in exactly the two
+# files tests/unit/test_weights_cache_is_derived_once.py already treats as
+# the sole resolvers -- reading either variable directly anywhere else is
+# the exact shape of the bug this project has already fixed once (the doctor
+# reading $BOLTZ_CACHE alone while tt-bio itself preferred $TT_BIO_CACHE).
+TT_BIO_DEMO_PACKAGED_WEIGHTS_CACHE="/opt/tt-bio-demo/weights"
+
+# An operator who has ALREADY set $TT_BIO_CACHE or $BOLTZ_CACHE themselves
+# keeps that choice -- this only fills the gap when NEITHER is set, the same
+# "explicit always wins over the pin" rule `tt_bio_demo_weights_cache_impl`
+# above already applies at every level of its own fallback chain.
+#
+# `export`, not a plain assignment: every caller of this function (the
+# postinst's own shell before it spawns the python fetch block; doctor.sh's
+# process before it spawns tt-bio's status-check subprocesses) needs a CHILD
+# PROCESS to see this too, and only an exported variable crosses that
+# boundary. Called as a plain top-level statement (never wrapped in the
+# caller's own `$(...)`), the export lands in the CALLING shell, not merely
+# in a subshell that evaporates on exit -- see the callers' own comments for
+# why that distinction matters here.
+tt_bio_demo_weights_cache_impl_packaged() {
+    # An operator who set ONLY $BOLTZ_CACHE used to leave $TT_BIO_CACHE
+    # unset entirely here (PR review, Copilot): the guard below only ever
+    # filled the gap when NEITHER variable was set, so the flat protenix
+    # artifacts (which resolve through $BOLTZ_CACHE) followed the
+    # operator's chosen directory while nesso1/the ESM-2 encoder (which
+    # resolve through tt_bio.weights.configure_hf_cache(), reading
+    # $TT_BIO_CACHE specifically -- see this file's own comment on
+    # TT_BIO_DEMO_PACKAGED_WEIGHTS_CACHE) silently fell back to the
+    # process's default Hugging Face cache instead. The installer
+    # documentation says either variable relocates the COMPLETE weight
+    # set, so $BOLTZ_CACHE now propagates into $TT_BIO_CACHE whenever the
+    # latter is absent -- an explicit $TT_BIO_CACHE still always wins,
+    # unchanged.
+    if [ -z "${TT_BIO_CACHE:-}" ]; then
+        if [ -n "${BOLTZ_CACHE:-}" ]; then
+            TT_BIO_CACHE="$BOLTZ_CACHE"
+        else
+            TT_BIO_CACHE="$TT_BIO_DEMO_PACKAGED_WEIGHTS_CACHE"
+        fi
+        export TT_BIO_CACHE
+    fi
+    tt_bio_demo_weights_cache_impl
+}
+
+# The friendly name for a caller that already knows it is diagnosing or
+# provisioning a PACKAGED install (scripts/doctor.sh, when it is; and, via
+# debian/helpers.sh's own wrapper of the same name, the weights postinst,
+# which is ALWAYS a packaged context -- postinst scripts only ever run
+# against a real `dpkg`/`apt install`).
+tt_bio_demo_weights_cache_packaged() {
+    tt_bio_demo_weights_cache_impl_packaged
+}
+
+# For a caller that has its OWN explicit cache directory in hand (an
+# operator's --weights/$TT_BIO_DEMO_WEIGHTS on scripts/run-demo.sh) and needs
+# every OTHER consumer of $TT_BIO_CACHE in the same process tree -- the
+# folding workers' runner_environ(), and any hf-repo artifact resolved via
+# tt_bio.weights.configure_hf_cache() -- to agree with it, not with the fixed
+# packaged default. Pins $TT_BIO_CACHE to exactly `$1` and prints it back,
+# so a caller can both export the agreement and capture the same value in
+# one call. Deliberately in THIS file rather than inlined as a plain
+# `export TT_BIO_CACHE=...` at the call site: this project has a repo-wide
+# guard (tests/unit/test_weights_cache_is_derived_once.py) restricting which
+# files may read or write $TT_BIO_CACHE/$BOLTZ_CACHE directly, specifically
+# because a second (now third, fourth...) place doing so is exactly how this
+# project's cache-location bugs have shipped before. An operator's own
+# already-exported $TT_BIO_CACHE/$BOLTZ_CACHE still wins over `$1` --
+# tt_bio_demo_weights_cache_impl checks both before anything this function
+# sets, the same "explicit always wins over a pin" rule every other function
+# in this file follows.
+tt_bio_demo_weights_cache_pin_to() {
+    if [ -z "${TT_BIO_CACHE:-}" ] && [ -z "${BOLTZ_CACHE:-}" ]; then
+        TT_BIO_CACHE="$1"
+        export TT_BIO_CACHE
+    fi
+    tt_bio_demo_weights_cache_impl
+}

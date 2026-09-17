@@ -5,7 +5,7 @@ import pytest
 
 from runner.workers import (
     CONTROL_FATAL, CONTROL_IDLE, CONTROL_READY, EVENT_FD, WorkerSpec,
-    WorkerSpecError, control, is_control, worker_environ, worker_specs,
+    WorkerSpecError, control, is_control, split_for_qa, worker_environ, worker_specs,
 )
 
 
@@ -220,6 +220,40 @@ def test_the_event_fd_is_not_a_standard_stream():
     """tt-metal writes to fd 1 and fd 2 from C++. An event stream on either
     is a shredded event stream."""
     assert EVENT_FD not in (0, 1, 2)
+
+
+def _spec(card):
+    """Fixture for split_for_qa tests: one WorkerSpec per card."""
+    return WorkerSpec(card=card, label=f"chip{card}", visible_devices=str(card),
+                       logical_device_id=0, mesh_graph_descriptor=None)
+
+
+def test_four_chips_reserve_exactly_one_for_qa():
+    """When more than one chip is available, split_for_qa reserves the
+    highest-numbered card permanently for a new Q&A feature."""
+    specs = [_spec(0), _spec(1), _spec(2), _spec(3)]
+    fold_specs, qa_spec = split_for_qa(specs)
+    assert len(fold_specs) == 3
+    assert qa_spec is not None
+    assert qa_spec not in fold_specs
+    assert {s.card for s in fold_specs} | {qa_spec.card} == {0, 1, 2, 3}
+
+
+def test_one_chip_reserves_none_for_qa():
+    """On a single-chip box, no chip is reserved for Q&A. This is the documented
+    degrade (spec §5): the feature is disabled, not an error."""
+    fold_specs, qa_spec = split_for_qa([_spec(0)])
+    assert len(fold_specs) == 1
+    assert qa_spec is None
+
+
+def test_reservation_is_deterministic():
+    """Same input, same split, every call -- a daemon restart must not
+    silently move which physical chip answers questions."""
+    specs = [_spec(0), _spec(1)]
+    first = split_for_qa(specs)
+    second = split_for_qa(specs)
+    assert first[1].card == second[1].card
 
 
 def test_the_module_imports_without_tt_bio(monkeypatch):

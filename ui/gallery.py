@@ -348,6 +348,14 @@ _BACKGROUND_BY_CLASS = {
     "gallery": _DARK_BASE,
 }
 
+# The affinity-questions "ask" strip's own hint copy (Task 11). Deliberately
+# separate wording from `_CARD_HINT`: a tap on a fold card starts a fold, a
+# tap here starts a fold AND queues a real score from nesso1
+# (runner/daemon.py's `_accept_question` does both for one `question`
+# message) -- the two affordances do different things and must not share one
+# sentence that blurs which is which.
+_ASK_HINT = "ASK  ·  starts the fold and queues a real affinity score"
+
 _GALLERY_CSS = f"""
 .gallery {{
     background-color: {_BACKGROUND_BY_CLASS["gallery"]};
@@ -415,6 +423,35 @@ _GALLERY_CSS = f"""
     letter-spacing: 0.02em;
     color: {_BG_ALT};
 }}
+/* The affinity-questions "ask" strip (Task 11): a row of small buttons
+   below the fold-pick grid, one per playlist question. No background of
+   its own -- a hairline-bordered cutout on the SAME `.gallery` dark ground,
+   same discipline as `.gallery-card`/`.gallery-thumbnail-placeholder`
+   above ("everything in this module sits on one background tier"), so it
+   is checked against the identical `_DARK_BASE` every other label here is. */
+.gallery-ask-heading {{
+    font-size: 13px;
+    font-weight: 700;
+    color: {_BG};
+}}
+.gallery-ask-button {{
+    padding: 8px 14px;
+    border-radius: 6px;
+    border: 1px solid {_HAIRLINE};
+}}
+.gallery-ask-button:hover {{
+    background-color: rgba(199, 217, 216, 0.08);
+}}
+.gallery-ask-button-text {{
+    font-size: 12px;
+    color: {_BG_ALT};
+}}
+.gallery-ask-hint {{
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    color: {_ACCENT_TEXT};
+}}
 """
 
 
@@ -437,11 +474,22 @@ def _ensure_css_installed():
 # Visitor-facing copy for the screen as a whole.
 #
 # True as written, and checked against what the code actually does -- see
-# this module's docstring. Three claims, each one the booth can back up:
-# four chips fold at once (Phase 5, measured); a tap puts that protein next
-# (Task 17, `ui/app.py`'s `_on_pick` -> `EventClient.send_pick`); and the
-# folds already running are left to finish, which is why the wait exists and
-# why the other cells keep moving.
+# this module's docstring. Two claims, each one the booth can back up: a tap
+# puts that protein next (Task 17, `ui/app.py`'s `_on_pick` -> `EventClient.
+# send_pick`); and the folds already running are left to finish, which is
+# why the wait exists and why the other cells keep moving.
+#
+# NO CHIP COUNT here, deliberately -- an earlier draft said "Four of these
+# are folding at once," true only on a box with no chip reserved for
+# affinity Q&A (`runner.workers.split_for_qa` takes one whenever 2+ are
+# detected, so a 4-physical-chip booth with it enabled folds on 3). This
+# screen has no access to the real fold-chip count at the point it is
+# built anyway (`ui/app.py`'s `_build_gallery` runs before `hello` ever
+# names one), which is exactly how the stale "four" would have kept
+# reading true on the ONE box it was actually false on. Saying "each chip"
+# instead of a number is honest at any chip count without needing the
+# `_sync_help_copy`-style re-sync machinery the `?` card needs for the
+# same fact.
 #
 # What is deliberately absent: "instantly", "now", "straight away". The pick
 # starts on the next chip to come free, usually within seconds, and the one
@@ -449,10 +497,9 @@ def _ensure_css_installed():
 # ---------------------------------------------------------------------------
 _CAPTION_TITLE = "What this booth folds"
 _CAPTION_BODY = (
-    "Four of these are folding at once, one on each Tenstorrent chip a few "
-    "feet away. Tap any of them to put it next: it starts on the chip that "
-    "finishes first, because the folds already running are left to finish "
-    "rather than interrupted."
+    "One protein folds per Tenstorrent chip, all at once. Tap any of them "
+    "to put it next -- it starts on the chip that finishes first, and "
+    "nothing already running is interrupted."
 )
 
 # The per-card line, in the same place the old "TAP TO FOLD" sat.
@@ -488,9 +535,19 @@ class Gallery(Gtk.ScrolledWindow):
     gallery's job is to produce that target_id; it does not drive the
     machine itself" (this task's brief) -- calling `on_pick` is the whole
     of that job; what happens after is entirely Task 9's concern.
+
+    `questions` and `on_ask(question_id, target_id)` (Task 11, the
+    affinity-questions feature) add one more affordance, in its own strip
+    below the fold grid rather than in it -- see `_build_ask_strip`'s own
+    docstring for why. `on_ask` is called with a `Question.id` and its
+    `target_id`, mirroring `ui.playlist.Question`'s own fields and
+    `protocol.events.question_message`'s two positional arguments exactly,
+    so ui/app.py's wiring is a straight pass-through. Both default to
+    nothing, and the strip stays hidden until `set_ask_capable(True)`.
     """
 
-    def __init__(self, targets, on_pick=None, width_px=1280):
+    def __init__(self, targets, on_pick=None, width_px=1280, questions=None,
+                on_ask=None):
         super().__init__()
         _ensure_css_installed()
         self.add_css_class("gallery")
@@ -501,6 +558,16 @@ class Gallery(Gtk.ScrolledWindow):
         self.targets = list(targets)
         self.on_pick = on_pick
         self.width_px = width_px
+        # The affinity-questions "ask" strip (Task 11). `questions` is
+        # `ui.playlist.load_questions()`'s own return shape -- a list of
+        # `Question`, each with `.id`/`.target_id`/`.question` -- kept
+        # separate from `targets` for the same reason ui/playlist.py keeps
+        # questions.yaml separate from manifest.yaml: a question is not a
+        # fold target, and mixing the two into one grid would conflate
+        # "pick a protein to watch fold" with "ask whether a ligand binds
+        # one" right where a visitor is choosing.
+        self.questions = list(questions) if questions else []
+        self.on_ask = on_ask
 
         self._grid = Gtk.Grid()
         self._grid.set_column_homogeneous(True)
@@ -517,20 +584,38 @@ class Gallery(Gtk.ScrolledWindow):
         # scrolled away from the cards it qualifies. `self._grid` stays the
         # cards' parent (tests address it directly, and the grid is what
         # `grid_shape` sizes); this box only stacks the two.
+        # target.id -> the Gtk.Button card built for it, and question.id ->
+        # the Gtk.Button asking it. Populated below, but declared before
+        # any widget-building call so `_build_cards`/`_build_ask_strip` --
+        # both of which populate one of these -- never race their own
+        # attribute's existence. Not read by GTK itself, but they let a
+        # test tap a specific card or question by id, and let diagnostics
+        # ask "how many got built" without walking the grid's own child
+        # list -- same rationale as TelemetryPanel.last_status /
+        # PipelinePanel.last_rows in ui/panels.py.
+        self.cards = {}
+        self.ask_buttons = {}
+
         column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         column.append(self._build_caption())
         column.append(self._grid)
+        # The ask strip sits BELOW the fold grid, in the same scrolled
+        # column, so it never competes with the fold cards for the space
+        # above the fold (pun noted, not intended when this was written).
+        # Built even with zero questions (an empty box, appended and left
+        # hidden) rather than conditionally appended, so `set_ask_capable`
+        # has one widget to show or hide regardless of load order.
+        self._ask_strip_box = self._build_ask_strip()
+        column.append(self._ask_strip_box)
         self.set_child(column)
 
-        # target.id -> the Gtk.Button card built for it. Not read by GTK
-        # itself, but it lets a test tap a specific card by id, and lets
-        # diagnostics ask "how many cards actually got built" without
-        # walking the grid's own child list -- same rationale as
-        # TelemetryPanel.last_status / PipelinePanel.last_rows in
-        # ui/panels.py.
-        self.cards = {}
-
         self._build_cards()
+        # Hidden until proven capable (`set_ask_capable`) -- the same "no
+        # capability advertised that isn't really there" rule
+        # `ui.questions.QuestionQueuePanel` follows, and for the identical
+        # reason: a booth whose daemon has no Q&A worker configured must not
+        # offer a tap that queues a question nothing will ever answer.
+        self._ask_strip_box.set_visible(False)
 
     def _build_caption(self):
         """The screen's own two lines: what it is, and what tapping does.
@@ -629,3 +714,74 @@ class Gallery(Gtk.ScrolledWindow):
     def _on_card_clicked(self, _button, target_id):
         if self.on_pick is not None:
             self.on_pick(target_id)
+
+    # -- the affinity-questions "ask" strip (Task 11) ----------------------
+
+    def _build_ask_strip(self):
+        """One small button per question, in a row below the fold grid.
+
+        A separate strip rather than a second kind of card mixed into
+        `self._grid`: `grid_shape` sizes that grid off `len(self.targets)`
+        alone (its own docstring's "no target is ever dropped" guarantee),
+        and a fold target and a question are different things a visitor
+        can tap for different reasons (this module's own module docstring
+        is careful never to let a tap promise something it does not do) --
+        so the smaller, honest diff is a strip that does not touch
+        `grid_shape`, `_build_cards`, or `self.cards` at all, rather than
+        teaching the grid a second kind of cell.
+        """
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.set_margin_top(4)
+        box.set_margin_bottom(16)
+        box.set_margin_start(16)
+        box.set_margin_end(16)
+
+        heading = Gtk.Label(label="ASK AN AFFINITY QUESTION", xalign=0.0)
+        heading.add_css_class("gallery-ask-heading")
+        box.append(heading)
+
+        hint = Gtk.Label(label=_ASK_HINT, xalign=0.0)
+        hint.add_css_class("gallery-ask-hint")
+        hint.set_wrap(True)
+        box.append(hint)
+
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        row.set_halign(Gtk.Align.START)
+        for question in self.questions:
+            button = self._build_ask_button(question)
+            self.ask_buttons[question.id] = button
+            row.append(button)
+        box.append(row)
+        return box
+
+    def _build_ask_button(self, question):
+        button = Gtk.Button()
+        button.add_css_class("flat")
+        button.add_css_class("gallery-ask-button")
+        button.set_tooltip_text(question.question)
+
+        label = Gtk.Label(label=question.question, xalign=0.0)
+        label.add_css_class("gallery-ask-button-text")
+        label.set_wrap(True)
+        label.set_max_width_chars(28)
+        button.set_child(label)
+
+        button.connect("clicked", self._on_ask_clicked,
+                       question.id, question.target_id)
+        return button
+
+    def _on_ask_clicked(self, _button, question_id, target_id):
+        if self.on_ask is not None:
+            self.on_ask(question_id, target_id)
+
+    def set_ask_capable(self, capable):
+        """Show or hide the whole ask strip.
+
+        Mirrors `ui.questions.QuestionQueuePanel.set_qa_capable` exactly --
+        `False` hides the strip entirely rather than leaving a tappable
+        affordance up for a capability the daemon does not have configured
+        (`hello`'s `qa_capable` field). A strip built with zero questions is
+        never shown either way: `bool(self.questions)` is folded into the
+        same check so an empty strip cannot be "capable" of anything.
+        """
+        self._ask_strip_box.set_visible(bool(capable) and bool(self.questions))

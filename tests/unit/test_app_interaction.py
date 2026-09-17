@@ -32,6 +32,7 @@ from ui import app as app_module
 from ui import chipviz as chipviz_module
 from ui import diagnostics as diagnostics_module
 from ui import panels as panels_module
+from ui import questions as questions_module
 from ui.app import DemoApp
 from ui.geometry import PLDDT_STOPS
 from ui.panels import MIN_CONTRAST_RATIO, contrast_ratio
@@ -385,6 +386,111 @@ def test_a_stray_control_chord_is_not_a_visitor_touch():
 
 
 # ---------------------------------------------------------------------------
+# Ctrl+A: restart the booth with affinity Q&A enabled.
+# ---------------------------------------------------------------------------
+
+def test_ctrl_a_is_a_no_op_once_qa_is_already_enabled(monkeypatch):
+    """There is no live "reserve a chip now" path, and Ctrl+A must never
+    build one by falling through to the exit/restart branch when the
+    daemon already reports `qa_capable`. Set up as if run-demo.sh launched
+    this process (the ENV var present) so a bug here cannot hide behind
+    "well it would have been a no-op anyway for the other reason"."""
+    app = _app()
+    monkeypatch.setenv(app_module.RUN_DEMO_SH_ENV_VAR, "1")
+    app.qa_capable = True
+    quits = []
+    app.quit = lambda: quits.append(True)
+
+    app._handle_key("a", ctrl=True)
+
+    assert quits == []
+    assert app.exit_code is None
+
+
+def test_ctrl_a_restarts_when_launched_by_run_demo_sh(monkeypatch):
+    """The one path that actually does something: not yet Q&A-capable, and
+    the environment run-demo.sh sets on its own UI child is present. Exiting
+    through `self.quit()` with the sentinel stashed on the instance is the
+    entire mechanism -- scripts/run-demo.sh's own test coverage
+    (test_run_demo_sh.py) is what proves the shell side catches it."""
+    app = _app()
+    monkeypatch.setenv(app_module.RUN_DEMO_SH_ENV_VAR, "1")
+    app.qa_capable = False
+    quits = []
+    app.quit = lambda: quits.append(True)
+
+    app._handle_key("a", ctrl=True)
+
+    assert quits == [True]
+    assert app.exit_code == app_module.QUESTIONS_RESTART_EXIT_CODE
+
+
+def test_ctrl_a_does_not_pretend_to_restart_when_nothing_is_watching(monkeypatch):
+    """Mutation this catches: exiting with the sentinel unconditionally.
+    A bare `python3 -m ui.app` (no run-demo.sh parent) has nothing that
+    knows to catch `QUESTIONS_RESTART_EXIT_CODE` and re-launch with
+    --questions -- exiting there would just silently kill the booth, which
+    is worse than declining and saying why."""
+    app = _app()
+    monkeypatch.delenv(app_module.RUN_DEMO_SH_ENV_VAR, raising=False)
+    app.qa_capable = False
+    quits = []
+    app.quit = lambda: quits.append(True)
+
+    app._handle_key("a", ctrl=True)
+
+    assert quits == []
+    assert app.exit_code is None
+
+
+def test_ctrl_a_no_op_still_says_something_on_the_diagnostics_rail(monkeypatch):
+    """Review finding: `_request_qa_restart`'s decline branches used to log
+    only through `logging`, which never reaches `ui/diagnostics.py`'s `D`
+    panel -- so an operator watching that rail for confirmation the booth
+    heard Ctrl+A saw nothing at all, indistinguishable from a frozen app or
+    an unbound key. Both decline paths must also land a line in
+    `app.diagnostics`. This is the already-enabled no-op path."""
+    app = _app()
+    monkeypatch.setenv(app_module.RUN_DEMO_SH_ENV_VAR, "1")
+    app.qa_capable = True
+    before = len(app.diagnostics)
+
+    app._handle_key("a", ctrl=True)
+
+    assert len(app.diagnostics) > before
+    _, _, text = app.diagnostics.tail(1)[0]
+    assert "ctrl+a" in text.lower()
+
+
+def test_ctrl_a_with_no_restart_mechanism_says_so_on_the_diagnostics_rail(monkeypatch):
+    """The other decline path: not launched by run-demo.sh at all (a bare
+    `python3 -m ui.app`, or the packaged deployment). Same requirement --
+    the rail must show something, not silence."""
+    app = _app()
+    monkeypatch.delenv(app_module.RUN_DEMO_SH_ENV_VAR, raising=False)
+    app.qa_capable = False
+    before = len(app.diagnostics)
+
+    app._handle_key("a", ctrl=True)
+
+    assert len(app.diagnostics) > before
+    _, _, text = app.diagnostics.tail(1)[0]
+    assert "ctrl+a" in text.lower()
+
+
+def test_a_bare_a_does_not_touch_qa_restart_state():
+    """The reason it is a CHORD: a visitor mashing the keyboard must not be
+    able to trigger a booth restart. Bare `a` is an ordinary visitor touch."""
+    app = _app()
+    app.qa_capable = False
+
+    app._handle_key("a")
+
+    assert app.exit_code is None
+    assert app.states.state == "gallery"
+
+
+# ---------------------------------------------------------------------------
 # An overlay a visitor walked away from must not persist forever.
 # ---------------------------------------------------------------------------
 
@@ -680,7 +786,7 @@ def test_every_key_the_booth_answers_to_is_listed_in_the_help_card():
                 | app_module._TENSIX_KEYS):
         assert key in printed_as, f"{key!r} is bound but not documented anywhere"
         assert printed_as[key] in listed, f"{key!r} is missing from the card"
-    for phrase in ("esc", "ctrl + f", "ctrl + q", "any other key"):
+    for phrase in ("esc", "ctrl + f", "ctrl + q", "ctrl + a", "any other key"):
         assert phrase in listed, f"{phrase} undocumented"
 
 
@@ -700,13 +806,19 @@ def test_the_help_card_still_fits_the_booth_s_own_screen():
     than the glass silently loses its last rows -- the operator keys are at
     the bottom of the KEYS column, so `Ctrl + Q` is the first thing to go.
 
-    Measured at the booth's real fullscreen size, which is the only size that
-    matters: 1920x1080 (see `_SIDE_RAIL_WIDTH_PX`'s own comment and the
-    windowed default of 1280x800, which this card has never fitted and does
-    not have to).
-
-    Found by looking at it: adding the quad's key row and its paragraph took
-    the card from 838px to 913px.
+    Measured at the card's REAL allocated width (`_HELP_CARD_WIDTH_PX`), not
+    the screen's 1920 -- that was this test's own bug, not a footnote: the
+    card is `halign=CENTER`, so it takes its OWN preferred width regardless
+    of how wide the screen is, and measuring at 1920 let GTK wrap every
+    paragraph across far more room than the card will ever actually have,
+    undercounting every wrapped line. It reported 1015px right up until the
+    affinity-questions feature added enough text to make the gap between
+    "wrapped at 1920" and "wrapped at the real ~1400" visible on a live
+    booth -- the real number, measured the same way this test now does, was
+    1460px on a 1080px screen, with the operator's own Ctrl+Q the first
+    casualty. Fixed on both sides: the copy was trimmed and the card widened
+    (`_HELP_CARD_WIDTH_PX`), and this test now measures the width that can
+    actually fail it again.
     """
     app = _app()
     card = app_module.DemoApp._build_help_overlay(app)
@@ -720,7 +832,8 @@ def test_the_help_card_still_fits_the_booth_s_own_screen():
             child = child.get_next_sibling()
 
     show(card)
-    _minimum, natural, _, _ = card.measure(Gtk.Orientation.VERTICAL, 1920)
+    _minimum, natural, _, _ = card.measure(Gtk.Orientation.VERTICAL,
+                                           app_module._HELP_CARD_WIDTH_PX)
     assert natural <= 1080, (
         f"the help card wants {natural}px of a 1080px screen; its last rows "
         f"(the operator's Ctrl+Q among them) are off the bottom")
@@ -783,6 +896,188 @@ def test_the_tensix_paragraph_still_says_a_resting_chip_is_drawn_resting():
     tensix = [p for p in _HELP_PANELS if "tensix activity" in p.lower()][0]
     lowered = tensix.lower()
     assert "rest" in lowered or "idle" in lowered or "quiet" in lowered
+
+
+# ---------------------------------------------------------------------------
+# Important 3 (whole-branch review, affinity-questions): the Q row, the
+# quad's own help line, and the Tensix paragraph must not hardcode "four" --
+# `runner.workers.split_for_qa` permanently reserves one chip for Q&A when
+# the affinity-questions feature is enabled, so a 4-physical-chip box folds
+# on 3, and the `?` card must say so rather than claim four.
+# ---------------------------------------------------------------------------
+
+def test_help_panels_and_key_help_are_functions_of_the_real_chip_count():
+    """`_key_help`/`_help_panels` (Important 3's fix) are functions, not the
+    frozen module-level tuples they used to be -- called with the real
+    fold-chip count, never a hardcoded one.
+
+    Checked against the QUAD line specifically (`_help_panels(n)[0]`), not
+    the whole joined column: the separate "Chips" (telemetry) paragraph
+    deliberately keeps saying "four" when the box genuinely has four
+    physical chips -- it samples every chip via tt-smi independently of the
+    daemon and of how many are reserved for folding vs. Q&A, so its claim is
+    about hardware inventory, not about how many chips are folding, and
+    stays true regardless of `n_chips`.
+    """
+    from ui.app import _help_panels, _key_help
+    quad_line = _help_panels(3)[0].lower()
+    assert "three" in quad_line
+    assert "four" not in quad_line
+
+    three_chip_keys = " ".join(m for _k, m in _key_help(3)).lower()
+    assert "three" in three_chip_keys
+    assert "four" not in three_chip_keys
+
+
+def test_the_tensix_paragraph_says_three_when_one_chip_is_reserved_for_qa():
+    from ui.app import _help_panels
+    tensix = [p for p in _help_panels(3) if "tensix activity" in p.lower()][0]
+    lowered = tensix.lower()
+    assert "three" in lowered
+    assert "four" not in lowered
+
+
+def test_a_booth_with_qa_enabled_shows_three_chips_not_four_on_the_help_card():
+    """`_sync_help_copy` (Important 3's fix) is what keeps the `?` card's
+    chip-count claims matched to the real fold-chip count after it changes
+    -- e.g. the affinity-questions feature's one-chip Q&A reservation on
+    what would otherwise be a 4-chip box. Driven directly against a
+    headless app (this file's own `_app()` fixture is fixed to one card, so
+    `self.cards` is set directly here rather than through the real
+    multi-chip `attach_cards`/`_ensure_quad` path, which needs a real quad
+    widget tree this test does not build) with fake labels standing in for
+    the real `Gtk.Label`s -- the same "record what a widget was told, no
+    GTK needed" shape every other fake in this file uses.
+    """
+    app = _app()
+    app.cards = [0, 1, 2]
+    app._help_q_meaning_label = _FakeLabel()
+    app._help_panel_labels = [_FakeLabel() for _ in app_module._help_panels(0)]
+    app._sync_help_copy()
+
+    q_text = app._help_q_meaning_label.get_label().lower()
+    assert "three" in q_text
+    assert "four" not in q_text
+
+    # Index 0 is the quad line, and the Tensix paragraph is found by
+    # content -- not the whole column joined, since the separate "Chips"
+    # (telemetry) paragraph correctly keeps saying "four" when the box
+    # genuinely has four physical chips (see the test above for why).
+    quad_text = app._help_panel_labels[0].get_label().lower()
+    assert "three" in quad_text
+    assert "four" not in quad_text
+
+    tensix_text = next(label.get_label().lower()
+                       for label in app._help_panel_labels
+                       if "tensix activity" in label.get_label().lower())
+    assert "three" in tensix_text
+    assert "four" not in tensix_text
+
+
+class _FakeLabel:
+    """A minimal stand-in for the one `Gtk.Label` method `_sync_help_copy`
+    calls -- so this test can drive it with no display, the same "record
+    what a widget was told, no GTK needed" shape every other fake in this
+    file uses."""
+
+    def __init__(self):
+        self._label = ""
+
+    def set_label(self, text):
+        self._label = text
+
+    def get_label(self):
+        return self._label
+
+
+# ---------------------------------------------------------------------------
+# Follow-up to Important 3, found during a real-hardware verification run:
+# `_HELP_INTRO`'s last paragraph -- "The booth folds four proteins at a
+# time, one on each chip, all day." -- was the exact same hardcoded-"four"
+# defect Important 3 fixed in `_KEY_HELP`/`_HELP_PANELS`/`QUAD_HELP_LINE`,
+# just missed in this one spot. Same treatment: a function of `n_chips`, a
+# frozen n=4 snapshot kept under the old name for tests that do not care
+# about a specific count, and `_sync_help_copy` extended to update the
+# built label too.
+# ---------------------------------------------------------------------------
+
+def test_help_intro_is_a_function_of_the_real_chip_count():
+    """`_help_intro` is a function, not the frozen module-level tuple it
+    used to be -- called with the real fold-chip count, never a hardcoded
+    one.
+
+    Checked against the LAST paragraph specifically (`_help_intro(n)[-1]`),
+    not the whole joined intro: the second paragraph's "about four and a
+    half seconds per protein" is a fold-timing claim, not a chip count, and
+    stays true regardless of `n_chips` -- the same "check the one paragraph
+    that actually varies" shape `test_help_panels_and_key_help_are_
+    functions_of_the_real_chip_count` uses for the Chips telemetry
+    paragraph.
+    """
+    from ui.app import _help_intro
+    three_chip_intro = _help_intro(3)[-1].lower()
+    assert "three" in three_chip_intro
+    assert "four" not in three_chip_intro
+
+    four_chip_intro = _help_intro(4)[-1].lower()
+    assert "four" in four_chip_intro
+
+
+def test_a_booth_with_qa_enabled_shows_three_chips_not_four_in_the_help_intro():
+    """`_sync_help_copy` must also update the intro paragraph, the same way
+    it already updates the Q row and the quad/Tensix panels -- driven the
+    same way `test_a_booth_with_qa_enabled_shows_three_chips_not_four_on_the_help_card`
+    drives those."""
+    app = _app()
+    app.cards = [0, 1, 2]
+    app._help_intro_labels = [_FakeLabel() for _ in app_module._help_intro(0)]
+    app._sync_help_copy()
+
+    last_paragraph = app._help_intro_labels[-1].get_label().lower()
+    assert "three" in last_paragraph
+    assert "four" not in last_paragraph
+
+
+def test_the_help_intro_frozen_constant_matches_the_function_at_four():
+    """`_HELP_INTRO` (kept only for tests that do not care about a specific
+    chip count) must not silently diverge from what `_help_intro` actually
+    produces at n=4."""
+    from ui.app import _HELP_INTRO, _help_intro
+    assert _HELP_INTRO == _help_intro(4)
+
+
+# ---------------------------------------------------------------------------
+# Important 5 (whole-branch review): before this fix there was ZERO
+# visitor-facing text anywhere explaining what the pocket highlight means or
+# naming its cutoff distance. The `?` card is its natural home (spec
+# section 7).
+# ---------------------------------------------------------------------------
+
+def test_the_help_card_explains_the_pocket_highlight():
+    from ui.app import _help_panels
+    from ui.pocket import POCKET_CUTOFF_ANGSTROM
+    text = " ".join(_help_panels(4)).lower()
+    assert "residues nearest the ligand" in text
+    assert f"{POCKET_CUTOFF_ANGSTROM:g}".lower() in text
+    assert "the binding site" not in text, (
+        "spec section 7: a distance cutoff cannot establish a TRUE binding "
+        "site, so the card must never claim one")
+
+
+def test_the_help_card_mentions_the_affinity_questions_panel():
+    from ui.app import _help_panels
+    text = " ".join(_help_panels(4)).lower()
+    assert "affinity question" in text
+
+
+def test_the_help_cards_stated_cutoff_matches_what_pocket_residues_uses():
+    """The number in the sentence and the number the geometry actually uses
+    must be the SAME name, not two independently typed literals that happen
+    to agree today -- ui.pocket.POCKET_CUTOFF_ANGSTROM is imported by
+    ui/app.py for exactly this reason."""
+    import ui.app as app_mod
+    from ui.pocket import POCKET_CUTOFF_ANGSTROM
+    assert app_mod.POCKET_CUTOFF_ANGSTROM is POCKET_CUTOFF_ANGSTROM
 
 
 def test_the_help_intro_no_longer_says_one_after_another():
@@ -918,6 +1213,22 @@ def test_the_readme_no_longer_says_a_tap_queues_nothing():
     assert "what is still missing is the last hop" not in lowered
     # ...and it has to say what DOES happen, or an operator learns nothing.
     assert "never pre-empts a running fold" in lowered
+
+
+def test_the_readme_does_not_claim_four_chips_unconditionally():
+    """Important 3 (whole-branch review): `runner.workers.split_for_qa`
+    permanently reserves one chip for Q&A when the affinity-questions
+    feature is enabled, so a 4-physical-chip box folds on 3 -- the README's
+    own "four chips, four proteins" claim must be qualified with that fact
+    rather than left as an unconditional number that goes false the instant
+    Q&A is turned on, the same standard `ui/app.py`'s `?` card and
+    `ui/quad.py`'s help line are held to.
+    """
+    readme = (Path(__file__).resolve().parents[2] / "README.md").read_text()
+    lowered = readme.lower()
+    assert "reserved" in lowered and "q&a" in lowered, (
+        "the README's chip-count claims need a caveat about the Q&A chip "
+        "reservation, the same one the ? card and quad_help_line carry")
 
 
 def test_the_pick_docstring_in_the_app_no_longer_says_it_reaches_nothing():
@@ -1320,6 +1631,13 @@ _MERGED_CSS_FN, _MERGED_BG_FN = _legibility.merged_stylesheets(
     # this line came to be written).
     (lambda: chipviz_module._CHIPVIZ_CSS,
      lambda: chipviz_module._BACKGROUND_BY_CLASS),
+    # The affinity-questions rail panel (Task 11) is the FIFTH stylesheet in
+    # this one tree, added the same way the Tensix panel was above: its own
+    # `.question-queue-panel` paints its own ground, so its labels need this
+    # entry or the walker hits a background-painting ancestor it does not
+    # recognize.
+    (lambda: questions_module._QUESTIONS_CSS,
+     lambda: questions_module._BACKGROUND_BY_CLASS),
 )
 
 

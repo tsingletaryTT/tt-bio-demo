@@ -64,6 +64,19 @@ no input file for, so tapping "Trypsin - ~74.9s" got you a 20-residue
 Trp-cage in four seconds. Now the launcher builds the daemon's directory
 FROM this manifest, through this CLI, so the two cannot disagree: one
 parser, one validation pass, one answer to "what can this booth fold".
+
+This module also loads the affinity-questions playlist: `playlist/
+questions.yaml` (a separate file from manifest.yaml, deliberately -- see
+`load_questions`'s own docstring and the spec's design doc, section 3) is a
+YAML list of `Question` entries -- each naming a `target_id` that must
+already exist in the fold manifest, plus the visitor-facing `question` and
+`ligand_name` copy and an optional `expected_s` for pacing, the same
+"present-but-null vs. absent both mean not yet measured" convention
+`Target.expected_s` uses above. `load_questions()` is the loader, and it
+validates every `target_id` against the FULL fold manifest at load time --
+a config-correctness check, not a display filter -- so a question naming a
+target this booth cannot fold is caught loudly here rather than surfacing
+later as a silent no-op when a visitor asks it.
 """
 
 import sys
@@ -171,6 +184,58 @@ class Target(object):
     # Optional, like `thumbnail`: a target added before anyone has written
     # one still loads, and the caption simply shows its name alone.
     tagline: str | None = None
+
+
+@dataclass(frozen=True)
+class Question(object):
+    """One affinity question the booth can ask and answer: "does this
+    ligand bind this protein?" -- for an existing playlist target.
+
+    Loaded from `playlist/questions.yaml`, a SEPARATE file from
+    `playlist/manifest.yaml` on purpose (see the design spec,
+    docs/superpowers/specs/2026-09-15-affinity-qa-design.md, section 3): a
+    question is not itself a fold target -- it names one, by `target_id`,
+    and answering it never re-folds anything (nesso1 needs no prior fold or
+    coordinates at all -- see docs/spike-nesso1-affinity.md section 3.4) --
+    so it does not belong in the file that defines what a visitor can pick
+    to watch fold.
+
+    Frozen for the same reason Target is: loaded once at startup and handed
+    around read-only.
+    """
+
+    id: str
+    # Must name an id that actually appears in the fold manifest --
+    # load_questions() is what enforces this; the dataclass itself does not
+    # re-validate it.
+    target_id: str
+    question: str
+    ligand_name: str
+    # None means "not yet measured" -- same convention as Target.expected_s
+    # (see this module's docstring and playlist/questions.yaml's own header
+    # comment): absent or explicit YAML `null`, never a fabricated number.
+    expected_s: float | None = None
+
+
+# Every field a question entry must supply explicitly, beyond `id` (checked
+# separately, same as _REQUIRED_FIELDS above). `expected_s` is NOT here: like
+# Target.expected_s, its absence means "not yet measured," not an error --
+# see Question's own docstring.
+_QUESTION_REQUIRED_FIELDS = ("target_id", "question", "ligand_name")
+
+# playlist/questions.yaml and playlist/manifest.yaml both ship as siblings,
+# one directory up from this module (ui/../playlist/). load_playlist() takes
+# an explicit path from every one of its own callers (its CLI, the tests,
+# scripts/run-demo.sh) rather than defaulting one -- but load_questions() is
+# a new, simpler entry point with exactly one real caller-shape ("load the
+# shipped questions against the shipped manifest"), so it gets a real
+# default here, resolved off THIS FILE'S OWN PATH rather than the process's
+# CWD -- the same rule the module docstring gives for every other path this
+# module hands out, and for the same reason: the daemon and the UI are
+# launched from different working directories.
+_PLAYLIST_DIR = Path(__file__).resolve().parent.parent / "playlist"
+_DEFAULT_QUESTIONS_PATH = _PLAYLIST_DIR / "questions.yaml"
+_DEFAULT_MANIFEST_PATH = _PLAYLIST_DIR / "manifest.yaml"
 
 
 def _entry_label(entry, index):
@@ -368,6 +433,134 @@ def select_targets(targets, ids):
             f"no such target(s) in the playlist: {', '.join(unknown)} "
             f"(this manifest has: {', '.join(sorted(known))})")
     return [target for target in targets if target.id in set(wanted)]
+
+
+def load_questions(path=None):
+    """Load and validate playlist/questions.yaml, returning a list of
+    `Question`.
+
+    `path` may be a `str`, a `pathlib.Path`, or `None` -- meaning the
+    shipped `playlist/questions.yaml`, resolved off this module's own file
+    (see `_DEFAULT_QUESTIONS_PATH`).
+
+    Every question's `target_id` is validated against the real fold
+    manifest (always `load_playlist(_DEFAULT_MANIFEST_PATH)`, regardless of
+    what `path` was passed for the questions file itself -- a question is
+    only ever about a target THIS booth's own playlist can fold, so there
+    is exactly one manifest to check it against): a `target_id` that does
+    not match any entry there is a config error, not a runtime one, and
+    must fail loudly here, at load time, rather than surface later as a
+    silent no-op when a visitor asks it.
+
+    Raises `PlaylistError` -- never yaml.YAMLError, KeyError, TypeError, or
+    anything else raw -- for every failure mode: a missing file, a file
+    that isn't a YAML list, an entry missing a required field, an entry
+    whose `expected_s` is PRESENT but not a number, two entries sharing one
+    `id`, or a `target_id` absent from the fold manifest. Same contract
+    `load_playlist` holds itself to, above.
+    """
+    questions_path = Path(path) if path is not None else _DEFAULT_QUESTIONS_PATH
+    if not questions_path.is_file():
+        raise PlaylistError(f"questions file not found: {questions_path}")
+
+    try:
+        raw_text = questions_path.read_text()
+    except OSError as exc:
+        raise PlaylistError(
+            f"questions file {questions_path} could not be read: {exc}"
+        ) from exc
+
+    try:
+        raw = yaml.safe_load(raw_text)
+    except yaml.YAMLError as exc:
+        raise PlaylistError(
+            f"questions file {questions_path} is not valid YAML: {exc}"
+        ) from exc
+
+    if raw is None:
+        raw = []
+    if not isinstance(raw, list):
+        raise PlaylistError(
+            f"questions file {questions_path} must be a YAML list of "
+            f"questions, got {type(raw).__name__}"
+        )
+
+    # The fold manifest decides which target_ids exist -- always the real
+    # shipped one (see this function's own docstring for why `path` above
+    # does not also parameterize this).
+    manifest_ids = {t.id for t in load_playlist(_DEFAULT_MANIFEST_PATH)}
+
+    questions = []
+    seen_ids = {}
+    for index, entry in enumerate(raw):
+        label = _entry_label(entry, index)
+
+        if not isinstance(entry, dict):
+            raise PlaylistError(
+                f"{label}: question entries must be mappings, got "
+                f"{type(entry).__name__}"
+            )
+
+        entry_id = entry.get("id")
+        if not isinstance(entry_id, str) or not entry_id.strip():
+            raise PlaylistError(f"{label}: missing required field 'id'")
+
+        for field in _QUESTION_REQUIRED_FIELDS:
+            value = entry.get(field)
+            # Reject anything that is not a real, non-blank string -- not
+            # just missing/None/"". The looser
+            # `value is None or (isinstance(value, str) and not value.strip())`
+            # this used to read let a YAML number or list through silently:
+            # an unhashable `target_id` (a list) raised an uncaught
+            # `TypeError` at the `in manifest_ids` membership check below,
+            # and a non-string `question`/`ligand_name` reached GTK label
+            # text downstream, which does not accept it either. Same rule
+            # `id`'s own check above already applies -- this loop just
+            # hadn't matched it.
+            if not isinstance(value, str) or not value.strip():
+                raise PlaylistError(f"{entry_id}: missing required field '{field}'")
+
+        if entry_id in seen_ids:
+            raise PlaylistError(
+                f"duplicate question id '{entry_id}' in {questions_path} "
+                f"(entries #{seen_ids[entry_id] + 1} and #{index + 1}) -- "
+                "which one a visitor asked would be ambiguous"
+            )
+        seen_ids[entry_id] = index
+
+        target_id = entry["target_id"]
+        if target_id not in manifest_ids:
+            raise PlaylistError(
+                f"question {entry_id!r} targets {target_id!r}, which is "
+                f"not in the fold manifest (this manifest has: "
+                f"{', '.join(sorted(manifest_ids))})"
+            )
+
+        # Same rule as Target.expected_s: absent or explicit null both mean
+        # "not yet measured" and stay None; only a PRESENT value is
+        # validated as a number.
+        raw_expected_s = entry.get("expected_s")
+        if raw_expected_s is None:
+            expected_s = None
+        else:
+            try:
+                expected_s = float(raw_expected_s)
+            except (TypeError, ValueError) as exc:
+                raise PlaylistError(
+                    f"{entry_id}: 'expected_s' must be a number (or "
+                    f"absent/null for 'not yet measured'), got "
+                    f"{raw_expected_s!r}"
+                ) from exc
+
+        questions.append(Question(
+            id=entry_id,
+            target_id=target_id,
+            question=entry["question"],
+            ligand_name=entry["ligand_name"],
+            expected_s=expected_s,
+        ))
+
+    return questions
 
 
 def main(argv=None):

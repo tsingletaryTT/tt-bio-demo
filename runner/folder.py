@@ -366,6 +366,20 @@ class Folder:
         resulting structure to a scratch .cif this process owns. `mean_plddt`
         is returned unscaled (tt-bio's own 0-1 fraction) -- fold() applies
         plddt_to_percent itself, so scaling here would double it.
+
+        tt-bio 0.8.0: `_read_bio_chains` grew a 5th tuple element,
+        `modifications` (the polymer's `modifications:` list, honoured now
+        instead of silently dropped -- see the 0.8.0 upgrade notes in
+        CLAUDE.md). This unpacking used to expect 4 elements and raised
+        "too many values to unpack" on every fold, immediately, before any
+        device work -- caught only by a real hardware fold, because no unit
+        test fakes this far down (see test_folder_events.py's
+        _fake_tt_bio_load_stack: it covers Folder.load(), not this feature-
+        building path at all). `modifications` is not threaded through to
+        `build_complex_features` below: no playlist target uses
+        `modifications:`, so wiring it now would be an untested code path
+        exercised by nothing on this booth. Revisit if a target that uses it
+        is ever added.
         """
         from tt_bio.main import (_read_bio_chains, _read_bio_constraints,
                                  _resolve_a3m_text, _write_protenix_structure)
@@ -381,10 +395,10 @@ class Folder:
         chains = _read_bio_chains(input_path)
         bonds = _read_bio_constraints(input_path)
         chain_specs = [(cseq, _resolve_a3m_text(spec, cseq, None), mol_type)
-                       for _cid, cseq, spec, mol_type in chains]
+                       for _cid, cseq, spec, mol_type, _mods in chains]
         feats = build_complex_features(
             chain_specs, mol_dir=str(self._mol_dir),
-            chain_ids=[cid for cid, _s, _sp, _mt in chains], bonds=bonds)
+            chain_ids=[cid for cid, _s, _sp, _mt, _mods in chains], bonds=bonds)
 
         coords, conf = self._model_obj.fold(
             feats, n_step=n_step, n_sample=1, progress_fn=on_progress,

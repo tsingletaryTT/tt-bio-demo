@@ -53,6 +53,46 @@ def test_a_quarantined_target_is_not_re_enqueued(tmp_path):
     assert [j.target_id for j in daemon.queue.pending] == ["good"]
 
 
+def test_manifest_and_questions_yaml_are_never_enqueued_as_fold_targets(tmp_path):
+    """A packaged install ships manifest.yaml and questions.yaml into the
+    SAME directory as real fold-input YAMLs (debian/tt-bio-demo.install
+    puts the whole `playlist/` tree under `/opt/tt-bio-demo/playlist/`,
+    which the systemd unit then passes straight to `--playlist` -- unlike
+    scripts/run-demo.sh's dev-mode symlink farm, which never contains
+    either name). Before this fix, a real deployment enumerated both as
+    bogus fold targets: each fails tt-bio's own YAML parsing three times
+    and gets silently quarantined, but every restart re-globs and pays the
+    three failed attempts again. Real targets still folded, so this was
+    never caught by a fold-outcome test -- only by inspecting exactly what
+    _enqueue_playlist queues."""
+    playlist = tmp_path / "playlist"
+    playlist.mkdir()
+    (playlist / "good.yaml").write_text("version: 1\n")
+    (playlist / "manifest.yaml").write_text("- id: good\n")
+    (playlist / "questions.yaml").write_text("- id: q1\n")
+
+    daemon = _daemon(tmp_path, _FakePool())
+    daemon._enqueue_playlist()
+    assert [j.target_id for j in daemon.queue.pending] == ["good"]
+
+
+def test_playlist_target_never_resolves_manifest_or_questions_by_stem(tmp_path):
+    """The same exclusion, checked at the OTHER call site: a client-supplied
+    target_id of "manifest" or "questions" (accidental or crafted) must not
+    resolve to a real path, the same way `_playlist_target` already refuses
+    a path-separator-bearing id."""
+    playlist = tmp_path / "playlist"
+    playlist.mkdir()
+    (playlist / "good.yaml").write_text("version: 1\n")
+    (playlist / "manifest.yaml").write_text("- id: good\n")
+    (playlist / "questions.yaml").write_text("- id: q1\n")
+
+    daemon = _daemon(tmp_path, _FakePool())
+    assert daemon._playlist_target("good") is not None
+    assert daemon._playlist_target("manifest") is None
+    assert daemon._playlist_target("questions") is None
+
+
 def _fake_tt_bio_main_read_bio_chains(monkeypatch, chains_or_exc):
     """Install a stand-in tt_bio.main with only _read_bio_chains faked --
     same style as tests/unit/runner/test_folder_events.py's tt_bio fakes,
@@ -81,10 +121,17 @@ def test_enqueue_playlist_populates_n_residues_from_the_target(tmp_path, monkeyp
     Job it submitted. The real count comes from tt_bio's own chain reader,
     summing every non-ligand chain's sequence length, matching
     tests/fixtures/streams/capture_real_fold.py's own formula.
+
+    tt-bio 0.8.0: _read_bio_chains grew a 5th tuple element
+    (`modifications`) -- this fixture used the pre-0.8.0 4-tuple shape,
+    which would have masked the same "too many values to unpack" regression
+    test_folder_events.py caught in _run_fold, just degraded to n_residues=0
+    via _residue_count's own try/except instead of crashing loudly. Kept at
+    the real current 5-tuple shape now.
     """
     _fake_tt_bio_main_read_bio_chains(monkeypatch, [
-        ("A", "NLYIQWLKDGGPSSGRPPPS", None, "protein"),   # 20 residues
-        ("B", "CCD_ATP", None, "ligand"),                  # excluded
+        ("A", "NLYIQWLKDGGPSSGRPPPS", None, "protein", None),   # 20 residues
+        ("B", "CCD_ATP", None, "ligand", None),                  # excluded
     ])
     playlist = tmp_path / "playlist"
     playlist.mkdir()
@@ -466,3 +513,89 @@ def test_the_devices_flag_defaults_to_every_chip(tmp_path):
     from runner.daemon import DaemonConfig
     assert DaemonConfig(socket_path="s", weights_dir="w", playlist_dir="p",
                         log_root="l").device_ids is None
+
+
+def test_questions_enabled_defaults_to_false(tmp_path):
+    """The current (flipped) default: a booth never reserves a chip for Q&A
+    unless an operator explicitly opts in, because permanently holding one
+    chip back costs a 4-chip booth 25% of its fold throughput for a feature
+    it may never be asked to use."""
+    from runner.daemon import DaemonConfig
+    assert DaemonConfig(socket_path="s", weights_dir="w", playlist_dir="p",
+                        log_root="l").questions_enabled is False
+
+
+def test_the_questions_flag_reaches_the_daemon_config(tmp_path, monkeypatch):
+    """`--questions` is the CLI half of `DaemonConfig.questions_enabled`.
+    A flag that parses but never reaches DaemonConfig is exactly the inert
+    `--device` shape `test_the_devices_flag_reaches_the_daemon_config`
+    already guards against, one field over.
+    """
+    from runner import cards as cards_mod
+    from runner import daemon as mod
+    from runner import preflight as preflight_mod
+
+    monkeypatch.setattr(preflight_mod, "check_tap_supported", lambda: None)
+    monkeypatch.setattr(cards_mod, "sample_tt_smi", lambda timeout=5.0: [])
+    monkeypatch.setattr(mod, "run_preflight",
+                        lambda *a, **k: types.SimpleNamespace(ok=True, missing=[]))
+    monkeypatch.setattr(mod.signal, "signal", lambda *a, **k: None)
+
+    built = {}
+
+    class _CapturingDaemon:
+        def __init__(self, config):
+            built["config"] = config
+
+        def run(self):
+            pass
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(mod, "Daemon", _CapturingDaemon)
+    code = main([
+        "--socket", str(tmp_path / "r.sock"),
+        "--weights", str(tmp_path / "weights"),
+        "--playlist", str(tmp_path / "playlist"),
+        "--log-root", str(tmp_path / "logs"),
+        "--questions",
+    ])
+    assert code == 0
+    assert built["config"].questions_enabled is True
+
+
+def test_omitting_the_questions_flag_leaves_questions_disabled(tmp_path, monkeypatch):
+    """The other half of the pin: NOT passing `--questions` must reach
+    DaemonConfig as `questions_enabled=False`, not merely "unset"."""
+    from runner import cards as cards_mod
+    from runner import daemon as mod
+    from runner import preflight as preflight_mod
+
+    monkeypatch.setattr(preflight_mod, "check_tap_supported", lambda: None)
+    monkeypatch.setattr(cards_mod, "sample_tt_smi", lambda timeout=5.0: [])
+    monkeypatch.setattr(mod, "run_preflight",
+                        lambda *a, **k: types.SimpleNamespace(ok=True, missing=[]))
+    monkeypatch.setattr(mod.signal, "signal", lambda *a, **k: None)
+
+    built = {}
+
+    class _CapturingDaemon:
+        def __init__(self, config):
+            built["config"] = config
+
+        def run(self):
+            pass
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(mod, "Daemon", _CapturingDaemon)
+    code = main([
+        "--socket", str(tmp_path / "r.sock"),
+        "--weights", str(tmp_path / "weights"),
+        "--playlist", str(tmp_path / "playlist"),
+        "--log-root", str(tmp_path / "logs"),
+    ])
+    assert code == 0
+    assert built["config"].questions_enabled is False

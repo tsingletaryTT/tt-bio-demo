@@ -561,6 +561,41 @@ def test_the_help_card_line_claims_nothing_the_booth_cannot_back_up():
 
 
 # ---------------------------------------------------------------------------
+# Important 3 (whole-branch review, affinity-questions): `quad_help_line` is
+# a function of the REAL fold-chip count, not a hardcoded "four" --
+# `runner.workers.split_for_qa` permanently reserves one chip for Q&A when
+# the affinity-questions feature is enabled, so a 4-physical-chip box folds
+# on 3, and this line (which reaches the `?` card verbatim) must say so.
+# ---------------------------------------------------------------------------
+
+def test_quad_help_line_names_the_real_count_on_a_qa_reduced_booth():
+    line = quadmod.quad_help_line(3).lower()
+    assert "three" in line
+    assert "four" not in line
+
+
+def test_quad_help_line_still_says_four_on_an_unreduced_four_chip_booth():
+    line = quadmod.quad_help_line(4).lower()
+    assert "four" in line
+
+
+def test_quad_help_line_is_grammatical_for_a_single_chip():
+    """MAX_SLOTS caps this booth at 4, but a dev box (or a 4-chip box with
+    3 chips already claimed elsewhere) can be down to 1 -- the line must
+    still read as one sentence, not "all one chips"."""
+    line = quadmod.quad_help_line(1)
+    assert "Tenstorrent chip," in line
+    assert "Tenstorrent chips" not in line
+
+
+def test_quad_help_line_frozen_constant_matches_the_function_at_four():
+    """`QUAD_HELP_LINE` (kept only for tests that do not care about a
+    specific chip count) must not silently diverge from what the function
+    it is frozen from actually produces at n=4."""
+    assert quadmod.QUAD_HELP_LINE == quadmod.quad_help_line(4)
+
+
+# ---------------------------------------------------------------------------
 # Beyond the brief 5: legibility, stated in numbers.
 # ---------------------------------------------------------------------------
 

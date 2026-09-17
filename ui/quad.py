@@ -33,7 +33,7 @@ quad, so it lives on the quad.
 The toggle key
 --------------
 `QUAD_KEYS` below is this view's decided key, and the copy for the `?` card
-travels with it (`QUAD_HELP_LINE`) so the two cannot drift apart. Task 15
+travels with it (`quad_help_line`) so the two cannot drift apart. Task 15
 wired them into `ui/app.py`'s `_handle_key` and `_HELP_PANELS`; nothing in
 this module reads a keyboard.
 
@@ -42,6 +42,16 @@ showing one big protein. That is `set_solo_mode` below -- one widget tree,
 with the cells that are not the focus hidden -- and `Q` is what turns the
 other three on. See the comment above `set_solo_mode` for why the hero is a
 cell of this grid rather than a fifth viewer of its own.
+
+The empty cell, when there is one
+----------------------------------
+Affinity Q&A permanently reserves one chip whenever 2+ are detected, so a
+4-physical-chip booth with it enabled folds on three -- and a `QuadView`
+built from that shorter card list has one grid slot with nothing attached
+to it at all (`slot_count < MAX_SLOTS`). `set_extra_cell` is what a caller
+puts there instead of leaving it blank; this module does not know or care
+what the widget IS (in practice, `ui.qa_spotlight.QASpotlightCell`) --
+placement and solo-mode visibility are this class's job, content is not.
 """
 
 import logging
@@ -97,16 +107,58 @@ _NOTICE_ROW = MAX_SLOTS // _COLUMNS
 # not have to be told about it in person.
 QUAD_KEYS = frozenset({"q"})
 
-# The `?` card's line for it. Says what the key does and what the view shows,
-# in the same register as the rest of the card: what it is, plainly, with no
-# claim the booth cannot back up. Four cells means four chips REALLY folding
-# four different proteins at the same time -- which is true only because
-# Tasks 6-9 made it true, and is the whole point of saying it.
-QUAD_HELP_LINE = (
-    "Press Q for the quad view: all four Tenstorrent chips at once, one "
-    "protein per chip, each folding on its own silicon. Press Q again for "
-    "the single large view."
-)
+# Number words for the small range of chip counts this booth ever actually
+# has (MAX_SLOTS caps at 4) -- "all three chips" reads as a booth, "all 3
+# chips" reads as a spec sheet. Falls back to the digit for anything outside
+# that range rather than raising: a count this module was not written to
+# expect should still produce SOME sentence, not a crash on a help card.
+_CHIP_COUNT_WORDS = {1: "one", 2: "two", 3: "three", 4: "four"}
+
+
+def chip_count_word(n_chips):
+    return _CHIP_COUNT_WORDS.get(n_chips, str(n_chips))
+
+
+def quad_help_line(n_chips):
+    """The `?` card's line for Q -- the quad view. Says what the key does
+    and what the view shows, in the same register as the rest of the card:
+    what it is, plainly, with no claim the booth cannot back up.
+
+    `n_chips` (whole-branch review, Important 3) is however many chips THIS
+    booth actually folds on right now -- `len(DemoApp.cards)`, the daemon's
+    own `hello.cards`, not the physical chip count on the box. The two agree
+    on an ordinary box, but the affinity-questions feature permanently
+    reserves one chip for Q&A when 2+ are detected
+    (`runner.workers.split_for_qa`), so a 4-physical-chip box with Q&A
+    enabled folds on 3 -- and a hardcoded "four" here would be false on
+    exactly that configuration, the same class of defect this project's own
+    CLAUDE.md already treats as a real, blocking bug ("the turnkey launcher
+    advertised four targets over a daemon that could fold one").
+
+    Previously a module-level constant (`QUAD_HELP_LINE`); a fixed string
+    cannot be correct across a booth's whole lifetime once the fold-chip
+    count can change under it (Q&A reservation, or a reconnect naming a
+    different card list), so it is a function of the one thing that
+    actually varies.
+    """
+    word = chip_count_word(max(n_chips, 1))
+    plural = "chip" if n_chips == 1 else "chips"
+    at_once = "" if n_chips == 1 else " at once"
+    return (
+        f"Press Q for the quad view: all {word} Tenstorrent {plural}"
+        f"{at_once}, one protein per chip, each folding on its own "
+        "silicon. Press Q again for the single large view."
+    )
+
+
+# A frozen 4-chip snapshot, kept ONLY for tests that check general content
+# (the toggle key is named, the sentence says "again", no overclaim words)
+# and do not care about a specific chip count. `ui/app.py`'s
+# `_build_help_panels`/`_sync_help_copy` never read this name -- they call
+# `quad_help_line(len(self.cards))` directly, which is what makes the copy
+# track the real fold-chip count instead of silently drifting back to this
+# hardcoded default.
+QUAD_HELP_LINE = quad_help_line(4)
 
 # The keys this module knows are already spoken for elsewhere in the booth,
 # so `test_the_toggle_key_is_not_one_already_taken` is a real check against a
@@ -364,6 +416,15 @@ class QuadView(Gtk.Grid):
 
         self._focus_slot = None
 
+        # The extra cell: whatever `set_extra_cell` was last given (the
+        # affinity Q&A spotlight, `ui.qa_spotlight.QASpotlightCell`, in
+        # practice), placed in the grid slot just past the last real chip
+        # cell -- the one this class otherwise leaves empty. See
+        # `set_extra_cell`'s own docstring for why it lives in its own
+        # wrapper rather than being attached directly.
+        self._extra_cell = None
+        self._extra_wrapper = None
+
         # Solo mode: the booth's DEFAULT, and what `Q` toggles off. See
         # `set_solo_mode`.
         self._solo_mode = True
@@ -504,14 +565,69 @@ class QuadView(Gtk.Grid):
 
         With no focus marked, solo mode falls back to cell 0 rather than
         hiding every cell: an unfocused booth must still show a protein.
+
+        The extra cell (see `set_extra_cell`) is never the hero -- it holds
+        no fold of its own -- so it is hidden in solo mode exactly like
+        every chip cell that is not the focus, and shown whenever they are.
         """
         if not self._solo_mode:
             for cell in self._cells:
                 cell.frame.set_visible(True)
+            if self._extra_wrapper is not None:
+                self._extra_wrapper.set_visible(True)
             return
         hero = self._focus_slot if self._cell(self._focus_slot) is not None else 0
         for slot, cell in enumerate(self._cells):
             cell.frame.set_visible(slot == hero)
+        if self._extra_wrapper is not None:
+            self._extra_wrapper.set_visible(False)
+
+    # ── the extra cell (affinity Q&A spotlight) ─────────────────────────
+
+    def set_extra_cell(self, widget):
+        """Place `widget` in the grid slot just past the last real chip
+        cell -- the one a shorter-than-4 card list otherwise leaves empty
+        -- or do nothing if there is no such slot (a full 2x2 of chips
+        leaves no room, and this booth has nowhere else to put it).
+
+        `widget` is reparented into a plain wrapper box THIS view owns,
+        rather than attached directly, so two independent things can each
+        own their own half of "is it visible" without fighting over one
+        widget's `visible` property: `_apply_solo` (above) owns the
+        wrapper's visibility (hidden in solo mode, exactly like every
+        non-hero cell), and the widget's OWN visibility stays whatever its
+        caller last set it to (`ui.qa_spotlight.QASpotlightCell.
+        set_qa_capable`, in practice) -- GTK already ANDs a child's
+        visibility with its ancestors', so neither has to know about the
+        other.
+
+        Safe to call again with the SAME widget across a card-list rebuild
+        (`ui/app.py`'s `_ensure_quad` builds a brand new `QuadView` on
+        every card-list change, but keeps one long-lived spotlight widget
+        instance across all of them): `Gtk.Widget.unparent()` detaches it
+        from whatever the OLD `QuadView`'s wrapper was first.
+        """
+        self._extra_cell = widget
+        if widget is None:
+            return
+        slot = len(self._cells)
+        if slot >= MAX_SLOTS:
+            log.debug("no free grid slot for the extra cell (%d cells "
+                      "already fill the quad)", len(self._cells))
+            return
+        if self._extra_wrapper is None:
+            wrapper = Gtk.Box()
+            wrapper.set_hexpand(True)
+            wrapper.set_vexpand(True)
+            column, row = grid_position(slot)
+            self.attach(wrapper, column, row, 1, 1)
+            self._extra_wrapper = wrapper
+        parent = widget.get_parent()
+        if parent is not None and parent is not self._extra_wrapper:
+            widget.unparent()
+        if widget.get_parent() is None:
+            self._extra_wrapper.append(widget)
+        self._apply_solo()
 
     @property
     def visible_slots(self):

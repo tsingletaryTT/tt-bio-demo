@@ -16,13 +16,59 @@ set -e
 . /usr/share/tt-bio-demo/helpers.sh
 
 PREFIX="$(tt_bio_demo_prefix)"
+
+# THE FIXED CACHE PATH FOR A PACKAGED INSTALL. See docs/followups.md's "root's
+# postinst-time HOME vs desktop-user's systemd-service-time HOME" entry
+# (FIXED here) for the full history: THIS script runs as root during
+# `dpkg`/`apt install` (HOME=/root), while the booth's compute daemon runs
+# later as a `systemd --user` service under the DESKTOP USER's own HOME --
+# two different, HOME-relative defaults that do not agree.
+# `tt_bio_demo_weights_cache_packaged` (debian/helpers.sh, sourced above --
+# which itself just hands off to scripts/weights-cache.sh's own
+# `tt_bio_demo_weights_cache_impl_packaged`) pins the cache variable the
+# shared resolver checks first to one fixed, non-home-relative path -- unless
+# an operator has already set it themselves. That literal path lives in
+# exactly ONE place (scripts/weights-cache.sh's
+# TT_BIO_DEMO_PACKAGED_WEIGHTS_CACHE); every other packaged caller --
+# scripts/doctor.sh, scripts/run-demo.sh, and
+# scripts/tt-bio-demo-daemon-launcher.sh (what debian/tt-bio-demo.user.
+# service's ExecStart= actually runs -- the unit itself no longer repeats the
+# path in a static `Environment=` line; see docs/followups.md's "the systemd
+# unit's Environment= is unconditional" entry, FIXED) -- reaches it the same
+# way, by CALLING this same guarded resolver, so there is nothing left to
+# drift apart. tests/unit/test_packaging.py's "the resolver declares a fixed
+# ... path" section checks that none of these callers keep their own copy of
+# the literal value. This removes HOME
+# from the equation entirely for every weight this postinst fetches: not
+# just the flat protenix-v2.pt/mols.tar artifacts (whose `root=`/`--cache`
+# argument already redirects them per-call), but also nesso1/nesso1-ccd/the
+# ESM-2 encoder, which are "hf-repo" sources that SILENTLY IGNORE `root=`
+# (see the big comment on NESSO1_ARTIFACTS below) and fall back to whatever
+# Hugging Face hub cache the fetching PROCESS resolves -- which is exactly
+# the gap this closes: `tt_bio.weights.configure_hf_cache` (run at
+# `import tt_bio` time, in every process, including this postinst's own
+# python block below) redirects the hub cache under the pinned path,
+# specifically because it is exported under the variable name that function
+# reads, so nesso1 lands in the same fixed place too.
+#
+# Called TWICE, deliberately. The first call runs as a plain top-level
+# statement (never inside THIS script's own `$(...)`) purely for its
+# exporting side effect -- so it lands in THIS shell's real environment, not
+# a subshell that evaporates on exit, and is inherited by the python child
+# process near the end of this script (a plain subprocess spawn, no `env -i`
+# anywhere here, inherits the full exported environment). Its own printed
+# output is discarded; the SECOND call, in the command substitution below,
+# captures the resolved path for `$CACHE` -- by then the pin is already a
+# no-op (the variable is set), so the two calls cannot disagree.
+tt_bio_demo_weights_cache_packaged >/dev/null
+
 # ONE derivation, from the shared shell resolver ($TT_BIO_CACHE, then
 # $BOLTZ_CACHE, then ~/.boltz -- tt-bio's own order). This used to read only
 # $BOLTZ_CACHE, and the python block below re-derived it a SECOND time from
 # the same incomplete rule, so on a host using $TT_BIO_CACHE this downloaded
 # 3.7 GB into a directory neither a fold nor the doctor would ever look in.
 # The python half is now handed the answer rather than working it out again.
-CACHE="$(tt_bio_demo_weights_cache)" || exit 1
+CACHE="$(tt_bio_demo_weights_cache_packaged)" || exit 1
 
 # ---------------------------------------------------------------------------
 # THE ARTIFACT TABLE. One line per artifact: <filename> <sha256>.
@@ -39,10 +85,32 @@ CACHE="$(tt_bio_demo_weights_cache)" || exit 1
 #
 # To add an artifact: add a line. An artifact with no hash FAILS the install
 # (see the loop below); it is never silently skipped.
+#
+# nesso1 and nesso1-ccd (the affinity-Q&A model, added for the
+# affinity-questions feature) are DELIBERATELY NOT in this table. Both are
+# "hf-repo" registry rows, and `tt_bio.weights.fetch`/`.resolve`/`.status`
+# IGNORE their `root=` argument for that source type -- confirmed empirically
+# against this box's real, pinned tt-bio: `weights.fetch("nesso1",
+# root=<anything>)` lands under the standard Hugging Face hub cache
+# regardless of `root`, never under `${CACHE}/model.safetensors` the way
+# protenix-v2.pt lands under `${CACHE}/protenix-v2.pt`. This table's
+# `tt_bio_demo_verify_sha256 "${CACHE}/${name}" ...` shape assumes a flat
+# path under `$CACHE` and would check a file that is never there, silently
+# reporting a present artifact as missing. nesso1/nesso1-ccd are fetched AND
+# checksum-verified inside the Python block below instead, where the real
+# resolved path (whatever it turns out to be) is known.
 # ---------------------------------------------------------------------------
 ARTIFACTS="
 protenix-v2.pt 8f931f9774a396b67033d0e58628e1834f4a1448165e04254b40a780b0c0d599
 mols.tar 39e076d96dbec6b4e86982bbda16f3a53a2a60c9bdc17828d88f6f9a0c7d1fd7
+"
+
+# nesso1's own artifacts, hashed the same way and from the same box, but kept
+# in a SEPARATE table (see the big comment above) because they are verified
+# in Python against tt-bio's own resolved path, not against `${CACHE}/<name>`.
+NESSO1_ARTIFACTS="
+model.safetensors 9928a8a824d147d665e76656804af1cd91c86731516d0b561f9fd1c91ee45622
+ccd.pkl 7ed0ccd3903f19627926a5e41a5c0b5309c127a071cb9498dcae96926799ffd8
 "
 
 tt_bio_demo_weights_verify_all() {
@@ -80,7 +148,8 @@ case "$1" in
             tt_bio_demo_log ""
             tt_bio_demo_log "    sudo dpkg-reconfigure tt-bio-demo-weights"
             tt_bio_demo_log ""
-            tt_bio_demo_log "That is ~3.7 GB and must happen BEFORE the venue (it is offline)."
+            tt_bio_demo_log "That is ~6.9 GB (3.7 GB required to fold, 3.2 GB more for"
+            tt_bio_demo_log "affinity Q&A) and must happen BEFORE the venue (it is offline)."
             exit 0
         fi
 
@@ -93,13 +162,79 @@ case "$1" in
             exit 0
         fi
 
+        # Created here, with an EXPLICIT mode, rather than left to the python
+        # block's own `cache.mkdir(parents=True, exist_ok=True)` (which
+        # relies on root's default umask -- 022 -- leaving it at 0755).
+        # "Should already be 0755" is not the same claim as "is 0755"; a
+        # changed umask, or a distro default this project has not seen, would
+        # silently leave the desktop user -- who has to READ this directory
+        # back later, as an entirely different user -- unable to see into it.
+        #
+        # 0777, NOT 0755 -- and this is deliberately WRITABLE, not merely
+        # readable. This directory is root-owned (this postinst runs as
+        # root; there is no SUDO_USER/logind-based booth-operator detection
+        # anywhere in this codebase to chown it to instead -- see docs/
+        # followups.md's "root's postinst-time HOME vs desktop-user's
+        # systemd-service-time HOME" entry for why that was rejected as a
+        # fix direction generally), yet `runner/folder.py`'s `Folder.load()`
+        # WRITES into it at runtime as the desktop user: a cache holding
+        # `mols.tar` but not yet the extracted `mols/` unpacks it in place on
+        # the first fold (`download_mols(cache)`), and `tt_bio.weights.fetch`
+        # can re-fetch a corrupt/incomplete artifact. 0755 made the directory
+        # READABLE by the desktop user but not WRITABLE, which silently
+        # turned that self-repair into a `PermissionError` inside `Folder.
+        # load()`'s own try block -- a booth that used to fix a missing
+        # `mols/` in twenty seconds instead got stuck on "preparing" with no
+        # diagnostic anyone would see. See docs/followups.md's "/opt/tt-bio-
+        # demo/weights is root-owned and not writable by the daemon" entry
+        # (FIXED) for the full history.
+        #
+        # world-writable rather than a dedicated group is the pragmatic
+        # choice for a single-operator conference-booth appliance: this
+        # project has never had per-user account separation on the booth
+        # machine (the desktop session IS the operator), and inventing a
+        # dedicated group here would need the SAME missing user-detection
+        # this project has already rejected as a fix direction once. The
+        # security tradeoff is real and worth stating plainly: any local
+        # account on this machine can write into this one directory. That is
+        # an acceptable trade for a machine whose only job is to run this
+        # booth, and not one to make on a shared multi-user box without
+        # reconsidering it.
+        #
+        # `install -d` sets the mode atomically at creation time rather than
+        # creating-then-chmodding, which matters if a stricter umask is ever
+        # in effect here. Done only in this branch (not unconditionally above
+        # the `case`), so an abort-upgrade/abort-remove/abort-deconfigure
+        # call never creates a directory for a fetch that is not happening.
+        install -d -m 0777 "$CACHE"
+
         tt_bio_demo_log "fetching weights via tt-bio's own resolver (resumable)..."
         # Resolution, not a copy: weights.fetch returns the cached path and
         # downloads only what is missing, so re-running this is cheap and an
         # interrupted download continues where it stopped. 0.7.0 also
         # re-fetches a copy that is present but corrupt, which used to be
         # scripts/doctor.sh's job alone to notice.
+        #
+        # nesso1/nesso1-ccd/ESM-2 (affinity Q&A) are fetched in the SAME
+        # python invocation, behind the SAME debconf question, so a booth
+        # that says yes here does not end up folding but unable to answer a
+        # single question -- the exact gap docs/followups.md's
+        # "affinity-questions feature" entry names. Their failure is
+        # DELIBERATELY NOT fatal to this install: unlike protenix-v2/mols,
+        # the booth runs fine without them (affinity Q&A is off by default,
+        # opt in with `--questions`; a single-chip box never reserves a Q&A
+        # worker at all regardless -- see runner/daemon.py's qa_capable
+        # gate), so a dropped connection on
+        # ~578 MB + 2.6 GB of optional weights must not fail a package
+        # configure step over the required 3.7 GB that already downloaded
+        # fine. A marker file (not piped output -- protenix-v2/mols's own
+        # download progress needs to keep streaming live to the console, and
+        # piping this script's output risks the exact SIGPIPE/pipefail trap
+        # CLAUDE.md already records for `pip show | awk '{...; exit}'`)
+        # carries the verdict back to the shell below.
+        rm -f "${CACHE}/.affinity-weights-incomplete"
         "$runner_py" - "$CACHE" <<'PYEOF'
+import hashlib
 import sys
 from pathlib import Path
 
@@ -121,7 +256,12 @@ except Exception as exc:                                  # noqa: BLE001
 # Handed in as argv, NOT re-derived here. The shell half above already asked
 # the one resolver; deriving it again from a different rule is what made the
 # download and the verification able to disagree about which directory they
-# meant.
+# meant. This heredoc is single-quoted ('PYEOF') for exactly this reason --
+# it is NOT shell-interpolated at all, so `$`/backtick anywhere in this block
+# (including in comments) is a literal Python character, never a shell
+# expansion silently swallowing (or mangling) part of the script. The cache
+# path below is threaded through as sys.argv[1], the same way it already
+# reaches this block -- never by interpolating it into the heredoc text.
 cache = Path(sys.argv[1])
 cache.mkdir(parents=True, exist_ok=True)
 
@@ -130,6 +270,83 @@ weights.fetch("protenix-v2", root=cache)
 # EXTRACTED mols/ directory, and this fetches the tar and unpacks it in one
 # resumable step. (It is itself a thin wrapper over weights.fetch("mols").)
 download_mols(cache)
+
+# --- nesso1 / nesso1-ccd: the affinity-Q&A model, non-fatal to this install.
+#
+# `root=cache` is passed for consistency with the calls above, but it is
+# IGNORED for these two rows: both are "hf-repo" registry entries, and
+# `weights.fetch`/`.resolve`/`.status` only honour `root` for "hf-file"
+# and "url" sources. Confirmed empirically against this box's pinned
+# tt-bio: nesso1 lands under the standard Hugging Face hub cache
+# ($TT_BIO_CACHE's own redirect of it, if the operator set that -- see
+# tt_bio.weights.configure_hf_cache -- or plain $HF_HUB_CACHE/$HF_HOME/
+# ~/.cache/huggingface, never under ${CACHE}). That is also why these two
+# are checksum-verified HERE rather than through the shell's flat-file
+# ARTIFACTS table above: only this block knows the real resolved path.
+def _sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+# Two explicit calls with literal string keys, not a loop over a dict -- so
+# that `test_the_weights_postinst_uses_the_tt_bio_api_that_actually_exists`'s
+# regex, which looks for a quoted string as fetch's first argument, sees
+# both calls below and keeps checking them against the pinned tt-bio's real
+# registry rows, the same way it already checks protenix-v2 above. A
+# variable in that position (e.g. from a dict/loop) would be invisible to
+# that regex and silently stop being checked.
+affinity_ok = True
+try:
+    nesso1_path = weights.fetch("nesso1", root=cache)
+    nesso1_ccd_path = weights.fetch("nesso1-ccd", root=cache)
+except Exception as exc:                                  # noqa: BLE001
+    print(f"AFFINITY-WEIGHTS-WARN: could not fetch nesso1/nesso1-ccd: {exc}",
+          file=sys.stderr)
+    affinity_ok = False
+else:
+    for key, path, expected in (
+        ("nesso1", nesso1_path,
+         "9928a8a824d147d665e76656804af1cd91c86731516d0b561f9fd1c91ee45622"),
+        ("nesso1-ccd", nesso1_ccd_path,
+         "7ed0ccd3903f19627926a5e41a5c0b5309c127a071cb9498dcae96926799ffd8"),
+    ):
+        actual = _sha256(path)
+        if actual != expected:
+            print(f"AFFINITY-WEIGHTS-WARN: {key} at {path} does not match "
+                  f"its recorded sha256 (expected {expected}, got {actual}) "
+                  "-- either a corrupt download or a new upstream revision",
+                  file=sys.stderr)
+            affinity_ok = False
+        else:
+            print(f"verified {key} ({path})")
+
+# --- the ESM-2 encoder nesso1's featurizer needs. No tt_bio.weights row at
+# all -- its own module comment says why ("ESM-2 650M deliberately gets no
+# row: ... reaches it through the vendored setup_esm_model, i.e. through
+# transformers, not through this fetch path") -- so this pre-warms it
+# directly through huggingface_hub, the same library setup_esm_model uses,
+# so it lands in the SAME cache location the real featurizer will read from.
+#
+# ignore_patterns IS LOAD-BEARING -- see scripts/setup-venvs.sh's
+# fetch_esm2_cache for the measurement: without it snapshot_download fetches
+# model.safetensors AND pytorch_model.bin AND tf_model.h5 (~7.3 GB, not the
+# ~2.6 GB the featurizer actually reads).
+try:
+    from tt_bio.nesso1_input import ESM2_MODEL
+    from huggingface_hub import snapshot_download
+
+    snapshot_download(ESM2_MODEL, ignore_patterns=["*.bin", "*.h5", "*.msgpack"])
+    print(f"verified ESM-2 encoder ({ESM2_MODEL})")
+except Exception as exc:                                  # noqa: BLE001
+    print(f"AFFINITY-WEIGHTS-WARN: could not fetch the ESM-2 encoder: {exc}",
+          file=sys.stderr)
+    affinity_ok = False
+
+if not affinity_ok:
+    (cache / ".affinity-weights-incomplete").write_text("incomplete\n")
 PYEOF
 
         if tt_bio_demo_weights_verify_all; then
@@ -137,6 +354,16 @@ PYEOF
         else
             tt_bio_demo_log "WEIGHTS DID NOT VERIFY -- see above."
             exit 1
+        fi
+
+        if [ -f "${CACHE}/.affinity-weights-incomplete" ]; then
+            rm -f "${CACHE}/.affinity-weights-incomplete"
+            tt_bio_demo_log "affinity Q&A weights (nesso1/ESM-2) are incomplete -- see warnings above."
+            tt_bio_demo_log "The booth will still fold; affinity questions will not answer until:"
+            tt_bio_demo_log "    ${PREFIX}/.venvs/venv-runner/bin/tt-bio weights --download nesso1"
+            tt_bio_demo_log "This does not fail the install -- run scripts/doctor.sh to re-check."
+        else
+            tt_bio_demo_log "affinity Q&A weights (nesso1 + ESM-2) present and verified too."
         fi
         ;;
 

@@ -813,6 +813,90 @@ def test_no_target_selection_means_the_whole_manifest():
     assert len(ids) > 1 and "trpcage" in ids
 
 
+def _gallery_and_question_targets(target_ids):
+    """Like `_gallery_ids` above, but also drives `_load_questions()` first
+    -- the same order `do_activate` uses -- and returns the target_ids of
+    the questions left in `app.questions` after `_build_gallery()` runs.
+    """
+    manifest = (pathlib.Path(__file__).resolve().parent.parent.parent
+                / "playlist" / "manifest.yaml")
+    app = DemoApp(socket_path=None, playlist_path=str(manifest),
+                  target_ids=target_ids)
+    app.screens = _NamingStack()
+    app._load_questions()
+    app._build_gallery()
+    return ([target.id for target in app.targets],
+            [question.target_id for question in app.questions])
+
+
+def test_a_narrowed_targets_selection_also_narrows_the_offered_questions():
+    """`load_questions()` itself validates every question's `target_id`
+    against the FULL fold manifest regardless of --targets (ui/playlist.py's
+    own docstring is explicit that this is a config-correctness check, not a
+    display filter) -- but the ask strip / rail panel built here must only
+    OFFER questions about targets this run actually loaded. --targets
+    trpcage has no question of its own in playlist/questions.yaml (all three
+    shipped questions target dhfr/trypsin/fkbp12), so a booth narrowed to it
+    must offer none at all, not silently offer all three."""
+    target_ids, question_target_ids = _gallery_and_question_targets(["trpcage"])
+    assert target_ids == ["trpcage"]
+    assert question_target_ids == []
+
+
+def test_a_narrower_selection_keeps_only_the_question_it_still_covers():
+    """The mutation guard for the test above: narrowing to a target that DOES
+    have a question must keep exactly that one, not drop everything or keep
+    everything."""
+    target_ids, question_target_ids = _gallery_and_question_targets(
+        ["dhfr", "trpcage"])
+    assert set(target_ids) == {"dhfr", "trpcage"}
+    assert question_target_ids == ["dhfr"]
+
+
+def test_a_custom_playlist_disables_qa_rather_than_risk_the_wrong_target(tmp_path):
+    """ADDED (PR review, Copilot): `ui.playlist.load_questions()` is
+    documented to validate every question's `target_id` against the SHIPPED
+    default manifest ALWAYS, regardless of what manifest this run was
+    actually given via `run-demo.sh --playlist <custom>`. Left alone, that
+    means a custom manifest reusing a shipped id (e.g. `dhfr`) for a
+    DIFFERENT actual complex would offer the shipped methotrexate question
+    against whatever the custom entry actually folds -- so `_load_questions`
+    disables Q&A outright whenever `self.playlist_path` resolves to
+    anything other than the shipped manifest, rather than trust a
+    validation that was never told about the real one.
+
+    The custom path here need not even exist: the check is on the PATH,
+    before anything is read from it, which is what lets this test drive it
+    with no fixture manifest at all.
+    """
+    custom = tmp_path / "custom-manifest.yaml"
+    app = DemoApp(socket_path=None, playlist_path=str(custom), target_ids=None)
+    app._load_questions()
+    assert app.questions == []
+
+
+def test_the_shipped_manifest_still_offers_questions_however_the_path_is_spelled():
+    """The mutation guard for the test above: the shipped manifest, reached
+    via a DIFFERENT (but equivalent) path string than `ui.app._DEFAULT_
+    PLAYLIST`'s own `__file__`-relative computation, must still offer
+    questions -- an implementation that disabled Q&A unconditionally, or
+    compared path STRINGS instead of resolved ones, would pass the sibling
+    test above and fail this one."""
+    manifest = (pathlib.Path(__file__).resolve().parent.parent.parent
+                / "playlist" / "manifest.yaml")
+    app = DemoApp(socket_path=None, playlist_path=str(manifest), target_ids=None)
+    app._load_questions()
+    assert app.questions != []
+
+
+def test_no_target_selection_still_offers_every_shipped_question():
+    """The unrestricted case (no --targets) must not lose any question --
+    this is the twin of test_no_target_selection_means_the_whole_manifest
+    above, for questions instead of targets."""
+    _, question_target_ids = _gallery_and_question_targets(None)
+    assert set(question_target_ids) == {"dhfr", "trypsin", "fkbp12"}
+
+
 def test_the_state_tick_lets_the_pipeline_panel_notice_it_is_stale():
     """The panel owns the threshold and the clock (ui/panels.py's
     PipelinePanel.tick), but it has no timer of its own -- the booth's 100ms

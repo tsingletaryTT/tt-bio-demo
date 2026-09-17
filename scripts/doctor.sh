@@ -65,13 +65,13 @@ doctor_prefix() {
 # "source" or "package" -- which changes the ADVICE, not the checks. A source
 # checkout is told to run scripts/setup-venvs.sh; a packaged install is told
 # to use dpkg-reconfigure, because that is where its debconf answers live.
+#
+# The .git/tests sniff test itself now lives in scripts/weights-cache.sh's
+# tt_bio_demo_install_mode (shared with scripts/run-demo.sh, which used to
+# have no equivalent at all -- see that function's own comment), so this is
+# just doctor.sh's own notion of the prefix handed to the shared check.
 doctor_install_mode() {
-    _p="$(doctor_prefix)"
-    if [ -d "$_p/.git" ] || [ -d "$_p/tests" ]; then
-        printf 'source\n'
-    else
-        printf 'package\n'
-    fi
+    tt_bio_demo_install_mode "$(doctor_prefix)"
 }
 
 # Where the weights live, derived exactly as tt-bio derives it:
@@ -94,8 +94,61 @@ doctor_install_mode() {
 # shellcheck source=weights-cache.sh
 . "$(dirname "${BASH_SOURCE[0]:-$0}")/weights-cache.sh"
 
+# A PACKAGED install diagnosed here must see the SAME fixed, non-home-
+# relative cache path every other packaged caller pins --
+# debian/tt-bio-demo-weights.postinst, scripts/run-demo.sh (the packaged
+# install's actual operator-facing launcher), and
+# scripts/tt-bio-demo-daemon-launcher.sh (what debian/tt-bio-demo.user.
+# service's ExecStart= actually runs; the unit itself no longer carries a
+# static `Environment=` line -- see docs/followups.md's "the systemd unit's
+# Environment= is unconditional" entry, FIXED) -- see docs/followups.md's
+# "root's postinst-time HOME vs desktop-user's systemd-service-time HOME"
+# entry (FIXED) for the full history. An
+# INTERACTIVE operator running this script has neither the postinst's
+# environment (root, at `dpkg`/`apt install` time) nor the unit's (the
+# desktop user, at service-start time), so without this, checking a
+# packaged install here would report a $HOME-relative path the real daemon
+# never reads from -- pronouncing a working booth broken, or a broken one
+# healthy, depending on what happens to live in the operator's own $HOME.
+#
+# `tt_bio_demo_weights_cache_packaged` (scripts/weights-cache.sh, sourced
+# above) is the SAME function the postinst calls, via debian/helpers.sh's
+# wrapper of the same name -- one place decides the fixed path and pins the
+# variable the resolver checks first, not a second copy of that decision
+# here. It also keeps $TT_BIO_CACHE/$BOLTZ_CACHE read in exactly the files
+# tests/unit/test_weights_cache_is_derived_once.py already treats as the
+# sole resolvers.
+#
+# Scoped to a PACKAGED install only, via doctor_install_mode's existing
+# source-vs-package split: a source checkout keeps today's home-relative
+# default unconditionally -- that gap is tracked separately in
+# docs/followups.md as lower priority and is deliberately NOT touched here.
 doctor_weights_cache() {
-    tt_bio_demo_weights_cache
+    if [ "$(doctor_install_mode)" = "package" ]; then
+        tt_bio_demo_weights_cache_packaged
+    else
+        tt_bio_demo_weights_cache
+    fi
+}
+
+# Primes the packaged pin, once, at the TOP LEVEL of doctor_main -- never
+# inside a `$(...)` command substitution, whose exports evaporate the
+# moment the subshell exits. Without this, doctor_weights_cache's own pin
+# (done inside tt_bio_demo_weights_cache_packaged, when called from inside a
+# `_c="$(doctor_weights_cache)"` elsewhere in this file) would be scoped to
+# THAT one subshell and invisible to the python subprocesses
+# doctor_ask_tt_bio_about_weights spawns afterwards -- which matters
+# specifically for doctor_check_affinity_weights' nesso1 check, since nesso1
+# is an "hf-repo" artifact whose real location is decided by
+# `tt_bio.weights.configure_hf_cache` reading the SAME pinned variable at
+# `import tt_bio` time in THAT subprocess, not by the cache path argv
+# doctor.sh passes it. Calling doctor_weights_cache directly (as this
+# project's own tests do) works correctly without this, since there is no
+# outer subshell in that path for the export to be scoped to.
+doctor_prime_weights_cache() {
+    if [ "$(doctor_install_mode)" = "package" ]; then
+        tt_bio_demo_weights_cache_packaged >/dev/null
+    fi
 }
 
 # ── reporting ───────────────────────────────────────────────────────────────
@@ -250,17 +303,25 @@ doctor_ask_tt_bio_about_weights() {
     # Prints "<key> <state> <path>" per artifact, or nothing at all if it
     # cannot ask. A failure to ask is swallowed on purpose: an unaskable
     # tt-bio is not itself a weights fault, and the caller falls back.
+    #
+    # `$3`, the MODEL name, defaults to protenix-v2 -- the original, only
+    # caller. doctor_check_affinity_weights below passes "nesso1", which
+    # (per tt_bio.weights.MODEL_ARTIFACTS) resolves to BOTH of nesso1's
+    # registry rows -- nesso1 itself and nesso1-ccd -- in one ask, the same
+    # way `tt-bio weights --download nesso1` fetches both in one call.
     _rn="$1"
     _cache="$2"
+    _model="${3:-protenix-v2}"
     [ -x "$_rn" ] || return 1
-    "$_rn" - "$_cache" <<'TT_BIO_STATUS_EOF' 2>/dev/null
+    "$_rn" - "$_cache" "$_model" <<'TT_BIO_STATUS_EOF' 2>/dev/null
 import sys
 try:
     from tt_bio import weights
 except Exception:
     raise SystemExit(1)
 root = sys.argv[1]
-for art in weights.artifacts_for("protenix-v2"):
+model = sys.argv[2]
+for art in weights.artifacts_for(model):
     st = weights.status(art.key, root)
     # resolve() honours the per-artifact overrides that status()'s own path
     # does not for a derived row, so an operator who moved just the molecule
@@ -357,6 +418,156 @@ VERDICT_EOF
     return $_rc
 }
 
+# The ESM-2 encoder's model id, exactly as tt_bio.nesso1_input.ESM2_MODEL
+# declares it -- hardcoded here (importing that module pulls torch, rdkit and
+# safetensors just to read one string) and pinned against the real constant
+# by test_doctor.py's test_the_hardcoded_esm2_model_id_matches_the_real_constant,
+# the same guard scripts/setup-venvs.sh's copy of this string has.
+DOCTOR_ESM2_MODEL="facebook/esm2_t33_650M_UR50D"
+
+# The ESM-2 cache half of doctor_check_affinity_weights, split out so it can
+# be tested in isolation with a REAL interpreter (the affinity-weights stub
+# used elsewhere in test_doctor.py answers by argument COUNT and cannot run
+# real Python either heredoc actually contains).
+#
+# SIZE-AWARE, NOT EXISTENCE-ONLY. This used to be `os.path.isdir(d)` -- but a
+# directory left behind by an interrupted multi-GB download reports
+# "present" to an existence check, which is exactly the false-alarm-in-the-
+# other-direction this project's README warns about ("checked by size, not
+# existence -- a truncated download is the realistic failure and looks
+# healthy to an existence check"), and the neighbouring protenix-v2/mols
+# check already has a size floor for the same reason. `try_to_load_from_
+# cache` is huggingface_hub's own cache lookup (the same one
+# `tt_bio.weights.resolve` uses for hf-repo artifacts), so this asks the
+# real resolution rather than re-guessing the snapshot directory name, and
+# then applies a floor the way protenix-v2.pt's own check does.
+doctor_check_esm2_cache() {
+    _rn="$1"
+    [ -x "$_rn" ] || return 1
+    _esm_line="$("$_rn" - "$DOCTOR_ESM2_MODEL" <<'ESM2_CHECK_EOF' 2>/dev/null
+import os
+import sys
+try:
+    import tt_bio  # noqa: F401 -- side effect: configure_hf_cache()
+    from huggingface_hub import constants, try_to_load_from_cache
+except Exception:
+    raise SystemExit(1)
+model = sys.argv[1]
+snapshot_name = "models--" + model.replace("/", "--")
+fallback = os.path.join(constants.HF_HUB_CACHE, snapshot_name)
+path = try_to_load_from_cache(model, "model.safetensors", cache_dir=constants.HF_HUB_CACHE)
+if not isinstance(path, str):
+    print("missing", fallback)
+else:
+    try:
+        size = os.stat(path).st_size
+    except OSError:
+        size = 0
+    # The real file is ~2.6 GB; 1 GB is a floor no truncation this matters
+    # for would pass -- same reasoning, and the same margin, as
+    # protenix-v2.pt's own floor against its 1.86 GB real size.
+    if size < 1000000000:
+        print("truncated", f"{path} ({size} bytes)")
+    else:
+        print("present", path)
+ESM2_CHECK_EOF
+)"
+    if [ -z "$_esm_line" ]; then
+        warn "could not check the ESM-2 encoder cache"
+        return 1
+    fi
+    _esm_state="${_esm_line%% *}"
+    _esm_path="${_esm_line#* }"
+    case "$_esm_state" in
+        present)
+            ok "ESM-2 encoder ($_esm_path)"
+            return 0
+            ;;
+        truncated)
+            warn "ESM-2 encoder is truncated: $_esm_path -- affinity Q&A cannot featurize"
+            return 1
+            ;;
+        *)
+            warn "ESM-2 encoder is missing ($_esm_path) -- affinity Q&A cannot featurize"
+            return 1
+            ;;
+    esac
+}
+
+# nesso1 + nesso1-ccd + the ESM-2 encoder: what the affinity-Q&A feature
+# needs. Both install paths (scripts/setup-venvs.sh and the Debian
+# tt-bio-demo-weights postinst) now attempt to fetch these -- but a real,
+# still-open gap (docs/followups.md, "From the affinity-questions feature")
+# means a fetch that reports success does not guarantee the booth's own
+# process can find what it fetched, so this check still earns its keep.
+# Deliberately WARN-ONLY, never FAIL: a booth NOT started with `--questions`
+# (the default -- see runner/daemon.py's `questions_enabled`), or with only
+# one chip (which never reserves a Q&A worker -- see runner/daemon.py's
+# qa_capable gate), legitimately never needs any of this, and this check has
+# no way to know which case it is looking at from here. runner/daemon.py
+# already degrades a missing/broken
+# nesso1 gracefully (every question errors, nothing crashes) -- see its
+# MAX_PENDING_QUESTIONS comment -- so the doctor's job is to say "this will
+# not work" in advance, not to gate the booth on it.
+doctor_check_affinity_weights() {
+    _p="$(doctor_prefix)"
+    _rn="$_p/.venvs/venv-runner/bin/python3"
+    _c="$(doctor_weights_cache)"
+
+    if [ ! -x "$_rn" ]; then
+        warn "cannot check nesso1/ESM-2 yet -- venv-runner is not built"
+        hint "only matters if this booth answers affinity questions, which"
+        hint "is off by default -- see --questions in run-demo.sh"
+        return 0
+    fi
+
+    _verdicts="$(doctor_ask_tt_bio_about_weights "$_rn" "$_c" "nesso1")"
+    _nesso1_missing=0
+    if [ -n "$_verdicts" ]; then
+        while read -r _key _state _path; do
+            [ -n "$_key" ] || continue
+            case "$_state" in
+                present)
+                    ok "$_key ($_path)"
+                    ;;
+                corrupt|partial)
+                    warn "$_key is $_state at $_path -- affinity Q&A cannot answer"
+                    _nesso1_missing=1
+                    ;;
+                *)
+                    warn "$_key is missing ($_path) -- affinity Q&A cannot answer"
+                    _nesso1_missing=1
+                    ;;
+            esac
+        done <<VERDICT_EOF
+$_verdicts
+VERDICT_EOF
+    else
+        warn "could not ask tt-bio about nesso1/nesso1-ccd"
+        _nesso1_missing=1
+    fi
+
+    if ! doctor_check_esm2_cache "$_rn"; then
+        _nesso1_missing=1
+    fi
+
+    if [ "$_nesso1_missing" != "0" ]; then
+        if [ "$(doctor_install_mode)" = "package" ]; then
+            hint "sudo dpkg-reconfigure tt-bio-demo-weights"
+            hint "or, directly:"
+        else
+            hint "fetch them with:"
+        fi
+        hint "$_p/.venvs/venv-runner/bin/tt-bio weights --download nesso1"
+        hint "the ESM-2 encoder downloads through scripts/setup-venvs.sh's own"
+        hint "fetch step, or on first use if a question is ever asked with a"
+        hint "network available"
+        hint "about 578 MB + 2.6 GB; not required to fold or run the booth --"
+        hint "only to answer affinity questions"
+    fi
+    return 0
+}
+
 # Every manifest entry must name an input file that exists. The failure this
 # catches is a booth that runs fine for two targets and dies on the third,
 # in front of people.
@@ -437,10 +648,11 @@ doctor_check_space() {
         return 0
     fi
     _gb=$((_avail / 1000000))
-    # 3.7 GB of weights, plus tt-metal's own log churn (bounded by the
-    # daemon's budgets, but it still needs somewhere to churn).
-    if [ "$_gb" -lt 8 ]; then
-        warn "only ${_gb} GB free at $_dir (weights alone are 3.7 GB)"
+    # ~6.9 GB of weights (3.7 GB required to fold + 3.2 GB more for
+    # affinity Q&A), plus tt-metal's own log churn (bounded by the daemon's
+    # budgets, but it still needs somewhere to churn).
+    if [ "$_gb" -lt 12 ]; then
+        warn "only ${_gb} GB free at $_dir (weights alone are ~6.9 GB)"
     else
         ok "${_gb} GB free at $_dir"
     fi
@@ -477,6 +689,54 @@ doctor_check_display() {
     return 0
 }
 
+# The --fix repair for a missing weights-cache directory. Split out into its
+# own function (rather than left inline in doctor_main) the same way every
+# other check/repair in this file is, so a test can call it directly.
+#
+# A bare `mkdir -p "$_c" && ok ...` used to sit here: under `set -uo
+# pipefail` (no `-e`) a failed mkdir just short-circuited the `&&`, so a
+# non-root operator saw mkdir's own raw "Permission denied" on stderr and
+# NOTHING from this script -- no fail(), no hint(), from the one command
+# whose whole job is turning a bare shell error into a doctor-formatted one.
+# That is exactly the failure mode for a PACKAGED cache: the directory is
+# under /opt/tt-bio-demo, root-owned, and creating it needs root.
+doctor_fix_weights_dir() {
+    _c="$(doctor_weights_cache)"
+    [ -d "$_c" ] && return 0
+    if [ "$(doctor_install_mode)" = "package" ]; then
+        # -m 0777, matching debian/tt-bio-demo-weights.postinst's own mode --
+        # see docs/followups.md's "/opt/tt-bio-demo/weights is root-owned and
+        # not writable by the daemon" entry (FIXED): the daemon WRITES into
+        # this directory at runtime (download_mols' self-repair of a
+        # mols.tar that was never unpacked, a re-fetch of a corrupt
+        # artifact), so a directory this repair creates without an explicit
+        # mode -- landing at whatever the invoking shell's umask says --
+        # could silently reintroduce that exact bug.
+        #
+        # `install -d`, not `mkdir -p`, for the same reason the postinst
+        # uses it: -m only applies to the DEEPEST directory either command
+        # creates (shellcheck SC2174), which matters not at all here -- the
+        # parent /opt/tt-bio-demo always already exists by the time this
+        # runs (it is the base package's own install directory, and this
+        # package depends on it), so $_c's single missing leaf component IS
+        # the deepest directory created.
+        if install -d -m 0777 "$_c" 2>/dev/null; then
+            ok "created $_c"
+            return 0
+        fi
+        fail "could not create $_c"
+        hint "this is under /opt/tt-bio-demo, which needs root:"
+        hint "sudo install -d -m 0777 $_c"
+        return 1
+    fi
+    if mkdir -p "$_c" 2>/dev/null; then
+        ok "created $_c"
+        return 0
+    fi
+    fail "could not create $_c"
+    return 1
+}
+
 # ── main ────────────────────────────────────────────────────────────────────
 
 doctor_main() {
@@ -492,6 +752,10 @@ doctor_main() {
 
     _p="$(doctor_prefix)"
     _mode="$(doctor_install_mode)"
+    # Top-level, not inside a `$(...)`: see doctor_prime_weights_cache's own
+    # comment for why this has to run here, before any check, for its
+    # `export` to reach the subprocesses those checks spawn.
+    doctor_prime_weights_cache
     head_ "tt-bio-demo doctor"
     say "  prefix:  $_p"
     say "  mode:    $_mode install"
@@ -501,6 +765,7 @@ doctor_main() {
     head_ "virtual environments";  doctor_check_venvs && doctor_check_imports
     head_ "tt-bio version";        doctor_check_tt_bio_version
     head_ "model weights";         doctor_check_weights
+    head_ "affinity Q&A weights (optional)";  doctor_check_affinity_weights
     head_ "playlist";              doctor_check_playlist
     head_ "hardware";              doctor_check_hardware
     head_ "disk";                  doctor_check_space
@@ -513,10 +778,7 @@ doctor_main() {
     # and because this box is shared.
     if [ "$_fix" = "1" ]; then
         head_ "--fix"
-        _c="$(doctor_weights_cache)"
-        if [ ! -d "$_c" ]; then
-            mkdir -p "$_c" && ok "created $_c"
-        fi
+        doctor_fix_weights_dir
         say "  nothing else is repaired automatically: building venvs and"
         say "  downloading weights are large, networked, and this box may be"
         say "  shared. The exact commands are printed above."

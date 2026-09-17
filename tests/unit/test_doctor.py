@@ -350,3 +350,416 @@ def test_tt_bios_present_verdict_clears_a_path_the_doctor_cannot_see(tmp_path):
     assert r.returncode == 0, f"a relocated but present artifact failed:\n{out}"
     assert "/big-disk/protenix-v2.pt" in out, \
         f"the doctor should report where tt-bio actually found it:\n{out}"
+
+
+# ---------------------------------------------------------------------------
+# nesso1 / nesso1-ccd / the ESM-2 encoder -- the affinity-questions
+# provisioning gap (docs/followups.md, "From the affinity-questions
+# feature"). Deliberately WARN-ONLY: a booth not started with --questions
+# (the default), or a single-chip box (which never reserves a Q&A worker),
+# legitimately never needs any of this, and the doctor cannot tell which
+# case it is looking at.
+# ---------------------------------------------------------------------------
+
+def _stub_runner_for_affinity(tmp_path, *, nesso1="present", nesso1_ccd="present",
+                               esm2="present", mode="source"):
+    """A prefix whose venv-runner/bin/python3 is a stub that answers BOTH
+    calls doctor_check_affinity_weights makes: the 2-arg status query
+    (cache, model) that doctor_ask_tt_bio_about_weights sends, and the 1-arg
+    ESM-2 cache check. Discriminated by argument COUNT, since a shell stub
+    cannot run the real Python either heredoc actually contains."""
+    prefix = tmp_path / "prefix"
+    (prefix / "ui").mkdir(parents=True)
+    if mode == "source":
+        (prefix / "tests").mkdir()
+    stub = prefix / ".venvs" / "venv-runner" / "bin"
+    stub.mkdir(parents=True)
+    py = stub / "python3"
+    py.write_text(
+        "#!/bin/sh\n"
+        'if [ "$#" = "2" ]; then\n'
+        f'  echo "nesso1 {nesso1} /cache/nesso1/v1.0.0/model.safetensors"\n'
+        f'  echo "nesso1-ccd {nesso1_ccd} /cache/nesso1/ccd.pkl"\n'
+        "else\n"
+        f'  echo "{esm2} /hf-cache/models--facebook--esm2_t33_650M_UR50D"\n'
+        "fi\n")
+    py.chmod(0o755)
+    return prefix
+
+
+def test_affinity_weights_present_reports_ok_and_never_fails(tmp_path):
+    prefix = _stub_runner_for_affinity(tmp_path)
+    r = _sh("doctor_check_affinity_weights", TT_BIO_DEMO_PREFIX=str(prefix))
+    out = r.stdout + r.stderr
+    assert r.returncode == 0, f"a healthy affinity-weights check failed:\n{out}"
+    assert "nesso1" in out and "ESM-2" in out, out
+    assert "[FAIL]" not in out, f"this check must never FAIL:\n{out}"
+
+
+def test_missing_nesso1_is_a_warning_not_a_failure(tmp_path):
+    """THE CORE RULE. A booth not started with --questions (the default) or
+    with one chip never needs nesso1 at all, and this check cannot tell --
+    so absence is reported, loudly, but the exit code must stay 0."""
+    prefix = _stub_runner_for_affinity(tmp_path, nesso1="missing", nesso1_ccd="missing")
+    r = _sh("doctor_check_affinity_weights", TT_BIO_DEMO_PREFIX=str(prefix))
+    out = r.stdout + r.stderr
+    assert r.returncode == 0, f"a missing nesso1 must warn, not fail:\n{out}"
+    assert "[warn]" in out, f"nothing warned about the missing weights:\n{out}"
+    assert "nesso1" in out
+
+
+def test_missing_nesso1_names_the_download_command(tmp_path):
+    prefix = _stub_runner_for_affinity(tmp_path, nesso1="missing", nesso1_ccd="missing")
+    r = _sh("doctor_check_affinity_weights", TT_BIO_DEMO_PREFIX=str(prefix))
+    out = r.stdout + r.stderr
+    assert "tt-bio weights --download nesso1" in out, (
+        f"no command offered to fetch the missing weights:\n{out}")
+
+
+def test_missing_esm2_is_also_a_warning_not_a_failure(tmp_path):
+    prefix = _stub_runner_for_affinity(tmp_path, esm2="missing")
+    r = _sh("doctor_check_affinity_weights", TT_BIO_DEMO_PREFIX=str(prefix))
+    out = r.stdout + r.stderr
+    assert r.returncode == 0, f"a missing ESM-2 cache must warn, not fail:\n{out}"
+    assert "[warn]" in out and "ESM-2" in out, out
+
+
+# ---------------------------------------------------------------------------
+# doctor_check_esm2_cache, in isolation, against a REAL venv-runner
+# interpreter and a real (fake-content) Hugging Face hub cache layout --
+# not the argument-count stub used above, which cannot exercise the actual
+# size-aware Python this function runs. THE BUG: the ESM-2 half used to be
+# `os.path.isdir(d)`, which reports a directory left by an interrupted
+# multi-GB download as "present" -- the exact false-healthy case this
+# project's own README warns about for the protenix-v2/mols check one layer
+# over ("checked by size, not existence -- a truncated download is the
+# realistic failure and looks healthy to an existence check").
+# ---------------------------------------------------------------------------
+
+def _real_runner_python():
+    py = REPO / ".venvs" / "venv-runner" / "bin" / "python3"
+    if not py.exists():
+        pytest.skip("venv-runner is not built; cannot run the real check")
+    return py
+
+
+def _fake_hf_snapshot(cache_dir, model, filename, size):
+    """A minimal but REAL Hugging Face hub cache layout -- just enough for
+    `huggingface_hub.try_to_load_from_cache` to resolve `filename` -- with
+    `filename` a SPARSE file that REPORTS `size` bytes without occupying
+    them. This project's own convention (see `_sized` above): the check
+    under test reads `stat -c %s`, so a sparse file exercises it exactly,
+    and the first version of doctor's size-floor tests wrote real
+    gigabyte-scale fixtures and put 15 GB into /tmp across three runs on a
+    box already at 100% disk."""
+    repo_dir = cache_dir / ("models--" + model.replace("/", "--"))
+    rev = "0" * 40
+    (repo_dir / "snapshots" / rev).mkdir(parents=True, exist_ok=True)
+    (repo_dir / "refs").mkdir(parents=True, exist_ok=True)
+    (repo_dir / "refs" / "main").write_text(rev)
+    (repo_dir / "blobs").mkdir(parents=True, exist_ok=True)
+    blob = repo_dir / "blobs" / "fakehash"
+    with open(blob, "wb") as fh:
+        fh.truncate(size)
+    (repo_dir / "snapshots" / rev / filename).symlink_to(blob)
+
+
+def test_a_truncated_esm2_download_is_flagged_not_reported_present(tmp_path):
+    """A directory (here: a snapshot tree) containing only a tiny/truncated
+    file must NOT be reported present -- an existence check would call this
+    healthy."""
+    py = _real_runner_python()
+    cache = tmp_path / "hf-cache"
+    _fake_hf_snapshot(cache, "facebook/esm2_t33_650M_UR50D",
+                       "model.safetensors", 100)  # sparse, tiny: truncated
+    r = _sh(f"doctor_check_esm2_cache '{py}'", HF_HUB_CACHE=str(cache))
+    out = r.stdout + r.stderr
+    assert r.returncode != 0, f"a truncated ESM-2 download passed as healthy:\n{out}"
+    assert "[warn]" in out and "truncat" in out.lower(), out
+
+
+def test_a_complete_esm2_download_is_reported_present(tmp_path):
+    """The matched pair: a file that clears the size floor must not be
+    flagged, or the check would be useless in the other direction."""
+    py = _real_runner_python()
+    cache = tmp_path / "hf-cache"
+    _fake_hf_snapshot(cache, "facebook/esm2_t33_650M_UR50D",
+                       "model.safetensors", 2_600_000_000)  # sparse, real-sized
+    r = _sh(f"doctor_check_esm2_cache '{py}'", HF_HUB_CACHE=str(cache))
+    out = r.stdout + r.stderr
+    assert r.returncode == 0, f"a complete ESM-2 download was flagged:\n{out}"
+    assert "[ ok ]" in out, out
+
+
+def test_a_missing_esm2_snapshot_is_flagged_via_the_real_check(tmp_path):
+    """No cache at all -- the ordinary missing case, run through the real
+    interpreter rather than the discriminated-by-argument-count stub."""
+    py = _real_runner_python()
+    cache = tmp_path / "hf-cache"  # deliberately not created
+    r = _sh(f"doctor_check_esm2_cache '{py}'", HF_HUB_CACHE=str(cache))
+    out = r.stdout + r.stderr
+    assert r.returncode != 0, f"a missing ESM-2 cache passed as healthy:\n{out}"
+    assert "[warn]" in out, out
+
+
+def test_esm2_cache_check_never_calls_fail_either():
+    """Same invariant as doctor_check_affinity_weights, one function down:
+    this is called from a warn-only check, so it must never escalate on its
+    own."""
+    src = DOCTOR.read_text()
+    start = src.index("doctor_check_esm2_cache() {")
+    end = src.index("\ndoctor_check_affinity_weights() {")
+    body = src[start:end]
+    assert "fail " not in _uncommented(body) and "fail\"" not in _uncommented(body), (
+        "doctor_check_esm2_cache must never call fail() -- it is used from "
+        "a warn-only check")
+
+
+def test_corrupt_nesso1_is_a_warning_not_a_failure(tmp_path):
+    """Mirrors protenix-v2's corrupt-file case, one layer over -- but this
+    check's whole point is that it must never escalate to FAIL."""
+    prefix = _stub_runner_for_affinity(tmp_path, nesso1="corrupt")
+    r = _sh("doctor_check_affinity_weights", TT_BIO_DEMO_PREFIX=str(prefix))
+    out = r.stdout + r.stderr
+    assert r.returncode == 0, f"a corrupt nesso1 must warn, not fail:\n{out}"
+    assert "[warn]" in out and "corrupt" in out.lower(), out
+
+
+def test_no_venv_runner_warns_gracefully_instead_of_erroring(tmp_path):
+    """Before venv-runner exists there is nothing to ask -- tt_bio cannot be
+    imported from anywhere. This must read as a warning, not a shell error."""
+    prefix = tmp_path / "prefix"
+    (prefix / "ui").mkdir(parents=True)
+    r = _sh("doctor_check_affinity_weights", TT_BIO_DEMO_PREFIX=str(prefix))
+    out = r.stdout + r.stderr
+    assert r.returncode == 0, out
+    assert "[warn]" in out, f"a missing venv-runner should warn, not go silent:\n{out}"
+    assert "questions" in out or "--questions" in out, (
+        f"should point out this only matters for affinity Q&A:\n{out}")
+
+
+def test_the_check_never_calls_fail_directly():
+    """The rule stated in the function's own comment, pinned as a test: a
+    single stray `fail` call inside this function would make a booth that
+    never uses affinity Q&A unable to pass the doctor. Parsed textually
+    rather than by running every combination, since the invariant is about
+    what the function CAN do, not what one input happens to trigger."""
+    src = DOCTOR.read_text()
+    start = src.index("doctor_check_affinity_weights() {")
+    # The next top-level function definition ends this one's body.
+    end = src.index("\ndoctor_check_playlist() {")
+    body = src[start:end]
+    assert "fail " not in _uncommented(body) and "fail\"" not in _uncommented(body), (
+        "doctor_check_affinity_weights must never call fail() -- it is "
+        "deliberately warn-only")
+
+
+def test_it_is_wired_into_doctor_main():
+    s = DOCTOR.read_text()
+    assert "doctor_check_affinity_weights" in s.split("doctor_main()")[1], (
+        "the new check is defined but never called from doctor_main")
+
+
+def test_the_hardcoded_esm2_model_id_matches_the_real_constant():
+    """DOCTOR_ESM2_MODEL is hardcoded (importing tt_bio.nesso1_input pulls
+    torch/rdkit/safetensors just to read one string) and must be pinned
+    against the real tt_bio.nesso1_input.ESM2_MODEL -- the same guard
+    scripts/setup-venvs.sh's own copy of this string has."""
+    import ast
+
+    venv = REPO / ".venvs" / "venv-runner"
+    site = next(venv.glob("lib/python3.*/site-packages/tt_bio"), None)
+    if site is None:
+        pytest.skip("venv-runner is not built; cannot check the real constant")
+
+    tree = ast.parse((site / "nesso1_input.py").read_text())
+    real_value = None
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id == "ESM2_MODEL"
+                and isinstance(node.value, ast.Constant)):
+            real_value = node.value.value
+            break
+    assert real_value is not None, "could not find ESM2_MODEL in tt_bio/nesso1_input.py"
+
+    hardcoded = None
+    for line in DOCTOR.read_text().splitlines():
+        line = line.strip()
+        if line.startswith("DOCTOR_ESM2_MODEL="):
+            hardcoded = line.split("=", 1)[1].strip('"')
+            break
+    assert hardcoded == real_value, (
+        f"doctor.sh hardcodes DOCTOR_ESM2_MODEL={hardcoded!r}, but the pinned "
+        f"tt-bio's tt_bio.nesso1_input.ESM2_MODEL is {real_value!r}")
+
+
+# ---------------------------------------------------------------------------
+# The packaged-install cache pin: docs/followups.md's "root's postinst-time
+# HOME vs desktop-user's systemd-service-time HOME" entry (FIXED).
+#
+# The weights postinst runs as root during dpkg/apt (HOME=/root) and the
+# systemd --user unit runs the daemon as the desktop user (a different HOME
+# entirely); both pin $TT_BIO_CACHE to one fixed, non-home-relative path so
+# neither ever derives ~/.boltz. An operator running doctor.sh interactively
+# has NEITHER of those two processes' environments, so without a matching
+# pin here the doctor would check a directory the real daemon never reads
+# from -- reporting a working booth broken, or a broken one healthy.
+# ---------------------------------------------------------------------------
+
+def _fake_package_prefix(tmp_path):
+    """A prefix doctor_install_mode reports as "package": no .git, no
+    tests/, just enough of the layout to be found at all."""
+    prefix = tmp_path / "opt" / "tt-bio-demo"
+    (prefix / "ui").mkdir(parents=True)
+    return prefix
+
+
+def test_a_packaged_install_reports_the_fixed_cache_when_nothing_is_set(tmp_path):
+    """The core fix: with neither $TT_BIO_CACHE nor $BOLTZ_CACHE set, a
+    PACKAGED install must report the SAME fixed path the postinst and the
+    systemd unit pin, not a $HOME-relative guess that belongs to whoever
+    happens to run this script."""
+    prefix = _fake_package_prefix(tmp_path)
+    r = _sh("doctor_weights_cache", TT_BIO_DEMO_PREFIX=str(prefix),
+            TT_BIO_CACHE="", BOLTZ_CACHE="")
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == "/opt/tt-bio-demo/weights", r.stdout
+
+
+def test_a_source_checkout_keeps_the_home_relative_default(tmp_path):
+    """The fix is scoped to the PACKAGED path on purpose -- a source checkout
+    (this repo, or any prefix doctor_install_mode calls "source") must keep
+    today's $HOME-relative behaviour unconditionally, because that gap is a
+    separate, lower-priority item in docs/followups.md."""
+    r = _sh("doctor_weights_cache", TT_BIO_CACHE="", BOLTZ_CACHE="",
+            HOME=str(tmp_path / "somebody"))
+    assert r.stdout.strip() == str(tmp_path / "somebody" / ".boltz"), r.stdout
+
+
+def test_a_packaged_installs_own_tt_bio_cache_override_still_wins(tmp_path):
+    """This project's standing rule: an operator who set a cache variable
+    deliberately keeps their choice. The pin must only fill the gap when
+    NEITHER variable is set, never overwrite an explicit one."""
+    prefix = _fake_package_prefix(tmp_path)
+    moved = tmp_path / "operators-own-disk"
+    r = _sh("doctor_weights_cache", TT_BIO_DEMO_PREFIX=str(prefix),
+            TT_BIO_CACHE=str(moved), BOLTZ_CACHE="")
+    assert r.stdout.strip() == str(moved), r.stdout
+
+
+def test_a_packaged_installs_own_boltz_cache_override_still_wins(tmp_path):
+    """Same rule, for the older variable: $BOLTZ_CACHE alone is enough to
+    mean "the operator already decided", even without $TT_BIO_CACHE."""
+    prefix = _fake_package_prefix(tmp_path)
+    moved = tmp_path / "an-older-override"
+    r = _sh("doctor_weights_cache", TT_BIO_DEMO_PREFIX=str(prefix),
+            TT_BIO_CACHE="", BOLTZ_CACHE=str(moved))
+    assert r.stdout.strip() == str(moved), r.stdout
+
+
+def test_the_summary_line_reports_the_pinned_path_for_a_packaged_install(tmp_path):
+    """doctor_main's own "weights: ..." summary line is built from
+    doctor_prime_weights_cache + doctor_weights_cache, in that order, at the
+    top level (not inside a `$(...)`) -- the exact sequence doctor_main
+    itself runs before printing it. Exercised directly rather than through
+    the whole doctor_main (which would also shell out to tt-smi, df, etc.)
+    so this stays a fast, deterministic unit test."""
+    prefix = _fake_package_prefix(tmp_path)
+    r = _sh('doctor_prime_weights_cache\n'
+            'say "  weights: $(doctor_weights_cache)"',
+            TT_BIO_DEMO_PREFIX=str(prefix), TT_BIO_CACHE="", BOLTZ_CACHE="")
+    assert "/opt/tt-bio-demo/weights" in r.stdout, r.stdout + r.stderr
+
+
+# ---------------------------------------------------------------------------
+# The shared "source"/"package" sniff test (Critical 1's plumbing): before
+# this, doctor_install_mode had ITS OWN copy of the .git/tests check, and
+# scripts/run-demo.sh -- a fourth caller of the weights-cache machinery, and
+# the packaged install's actual operator-facing launcher -- had no equivalent
+# at all, so it always resolved the plain, $HOME-relative default even from a
+# real /opt/tt-bio-demo tree. See docs/followups.md's "run-demo.sh resolved
+# home-relative even from a packaged install" entry (FIXED).
+# ---------------------------------------------------------------------------
+
+def test_doctor_install_mode_delegates_to_the_shared_check_rather_than_repeating_it():
+    """doctor_install_mode must not keep its own copy of the .git/tests sniff
+    test -- that is exactly the kind of second copy this project's tests
+    already guard against for the weights-cache resolvers themselves, and
+    scripts/run-demo.sh needs the identical check applied to ITS OWN notion
+    of the prefix."""
+    doctor = DOCTOR.read_text()
+    fn = doctor.split("doctor_install_mode() {", 1)[1].split("\n}\n", 1)[0]
+    assert "tt_bio_demo_install_mode" in fn, \
+        "doctor_install_mode should delegate to the shared function"
+    assert ".git" not in fn and "tests" not in fn, \
+        "doctor_install_mode should not repeat the .git/tests check itself"
+
+
+def test_the_shared_install_mode_function_works_directly(tmp_path):
+    """scripts/weights-cache.sh's tt_bio_demo_install_mode, called directly
+    with an explicit prefix argument -- exactly how scripts/run-demo.sh now
+    calls it (with $REPO_ROOT), as opposed to doctor.sh's own doctor_prefix()
+    wrapper around the same underlying check."""
+    assert _sh(f'tt_bio_demo_install_mode "{REPO}"').stdout.strip() == "source"
+    fake = tmp_path / "opt" / "tt-bio-demo"
+    fake.mkdir(parents=True)
+    assert _sh(f'tt_bio_demo_install_mode "{fake}"').stdout.strip() == "package"
+    (fake / ".git").mkdir()
+    assert _sh(f'tt_bio_demo_install_mode "{fake}"').stdout.strip() == "source"
+
+
+# ---------------------------------------------------------------------------
+# doctor --fix's weights-directory repair (Important 3's other half): a bare
+# `mkdir -p "$_c" && ok ...` used to sit inline in doctor_main. Under
+# `set -uo pipefail` (no `-e`) a failed mkdir just short-circuited the `&&`,
+# so a non-root operator diagnosing a packaged install (where the cache is
+# under root-owned /opt/tt-bio-demo) saw mkdir's own raw "Permission denied"
+# on stderr and NOTHING from this script -- no fail(), no hint(). Split out
+# into doctor_fix_weights_dir so it is directly testable like every other
+# check/repair in this file.
+# ---------------------------------------------------------------------------
+
+def test_fix_creates_a_missing_cache_directory_in_source_mode(tmp_path):
+    home = tmp_path / "somebody"
+    home.mkdir()
+    r = _sh("doctor_fix_weights_dir", TT_BIO_CACHE="", BOLTZ_CACHE="", HOME=str(home))
+    assert r.returncode == 0, r.stderr
+    assert (home / ".boltz").is_dir()
+
+
+def test_fix_creates_a_missing_cache_directory_writable_in_package_mode(tmp_path):
+    """The packaged repair must use the SAME writable mode
+    debian/tt-bio-demo-weights.postinst uses (0777) -- not merely readable,
+    since runner/folder.py's Folder.load() self-repair writes into this
+    directory at runtime, as whichever desktop user runs the daemon."""
+    prefix = _fake_package_prefix(tmp_path)
+    cache_dir = tmp_path / "opt" / "tt-bio-demo" / "weights"
+    r = _sh("doctor_fix_weights_dir", TT_BIO_DEMO_PREFIX=str(prefix),
+            TT_BIO_CACHE=str(cache_dir), BOLTZ_CACHE="")
+    assert r.returncode == 0, r.stderr
+    assert cache_dir.is_dir()
+    mode = cache_dir.stat().st_mode & 0o777
+    assert mode == 0o777, f"expected 0777, got {oct(mode)}"
+
+
+def test_fix_reports_a_permission_failure_instead_of_a_raw_mkdir_error(tmp_path):
+    """The regression this replaces: a failed mkdir under `set -uo pipefail`
+    used to print nothing from this script at all -- just mkdir's own raw
+    stderr line, with no fail()/hint() to tell an operator what to do about
+    it. Forced here with a directory this test process genuinely cannot
+    write into (this sandbox is not root), the same shape of failure a
+    non-root operator hits under /opt/tt-bio-demo."""
+    prefix = _fake_package_prefix(tmp_path)
+    locked = tmp_path / "locked"
+    locked.mkdir(mode=0o000)
+    try:
+        cache_dir = locked / "weights"
+        r = _sh("doctor_fix_weights_dir", TT_BIO_DEMO_PREFIX=str(prefix),
+                TT_BIO_CACHE=str(cache_dir), BOLTZ_CACHE="")
+        assert r.returncode != 0
+        assert "[FAIL]" in r.stdout, r.stdout + r.stderr
+        assert "->" in r.stdout, "expected a hint() line naming what to do"
+    finally:
+        locked.chmod(0o755)

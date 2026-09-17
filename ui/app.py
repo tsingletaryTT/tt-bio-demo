@@ -167,6 +167,7 @@ three on. Both are the same four viewers.
 import argparse
 import collections
 import logging
+import os
 import pathlib
 import sys
 import threading
@@ -186,13 +187,16 @@ from ui.client import EventClient, LatestFrameByJob
 from ui.diagnostics import KIND_MARK, DiagnosticsLog, DiagnosticsPanel
 from ui.gallery import Gallery
 from ui.geometry import PLDDT_STOPS, ribbon_from_cif
+from ui.pocket import POCKET_CUTOFF_ANGSTROM, pocket_residues
 from ui.structure_view import structure_mesh
 from ui.panels import PipelinePanel, TelemetryPanel
-from ui.playlist import PlaylistError, load_playlist, select_targets
-from ui.attract import (CLOSE_DIAGNOSTICS, CLOSE_TENSIX, HIDE_GALLERY,
-                        OPEN_DIAGNOSTICS, OPEN_TENSIX, SHOW_GALLERY,
-                        Choreography)
-from ui.quad import QUAD_HELP_LINE, QUAD_KEYS, QuadView
+from ui.playlist import PlaylistError, load_playlist, load_questions, select_targets
+from ui.qa_spotlight import QASpotlightCell
+from ui.questions import QuestionQueuePanel
+from ui.attract import (ASK_QUESTION, CLOSE_DIAGNOSTICS, CLOSE_TENSIX,
+                        HIDE_GALLERY, OPEN_DIAGNOSTICS, OPEN_TENSIX,
+                        SHOW_GALLERY, Choreography)
+from ui.quad import QUAD_KEYS, QuadView, chip_count_word, quad_help_line
 from ui.slots import MAX_SLOTS, SlotRouter
 from ui.states import BoothState, StateMachine
 from ui.telemetry import TelemetrySampler
@@ -462,6 +466,33 @@ def cell_caption(*, name, stage, showing=None, empty=False, awaiting=False):
     return line
 
 
+# ── the pocket highlight (Task 11, affinity-questions) ──────────────────────
+
+def _compute_pocket_residues(cif_path):
+    """Parse `cif_path` and return the set of protein residues near its
+    ligand -- `ui.pocket.pocket_residues`'s own return shape, a set of
+    `(chain_id, residue_seqid)` pairs, or an empty set for a structure with
+    no ligand (three of this booth's targets have none).
+
+    A module-level function, not inlined into `_highlight_worker_main`, for
+    the same reason `structure_mesh` is imported at module level rather than
+    called through some deeper path: it is the one seam a test can
+    monkeypatch (`ui.app._compute_pocket_residues`) to drive the highlight
+    pipeline with a canned pocket instead of a real gemmi parse, mirroring
+    `tests/unit/test_ribbon_async.py`'s own `monkeypatch.setattr(mod,
+    "structure_mesh", ...)` pattern for the ribbon build it sits beside.
+
+    Runs entirely off the main loop (see `_highlight_worker_main`) -- gemmi
+    parsing a multi-thousand-atom structure is exactly the kind of cost
+    `ui/structure_view.py`'s own docstring already measures for the cartoon
+    build it feeds.
+    """
+    import gemmi
+    structure = gemmi.read_structure(str(cif_path))
+    structure.setup_entities()
+    return pocket_residues(structure)
+
+
 class _SlotView:
     """The app's half of one cell: what it is showing and what it awaits.
 
@@ -486,11 +517,21 @@ class _SlotView:
     is per cell for the same reason everything else here is: four chips fold
     at once, and one booth-wide stage would animate whichever fold spoke last
     on all four of the Tensix panel's canvases (see `_chip_stages`).
+
+    `shown_cif_path` (Task 11, affinity-questions) is the `.cif` behind the
+    ribbon actually on screen in this cell, set the moment `_apply_ribbon`
+    puts it there. It exists for exactly one purpose: when an `answer_done`
+    names a target this cell is STILL showing (`shown_target_id` matches),
+    this is what lets the pocket highlight be rebuilt from the SAME
+    structure rather than needing a second copy of the fold's own cif_path
+    kept somewhere else. Never read for anything else -- in particular,
+    never trusted as "the newest fold's cif" once `shown_target_id` no
+    longer matches the target it was recorded for.
     """
 
     __slots__ = ("awaiting_first_frame", "current_job_id", "current_target_id",
                  "shown_target_id", "has_structure", "ribbon_generation",
-                 "pending_ribbon", "stage")
+                 "pending_ribbon", "stage", "shown_cif_path", "pending_highlight")
 
     def __init__(self):
         self.awaiting_first_frame = False
@@ -501,6 +542,15 @@ class _SlotView:
         self.ribbon_generation = 0
         self.pending_ribbon = None
         self.stage = None
+        self.shown_cif_path = None
+        # (target_id, outcome) from a finished `_highlight_worker_main`, not
+        # yet applied -- guarded by the same `_ribbon_lock` `pending_ribbon`
+        # is, and drained the same way (`_drain_pending_highlight`, woken by
+        # `GLib.idle_add` exactly like `_drain_pending_ribbon`). See
+        # `_spawn_highlight_worker`'s own docstring for why this is a
+        # SEPARATE small pipeline rather than reusing `pending_ribbon`/
+        # `ribbon_generation`.
+        self.pending_highlight = None
 
 
 # ── booth timing ────────────────────────────────────────────────────────────
@@ -787,7 +837,7 @@ _DIAGNOSTICS_KEYS = frozenset({"d"})
 # Nothing about it is persisted: a restart at the venue is a clean booth.
 _TENSIX_KEYS = frozenset({"t"})
 # The quad view's key is DECIDED IN `ui/quad.py`, beside the view it opens and
-# beside the `?`-card copy that describes it (`QUAD_HELP_LINE`), so the
+# beside the `?`-card copy that describes it (`quad_help_line`), so the
 # binding and the words a visitor reads about it cannot drift apart. Imported
 # rather than restated for the same reason -- a second `frozenset({"q"})` here
 # would be a second place to change it. `_handle_key` reads it exactly the way
@@ -829,6 +879,56 @@ _QUAD_KEYS = QUAD_KEYS
 # `test_the_easter_egg_is_not_advertised_on_the_help_card`, which pins that as
 # a decision rather than leaving it as an omission somebody later "fixes".
 _EGG_KEYS = frozenset({"g"})
+
+# ── Ctrl+A: opt in to affinity Q&A, live ────────────────────────────────────
+#
+# Q&A is off by default (runner/daemon.py's `DaemonConfig.questions_enabled`)
+# because permanently reserving a chip for it costs a 4-chip booth 25% of its
+# fold throughput -- an operator who wants the feature says so explicitly.
+# `--questions` at launch (scripts/run-demo.sh) is the setup-time way to say
+# that; this chord is the LIVE one, for an operator who did not think to set
+# the flag before the booth went up, or who decides mid-run that a booth is
+# worth the tradeoff after all.
+#
+# There is no live "reserve a chip now" path, and this key does not attempt
+# one -- that would mean taking a chip away from a fold loop the daemon may
+# already be running (or a fold already in flight on it), i.e. reserving or
+# releasing a device while the daemon keeps running. That is a materially
+# bigger and riskier feature than anyone asked for, and was decided against
+# explicitly rather than by omission: the only thing this key does is exit
+# the process with a documented sentinel exit code
+# (`QUESTIONS_RESTART_EXIT_CODE`, below) -- scripts/run-demo.sh is what turns
+# that into an actual restart with `--questions` added, near its own
+# invocation of the UI. A restart costs the booth a few dark seconds, the
+# same as any other startup-time config change in this project's history.
+#
+# `Ctrl+A`, for "Ask"/"Affinity" -- checked against every existing binding
+# before picking it: the operator chords already claimed are Ctrl+Q (quit),
+# Ctrl+F (fullscreen) and Ctrl+G (the egg); the visitor-facing plain keys are
+# Q, T, D, `?`/F1 and Esc, none of them a chord at all. Unlike Ctrl+G's egg,
+# this one IS documented on the `?` card (`_key_help` below): it is a real
+# operator feature an operator needs to be able to find, not a hidden one.
+_QA_RESTART_KEYS = frozenset({"a"})
+
+# Set by scripts/run-demo.sh (only) on the UI subprocess's own environment,
+# so `_request_qa_restart` can tell that flow apart from every other way this
+# app starts: a bare `python3 -m ui.app` run by hand, or the packaged
+# systemd-unit + `.desktop`-entry deployment, where the daemon and the UI are
+# two independently-managed processes with no single parent able to restart
+# both (see docs/followups.md for that follow-up). Neither of those has
+# anything watching for `QUESTIONS_RESTART_EXIT_CODE`, so exiting with it
+# there would just quit the booth with no explanation -- worse than doing
+# nothing.
+RUN_DEMO_SH_ENV_VAR = "TT_BIO_DEMO_RUN_DEMO_SH"
+
+# Distinct from every other exit path this process has (0 = a normal/clean
+# quit or `main()`'s KeyboardInterrupt-free return, 130 = SIGINT -- see
+# `main()`). scripts/run-demo.sh checks the UI child's exit code for exactly
+# this value and, only then, skips its normal cleanup-and-exit path in favor
+# of tearing the daemon down and re-invoking itself with `--questions`
+# added. Never used for anything else, and never produced except by
+# `_request_qa_restart` below.
+QUESTIONS_RESTART_EXIT_CODE = 42
 
 # One frame per tick, at the same cadence `_drain_frames` runs a real fold's
 # frames at -- so the egg's collapse is paced like the diffusion trajectory it
@@ -1276,49 +1376,86 @@ window, .booth-root, .booth-side {{
 # away, the trajectory IS the model's own, and the timings are the measured
 # ones from docs/followups.md's 30-fold soak (4.35-4.45s warm), not marketing
 # numbers.
-_HELP_INTRO = (
-    "A protein structure prediction, running right now on Tenstorrent "
-    "Blackhole chips a few feet away. This is not a recording or an "
-    "animation: the cloud of points collapsing on screen is the model's own "
-    "working, streamed off the chip as it computes, and the ribbon at the "
-    "end is the structure it just predicted.",
+#
+# `_HELP_INTRO` used to be a plain module-level tuple. It is a function of
+# `n_chips` now, for the identical reason `_key_help`/`_help_panels` below
+# are (whole-branch review, Important 3, and this follow-up to it): the last
+# paragraph said "four proteins", hardcoded, which goes false the instant
+# `runner.workers.split_for_qa` reserves one chip for Q&A -- a
+# 4-physical-chip box with the affinity-questions feature enabled folds on
+# 3. Important 3's fix converted `_KEY_HELP`/`_HELP_PANELS` and
+# `ui/quad.py`'s `QUAD_HELP_LINE` to functions of `n_chips` but missed this
+# tuple, found here during a real-hardware verification run of the same
+# feature. `n_chips` is `len(DemoApp.cards)` -- the daemon's own
+# `hello.cards` -- threaded in by `_build_help_overlay` at build time and
+# kept in sync afterwards by `_sync_help_copy`, exactly as the other two.
+def _help_intro(n_chips):
+    word = chip_count_word(n_chips)
+    protein_word = "protein" if n_chips == 1 else "proteins"
+    return (
+        "A protein structure prediction, running right now on Tenstorrent "
+        "chips a few feet away — not a recording. The collapsing point cloud "
+        "is the model's own work, streamed live; the ribbon at the end is "
+        "what it just predicted.",
 
-    "A protein is a chain of amino acids that only does its job once it "
-    "folds into a particular three-dimensional shape. Predicting that shape "
-    "from the sequence of the chain alone is the problem this model solves "
-    "— here, in about four and a half seconds per protein.",
+        "A protein only works once it folds into one particular 3D shape. "
+        "Predicting that shape from its sequence alone is the problem this "
+        "model solves — in about four and a half seconds, here.",
 
-    "It works by denoising: the model starts from a cloud of random atom "
-    "positions and pulls it, over roughly 200 small steps, into a real "
-    "structure. Touch the screen to see everything this booth folds.",
+        "It works by denoising: starting from random atom positions, it "
+        "pulls them into a real structure over roughly 200 steps. Touch the "
+        "screen to see everything this booth folds.",
 
-    # The disclosure, in the visitor's own words. The booth folds its
-    # playlist in its own order and a tap cannot change that: the socket
-    # protocol is one-way (runner/server.py broadcasts, ui/client.py never
-    # sends), so `_on_pick` reaches the state machine and nothing further.
-    # Stated as a fact rather than an apology, and paired with what IS on
-    # offer -- see ui/gallery.py's own module docstring, which carries the
-    # same rule for the copy on that screen.
-    #
-    # The first sentence changed with Task 16 and not before: "one after
-    # another" was true of a booth folding on card 0, and four chips fold at
-    # once now.
-    # The disclosure became an offer with Task 17, in the same commit as
-    # `_on_pick` learning to send. What it must NOT become is a promise of an
-    # instant fold: with four chips busy the pick starts when one frees,
-    # usually within seconds, and "instantly" is a claim the booth breaks in
-    # front of the one visitor watching for it. The second half is the wait
-    # stated as the feature it is -- not interrupting is exactly why the
-    # other three cells keep moving.
-    #
-    # Kept to the same number of wrapped lines as the copy it replaced: the
-    # `?` card is 913px of the booth's 1080 and every line added to it costs
-    # the operator keys at the bottom of the KEYS column (see
-    # `test_the_help_card_still_fits_the_booth_s_own_screen`).
-    "The booth folds four proteins at a time, one on each chip, all day. Tap "
-    "any of them to put it next: it starts on the next chip to come free, "
-    "because the folds already running are left to finish.",
-)
+        # The disclosure, in the visitor's own words. The booth folds its
+        # playlist in its own order and a tap cannot change that: the socket
+        # protocol is one-way (runner/server.py broadcasts, ui/client.py never
+        # sends), so `_on_pick` reaches the state machine and nothing further.
+        # Stated as a fact rather than an apology, and paired with what IS on
+        # offer -- see ui/gallery.py's own module docstring, which carries the
+        # same rule for the copy on that screen.
+        #
+        # The first sentence changed with Task 16 and not before: "one after
+        # another" was true of a booth folding on card 0, and four chips fold at
+        # once now.
+        # The disclosure became an offer with Task 17, in the same commit as
+        # `_on_pick` learning to send. What it must NOT become is a promise of an
+        # instant fold: with four chips busy the pick starts when one frees,
+        # usually within seconds, and "instantly" is a claim the booth breaks in
+        # front of the one visitor watching for it. The second half is the wait
+        # stated as the feature it is -- not interrupting is exactly why the
+        # other three cells keep moving.
+        #
+        # Kept short deliberately: the `?` card's real constraint is not
+        # lines-per-se but the card's measured height against the booth's
+        # own 1080px screen (see `test_the_help_card_still_fits_the_booth_
+        # s_own_screen` -- and that test's own history note on why it must
+        # be measured at the card's REAL allocated width, not the screen's,
+        # or it silently stops being able to fail).
+        f"The booth folds {word} {protein_word} at once, all day. Tap one "
+        "to put it next — it starts when a chip frees up; the folds "
+        "already running are left to finish.",
+    )
+
+
+# A frozen 4-chip snapshot, kept ONLY for tests that check general content
+# (no "one after another", no overclaim words) and do not care about a
+# specific chip count -- the running booth never reads this name;
+# `_build_help_overlay`/`_sync_help_copy` call `_help_intro(len(self.cards))`
+# directly, which is what makes the copy track the real fold-chip count
+# instead of silently drifting back to this hardcoded default.
+_HELP_INTRO = _help_intro(4)
+
+# The help card's fixed width (`_build_help_overlay`'s `card.set_size_
+# request`) -- named so the regression test that pins the card's height
+# against the booth's real 1080px screen can measure at the card's REAL
+# allocated width rather than the screen's. Measuring at the screen's width
+# (1920) is what let this card silently grow to 1460px tall while the test
+# stayed green: `halign=CENTER` means the card takes its OWN width, not the
+# window's, so a `for_size` wider than that lets GTK wrap paragraphs across
+# far more horizontal room than they will ever actually get, undercounting
+# every wrapped line. One name, so the test and the real layout cannot
+# quietly disagree about which width that is.
+_HELP_CARD_WIDTH_PX = 1400
 
 # Every key the booth answers to, and what it does. This table is the ONE
 # place the bindings are described to a visitor, and the test
@@ -1326,69 +1463,137 @@ _HELP_INTRO = (
 # `_handle_key`'s real behavior against it -- so a binding added to the
 # handler without a line here fails the suite rather than quietly becoming
 # folklore.
-_KEY_HELP = (
-    ("?  or  F1", "this card — from any screen, at any time"),
-    ("Q", "the quad view: all four chips at once, one protein per chip — "
-          "press it again for the single large view"),
-    ("T", "Tensix activity: the live core-grid animation, one grid per chip"),
-    ("D", "diagnostics: the live protocol log in the right-hand rail"),
-    ("Esc", "close this card, or close whichever rail panel is open"),
-    ("any other key,\nor a tap anywhere",
-     "wake the booth and look through the proteins it folds"),
-    ("Ctrl + F", "leave or return to fullscreen — for the booth operator"),
-    ("Ctrl + Q", "quit the booth — for the booth operator"),
-)
+#
+# `_KEY_HELP`/`_HELP_PANELS` used to be plain module-level tuples. They are
+# functions of `n_chips` now (whole-branch review, Important 3): the Q row
+# and the Tensix paragraph both used to say "four chips", hardcoded, which
+# goes false the instant `runner.workers.split_for_qa` reserves one chip for
+# Q&A -- a 4-physical-chip box with the affinity-questions feature enabled
+# folds on 3, and a visitor reading the `?` card would see a claim the booth
+# cannot back up (this project's own standing rule against exactly that
+# class of defect: CLAUDE.md, "the turnkey launcher advertised four targets
+# over a daemon that could fold one"). `n_chips` is `len(DemoApp.cards)` --
+# the daemon's own `hello.cards`, i.e. the REAL fold-chip count, not the
+# physical chip count on the box (those two agree except when a chip is
+# reserved) -- threaded in by `_build_help_keys`/`_build_help_panels` at
+# build time and kept in sync afterwards by `_sync_help_copy` (called from
+# `attach_cards`, since a `hello` naming a different chip count can arrive
+# well after the help card was first built).
+def _key_help(n_chips):
+    return (
+        ("?  or  F1", "this card, any time"),
+        ("Q", "quad view: all " + chip_count_word(n_chips) +
+              (" chip" if n_chips == 1 else " chips") +
+              " at once — press again for one large view"),
+        ("T", "Tensix core-grid animation, one per chip"),
+        ("D", "live protocol log"),
+        ("Esc", "close this card or panel"),
+        ("any other key,\nor a tap anywhere",
+         "wake the booth; browse what it folds"),
+        ("Ctrl + F", "toggle fullscreen — operator"),
+        ("Ctrl + A", "restart with Q&A enabled (no-op if already on) — operator"),
+        ("Ctrl + Q", "quit — operator"),
+    )
 
-_HELP_PANELS = (
-    # The quad view's own line, imported from `ui/quad.py` rather than
-    # re-typed here: the key, the view and the words describing it are one
-    # decision, and a hand-copied second sentence is where a booth ends up
-    # documenting a key it no longer has. It leads this column because it is
-    # the only entry that changes what the hero image IS, rather than what
-    # sits in the rail beside it.
-    QUAD_HELP_LINE,
 
-    "Pipeline — one row per stage of a fold: msa, prep, trunk, diffusion, "
-    "confidence, saving. The bright row is the stage running right now; "
-    "diffusion owns most of the bar because it does most of the work.",
+def _help_panels(n_chips):
+    word = chip_count_word(n_chips)
+    plural = "chip" if n_chips == 1 else "chips"
+    verb = "folds" if n_chips == 1 else "fold"
+    return (
+        # The quad view's own line, from `ui/quad.py` rather than re-typed
+        # here: the key, the view and the words describing it are one
+        # decision, and a hand-copied second sentence is where a booth ends
+        # up documenting a key it no longer has. It leads this column
+        # because it is the only entry that changes what the hero image IS,
+        # rather than what sits in the rail beside it.
+        quad_help_line(n_chips),
 
-    # The cadence here is `ui/telemetry.py`'s TelemetrySampler(period_s=2.0)
-    # -- one `tt-smi` snapshot every two seconds, on its own thread. This
-    # paragraph used to say "read from the driver twice a second", which was
-    # wrong twice over: it is 4x the real rate (500ms is `_TELEMETRY_REPAINT_MS`,
-    # the REPAINT cadence, not the sample rate) and it is a `tt-smi`
-    # subprocess, not a driver read. The chip panel below it genuinely does
-    # read the driver, once a second, and says so.
-    "Chips — temperature, power draw and clock speed for every Tenstorrent "
-    "chip in this machine, taken from a tt-smi snapshot every two seconds. A "
-    "Blackhole p300c board carries two chips, so the four chips here are two "
-    "boards. It is independent of the fold, so the silicon keeps breathing "
-    "even if a fold stalls.",
+        "Pipeline — one row per fold stage (msa, prep, trunk, diffusion, "
+        "confidence, saving). The bright row is running now; diffusion "
+        "takes the longest.",
 
-    # Every claim in this paragraph was checked against the rendered pixels
-    # before it was written. An earlier draft said each grid was "driven by
-    # that chip's own clock" -- the per-chip feed IS wired (ui/chipviz.py),
-    # but at this size it makes no visible difference, so the sentence was
-    # cut rather than left as a nice-sounding thing the screen does not
-    # actually do. What IS live and per-chip is the clock number, and the
-    # temperatures directly above it.
-    # Rewritten with Task 16, in the same commit as the behaviour. This
-    # paragraph was walked back once (whole-branch review, Critical 3) to say
-    # the fold "runs on one chip" and that the others "sit idle" -- true then,
-    # a lie now that all four fold at once. What it must NOT do is overshoot
-    # in the other direction: the panel counts the chips that are actually
-    # animating work, so a chip between folds really is drawn resting and the
-    # card has to say so or it promises four grids of motion at every moment.
-    "Tensix activity (press T) — one animated Tensix core grid per chip, in "
-    "the same left-to-right order as the readouts above it. Each grid follows "
-    "its own chip's fold: a spreading ring while that chip is denoising atom "
-    "positions, a steady glow while it is reasoning about which residues "
-    "touch, and quiet when it is between folds. Four chips fold at the same "
-    "time, so the header says how many are working right now — or names the "
-    "one, if only one is. The number beside it is the fastest clock any of "
-    "these chips is running at, read from the driver every second. It is a "
-    "picture of the work, not a trace of individual cores.",
-)
+        # The cadence here is `ui/telemetry.py`'s TelemetrySampler(period_s=2.0)
+        # -- one `tt-smi` snapshot every two seconds, on its own thread. This
+        # paragraph used to say "read from the driver twice a second", which was
+        # wrong twice over: it is 4x the real rate (500ms is `_TELEMETRY_REPAINT_MS`,
+        # the REPAINT cadence, not the sample rate) and it is a `tt-smi`
+        # subprocess, not a driver read. The chip panel below it genuinely does
+        # read the driver, once a second, and says so.
+        #
+        # Deliberately NOT parameterized on `n_chips`: this panel samples
+        # EVERY physical Tenstorrent chip on the box via `tt-smi`
+        # (`self.sampler`, independent of the daemon and of which chips it
+        # has reserved for folding vs. Q&A), so "four chips" here is a
+        # hardware-inventory fact, unaffected by `split_for_qa` -- unlike the
+        # quad/Tensix lines below, which describe how many chips are
+        # actually FOLDING right now.
+        "Chips — temperature, power and clock speed for every chip on this "
+        "machine, sampled every two seconds. Independent of the fold, so "
+        "the readouts keep moving even if one stalls.",
+
+        # Every claim in this paragraph was checked against the rendered pixels
+        # before it was written. An earlier draft said each grid was "driven by
+        # that chip's own clock" -- the per-chip feed IS wired (ui/chipviz.py),
+        # but at this size it makes no visible difference, so the sentence was
+        # cut rather than left as a nice-sounding thing the screen does not
+        # actually do. What IS live and per-chip is the clock number, and the
+        # temperatures directly above it.
+        # Rewritten with Task 16, in the same commit as the behaviour. This
+        # paragraph was walked back once (whole-branch review, Critical 3) to say
+        # the fold "runs on one chip" and that the others "sit idle" -- true then,
+        # a lie now that all four fold at once. What it must NOT do is overshoot
+        # in the other direction: the panel counts the chips that are actually
+        # animating work, so a chip between folds really is drawn resting and the
+        # card has to say so or it promises four grids of motion at every moment.
+        #
+        # `n_chips` chips fold at the same time -- NOT always "four": with
+        # the affinity-questions feature enabled, one chip is permanently
+        # reserved for Q&A (see the comment above this function), so this
+        # panel's own cell count (`ui/app.py`'s `_sync_chipviz`, driven by
+        # `self.cards`) is `n_chips` too, and the two must agree.
+        "Tensix activity (press T) — one animated core grid per chip, same "
+        "order as the readouts above. Each follows its own fold: a "
+        "spreading ring while denoising, a steady glow while reasoning "
+        f"about residue contacts, quiet between folds. {word.capitalize()} "
+        f"{plural} {verb} at once; the header names how many are working, "
+        "and the number beside it is the fastest clock among them.",
+
+        # Important 5 (whole-branch review): before this, there was ZERO
+        # visitor-facing text anywhere -- not this card, not the panel
+        # itself, not the gallery -- explaining what the highlighted patch
+        # of ribbon means or naming its cutoff. Spec section 7 is explicit
+        # that the copy must describe this as "the residues nearest the
+        # ligand", a stated, checkable geometric fact, and never as "the
+        # binding site", which a distance cutoff alone cannot establish --
+        # see ui/pocket.py's own module docstring for the same rule applied
+        # to the code that computes it. `POCKET_CUTOFF_ANGSTROM` is
+        # imported, not retyped as a literal "5", so this sentence can never
+        # quietly disagree with the number `pocket_residues` actually uses.
+        #
+        # Present unconditionally, the same way the Tensix paragraph
+        # documents `T` even on a box where WebKit (and so the Tensix panel
+        # itself) may not be available: this describes what the feature
+        # DOES when present, not a claim that this specific box has it.
+        "Affinity questions (right rail, and the quad's own spare cell) — "
+        "a small set of questions this booth answers with a real "
+        "computation: does this ligand bind this protein? The answer is "
+        "nesso1's own score, plus a highlight of the residues nearest the "
+        f"ligand — within {POCKET_CUTOFF_ANGSTROM:g} Å of it, a checkable "
+        "distance, never a claim about where it truly binds.",
+    )
+
+
+# Frozen 4-chip snapshots, kept ONLY for tests that check general content
+# (which keys are documented, which forbidden words never appear, ...) and
+# do not care about a specific chip count -- the running booth never reads
+# these two names; `_build_help_keys`/`_build_help_panels`/
+# `_sync_help_copy` all call `_key_help(len(self.cards))`/
+# `_help_panels(len(self.cards))` directly, which is what makes the copy
+# track the REAL fold-chip count instead of silently drifting back to this
+# hardcoded default.
+_KEY_HELP = _key_help(4)
+_HELP_PANELS = _help_panels(4)
 
 _APP_CSS_INSTALLED = False
 
@@ -1475,12 +1680,77 @@ class DemoApp(Gtk.Application):
         self.screens = None
         self.telemetry_panel = None
         self.pipeline_panel = None
+        # The affinity-questions rail panel (ui.questions.QuestionQueuePanel,
+        # Task 11). May legitimately stay None the same way `chipviz_panel`
+        # may: headless tests, and the moment before do_activate runs.
+        self.question_panel = None
+        # The quad's own spotlight cell (ui.qa_spotlight.QASpotlightCell) --
+        # the SAME facts as `question_panel` above, shown large in the
+        # quad's own empty fourth cell instead of the sidebar. One
+        # long-lived instance, same as `question_panel`: `_ensure_quad`
+        # reparents it into each freshly-built `QuadView` rather than this
+        # module ever constructing a second one.
+        self.qa_spotlight = None
         # The Tensix activity panel (ui/chipviz.py). May legitimately stay
         # None (headless tests, and the moment before do_activate runs) and
         # may legitimately exist-but-be-unavailable (no WebKit, no chips);
         # `_sync_chipviz` tolerates both.
         self.chipviz_panel = None
         self.targets = []
+        # The affinity-questions playlist (ui.playlist.load_questions(),
+        # Task 11) -- loaded alongside `self.targets` in `_load_questions`,
+        # same guard-against-a-bad-file shape as `_build_gallery`. Fed to
+        # both the rail panel and the gallery's ask strip.
+        self.questions = []
+        # Whether THIS DAEMON has a chip reserved for Q&A (`hello`'s
+        # `qa_capable` field). False until told otherwise -- the same "no
+        # capability advertised that isn't really there" default the rail
+        # panel and the gallery's ask strip both start hidden under.
+        self.qa_capable = False
+        # Set by `_request_qa_restart` (Ctrl+A) to
+        # `QUESTIONS_RESTART_EXIT_CODE` when the operator asks to restart
+        # the booth with Q&A enabled; None otherwise. `main()` reads this
+        # back after `run()` returns and uses it in place of Gio's own
+        # (always 0) result, since `Gio.Application.quit()` has no notion of
+        # a custom process exit code of its own.
+        self.exit_code = None
+        # Round-robin cursor into `self.questions` for the attract loop's
+        # ASK_QUESTION cue (`_ask_next_question`) -- a plain int, not read
+        # back off anything, so a headless test can drive it directly.
+        self._ask_question_index = 0
+        # target_id -> the most recent, not-yet-VISUALLY-APPLIED `answer_done`
+        # event for that target (Critical fix, whole-branch review). See
+        # `_handle_answer_event`/`_spawn_ribbon_worker`/`_apply_ribbon`'s own
+        # comments for the full reasoning; the short version: an answer's
+        # arrival and its target's ribbon becoming showable are two
+        # independent events that can land in either order (in production,
+        # nesso1 usually finishes FIRST -- the dedicated Q&A chip is idle and
+        # ~8-12s, while the fold itself queues behind whatever is already
+        # running and then takes 9.7-17.4s for the three question targets).
+        # Recording the answer here is what lets whichever of the two events
+        # happens SECOND be the one that actually paints the highlight,
+        # instead of only ever reacting to `answer_done` against a ribbon
+        # that may not exist yet.
+        #
+        # Consumed (popped) the moment it is used to produce a highlighted
+        # ribbon that is actually applied to a cell -- never reapplied to a
+        # LATER, unrelated fold of the same target that was not paired with
+        # a new answer. That is a deliberate choice, not an oversight: a
+        # question's pick is enqueued (or deduped against an in-flight one)
+        # the instant the question is accepted, so the very next ribbon this
+        # target produces is, for all practical purposes, the one the
+        # question was about. Once that ribbon has consumed the answer, the
+        # record is gone, so an ordinary later re-fold of the same target in
+        # the attract loop -- with no new question asked -- never resurrects
+        # a stale highlight. (The one gap this leaves: if that specific fold
+        # errors instead of completing, the answer survives to pair with
+        # whatever THIS target next folds successfully, rather than being
+        # dropped outright -- deliberately, since the score is still an
+        # honest answer about this target and pocket residues for a given
+        # target+ligand are a property of the molecule, not of one
+        # particular diffusion run, so pairing it with a later successful
+        # fold of the same target is not a false claim.)
+        self._answered_pockets = {}
         self._preparing_box = None
         self._preparing_message_label = None
         self._window = None
@@ -1597,6 +1867,15 @@ class DemoApp(Gtk.Application):
         self._diagnostics_toggle_label = None
         self._tensix_toggle_label = None
         self._help_box = None
+        # The chip-count-dependent spots on the `?` card (Important 3,
+        # whole-branch review, and this follow-up to it for the intro
+        # paragraphs) -- kept so `_sync_help_copy` can update their text in
+        # place whenever the real fold-chip count changes, rather than
+        # rebuilding the whole card. None/empty until the card is actually
+        # built (headless tests never call do_activate at all).
+        self._help_q_meaning_label = None
+        self._help_panel_labels = []
+        self._help_intro_labels = []
 
         # Visibility is tracked as plain booleans, NOT read back off the
         # widgets: `_handle_key`'s decisions have to be testable without a
@@ -1816,6 +2095,7 @@ class DemoApp(Gtk.Application):
         self._resolve_auto_quad()
         self._ensure_quad(cards)
         self._sync_viewer_hold()
+        self._sync_help_copy()
 
     def _note_card(self, card):
         """Give a chip the booth has just heard of its own cell.
@@ -1880,6 +2160,15 @@ class DemoApp(Gtk.Application):
             quad.set_connection_state(self._connection_state)
         except Exception:
             log.exception("connection state not applied to the new quad")
+        if self.qa_spotlight is not None:
+            # Reparents the SAME long-lived spotlight widget into this
+            # fresh grid (a no-op if this quad has no free cell for it --
+            # see `QuadView.set_extra_cell`) -- never a new one, so whatever
+            # question/answer it was showing survives a card-list rebuild.
+            try:
+                quad.set_extra_cell(self.qa_spotlight)
+            except Exception:
+                log.exception("qa spotlight not attached to the new quad")
         self._viewer_page.set_child(quad)
         self.quad = quad
         for viewer in quad.viewers:
@@ -1990,6 +2279,10 @@ class DemoApp(Gtk.Application):
         viewer_column.append(viewer_page)
         viewer_column.append(self._build_target_info())
         self.screens.add_named(viewer_column, "viewer")
+        # Loaded before `_build_gallery` and `_build_side_rail` both need
+        # it: the gallery's ask strip and the rail's QuestionQueuePanel are
+        # each built from `self.questions` at construction time.
+        self._load_questions()
         self._build_gallery()
 
         # The hero slot, with the easter egg laid over it and NOTHING else.
@@ -2163,8 +2456,23 @@ class DemoApp(Gtk.Application):
         # rather than as generic decoration. Hides itself when unavailable
         # (no WebKit, no chips, no bundled assets) -- see ui/chipviz.py.
         self.chipviz_panel = ChipVizPanel()
+        # The affinity-questions rail panel (Task 11). Fed `self.questions`
+        # at construction -- loaded in `do_activate`, before this method
+        # runs -- and hidden until `hello` says `qa_capable`
+        # (`_set_qa_capable`), the same "no capability advertised that isn't
+        # really there" discipline `ChipVizPanel`'s own availability check
+        # follows, applied to a daemon-level capability instead of a
+        # host-level one.
+        self.question_panel = QuestionQueuePanel(self.questions)
+        # The same Q&A facts, large, in the quad's own empty fourth cell
+        # (see ui/qa_spotlight.py). Built here rather than inside
+        # `_ensure_quad` because it must be the SAME instance across every
+        # card-list rebuild that method does (`_ensure_quad` reparents it
+        # into whichever `QuadView` is current); it is not appended to
+        # `side` below, since it lives in the quad, not the rail.
+        self.qa_spotlight = QASpotlightCell(self.questions)
         for panel in (self.pipeline_panel, self.telemetry_panel,
-                      self.chipviz_panel):
+                      self.chipviz_panel, self.question_panel):
             panel.set_hexpand(False)
             panel.set_vexpand(False)
             side.append(panel)
@@ -2174,6 +2482,12 @@ class DemoApp(Gtk.Application):
         # means -- including the part the key cannot do, which is leaving an
         # UNAVAILABLE panel (no WebKit, no chips) hidden regardless.
         self._set_chipviz_visible(self.chipviz_visible)
+        # Same idea as the line above, for the question panel and its quad
+        # spotlight twin: whatever `hello` has already told this booth (or
+        # nothing yet, on a fresh activate) is both panels' settled state
+        # from the moment they exist.
+        self.question_panel.set_qa_capable(self.qa_capable and bool(self.questions))
+        self.qa_spotlight.set_qa_capable(self.qa_capable and bool(self.questions))
 
         # Below the progress legend and the chip readout, in the space the
         # rail was leaving empty (see .superpowers/.../booth-wired.png): the
@@ -2260,6 +2574,22 @@ class DemoApp(Gtk.Application):
                           "run without a gallery", path)
             self.targets = []
             return
+        # `self.questions` (set by `_load_questions()`, above) was validated
+        # against the FULL fold manifest -- ui/playlist.py's load_questions()
+        # deliberately does that regardless of any --targets narrowing (a
+        # config-correctness check, not a display filter; see its own
+        # docstring). `self.targets` just above may be a narrower subset when
+        # an operator passed --targets, so narrow what a visitor is actually
+        # OFFERED to match: without this, a one-card gallery (e.g.
+        # `--targets trpcage`) would sit next to an ask strip / rail panel
+        # still advertising questions about targets that were never loaded --
+        # each degrades gracefully on its own (an unknown-target caption, not
+        # a crash), but the two surfaces would visibly disagree. Both
+        # `Gallery` below and `_build_side_rail`'s `QuestionQueuePanel` read
+        # `self.questions` after this point.
+        loaded_target_ids = {target.id for target in self.targets}
+        self.questions = [question for question in self.questions
+                           if question.target_id in loaded_target_ids]
         # The dwell caps come from the playlist, so they can only be known
         # here -- StateMachine is built in __init__, long before any manifest
         # is read. Assigned rather than passed for exactly that reason; the
@@ -2272,7 +2602,8 @@ class DemoApp(Gtk.Application):
                 slot.dwell_caps = dict(self.states.dwell_caps)
 
         self.gallery = Gallery(self.targets, on_pick=self._on_pick,
-                               width_px=_GALLERY_WIDTH_PX)
+                               width_px=_GALLERY_WIDTH_PX,
+                               questions=self.questions, on_ask=self._on_ask)
         # Cards at their natural width, centred -- NOT stretched to fill.
         # `Gallery` sets hexpand(True) on itself, which is right for a grid
         # that fills a window and wrong for this booth's one-target
@@ -2286,7 +2617,67 @@ class DemoApp(Gtk.Application):
         # still scrolls.
         self.gallery.set_hexpand(False)
         self.gallery.set_halign(Gtk.Align.CENTER)
+        # Bare self.qa_capable, not `and bool(self.questions)`: `Gallery.
+        # set_ask_capable` already applies that same gate internally, and
+        # applying it again here would just be a second, needlessly
+        # duplicated copy of the same rule (see `_set_qa_capable`'s own
+        # comment on why the rail panel and spotlight cell -- which do NOT
+        # gate themselves -- need it applied at their call site instead).
+        self.gallery.set_ask_capable(self.qa_capable)
         self.screens.add_named(self.gallery, "gallery")
+
+    def _load_questions(self):
+        """Load `playlist/questions.yaml`, or ship without any (Task 11).
+
+        Same guard shape as `_build_gallery` immediately above -- a missing
+        or malformed questions file must not take the booth down: it costs
+        the rail panel and the gallery's ask strip (both simply stay hidden,
+        same as a daemon with no Q&A worker configured -- `set_qa_capable`/
+        `set_ask_capable`), and nothing else. `load_questions()` also
+        validates every question's `target_id` against the real fold
+        manifest at load time (ui/playlist.py's own docstring), so a
+        question naming a target this playlist does not fold is caught
+        here, loudly, rather than silently failing to highlight anything
+        later.
+
+        **Disabled outright for a custom `--playlist` (PR review, Copilot).**
+        `ui.playlist.load_questions()` is documented to validate every
+        question's `target_id` against the SHIPPED default manifest
+        ALWAYS, "regardless of what `path` was passed for the questions
+        file itself" -- a deliberate simplification (there is exactly one
+        `questions.yaml` to load), not a bug in that function. But
+        `_build_gallery` right below this method loads `self.playlist_path`
+        when an operator passed `run-demo.sh --playlist <custom>`, and this
+        method has no way to validate the shipped `questions.yaml` against
+        THAT manifest instead. Two ways that goes wrong: a custom manifest
+        entry that reuses a shipped id (say `dhfr`) for a DIFFERENT actual
+        complex would offer the shipped methotrexate question against
+        whatever that custom entry actually folds; a custom manifest using
+        different ids drops every question silently, with nothing telling
+        the operator why. Disabling Q&A whenever the operator's own
+        playlist differs from the shipped one is the safe default the
+        review itself names as an acceptable alternative to threading a
+        second manifest path through `load_questions()` -- and it is
+        already exactly what `runner/daemon.py` does NOT need to be told
+        about separately: the daemon has no `questions.yaml` of its own to
+        disagree with, since it only ever receives a `target_id` and an
+        `input_path` this UI already resolved.
+        """
+        if (self.playlist_path is not None
+                and pathlib.Path(self.playlist_path).resolve() != _DEFAULT_PLAYLIST):
+            log.info("custom --playlist in use (%s); affinity Q&A stays "
+                     "off rather than risk a question naming the wrong "
+                     "target -- see ui.playlist.load_questions()'s own "
+                     "docstring on why it cannot validate against a "
+                     "manifest it was not told about", self.playlist_path)
+            self.questions = []
+            return
+        try:
+            self.questions = load_questions()
+        except PlaylistError:
+            log.exception("playlist/questions.yaml could not be loaded; "
+                          "the booth will run without affinity questions")
+            self.questions = []
 
     def _build_preparing_overlay(self):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -2653,14 +3044,25 @@ class DemoApp(Gtk.Application):
         # existed. Expanding first gives it the whole column to centre in.
         card.set_vexpand(True)
         card.set_valign(Gtk.Align.CENTER)
-        card.set_size_request(980, -1)
+        # `_HELP_CARD_WIDTH_PX`, not a bare 980: at 980 the two-column
+        # layout wraps narrowly enough that the card's real on-screen height
+        # blows past the booth's own 1080px screen even after the
+        # affinity-questions copy was trimmed (measured: 1180px at 980 wide,
+        # 992px at 1400) -- see that constant's own comment.
+        card.set_size_request(_HELP_CARD_WIDTH_PX, -1)
         for margin in ("set_margin_top", "set_margin_bottom",
                        "set_margin_start", "set_margin_end"):
             getattr(card, margin)(40)
 
         card.append(self._help_label("What you are looking at", "help-title"))
-        for paragraph in _HELP_INTRO:
-            card.append(self._help_label(paragraph, "help-body", wrap=True))
+        self._help_intro_labels = []
+        for paragraph in _help_intro(len(self.cards)):
+            label = self._help_label(paragraph, "help-body", wrap=True)
+            card.append(label)
+            # Same reason as `_help_panel_labels` below: `_sync_help_copy`
+            # updates this label's text in place when the real fold-chip
+            # count changes, rather than rebuilding the whole help card.
+            self._help_intro_labels.append(label)
 
         columns = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=56)
         columns.set_homogeneous(True)
@@ -2698,13 +3100,19 @@ class DemoApp(Gtk.Application):
         column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         column.append(self._help_label("KEYS", "help-section"))
         grid = Gtk.Grid(column_spacing=20, row_spacing=8)
-        for row_index, (keys, meaning) in enumerate(_KEY_HELP):
+        for row_index, (keys, meaning) in enumerate(_key_help(len(self.cards))):
             key_label = self._help_label(keys, "help-key")
             key_label.set_valign(Gtk.Align.START)
             meaning_label = self._help_label(meaning, "help-desc", wrap=True)
             meaning_label.set_max_width_chars(34)
             grid.attach(key_label, 0, row_index, 1, 1)
             grid.attach(meaning_label, 1, row_index, 1, 1)
+            if keys.strip().lower() == "q":
+                # Kept so `_sync_help_copy` can update just this one row's
+                # text later, without rebuilding the whole card -- see that
+                # method's docstring for why the chip count in this row can
+                # change after the card is first built.
+                self._help_q_meaning_label = meaning_label
         column.append(grid)
         return column
 
@@ -2712,10 +3120,15 @@ class DemoApp(Gtk.Application):
         column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         column.append(self._help_label("THE QUAD, AND THE PANELS ON THE RIGHT",
                                        "help-section"))
-        for paragraph in _HELP_PANELS:
+        self._help_panel_labels = []
+        for paragraph in _help_panels(len(self.cards)):
             label = self._help_label(paragraph, "help-desc", wrap=True)
             label.set_max_width_chars(52)
             column.append(label)
+            # Same reason as `_help_q_meaning_label` above: `_sync_help_copy`
+            # updates these labels' text in place when the real fold-chip
+            # count changes, rather than rebuilding the whole help card.
+            self._help_panel_labels.append(label)
 
         # Per RESIDUE, not per atom. ui/geometry.py's `load_backbone_trace`
         # reads one pLDDT per residue -- its anchor atom's B-factor -- and that is
@@ -2740,6 +3153,40 @@ class DemoApp(Gtk.Application):
                                         "help-desc", wrap=True))
             column.append(row)
         return column
+
+    def _sync_help_copy(self):
+        """Keep the `?` card's chip-count claims matched to the REAL number
+        of chips this booth folds on right now (whole-branch review,
+        Important 3).
+
+        `_build_help_keys`/`_build_help_panels` compute their text from
+        `len(self.cards)` at BUILD time, but the help card is built once
+        (from `do_activate`, before any `hello` has necessarily arrived --
+        `self.cards` may still be its `[0]` placeholder then), while the
+        real fold-chip count can change afterwards: a `hello` naming a
+        different card list (a reconnect), or the affinity-questions
+        feature's permanent one-chip Q&A reservation
+        (`runner.workers.split_for_qa`) taking the booth from 4 fold chips
+        to 3. Called from `attach_cards`, which is the one place that
+        already reacts to exactly that change.
+
+        A no-op before the card exists at all (headless tests, and the
+        instant before `do_activate` runs) -- `_help_q_meaning_label`/
+        `_help_panel_labels`/`_help_intro_labels` are only ever populated
+        once the real widgets are built.
+        """
+        n_chips = len(self.cards)
+        for label, paragraph in zip(self._help_intro_labels,
+                                    _help_intro(n_chips)):
+            label.set_label(paragraph)
+        if self._help_q_meaning_label is not None:
+            for keys, meaning in _key_help(n_chips):
+                if keys.strip().lower() == "q":
+                    self._help_q_meaning_label.set_label(meaning)
+                    break
+        for label, paragraph in zip(self._help_panel_labels,
+                                    _help_panels(n_chips)):
+            label.set_label(paragraph)
 
     def _connect_visitor_input(self, window):
         """Any tap, click or keypress reaches the booth through here.
@@ -2981,8 +3428,9 @@ class DemoApp(Gtk.Application):
         Order matters, and each step is here for a reason:
 
         1. The operator's Ctrl chords work from ANY screen, including with
-           the help card up -- if the booth needs to be quit or unfullscreened
-           at a venue, no visitor-facing state may stand in the way.
+           the help card up -- if the booth needs to be quit, unfullscreened
+           or restarted with Q&A enabled at a venue, no visitor-facing state
+           may stand in the way.
         2. With the help card up, ANY key closes it and nothing else
            happens. `?` and `Esc` are the documented ways out (per the
            user's request), but a visitor pressing something random while a
@@ -3018,6 +3466,9 @@ class DemoApp(Gtk.Application):
             return True
         if ctrl and lowered in _EGG_KEYS:
             self._toggle_egg()
+            return True
+        if ctrl and lowered in _QA_RESTART_KEYS:
+            self._request_qa_restart()
             return True
         if ctrl:
             # An unbound chord is swallowed rather than treated as a touch:
@@ -3060,6 +3511,53 @@ class DemoApp(Gtk.Application):
 
         self._on_touch()
         return True
+
+    def _request_qa_restart(self):
+        """Ctrl+A: opt in to affinity Q&A. See the module comment above
+        `_QA_RESTART_KEYS` for the full reasoning; this is the mechanism.
+
+        Already-enabled is a no-op -- deliberately a one-way switch, not a
+        toggle: building the reverse (drop Q&A live) would need the exact
+        same live chip-reallocation this key is scoped to never attempt,
+        from the other direction. Otherwise, exiting with
+        `QUESTIONS_RESTART_EXIT_CODE` only helps if something is watching
+        for it -- `RUN_DEMO_SH_ENV_VAR` is how this process tells that apart
+        from a bare `python3 -m ui.app` or the packaged deployment, neither
+        of which has a restart mechanism at all (docs/followups.md). In
+        either of those, say so rather than pretending a restart happened.
+
+        Both decline branches ALSO feed a line into `self.diagnostics`
+        (`ui/diagnostics.py`, the `D` panel), not only `log.*`: a plain
+        Python log line only ever reaches stderr/the journal, so an
+        operator who is actually watching the diagnostics rail for
+        confirmation the booth heard them would otherwise see nothing at
+        all when this documented, `?`-card-advertised key declines --
+        indistinguishable from a frozen app or an unbound key. The
+        successful (restarting) branch does not bother: the process is
+        about to exit, so there is no rail left to read it on.
+        """
+        if self.qa_capable:
+            log.info("ctrl+a: affinity Q&A is already enabled; nothing to do")
+            self._note_diagnostics(
+                self.diagnostics.note,
+                "ctrl+a: affinity Q&A is already on; nothing to do",
+                KIND_MARK)
+            return
+        if os.environ.get(RUN_DEMO_SH_ENV_VAR) != "1":
+            log.warning(
+                "ctrl+a: affinity Q&A is off, and this process has no "
+                "restart mechanism to drive (not launched by "
+                "scripts/run-demo.sh) -- restart the booth manually with "
+                "--questions to enable it")
+            self._note_diagnostics(
+                self.diagnostics.note,
+                "ctrl+a: no restart mechanism here -- restart manually "
+                "with --questions",
+                KIND_MARK)
+            return
+        log.info("ctrl+a: exiting to restart the booth with --questions")
+        self.exit_code = QUESTIONS_RESTART_EXIT_CODE
+        self.quit()
 
     # ── chrome: the two rail panels and the help card ────────────────────
     #
@@ -3598,6 +4096,13 @@ class DemoApp(Gtk.Application):
                     if self.states.state == BoothState.GALLERY:
                         self.states.state = BoothState.ATTRACT
                         self._sync_to_state()
+                elif cue == ASK_QUESTION:
+                    # Fire-and-forget (ui/attract.py's own comment on this
+                    # cue): unlike every branch above, there is no panel
+                    # state to check first and nothing to disown -- the cue
+                    # never took ownership of anything (`Choreography._
+                    # apply_ownership` never records it).
+                    self._ask_next_question()
             except Exception:
                 log.exception("attract cue %r could not be applied", cue)
 
@@ -3650,6 +4155,29 @@ class DemoApp(Gtk.Application):
                 self.diagnostics.note,
                 f"pick {target_id} dropped: incompatible daemon", KIND_MARK)
             return
+        self._apply_pick(target_id)
+        self._send_pick(target_id)
+        self._sync_to_state()
+        # The focus rule is the router's (ui/slots.py) and this is what
+        # applies it. It matters at tap time for exactly one case, and it is
+        # the case that would otherwise do nothing at all: a pick for a
+        # target ALREADY folding. The daemon queues nothing then, so a UI
+        # that waited for a `job_start` would wait forever.
+        self._sync_focus()
+
+    def _apply_pick(self, target_id):
+        """Router + state-machine bookkeeping shared by a visitor's plain
+        pick (`_on_pick`) and a visitor's ask (`_on_ask`).
+
+        Extracted because both need it, verbatim: the daemon's own
+        `_accept_question` (runner/daemon.py) enqueues the underlying fold
+        pick itself the instant it receives a `question` message, so a
+        visitor's ask puts a target on a chip exactly as a plain pick does
+        and deserves the identical "NEXT UP" acknowledgement and focus
+        move -- the only thing that differs between the two call sites is
+        which message reaches the daemon (`_send_pick` vs.
+        `_send_question`).
+        """
         if self.router is not None:
             # The SAME clock reading the state tick uses, kept in
             # `_tick_now`. A pick stamped off `self._clock()` while
@@ -3663,13 +4191,41 @@ class DemoApp(Gtk.Application):
             # number.
             self._pick_at = self._tick_now
         self.states.on_pick(target_id)
-        self._send_pick(target_id)
+
+    def _on_ask(self, question_id, target_id):
+        """A visitor tapped "ask" on the gallery's affinity-questions strip
+        (Task 11), or asked a chord: same shape as `_on_pick`, and for the
+        same reason -- runner/daemon.py's `_accept_question` folds
+        `target_id` too, so the visitor gets the identical tap-time
+        acknowledgement a plain pick gives, on top of the daemon queuing a
+        real nesso1 score.
+
+        Sends `question`, NEVER a separate `pick`: the daemon's own comment
+        on `_accept_question` is explicit that both of this booth's trigger
+        paths (a visitor's tap, the attract-loop cadence) send only
+        `question` -- it already calls `_accept_pick` itself, and sending a
+        second `pick` alongside it would queue the same fold twice for no
+        reason.
+        """
+        log.info("visitor asked %s (target %s)", question_id, target_id)
+        self._note_input()
+        self._note_diagnostics(
+            self.diagnostics.note,
+            f"visitor asked {question_id} ({target_id})", KIND_MARK)
+        if self._connection_state == "incompatible":
+            # Same rule as `_on_pick`'s identical guard: a booth that has
+            # already declared it cannot speak to this daemon must not
+            # acknowledge a tap it can never honour.
+            log.info("question %s dropped: this build cannot speak to that "
+                     "daemon", question_id)
+            self._note_diagnostics(
+                self.diagnostics.note,
+                f"question {question_id} dropped: incompatible daemon",
+                KIND_MARK)
+            return
+        self._apply_pick(target_id)
+        self._send_question(question_id, target_id)
         self._sync_to_state()
-        # The focus rule is the router's (ui/slots.py) and this is what
-        # applies it. It matters at tap time for exactly one case, and it is
-        # the case that would otherwise do nothing at all: a pick for a
-        # target ALREADY folding. The daemon queues nothing then, so a UI
-        # that waited for a `job_start` would wait forever.
         self._sync_focus()
 
     def _send_pick(self, target_id):
@@ -3704,6 +4260,58 @@ class DemoApp(Gtk.Application):
             # reach a screen -- `log.exception` is the whole of its audience.
             log.exception("could not ask the daemon to fold %s", target_id)
             return False
+
+    def _send_question(self, question_id, target_id):
+        """Ask the daemon to answer one affinity question. Returns whether
+        it queued.
+
+        Mirrors `_send_pick` exactly -- same guard against a daemon this
+        build has refused to interpret, same never-raise contract, same
+        reason for being its own method. Both of this booth's trigger paths
+        for a question (`_on_ask`, `_ask_next_question`) call this and this
+        alone.
+        """
+        if self._connection_state == "incompatible":
+            log.info("not asking a daemon this build cannot interpret to "
+                     "answer %s", question_id)
+            return False
+        client = getattr(self, "_client", None)
+        if client is None:
+            return False
+        try:
+            return bool(client.send_question(question_id, target_id))
+        except Exception:
+            # `send_question` promises not to raise; belt-and-braces, same
+            # as `_send_pick`'s identical guard.
+            log.exception("could not ask the daemon to answer %s", question_id)
+            return False
+
+    def _ask_next_question(self):
+        """The attract loop's `ASK_QUESTION` cue: round-robin through
+        `load_questions()` and ask the daemon the next one.
+
+        Fire-and-forget, matching `ui.attract.Choreography`'s own cue: no
+        visitor input is recorded (`_note_input()` is deliberately NOT
+        called here -- this is the booth acting on its own, and resetting
+        the idle clock on its own account would mean the attract loop could
+        keep itself running forever), and nothing here waits on an answer.
+        A daemon with no chip reserved for Q&A ignores the message quietly
+        (runner/daemon.py's `_accept_question`), so this needs no
+        `qa_capable` guard of its own for correctness -- but it checks
+        anyway, so the booth does not narrate a capability it has already
+        told its own rail panel and gallery strip is not there.
+        """
+        if not self.qa_capable or not self.questions:
+            return
+        index = self._ask_question_index % len(self.questions)
+        self._ask_question_index += 1
+        question = self.questions[index]
+        log.info("attract loop asking %s (target %s)",
+                 question.id, question.target_id)
+        self._note_diagnostics(
+            self.diagnostics.note,
+            f"attract loop asked: {question.question}", KIND_MARK)
+        self._send_question(question.id, question.target_id)
 
     def _sync_quad_notice(self, now):
         """Say one thing across the quad about the visitor's pick, or stop
@@ -3964,6 +4572,11 @@ class DemoApp(Gtk.Application):
             # `job_start` for chip 2 belongs to no cell until it does.
             if kind == "hello":
                 self.attach_cards(event.get("cards") or [0])
+                # Whether this booth's daemon has a chip reserved for Q&A --
+                # applied here, at the top, for the same reason `attach_cards`
+                # is: it must be settled before anything below tries to show
+                # a capability that may not exist.
+                self._set_qa_capable(bool(event.get("qa_capable")))
             elif kind in ("job_start", "card_state"):
                 # The two events that name a chip without being the greeting.
                 # A booth that connected before the daemon's workers were
@@ -4161,7 +4774,17 @@ class DemoApp(Gtk.Application):
                     # ribbon_from_cif's cost moved off this thread -- see
                     # _spawn_ribbon_worker. The result comes back later, via
                     # _drain_pending_ribbon on the main loop, not here.
-                    self._spawn_ribbon_worker(slot, cif_path)
+                    #
+                    # `view.current_target_id`, not `event.get("target_id")`:
+                    # `job_done` carries no `target_id` on the wire (only
+                    # `job_start` does), and this is what `_spawn_ribbon_worker`
+                    # needs to check whether an affinity answer for THIS
+                    # target is already sitting in `_answered_pockets`,
+                    # waiting for a ribbon to apply itself to (Critical fix,
+                    # whole-branch review).
+                    view = self._slot_view(slot)
+                    target_id = view.current_target_id if view else None
+                    self._spawn_ribbon_worker(slot, cif_path, target_id)
                 elif cif_path:
                     log.warning("job_done for %s belongs to no cell; nothing "
                                 "to render", event.get("job_id"))
@@ -4232,6 +4855,13 @@ class DemoApp(Gtk.Application):
                 # type" branch below, which would be a warning per reconnect.
                 log.info("daemon says hello: chips %s, models %s",
                          event.get("cards"), event.get("models"))
+            elif kind in ("answer_start", "answer_done", "answer_error"):
+                # Affinity questions (Task 11). All three forward straight
+                # to the rail panel (`ui.questions.QuestionQueuePanel`
+                # already knows how to render each), and `answer_done` is
+                # additionally what may re-derive the pocket highlight on
+                # the ribbon -- see `_handle_answer_event`.
+                self._handle_answer_event(kind, event)
             else:
                 # A future protocol addition should be visible in the logs,
                 # not silently dropped the way job_error was before this fix.
@@ -4266,6 +4896,307 @@ class DemoApp(Gtk.Application):
 
     def _reset_pipeline_panel(self):
         self._call_pipeline_panel("reset")
+
+    # ── the affinity-questions rail panel (Task 11) ──────────────────────
+    #
+    # Same guard shape as `_call_pipeline_panel` directly above, for the
+    # identical reason: this panel is chrome relative to the fold itself,
+    # and an exploding panel call must not cost the rest of `_handle_event`
+    # its rendering.
+
+    def _call_question_panel(self, method, *args):
+        """Forward one call to every widget that shows the Q&A queue's
+        state -- the rail panel AND the quad's own spotlight cell
+        (`ui/qa_spotlight.py`). The two are independent widgets showing the
+        SAME facts at two sizes, so every caller of this method (`_handle_
+        answer_event`, `_set_qa_capable`) drives both from one call site
+        rather than remembering to call two -- the same "one place that
+        knows" shape `_call_pipeline_panel` already uses for a single
+        target, extended to a short fixed list of them.
+
+        Each target gets its own try/except: one panel's update exploding
+        must not cost the other panel its own render, any more than it
+        should cost the rest of `_handle_event` its own work.
+        """
+        for target in (self.question_panel, self.qa_spotlight):
+            if target is None:
+                continue
+            try:
+                getattr(target, method)(*args)
+            except Exception:
+                log.exception("%s.%s dropped", type(target).__name__, method)
+
+    def _set_qa_capable(self, capable):
+        """Record whether this daemon has a chip reserved for Q&A, and tell
+        every surface that offers to ask one (the rail panel, the quad's own
+        spotlight cell, the gallery's ask strip) -- called once from `hello`,
+        the one event that carries `qa_capable`.
+
+        Stored on `self` (not read back off a widget) for the usual reason
+        this file keeps making that split: a headless test must be able to
+        drive and read the decision with no display.
+
+        `self.qa_capable and bool(self.questions)` (PR review, Copilot), not
+        bare `self.qa_capable`: a daemon can genuinely reserve a chip for
+        Q&A while THIS process loaded no questions to ask with it --
+        `_load_questions` ships with an empty `self.questions` on a missing
+        or malformed `questions.yaml`, or (deliberately, see that method's
+        own docstring) whenever a custom `--playlist` is in use. Without
+        this gate, the rail panel and the spotlight cell would show up
+        advertising a capability with nothing behind it -- an empty "No
+        questions queued" / "No question answered yet" implying Q&A is live
+        when it cannot ever answer anything this session. `Gallery.
+        set_ask_capable` already makes exactly this check internally
+        (`bool(capable) and bool(self.questions)`); this applies the same
+        rule at the one other call site rather than trusting a widget to
+        reinvent it correctly on its own.
+        """
+        self.qa_capable = bool(capable)
+        self._call_question_panel("set_qa_capable",
+                                  self.qa_capable and bool(self.questions))
+        if self.gallery is not None:
+            try:
+                self.gallery.set_ask_capable(self.qa_capable)
+            except Exception:
+                log.exception("gallery ask-strip visibility update dropped")
+
+    def _handle_answer_event(self, kind, event):
+        """One `answer_start`/`answer_done`/`answer_error` event: forward it
+        to the rail panel, and -- for `answer_done` only -- re-derive the
+        pocket highlight if the answered target is still what a cell is
+        showing.
+
+        Guarded the same broad way every other panel call in `_handle_event`
+        is: an exploding panel update, or a highlight rebuild that never
+        gets the chance to start, must not turn a real answer into a
+        "dropping malformed event" log line for the WHOLE event -- the
+        panel forward (`_call_question_panel`, its own try/except) and the
+        highlight-rebuild bookkeeping just below (its own try/except too,
+        added for exactly this reason -- a prior version had none, and an
+        exception there would have propagated out of this method and been
+        caught only by `_handle_event`'s OUTER handler, which logs the
+        already-successfully-shown answer as a "dropping malformed
+        answer_done event") are genuinely two independent opportunities to
+        fail, not one that merely looks like two.
+        """
+        question_id = event.get("question_id")
+        target_id = event.get("target_id")
+        if kind == "answer_start":
+            self._call_question_panel("on_answer_start", question_id, target_id)
+        elif kind == "answer_done":
+            self._call_question_panel(
+                "on_answer_done", question_id, target_id, event.get("score"))
+            if target_id is not None:
+                try:
+                    # Remembered BEFORE the reactive check below, not after:
+                    # this is what lets a ribbon that has not been built yet
+                    # (the Critical ordering bug -- see `_answered_pockets`'
+                    # docstring in __init__) pick this answer up later, at
+                    # `_spawn_ribbon_worker`, instead of it only ever being
+                    # tried once, right here, against whatever this cell
+                    # happens to be showing at this exact instant.
+                    self._answered_pockets[target_id] = dict(event)
+                    self._maybe_highlight_pocket(target_id)
+                except Exception:
+                    log.exception("pocket highlight rebuild for %r dropped",
+                                  target_id)
+        elif kind == "answer_error":
+            self._call_question_panel("on_answer_error", question_id, target_id)
+
+    def _maybe_highlight_pocket(self, target_id):
+        """An answer landed for `target_id`. If some cell is STILL showing
+        that exact target's ribbon, rebuild it with a pocket highlight.
+
+        `view.shown_target_id` is the field to ask, not `view.
+        current_target_id` or the router's focus: it is set at the instant
+        a fold's own coordinates actually reach the screen (`_draw_frame`'s
+        handover) and stays put through that fold's own `showcase` AND
+        through the "held, dimmed, captioned" window that follows it (the
+        module docstring's second section) -- exactly the whole span during
+        which the answered structure is genuinely what a visitor is looking
+        at. It goes false the instant the NEXT fold on that cell supersedes
+        it, which is also the one moment a stale highlight rebuild must be
+        allowed to lose the race -- see `_apply_highlight`'s own re-check.
+
+        No camera movement here or anywhere downstream (spec section 6):
+        this only ever calls `_spawn_highlight_worker`, which rebuilds the
+        SAME mesh from the SAME cif with different vertex colours -- the
+        geometry `_frame_camera` frames against does not change, so nothing
+        here asks the camera to move.
+        """
+        # Nothing to do if this target's answer has already been consumed
+        # (applied to some ribbon already) -- this method is also called as
+        # a safety net right after an ordinary ribbon build applies (see
+        # `_apply_ribbon`), specifically to catch an answer that landed
+        # *during* that build, after `_spawn_ribbon_worker`'s own snapshot
+        # was taken. Without this check it would unconditionally re-spawn a
+        # highlight rebuild every single time ANY ribbon lands for a target
+        # that was ever answered, forever.
+        if target_id not in self._answered_pockets:
+            return
+        for slot, view in enumerate(self._slots):
+            if (view.shown_target_id == target_id and view.has_structure
+                    and view.shown_cif_path):
+                self._spawn_highlight_worker(slot, target_id, view.shown_cif_path)
+
+    def _spawn_highlight_worker(self, slot, target_id, cif_path):
+        """Move the pocket-residue computation and the cartoon rebuild it
+        feeds onto a background thread, for one cell -- the same reasoning
+        as `_spawn_ribbon_worker` (gemmi/numpy cost that must never run on
+        the GTK main loop), but a DIFFERENT worker and a DIFFERENT apply
+        path, deliberately not threaded through `_spawn_ribbon_worker`'s own
+        `ribbon_generation` counter.
+
+        Why not reuse it: `_apply_ribbon` calls `SlotState.
+        on_structure_revealed()`, which restarts this cell's showcase dwell
+        if it is still showcasing (ui/slots.py's own docstring: "restart
+        this cell's dwell from this instant"). A highlight arriving for a
+        structure already on screen must never do that -- it would let an
+        answer arbitrarily EXTEND how long a finished fold holds the
+        screen, which is exactly the "narrowed never widened" dwell
+        discipline this project's dwell-cap work (2026-08-24) established.
+        So this gets its own small worker and its own apply step
+        (`_apply_highlight`), which touches only the viewer's ribbon
+        buffer -- no dwell, no focus, no state-machine call.
+
+        Bookkeeping only: appended to the same `_ribbon_threads` list
+        `_spawn_ribbon_worker` uses, so `_join_ribbon_workers` (tests,
+        `do_shutdown`) waits for these too without a second list to keep in
+        step. Guarded by the same `_ribbon_lock` `pending_ribbon` is, for
+        the identical reason: `_slot_view`/`view.pending_highlight` are
+        shared with the main thread.
+        """
+        self._ribbon_threads = [t for t in self._ribbon_threads if t.is_alive()]
+        worker = threading.Thread(
+            target=self._highlight_worker_main,
+            args=(slot, target_id, cif_path),
+            name=f"pocket-highlight-{slot}",
+            daemon=True,
+        )
+        self._ribbon_threads.append(worker)
+        worker.start()
+
+    def _highlight_worker_main(self, slot, target_id, cif_path):
+        """Runs entirely off the main loop -- must never raise out of this
+        method, for the identical reason `_ribbon_worker_main` gives: a
+        plain thread's uncaught exception vanishes into Python's default
+        excepthook with nothing for the app to act on.
+
+        Stores its result in `view.pending_highlight` and wakes the main
+        loop via `GLib.idle_add(self._drain_pending_highlight)` -- the same
+        two-step handoff `_ribbon_worker_main`/`_drain_pending_ribbon` use,
+        and for the same reason: only the main loop may touch a GTK/GL
+        widget, and a plain function reference plus a stored result is what
+        lets a test apply the result deterministically (`_join_ribbon_
+        workers` then `_drain_pending_highlight`) instead of racing a
+        background thread.
+        """
+        try:
+            residues = _compute_pocket_residues(cif_path)
+            result = structure_mesh(cif_path, highlight_residues=residues)
+        except Exception as exc:
+            outcome = ("error", exc)
+        else:
+            outcome = ("ok", result)
+        with self._ribbon_lock:
+            view = self._slot_view(slot)
+            if view is not None:
+                # No staleness check here against anything -- unlike
+                # `_ribbon_worker_main`'s generation compare, THE stale
+                # check for a highlight is "does the target still match, AND
+                # is this still the exact ribbon that target is showing",
+                # and that can only be answered once `shown_target_id` and
+                # `shown_cif_path` are readable without racing `_draw_frame`'s
+                # own writes to them -- i.e. on the main loop, in
+                # `_apply_highlight`. Recording unconditionally here just
+                # means at most one pending highlight per cell waits to be
+                # judged there.
+                view.pending_highlight = (target_id, cif_path, outcome)
+        GLib.idle_add(self._drain_pending_highlight)
+
+    def _drain_pending_highlight(self):
+        """Runs on the main loop (via `GLib.idle_add`, from
+        `_highlight_worker_main`). Applies every cell's still-pending
+        highlight result, mirroring `_drain_pending_ribbon` exactly (same
+        lock, same "every cell in one pass" reasoning: several answers can
+        land in one idle callback).
+
+        One-shot idle source; the broad guard lives in `_apply_highlight`
+        itself, same split `_drain_pending_ribbon`/`_apply_ribbon` use.
+        """
+        with self._ribbon_lock:
+            pending = []
+            for slot, view in enumerate(self._slots):
+                if view.pending_highlight is not None:
+                    pending.append((slot, view.pending_highlight))
+                    view.pending_highlight = None
+        for slot, (target_id, cif_path, outcome) in pending:
+            self._apply_highlight(slot, target_id, cif_path, outcome)
+        return False
+
+    def _apply_highlight(self, slot, target_id, cif_path, outcome):
+        """Put a rebuilt, highlighted ribbon on screen, or decide not to.
+
+        Re-checks `shown_target_id` here, not just at spawn time -- the
+        whole point of the check, since a fold on this cell can supersede
+        the held structure while the rebuild was in flight (structure_mesh
+        costs up to ~1.2s at 3000 residues; the daemon does not pause
+        between folds). Without this re-check a slow rebuild could land
+        AFTER the cell has moved on to the next fold's live diffusion and
+        paint a finished ribbon back over it -- the exact headline defect
+        this project's hold-until-superseded work exists to prevent,
+        reintroduced from a different call site.
+
+        Also re-checks `shown_cif_path` against the exact path this rebuild
+        was BUILT FROM, not just the target id: a same-target race is still
+        possible when this cell's own fold repeats (or a new one lands for
+        the same target) while an older rebuild for an earlier ribbon of
+        that target is still in flight. `shown_target_id` alone cannot see
+        that -- it would still read the same target -- but `shown_cif_path`
+        will have moved to the newer ribbon's own file by then.
+
+        Guarded the same broad way `_apply_ribbon` is: this must never show
+        a stack trace or die on e.g. a viewer already torn down.
+        """
+        try:
+            view = self._slot_view(slot)
+            if (view is None or view.shown_target_id != target_id
+                    or not view.has_structure
+                    or view.shown_cif_path != cif_path):
+                log.info("pocket highlight for %s arrived after its cell "
+                         "moved on; dropping it", target_id)
+                return
+            kind, payload = outcome
+            if kind == "error":
+                log.error("could not rebuild a pocket highlight for %s",
+                          target_id, exc_info=payload)
+                return
+            viewer = self._viewer_for(slot)
+            if viewer is None:
+                return
+            verts, norms, colors, idx = payload
+            # set_ribbon(), not a second, lighter-weight setter: there is no
+            # such thing (Task 11 brief, confirmed by reading ui/viewer.py --
+            # this is the ONLY place a highlight can reach the screen). It
+            # DOES reframe the camera internally (_frame_camera(snap=True)),
+            # but against the SAME vertex positions this cell is already
+            # showing -- only the colours changed -- so the computed frame
+            # is the one already on screen and nothing visibly moves. No
+            # begin_crossfade() call: the structure is already fully faded
+            # in (blend already at 1.0 by the time an answer can arrive),
+            # so there is nothing to fade FROM.
+            viewer.set_ribbon(verts, norms, colors, idx)
+            # Consumed: this answer has now been visually applied, so it
+            # must not be picked up again by some LATER, unrelated re-fold
+            # of this same target -- see `_answered_pockets`' docstring in
+            # __init__. Only pops the record if it is still the SAME one
+            # that drove this rebuild (a newer answer for the same target
+            # could in principle have landed while this rebuild was in
+            # flight); an unrelated newer answer must survive to get its
+            # own highlight later.
+            self._answered_pockets.pop(target_id, None)
+        except Exception:
+            log.exception("dropping pocket highlight for %s", target_id)
 
     def _sync_focus(self):
         """Mark the cell the booth is following, on screen.
@@ -4432,7 +5363,7 @@ class DemoApp(Gtk.Application):
     # actually promise), and no queue that could let a superseded ribbon
     # sit and apply later.
 
-    def _spawn_ribbon_worker(self, slot, cif_path):
+    def _spawn_ribbon_worker(self, slot, cif_path, target_id=None):
         """Move ribbon_from_cif's cost onto a background thread, for one cell.
 
         Threads, not e.g. a process pool: the payload (a cif_path string
@@ -4451,6 +5382,17 @@ class DemoApp(Gtk.Application):
         generation and chip 0's in-flight ribbon build is dropped as stale --
         silently, every cycle, forever, and with four chips folding that is
         most ribbons the booth ever builds.
+
+        `target_id` (Critical fix, whole-branch review): if an affinity
+        answer for this exact target is already sitting in
+        `_answered_pockets` -- the common case in production, where nesso1
+        (~8-12s, dedicated idle chip) usually finishes before this fold does
+        -- the highlight is baked into THIS build directly, rather than
+        built plain here and rebuilt a second time later by the reactive
+        path. Snapshotted here, on the MAIN thread, and handed to the worker
+        as a plain value: `_answered_pockets` is mutated only from the main
+        loop (`_handle_answer_event`), so reading it here and never again
+        inside the worker thread avoids needing a lock around it.
         """
         view = self._slot_view(slot)
         if view is None:
@@ -4460,6 +5402,9 @@ class DemoApp(Gtk.Application):
             view.ribbon_generation += 1
             generation = view.ribbon_generation
 
+        pocket_event = (self._answered_pockets.get(target_id)
+                        if target_id is not None else None)
+
         # Bookkeeping only (test joins + a bound on how many dead Thread
         # objects accumulate across a long attract-loop session) -- prune
         # finished workers before adding the new one rather than letting
@@ -4468,7 +5413,7 @@ class DemoApp(Gtk.Application):
 
         worker = threading.Thread(
             target=self._ribbon_worker_main,
-            args=(slot, generation, cif_path),
+            args=(slot, generation, cif_path, target_id, pocket_event),
             name=f"ribbon-worker-{slot}-{generation}",
             daemon=True,
         )
@@ -4498,7 +5443,8 @@ class DemoApp(Gtk.Application):
                         alive, timeout)
         return not alive
 
-    def _ribbon_worker_main(self, slot, generation, cif_path):
+    def _ribbon_worker_main(self, slot, generation, cif_path, target_id=None,
+                            pocket_event=None):
         """Runs entirely off the main loop -- must never raise out of this
         method. A plain threading.Thread whose target raises doesn't freeze
         anything the way an uncaught exception in a GLib source would (see
@@ -4508,12 +5454,22 @@ class DemoApp(Gtk.Application):
         Catch broadly -- deliberately not just GeometryError, since
         anything ribbon_from_cif raises must produce the same "log it,
         leave the screen alone" outcome, not a silent thread death.
+
+        `pocket_event` (Critical fix, whole-branch review): non-None means
+        `_spawn_ribbon_worker` found an answer already waiting for this
+        target at spawn time, so this build bakes the highlight in directly
+        -- one rebuild instead of a plain one followed immediately by a
+        second, highlighted one.
         """
         try:
-            # The cartoon, with any bound ligand drawn beside it. Falls
-            # back to the plain backbone tube if either raises -- see
-            # ui/structure_view.py. Same four arrays either way.
-            result = structure_mesh(cif_path)
+            if pocket_event is not None:
+                residues = _compute_pocket_residues(cif_path)
+                result = structure_mesh(cif_path, highlight_residues=residues)
+            else:
+                # The cartoon, with any bound ligand drawn beside it. Falls
+                # back to the plain backbone tube if either raises -- see
+                # ui/structure_view.py. Same four arrays either way.
+                result = structure_mesh(cif_path)
         except Exception as exc:
             outcome = ("error", exc)
         else:
@@ -4542,7 +5498,8 @@ class DemoApp(Gtk.Application):
                 and generation < view.pending_ribbon[0]
             )
             if not stale and not superseded_in_slot:
-                view.pending_ribbon = (generation, cif_path, outcome)
+                view.pending_ribbon = (generation, cif_path, outcome,
+                                       target_id, pocket_event)
 
         # Wake the main loop regardless of whether this worker's result was
         # the one actually stored -- GLib.idle_add is safe to call from any
@@ -4582,13 +5539,14 @@ class DemoApp(Gtk.Application):
                                     view.ribbon_generation))
                     view.pending_ribbon = None
 
-        for slot, (generation, cif_path, outcome), current_generation in pending:
+        for slot, entry, current_generation in pending:
+            generation, cif_path, outcome, target_id, pocket_event = entry
             self._apply_ribbon(slot, generation, current_generation,
-                               cif_path, outcome)
+                               cif_path, outcome, target_id, pocket_event)
         return False
 
     def _apply_ribbon(self, slot, generation, current_generation, cif_path,
-                      outcome):
+                      outcome, target_id=None, pocket_event=None):
         """Put one cell's finished structure on screen, or decide not to."""
         if generation != current_generation:
             # A newer fold started ON THIS CELL after this result was
@@ -4643,6 +5601,36 @@ class DemoApp(Gtk.Application):
                 # really changes is the moment a frame is drawn, and that is
                 # where `shown_target_id` is set -- see `_draw_frame`.
                 view.has_structure = True
+                # Which .cif this ribbon came from -- the affinity-questions
+                # feature's own seam (Task 11): if an answer for this same
+                # target lands while this cell still shows it,
+                # `_maybe_highlight_pocket` rebuilds from exactly this file
+                # rather than needing a second place that remembers it.
+                view.shown_cif_path = cif_path
+            # Critical fix (whole-branch review): reconcile this ribbon
+            # against `_answered_pockets` now that `shown_cif_path` is set.
+            if pocket_event is not None:
+                # This build already baked the highlight in at spawn time
+                # (`_spawn_ribbon_worker`'s snapshot found the answer
+                # waiting) -- consume the record so a LATER, unrelated
+                # re-fold of the same target never resurrects it. Only pops
+                # it if it is still the SAME record: an answer that arrived
+                # for the same target *after* the snapshot (superseding
+                # this one) must survive to get its own highlight, handled
+                # by the safety net below on ITS OWN ribbon.
+                if self._answered_pockets.get(target_id) is pocket_event:
+                    del self._answered_pockets[target_id]
+            elif target_id is not None:
+                # Safety net for the one race the spawn-time snapshot cannot
+                # close: an answer for this target landed AFTER the
+                # snapshot was taken (so this build went out plain) but
+                # before this apply -- or is landing concurrently. Now that
+                # `shown_cif_path`/`shown_target_id` genuinely describe this
+                # ribbon, `_maybe_highlight_pocket`'s reactive path (the one
+                # `answer_done` already drives) is the correct, already-
+                # tested way to pick it up; it is a no-op if there is
+                # nothing unconsumed to find.
+                self._maybe_highlight_pocket(target_id)
             # The structure is only NOW something a visitor can see, so
             # this is when its dwell starts -- not back at job_done,
             # which is separated from this instant by the build above
@@ -4833,6 +5821,19 @@ class DemoApp(Gtk.Application):
                 # what stops one fold's noise rescaling another's ribbon.
                 viewer.clear_structure()
                 view.has_structure = False
+                # `shown_cif_path` names the ribbon this cell is showing, and
+                # this is the instant that ribbon genuinely leaves the screen
+                # -- the same handover `has_structure` just recorded. Left
+                # alone it stays pointed at the OUTGOING fold's .cif while
+                # `shown_target_id` (below) is about to be renamed to the
+                # INCOMING fold: `_maybe_highlight_pocket`'s guard reads both
+                # fields, so an answer landing in that window would rebuild
+                # and paint the outgoing fold's stale ribbon over this cell's
+                # live diffusion, snapping the camera to the wrong geometry
+                # (spec section 6 forbids exactly this camera jump). Clearing
+                # it here keeps it in lockstep with `has_structure` for
+                # every reader downstream.
+                view.shown_cif_path = None
             viewer.set_points(coords)
             view.has_structure = True
             if view.awaiting_first_frame:
@@ -4888,11 +5889,19 @@ def main(argv=None):
     target_ids = [part.strip() for part in (args.targets or "").split(",")
                   if part.strip()]
     try:
-        return DemoApp(socket_path=args.socket,
-                       playlist_path=args.playlist,
-                       target_ids=target_ids,
-                       windowed=args.windowed,
-                       quad=args.quad).run([])
+        # Construction lives INSIDE this try, not before it: "a clean stop
+        # must not end in a traceback" (this project's standing rule) means
+        # a Ctrl-C raised while GTK/GObject construction is still in flight
+        # must hit the same KeyboardInterrupt handling as one raised inside
+        # `run()`, rather than propagating out of `main()` as a bare stack
+        # trace. The `except` below returns 130 directly WITHOUT touching
+        # `app` -- it may not exist yet if the interrupt landed here.
+        app = DemoApp(socket_path=args.socket,
+                      playlist_path=args.playlist,
+                      target_ids=target_ids,
+                      windowed=args.windowed,
+                      quad=args.quad)
+        result = app.run([])
     except KeyboardInterrupt:
         # A CLEAN STOP MUST NOT END IN A TRACEBACK. Ctrl-C (and the
         # `kill -INT -<pgid>` the README recommends, which is the same thing
@@ -4906,6 +5915,13 @@ def main(argv=None):
         # 130 is the shell's convention for "terminated by SIGINT".
         log.info("interrupted; booth stopped")
         return 130
+    # Ctrl+A's restart path (`DemoApp._request_qa_restart`) exits through
+    # `Gio.Application.quit()`, which stops the main loop but has no notion
+    # of a custom process exit code -- `Gio.Application.run()` always
+    # returns 0 on a clean quit. `app.exit_code` is where that sentinel is
+    # stashed instead; read it back here, overriding the 0 `run()` gave us,
+    # so scripts/run-demo.sh's exit-code check downstream actually sees it.
+    return app.exit_code if app.exit_code is not None else result
 
 
 if __name__ == "__main__":

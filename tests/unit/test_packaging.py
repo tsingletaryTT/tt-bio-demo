@@ -13,6 +13,7 @@ import re
 import os
 import shutil
 import subprocess
+import sys
 import pathlib
 import pytest
 
@@ -693,6 +694,185 @@ def test_the_weights_postinst_uses_the_tt_bio_api_that_actually_exists():
             f'postinst fetches artifact "{key}", which is not a row in '
             f"tt_bio/weights.py (rows: {sorted(declared)})")
 
+    # The same contract, one more constant over: the postinst's ESM-2
+    # pre-warm imports ESM2_MODEL from tt_bio.nesso1_input rather than
+    # duplicating the model id as a literal (see the affinity-questions
+    # tests below for why), so that import is only as safe as the name
+    # actually existing on the pinned tt-bio. Folded into THIS test rather
+    # than given its own venv-runner-dependent test, per this file's own
+    # rule above the CI deselection: a second test needing the multi-GB
+    # venv is a signal to re-examine scope, not to lengthen that list.
+    nesso1_input_tree = ast.parse((site / "nesso1_input.py").read_text())
+    nesso1_input_names = {
+        n.targets[0].id for n in ast.walk(nesso1_input_tree)
+        if isinstance(n, ast.Assign) and len(n.targets) == 1
+        and isinstance(n.targets[0], ast.Name)}
+    assert "ESM2_MODEL" in nesso1_input_names, (
+        "tt_bio.nesso1_input no longer defines ESM2_MODEL; update the postinst")
+
+
+# ── affinity-questions weights: nesso1 / nesso1-ccd / the ESM-2 encoder ─────
+#
+# docs/followups.md's "From the affinity-questions feature" entry: the
+# feature originally shipped with `qa_capable: true` and no provisioning at
+# all, so a fresh install (source or .deb) reported the booth ready and then
+# failed every single question. Both source setup and the Debian postinst
+# now attempt this provisioning -- these tests below confirm the ATTEMPT is
+# real and correctly formed, not that it always succeeds: the fetch is
+# optional and non-fatal (see the rule below), can be declined, and (per a
+# real, separate, still-open gap documented in docs/followups.md) can even
+# succeed at install time and still leave the weights unreachable to the
+# booth's own process. These mirror the protenix-v2 tests above, one
+# artifact set over, plus the one new rule that set has and protenix-v2/mols
+# does not: failure here must NOT fail the install (see runner/daemon.py's
+# graceful-degrade design -- a booth not started with --questions (the
+# default) or a one-chip box never needs any of this at all).
+
+def test_the_postinst_also_fetches_nesso1_and_nesso1_ccd():
+    p = _weights("postinst")
+    assert 'weights.fetch("nesso1"' in p, "postinst does not fetch nesso1"
+    assert 'weights.fetch("nesso1-ccd"' in p, "postinst does not fetch nesso1-ccd"
+
+
+def test_the_postinst_pre_warms_the_esm2_encoder_through_the_real_constant():
+    """ESM2_MODEL is imported from tt_bio.nesso1_input, not duplicated as a
+    literal, in the postinst's Python block -- unlike scripts/doctor.sh and
+    scripts/setup-venvs.sh, which hardcode it (importing nesso1_input there
+    pulls torch/rdkit/safetensors just to read one string). The postinst
+    already imports tt_bio.main, which pulls torch anyway, so there is no
+    cost to importing the real constant here and no duplicate to drift.
+
+    Checks only the postinst's own source text -- no venv-runner needed.
+    Whether `ESM2_MODEL` actually still exists on the pinned tt-bio is
+    checked in `test_the_weights_postinst_uses_the_tt_bio_api_that_actually_
+    exists` instead, which already pays the venv-runner cost for the same
+    class of check; see that test's own comment on why a second such test
+    is a scope smell rather than a second line to add to the CI deselect
+    list."""
+    p = _weights("postinst")
+    assert "from tt_bio.nesso1_input import ESM2_MODEL" in p, (
+        "postinst should import the real ESM2_MODEL constant, not "
+        "hardcode the model id")
+    assert "snapshot_download(ESM2_MODEL" in p, (
+        "postinst does not pre-warm the ESM-2 encoder through huggingface_hub")
+
+
+def test_the_postinst_esm2_prewarm_restricts_the_download_to_the_files_it_needs():
+    """THE BUG. Without allow_patterns/ignore_patterns, snapshot_download
+    fetches EVERY file in the HF repo -- measured on the dev box:
+    model.safetensors (2.6 GB) AND pytorch_model.bin (2.6 GB) AND
+    tf_model.h5 (2.6 GB), ~7.3 GB total, when the featurizer only ever
+    reads model.safetensors plus the small json/txt config/tokenizer
+    files. Every "~2.6 GB"/"~3.2 GB"/"~6.9 GB" figure this project states
+    (the debconf prompt, README, INSTALL.md, scripts/setup-venvs.sh) was
+    off by the ~4.7 GB the two unwanted formats cost without this.
+
+    Parses the ACTUAL heredoc the postinst ships, via `ast`, the same way
+    the mirror test in tests/unit/test_setup_venvs_weights.py checks the
+    source-install fetch step -- not a substring match, which would pass
+    for a call whose patterns exclude nothing real."""
+    import ast
+
+    p = _weights("postinst")
+    heredoc = p.split("<<'PYEOF'", 1)[1].split("\nPYEOF", 1)[0]
+    tree = ast.parse(heredoc)
+    call = None
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "snapshot_download"):
+            call = node
+            break
+    assert call is not None, f"no snapshot_download call found:\n{heredoc}"
+    kwargs = {kw.arg: kw.value for kw in call.keywords if kw.arg}
+    assert "ignore_patterns" in kwargs or "allow_patterns" in kwargs, (
+        f"postinst's snapshot_download has no allow_patterns/ignore_patterns "
+        f"-- it fetches every weight format in the repo (~7.3 GB instead of "
+        f"~2.6 GB):\n{heredoc}")
+    if "ignore_patterns" in kwargs:
+        patterns = [elt.value for elt in kwargs["ignore_patterns"].elts]
+        for unwanted in ("*.bin", "*.h5"):
+            assert unwanted in patterns, (
+                f"ignore_patterns does not exclude {unwanted}: {patterns}")
+    else:
+        patterns = [elt.value for elt in kwargs["allow_patterns"].elts]
+        assert any("safetensors" in p for p in patterns), patterns
+
+
+def test_the_postinst_python_block_is_single_quoted():
+    """FOUND IN REVIEW. The heredoc used to be `<<PYEOF` (unquoted), which
+    shell-interpolates every `$`/backtick in the block -- including inside
+    Python comments -- and was changed to that specifically to interpolate
+    `${CACHE}` into the marker-file path. That removed a whole class of
+    future-edit safety this file's own comment warns about: "deriving it
+    again from a different rule is what made the download and the
+    verification able to disagree". The cache path reaches the block as
+    `sys.argv[1]` instead (like everywhere else in it), so there is no
+    reason left for shell interpolation here at all."""
+    p = _weights("postinst")
+    assert "<<'PYEOF'" in p, (
+        "the postinst's python heredoc must be single-quoted ('PYEOF') so "
+        "$/backticks inside it are never shell-expanded")
+    assert "<<PYEOF\n" not in p, (
+        "an unquoted PYEOF heredoc marker is still present -- every $/backtick "
+        "inside it would be shell-expanded")
+
+
+def test_every_nesso1_artifact_the_package_fetches_is_checksum_verified():
+    """Same invariant as protenix-v2/mols's own version of this test, over
+    the SEPARATE table these two live in (see the postinst's own comment for
+    why: nesso1/nesso1-ccd are "hf-repo" rows and ignore the flat-cache
+    ARTIFACTS table's assumed path shape, so they are verified inside the
+    Python block against tt-bio's own resolved path instead)."""
+    p = _weights("postinst")
+    artifacts = re.findall(
+        r'^\s*\("([a-z0-9-]+)",\s*\w+,\s*\n?\s*"([a-f0-9]{64})"\)', p, re.MULTILINE)
+    assert artifacts, "no nesso1 (key, path, sha256) tuples found in the postinst"
+    keys = {k for k, _ in artifacts}
+    assert keys == {"nesso1", "nesso1-ccd"}, (
+        f"expected exactly nesso1 + nesso1-ccd to be checksum-verified, got {keys}")
+
+
+def test_a_failed_affinity_weights_fetch_does_not_fail_the_install():
+    """THE RULE THIS SECTION EXISTS TO ENFORCE. Unlike protenix-v2/mols
+    (whose verification failure calls `exit 1`), nesso1/nesso1-ccd/ESM-2 are
+    optional: not passing `--questions` (the default) or a single-chip box
+    never reserves a Q&A worker at all, so a package "configure" step must
+    not fail over ~3.2 GB of weights that specific booth will never touch."""
+    p = _weights("postinst")
+    # The marker-file branch that reports the affinity-weights outcome must
+    # not itself call exit 1 -- only the protenix-v2/mols branch above it may.
+    marker_branch = p.split('if [ -f "${CACHE}/.affinity-weights-incomplete" ]')[1]
+    marker_branch = marker_branch.split("\n        ;;")[0]
+    assert "exit 1" not in marker_branch, (
+        f"the affinity-weights branch must never fail the install:\n{marker_branch}")
+
+
+def test_the_affinity_weights_python_block_never_raises_for_nesso1_or_esm2():
+    """The nesso1/nesso1-ccd fetch and the ESM-2 pre-warm must both be
+    wrapped so a network failure sets a flag rather than raising -- an
+    uncaught exception in this heredoc kills the whole postinst (`set -e`
+    is not even needed; an unhandled exception exits the python process
+    nonzero on its own), which is exactly the failure mode the marker-file
+    design exists to avoid."""
+    p = _weights("postinst")
+    # Both new fetches must be inside a try/except, unlike the (deliberately
+    # fatal) protenix-v2/mols calls above them.
+    assert re.search(r'try:\s*\n\s*nesso1_path = weights\.fetch\("nesso1"', p), (
+        "the nesso1/nesso1-ccd fetch is not wrapped in a try/except")
+    assert re.search(r'try:\s*\n\s*from tt_bio\.nesso1_input import ESM2_MODEL', p), (
+        "the ESM-2 pre-warm is not wrapped in a try/except")
+
+
+def test_the_prompt_states_the_new_total_size():
+    """The SAME debconf question now triggers protenix-v2 + mols + nesso1 +
+    nesso1-ccd + the ESM-2 encoder, so its stated size must be the real
+    total a "yes" answer downloads, not just protenix-v2/mols's 3.7 GB."""
+    t = _weights("templates")
+    assert "6.9 GB" in t, f"the prompt still states the old, incomplete size:\n{t}"
+    assert "nesso1" in t.lower() or "affinity" in t.lower(), (
+        "the prompt does not mention what the extra download is for")
+
 
 # ── Task 7: the systemd user unit and the desktop entry ─────────────────────
 
@@ -709,23 +889,210 @@ def test_the_daemon_restarts_if_it_dies():
     assert "Restart=no" not in u
 
 
+def _daemon_launcher():
+    return (REPO / "scripts" / "tt-bio-demo-daemon-launcher.sh").read_text()
+
+
 def test_the_unit_pins_the_log_root_and_budgets():
     """tt-metal writes gigabytes RELATIVE TO CWD unless pinned, and a service
     has no obvious CWD. Not hypothetical: this project measured tt-metal
     writing 13-14 MB/s into a file it had already unlinked -- invisible to a
-    directory walk -- which would have exhausted a tmpfs in ~31 minutes."""
+    directory walk -- which would have exhausted a tmpfs in ~31 minutes.
+
+    This logic now lives in scripts/tt-bio-demo-daemon-launcher.sh, which
+    ExecStart= runs (see the Critical-2 fix, docs/followups.md's "the systemd
+    unit's Environment= is unconditional" entry) -- the unit itself only
+    forwards the socket/log-root paths as argv so systemd's `%t` specifier
+    still gets expanded in the one place that can expand it."""
     u = (REPO / "debian" / "tt-bio-demo.user.service").read_text()
-    assert "--log-root" in u
-    assert "--log-budget-gb" in u
+    assert "%t/tt-bio-demo/logs" in u, "unit must still forward the log root to the launcher"
+    launcher = _daemon_launcher()
+    assert "--log-root" in launcher
+    assert "--log-budget-gb" in launcher
 
 
 def test_the_unit_runs_the_daemon_from_the_runner_venv():
     """The UI venv has no torch and the runner venv has no GTK. A unit that
-    invoked a bare `python3` would import neither."""
+    invoked a bare `python3` would import neither -- and since the
+    Critical-2 fix, the unit no longer invokes python3 directly at all; it
+    runs scripts/tt-bio-demo-daemon-launcher.sh, which does."""
     u = (REPO / "debian" / "tt-bio-demo.user.service").read_text()
-    assert "venv-runner/bin/python3" in u, "unit must use venv-runner's interpreter"
-    assert "runner.daemon" in u
+    assert "tt-bio-demo-daemon-launcher.sh" in u, \
+        "ExecStart= must run the launcher script"
     assert not re.search(r"ExecStart=/usr/bin/python3\b", u), "bare system python3"
+    assert not re.search(r"ExecStart=.*venv-runner/bin/python3", u), (
+        "the venv-runner invocation belongs in the launcher script now, not "
+        "inlined in the unit -- see test_the_launcher_runs_the_daemon_from_"
+        "the_runner_venv")
+
+
+def test_the_launcher_runs_the_daemon_from_the_runner_venv():
+    """The other half of the assertion above: the launcher itself must be
+    the thing that actually invokes venv-runner's interpreter against
+    runner.daemon, not silently drop it during the Critical-2 refactor."""
+    launcher = _daemon_launcher()
+    assert "venv-runner/bin/python3" in launcher, \
+        "launcher must use venv-runner's interpreter"
+    assert "runner.daemon" in launcher
+    assert not re.search(r"exec /usr/bin/python3\b", launcher), "bare system python3"
+
+
+def test_the_launcher_is_executable():
+    """ExecStart= runs this file directly (no `bash` prefix), so dpkg must
+    ship it with its execute bit set -- the same convention run-demo.sh and
+    doctor.sh already follow."""
+    path = REPO / "scripts" / "tt-bio-demo-daemon-launcher.sh"
+    assert path.stat().st_mode & 0o111, f"{path} is not executable"
+
+
+def test_the_launcher_parses():
+    r = subprocess.run(
+        ["bash", "-n", str(REPO / "scripts" / "tt-bio-demo-daemon-launcher.sh")],
+        capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+
+
+def test_the_launcher_requires_the_weights_flag_the_daemon_actually_requires():
+    """runner/daemon.py's argument parser has `--weights` as a REQUIRED
+    argument. The unit's ExecStart= used to omit it entirely -- a
+    pre-existing bug, found while fixing Critical 2, that would have made
+    the daemon exit immediately (argparse's "the following arguments are
+    required: --weights") every time systemd tried to start it."""
+    launcher = _daemon_launcher()
+    assert "--weights" in launcher
+
+
+# ---------------------------------------------------------------------------
+# Forwarding extra daemon args (PR review, Copilot): the README documents
+# `systemctl --user edit tt-bio-demo` to append `--questions` to this
+# unit's own ExecStart= line as the systemd-mode way to opt into affinity
+# Q&A -- but the launcher required EXACTLY two arguments and had nowhere
+# for a third to go, so that documented step made it exit immediately with
+# an argument-count error. Real end-to-end execution isn't practical to
+# test here (the script hardcodes `PREFIX=/opt/tt-bio-demo` and `exec`s a
+# real venv-runner interpreter, unlike run-demo.sh's own launcher tests,
+# which run against a `_fake_packaged_tree` because that script takes its
+# root from an overridable env var) -- consistent with every other test in
+# this section, this is a static guard against reverting the fix.
+# ---------------------------------------------------------------------------
+
+def test_the_launcher_accepts_more_than_two_arguments():
+    """The old `[ "$#" -ne 2 ]` guard rejected a 3rd argument outright --
+    exactly what `systemctl --user edit` appending `--questions` to
+    ExecStart= produces."""
+    launcher = _daemon_launcher()
+    assert '[ "$#" -ne 2 ]' not in launcher, (
+        "still rejects anything past the socket/log-root pair")
+    assert re.search(r'\[\s*"\$#"\s*-lt\s*2\s*\]', launcher), (
+        "expected a 'fewer than two is an error' guard that allows more"
+    )
+
+
+def test_the_launcher_forwards_extra_arguments_to_the_daemon():
+    """The other half: captured extra args must actually reach the `exec`
+    line, not just be accepted and silently dropped."""
+    launcher = _daemon_launcher()
+    assert 'shift 2' in launcher
+    assert "EXTRA_DAEMON_ARGS" in launcher
+    exec_block = launcher[launcher.index("exec "):]
+    assert "${EXTRA_DAEMON_ARGS[@]}" in exec_block
+
+
+# ---------------------------------------------------------------------------
+# The packaged playlist: `debian/tt-bio-demo.install` ships the real fold-
+# input YAMLs into a SIBLING `examples/` directory, never into
+# `/opt/tt-bio-demo/playlist/` itself (that directory carries only
+# manifest.yaml/questions.yaml) -- so a launcher that pointed `--playlist`
+# straight at the installed directory handed `runner.daemon._playlist_files
+# ()` a glob that (once `_NON_FOLD_PLAYLIST_FILENAMES` correctly excludes
+# those two metadata files) always found ZERO fold targets. (PR review,
+# Copilot.) The fix is `scripts/materialize-playlist.sh`, the SAME
+# per-target symlink farm `scripts/run-demo.sh` already builds for the
+# source/dev path, called from the launcher into a runtime directory it can
+# actually write to.
+# ---------------------------------------------------------------------------
+
+def test_the_launcher_materializes_the_playlist_rather_than_globbing_the_installed_one():
+    """Static guard against reverting straight back to the bug: the launcher
+    must no longer hand `--playlist` the bare installed directory, and must
+    go through the shared materializer instead."""
+    launcher = _daemon_launcher()
+    assert "materialize-playlist.sh" in launcher
+    assert "tt_bio_demo_materialize_playlist" in launcher
+    assert '--playlist "${PREFIX}/playlist"' not in launcher, (
+        "this is the installed, metadata-only directory -- real fold "
+        "targets never live there")
+
+
+def test_materialize_playlist_turns_the_real_manifest_into_real_fold_inputs(tmp_path):
+    """The functional half: actually source `materialize-playlist.sh` and
+    call its one function against the REAL repo manifest (the same one the
+    packaged install ships), the way the daemon-launcher does. What a
+    packaged daemon's `--playlist` glob sees afterward must be real,
+    existing fold-input files -- not the two metadata files this bug left
+    it with, and not merely "some files, unverified"."""
+    dest = tmp_path / "playlist"
+    dest.mkdir()
+    script = f'''
+set -euo pipefail
+. "{REPO}/scripts/materialize-playlist.sh"
+tt_bio_demo_materialize_playlist \
+    "{sys.executable}" "{REPO}/playlist/manifest.yaml" "" "{dest}"
+'''
+    r = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                       cwd=str(REPO))
+    assert r.returncode == 0, f"stdout:\n{r.stdout}\nstderr:\n{r.stderr}"
+
+    yaml_files = sorted(dest.glob("*.yaml"))
+    assert yaml_files, "materialized directory has no fold-input YAMLs at all"
+    names = {p.name for p in yaml_files}
+    assert "manifest.yaml" not in names and "questions.yaml" not in names, (
+        "the farm must symlink per-target inputs, not the metadata files "
+        "themselves")
+    for path in yaml_files:
+        assert path.is_symlink(), f"{path.name} is not a symlink"
+        assert path.resolve().is_file(), (
+            f"{path.name} -> {path.resolve()} does not exist -- exactly "
+            "what this fix exists to prevent a visitor's pick from hitting")
+
+
+def test_materialize_playlist_refuses_a_target_id_with_a_path_separator(tmp_path):
+    """PR review (Copilot): `ui.playlist.load_playlist` validates a
+    manifest entry's `id` only for presence, never for shape, so an id of
+    `../outside` reaches `tt_bio_demo_materialize_playlist` unchanged --
+    and `ln -sf ... "${dest_dir}/${target_id}.yaml"` would then write a
+    symlink OUTSIDE the directory this function's own contract says is the
+    only thing it touches. A malicious or merely malformed custom manifest
+    must be refused, not followed."""
+    outside = tmp_path / "outside-marker.yaml"
+    real_input = tmp_path / "evil.yaml"
+    real_input.write_text("version: 1\n")
+    manifest = tmp_path / "manifest.yaml"
+    manifest.write_text(
+        "- id: ../outside-marker\n"
+        f"  input: {real_input}\n"
+        "  name: Evil\n"
+        "  blurb: b\n"
+    )
+    dest = tmp_path / "playlist"
+    dest.mkdir()
+
+    script = f'''
+set -uo pipefail
+. "{REPO}/scripts/materialize-playlist.sh"
+tt_bio_demo_materialize_playlist \
+    "{sys.executable}" "{manifest}" "" "{dest}"
+'''
+    r = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                       cwd=str(REPO))
+    assert r.returncode != 0, (
+        f"a target id with a path separator must be refused, not "
+        f"followed\nstdout:\n{r.stdout}\nstderr:\n{r.stderr}")
+    assert not outside.exists(), (
+        f"a symlink escaped {dest} to {outside} -- the exact path "
+        "traversal this test exists to catch")
+    assert not list(dest.glob("*")), (
+        "nothing should have been written into dest_dir either")
 
 
 def test_the_desktop_entry_is_valid_and_names_the_ui():
@@ -1018,3 +1385,285 @@ def test_helpers_does_not_recurse_when_the_resolver_defines_nothing(tmp_path):
     assert "recursion" not in (r.stdout + r.stderr).lower(), \
         f"the wrapper recursed:\n{r.stdout}{r.stderr}"
     assert r.returncode != 0, "a resolver that defines nothing must be an error"
+
+
+# ── The root-postinst-time HOME vs desktop-user's systemd-service-time HOME
+#    fix: a packaged install pins $TT_BIO_CACHE to ONE fixed, non-home-
+#    relative path. See docs/followups.md's "root's postinst-time HOME vs
+#    desktop-user's systemd-service-time HOME" entry (FIXED) for the full
+#    history: the postinst runs as root during dpkg/apt (HOME=/root) while
+#    the daemon runs as a systemd --user service under the desktop user's
+#    own HOME, so the two would otherwise derive two different ~/.boltz
+#    directories and a package could report every weight fetched
+#    successfully while the booth finds none of it.
+#
+#    The literal fixed path is declared in exactly ONE place --
+#    scripts/weights-cache.sh's `TT_BIO_DEMO_PACKAGED_WEIGHTS_CACHE` -- the
+#    same file tests/unit/test_weights_cache_is_derived_once.py already
+#    treats as one of the two allowed resolvers. FOUR callers reach it by
+#    CALLING that resolver (`tt_bio_demo_weights_cache_packaged`) rather than
+#    repeating the literal path themselves: the postinst (via
+#    debian/helpers.sh's wrapper of the same name), scripts/doctor.sh,
+#    scripts/run-demo.sh (the packaged install's actual operator-facing
+#    launcher), and scripts/tt-bio-demo-daemon-launcher.sh (what
+#    debian/tt-bio-demo.user.service's ExecStart= actually runs). The
+#    systemd unit ITSELF used to be the one place that had to repeat the
+#    literal value, in a static `Environment=` line that could not call a
+#    shell function and so could not honour an operator's own override --
+#    see docs/followups.md's "the systemd unit's Environment= is
+#    unconditional" entry (FIXED). Moving that pin into the launcher script
+#    above removed the one caller that could drift from this resolver at
+#    all; nothing left in this tree repeats the literal value, so there is
+#    no longer a second drift this section has to guard against directly --
+#    only that the four callers keep calling the shared resolver instead of
+#    reinventing their own copy.
+#    ──────────────────────────────────────────────────────────────────────
+
+def _fixed_weights_cache_path():
+    """The literal path scripts/weights-cache.sh declares as
+    TT_BIO_DEMO_PACKAGED_WEIGHTS_CACHE, or None if it is not found."""
+    wc = (REPO / "scripts" / "weights-cache.sh").read_text()
+    m = re.search(r'TT_BIO_DEMO_PACKAGED_WEIGHTS_CACHE="(/[^"]+)"', wc)
+    return m.group(1) if m else None
+
+
+def test_the_resolver_declares_a_fixed_non_home_relative_packaged_path():
+    """The ONE place the literal path lives. Non-home-relative, because the
+    whole point is to sidestep whichever $HOME a postinst-as-root or a
+    unit-as-desktop-user happens to have."""
+    path = _fixed_weights_cache_path()
+    assert path is not None, \
+        "scripts/weights-cache.sh does not declare TT_BIO_DEMO_PACKAGED_WEIGHTS_CACHE"
+    assert "$HOME" not in path and "~" not in path, \
+        f"the pinned path is home-relative: {path}"
+
+
+def _packaged_resolver_tt_bio_cache(env_overrides):
+    """Source weights-cache.sh, call `tt_bio_demo_weights_cache_impl_
+    packaged` under the given extra environment, and return the resulting
+    $TT_BIO_CACHE -- a real functional check of the resolver's actual
+    behavior, not a substring match against its source text."""
+    env = {**os.environ}
+    for var in ("TT_BIO_CACHE", "BOLTZ_CACHE"):
+        env.pop(var, None)
+    env.update(env_overrides)
+    script = (
+        f'. "{REPO}/scripts/weights-cache.sh"\n'
+        'tt_bio_demo_weights_cache_impl_packaged >/dev/null\n'
+        'printf "%s" "$TT_BIO_CACHE"\n'
+    )
+    r = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                       env=env)
+    assert r.returncode == 0, f"stderr:\n{r.stderr}"
+    return r.stdout
+
+
+def test_the_resolver_pins_the_fixed_path_when_neither_variable_is_set():
+    cache = _packaged_resolver_tt_bio_cache({})
+    assert cache == _fixed_weights_cache_path()
+
+
+def test_the_resolver_propagates_boltz_cache_into_tt_bio_cache():
+    """PR review (Copilot): setting ONLY $BOLTZ_CACHE used to leave
+    $TT_BIO_CACHE unset, so the flat protenix artifacts followed the
+    operator's chosen directory while nesso1/the ESM-2 encoder (which read
+    $TT_BIO_CACHE specifically, via tt_bio.weights.configure_hf_cache())
+    silently fell back to the default Hugging Face cache instead -- the
+    installer documentation says either variable relocates the COMPLETE
+    weight set, so this must not be true any more.
+
+    Functional, not textual: the test this replaces asserted `-z
+    "${BOLTZ_CACHE:-}"` appears somewhere in the function body, which
+    stayed green throughout the exact bug this test now catches -- that
+    substring says nothing about which BRANCH it guards or what happens in
+    the other one.
+    """
+    cache = _packaged_resolver_tt_bio_cache({"BOLTZ_CACHE": "/mnt/relocated"})
+    assert cache == "/mnt/relocated"
+
+
+def test_the_resolver_still_prefers_an_explicit_tt_bio_cache_over_boltz_cache():
+    """This project's standing rule, unchanged by the fix above: an
+    operator's own $TT_BIO_CACHE always wins, even with $BOLTZ_CACHE also
+    set to something else."""
+    cache = _packaged_resolver_tt_bio_cache({
+        "TT_BIO_CACHE": "/mnt/explicit",
+        "BOLTZ_CACHE": "/mnt/relocated",
+    })
+    assert cache == "/mnt/explicit"
+
+
+def test_the_postinst_calls_the_packaged_resolver_before_computing_cache():
+    """The postinst must ask the shared PACKAGED resolver -- not derive or
+    hardcode the fixed path itself -- and must do so BEFORE `CACHE` is
+    computed, so the pin (and, via the exported environment it sets, the
+    python block's `import tt_bio`) is in place first."""
+    p = _weights("postinst")
+    assert "tt_bio_demo_weights_cache_packaged" in p, \
+        "the postinst must call the shared packaged resolver, not derive the path itself"
+    first_call_at = p.index("tt_bio_demo_weights_cache_packaged")
+    cache_computed_at = p.index('CACHE="$(tt_bio_demo_weights_cache_packaged)"')
+    assert first_call_at < cache_computed_at, \
+        "the packaged resolver must be called (for its pinning side effect) " \
+        "before CACHE is computed from it"
+
+
+def test_the_postinst_makes_the_cache_directory_writable_not_just_readable():
+    """IMPORTANT-3 FIX. `install -d -m 0755` made the cache readable by the
+    desktop user but not WRITABLE -- and runner/folder.py's Folder.load()
+    self-repair (unpacking mols.tar into mols/ on the first fold if it was
+    never unpacked) and tt_bio.weights.fetch's own re-fetch of a corrupt
+    artifact both WRITE into this directory at runtime, as that desktop
+    user. 0755 turned that self-repair into a silent PermissionError deep
+    inside Folder.load()'s own try block. See docs/followups.md's
+    "/opt/tt-bio-demo/weights is root-owned and not writable by the daemon"
+    entry (FIXED)."""
+    p = _weights("postinst")
+    assert "install -d -m 0777 \"$CACHE\"" in p, (
+        "the cache directory must be created world-writable (0777) -- a "
+        "single-purpose booth appliance with no per-user account "
+        "separation, and no SUDO_USER/logind-based operator detection "
+        "anywhere in this codebase to chown it to instead"
+    )
+    assert "install -d -m 0755 \"$CACHE\"" not in p, \
+        "0755 is readable but not writable -- this is the exact regression"
+
+
+def test_installing_the_cache_directory_actually_yields_a_writable_mode(tmp_path):
+    """Not a textual check this time: actually run the same `install -d -m
+    0777` invocation the postinst uses and confirm the resulting directory
+    is genuinely writable, not merely readable -- 0755 vs 0777 is exactly
+    the distinction the regression hinged on, and a textual grep alone
+    cannot tell a real writable directory from a comment claiming one."""
+    target = tmp_path / "weights"
+    subprocess.run(["install", "-d", "-m", "0777", str(target)], check=True)
+    mode = target.stat().st_mode & 0o777
+    assert mode == 0o777, f"expected 0777, got {oct(mode)}"
+    assert os.access(target, os.W_OK), f"{target} is not writable"
+
+
+def test_the_unit_no_longer_pins_the_cache_unconditionally():
+    """CRITICAL-2 FIX. A static `Environment=TT_BIO_CACHE=...` line in a
+    systemd unit ALWAYS wins over anything the user manager's own
+    environment would otherwise supply, and outranks $BOLTZ_CACHE in
+    tt-bio's own resolution order -- there is no way to spell "only if
+    unset" in unit-file syntax. So an operator who had set $BOLTZ_CACHE
+    themselves (the postinst's own guard would have honoured it) still got
+    a daemon that ALWAYS loaded from the packaged default, silently, on
+    every start. See docs/followups.md's "the systemd unit's Environment=
+    is unconditional" entry (FIXED). The pin now lives in
+    scripts/tt-bio-demo-daemon-launcher.sh instead, which CAN run the same
+    guarded check every other packaged caller uses."""
+    unit = (REPO / "debian" / "tt-bio-demo.user.service").read_text()
+    # Non-comment lines only: the unit's own comment DESCRIBES the old,
+    # rejected `Environment=TT_BIO_CACHE=...` directive in prose (explaining
+    # why it was removed), which is not the same as the directive existing.
+    live_lines = [l for l in unit.splitlines() if not l.strip().startswith("#")]
+    assert not any(l.startswith("Environment=TT_BIO_CACHE=") for l in live_lines), (
+        "a static Environment=TT_BIO_CACHE= line always overrides an "
+        "operator's own BOLTZ_CACHE/TT_BIO_CACHE -- the pin must be guarded, "
+        "in the launcher script, not unconditional in the unit")
+
+
+def test_the_launcher_calls_the_same_guarded_resolver_the_postinst_does():
+    """The guard itself, restated for the launcher script: it must call
+    the SHARED guarded resolver (which only pins $TT_BIO_CACHE when NEITHER
+    it nor $BOLTZ_CACHE is already set) rather than hardcode the literal
+    path itself -- the exact shape of drift this project's tests already
+    guard against for the postinst and scripts/doctor.sh."""
+    launcher = _daemon_launcher()
+    assert "tt_bio_demo_weights_cache_packaged" in launcher, (
+        "the launcher must call the shared packaged resolver, not derive "
+        "or hardcode the fixed path itself")
+    # Non-comment lines only: the launcher's own header comment DESCRIBES the
+    # path in prose while explaining the history, which is not the same as
+    # the script deriving it itself instead of calling the resolver.
+    live_lines = [l for l in launcher.splitlines() if not l.strip().startswith("#")]
+    fixed_path = _fixed_weights_cache_path()
+    assert not any(fixed_path in l for l in live_lines), (
+        "the launcher should not repeat the literal fixed path in its own "
+        "code -- it should only ever reach it by calling the shared resolver")
+
+
+def test_the_launcher_primes_before_it_captures():
+    """Same "prime once, capture again" shape the postinst and
+    doctor_prime_weights_cache use: the FIRST call is a bare top-level
+    statement (for its exporting side effect, so `exec`'s replaced process
+    still has $TT_BIO_CACHE), and only the SECOND, inside `$(...)`, captures
+    the resolved path for `--weights`."""
+    launcher = _daemon_launcher()
+    first_call_at = launcher.index("tt_bio_demo_weights_cache_packaged")
+    weights_computed_at = launcher.index('WEIGHTS="$(tt_bio_demo_weights_cache_packaged)"')
+    assert first_call_at < weights_computed_at, (
+        "the packaged resolver must be called (for its pinning side effect) "
+        "before WEIGHTS is computed from it")
+
+
+def test_the_launcher_execs_rather_than_spawning_a_child():
+    """`exec` replaces this shell's own process image, so systemd's
+    Restart=/TimeoutStopSec=/signal delivery talk to the actual daemon PID
+    -- a bare invocation (no `exec`) would leave the launcher's shell
+    sitting in front of it as an extra process systemd has to reach
+    through."""
+    launcher = _daemon_launcher()
+    exec_at = launcher.index('exec "${PREFIX}')
+    daemon_at = launcher.index("runner.daemon", exec_at)
+    assert exec_at < daemon_at < exec_at + 200, (
+        "the daemon invocation must be `exec`'d, not spawned as a child "
+        "(look for a bare invocation with no leading `exec`)")
+
+
+def test_doctor_uses_the_same_packaged_resolver_the_postinst_does():
+    """The third leg: scripts/doctor.sh must diagnose a packaged install by
+    calling the SAME shared resolver the postinst calls, not a second copy
+    of the fixed path -- or it could report a healthy booth as broken (or a
+    broken one as healthy) the moment the two drift."""
+    doctor = (REPO / "scripts" / "doctor.sh").read_text()
+    assert "tt_bio_demo_weights_cache_packaged" in doctor, \
+        "scripts/doctor.sh must call the shared packaged resolver"
+    # And it must not have re-declared its own copy of the fixed path.
+    assert "DOCTOR_PACKAGED_WEIGHTS_CACHE" not in doctor, \
+        "doctor.sh should not keep its own copy of the fixed path any more"
+
+
+def test_doctor_only_uses_the_packaged_resolver_for_a_packaged_install():
+    """The fix is scoped to the packaged deployment path. A source checkout
+    must keep behaving exactly as it did before this change."""
+    doctor = (REPO / "scripts" / "doctor.sh").read_text()
+    for fn_name in ("doctor_weights_cache", "doctor_prime_weights_cache"):
+        fn = doctor.split(f"{fn_name}() {{")[1]
+        fn = fn.split("\n}\n", 1)[0]
+        assert 'doctor_install_mode)" = "package"' in fn, (
+            f"{fn_name} must condition the packaged resolver call on "
+            'doctor_install_mode reporting "package"')
+
+
+def test_run_demo_sh_only_uses_the_packaged_resolver_for_a_packaged_install():
+    """The same scoping, for scripts/run-demo.sh -- the fourth caller this
+    project's history names (docs/followups.md's "run-demo.sh resolved
+    home-relative even from a packaged install" entry, FIXED). A source
+    checkout must keep resolving the plain, $HOME-relative default."""
+    run_demo = (REPO / "scripts" / "run-demo.sh").read_text()
+    assert 'tt_bio_demo_install_mode "$REPO_ROOT")" = "package"' in run_demo, (
+        "run-demo.sh must condition the packaged resolver call on "
+        'tt_bio_demo_install_mode reporting "package"')
+
+
+def test_nothing_outside_the_shared_resolver_reads_the_cache_variables_either():
+    """The same invariant tests/unit/test_weights_cache_is_derived_once.py
+    already enforces for $TT_BIO_CACHE/$BOLTZ_CACHE, restated here for the
+    files this fix and its follow-up specifically touched -- so a
+    regression in any one of them is caught by two tests describing it from
+    different angles."""
+    for rel in ("debian/tt-bio-demo-weights.postinst", "scripts/doctor.sh",
+                "debian/helpers.sh", "scripts/run-demo.sh",
+                "scripts/tt-bio-demo-daemon-launcher.sh"):
+        text = (REPO / rel).read_text()
+        for n, line in enumerate(text.splitlines(), 1):
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            assert "TT_BIO_CACHE" not in line and "BOLTZ_CACHE" not in line, (
+                f"{rel}:{n} reads a cache variable directly -- it should call "
+                f"the shared resolver in scripts/weights-cache.sh instead: "
+                f"{stripped!r}")

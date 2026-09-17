@@ -41,7 +41,8 @@ work around it.
 - The GTK4 / OpenGL system libraries the UI needs (`python3-gi`, `gir1.2-gtk-4.0`, `libgl1`, …)
 - tt-bio itself, or the torch/ttnn stack it sits on
 - The SFPI RISC-V cross-toolchain tt-bio's kernels compile against
-- The model weights (3.7 GB)
+- The model weights (~6.9 GB: protenix-v2 + CCD for folding, nesso1 + its own
+  CCD dict + the ESM-2 encoder for affinity Q&A)
 - The application
 
 Steps 1–4 supply exactly those, in that order.
@@ -100,7 +101,7 @@ the opposite of what this packaging is for.
 | Prompt | Default | What to answer on a post-`tt-installer` box |
 |---|---|---|
 | `Run "tt-bio install-deps" now?` | No | **No.** `tt-installer` has already installed the Tenstorrent system packages and kernel modules this would fetch. Saying yes re-runs a kernel-module installer you do not need. |
-| `Download the model weights now (3.7 GB)?` | No | **No here, yes in step 3.** The download is better run deliberately, where you can watch it, than under the dpkg lock. (A *source* install has no such lock, so `scripts/setup-venvs.sh` fetches them by default; `--skip-weights` opts out.) |
+| `Download the model weights now (6.9 GB)?` | No | **No here, yes in step 3.** The download is better run deliberately, where you can watch it, than under the dpkg lock. (A *source* install has no such lock, so `scripts/setup-venvs.sh` fetches them by default; `--skip-weights` opts out.) The 6.9 GB is protenix-v2 + CCD (3.7 GB, required to fold) plus nesso1 + its own CCD dict + the ESM-2 encoder (3.2 GB, only needed for affinity Q&A — off by default, and a single-chip booth never touches them regardless, and a failure fetching them does not fail the install). |
 
 The install finishes by printing `ONE STEP LEFT` and the exact command for step 2. That is
 expected — the postinst deliberately does not build the Python environments while apt holds
@@ -169,14 +170,28 @@ A second run without `--force` is a ~0.3–0.5 s no-op, so re-running to confirm
 sudo dpkg-reconfigure tt-bio-demo-weights      # answer Yes this time
 ```
 
-That pulls two artifacts totalling ~3.7 GB through tt-bio's own Hugging Face client:
+That pulls five artifacts totalling ~6.9 GB through tt-bio's own Hugging Face client (or,
+for the last three, straight through `huggingface_hub` — see below):
 
-- `protenix-v2.pt` — 1.86 GB
-- `mols` — the CCD molecule library, 1.85 GB, unpacked into a directory beside it
+- `protenix-v2.pt` — 1.86 GB — **required to fold**
+- `mols` — the CCD molecule library, 1.85 GB, unpacked into a directory beside it —
+  **required to fold**
+- nesso1's affinity head — 165 MB — needed to answer affinity questions
+- nesso1's own CCD molecule dict — 413 MB — needed to answer affinity questions
+- the ESM-2 protein-language-model encoder nesso1's featurizer runs — 2.6 GB — needed to
+  answer affinity questions
 
 The download is **resumable**: an interrupted attempt continues rather than restarting. The
 postinst verifies what landed and prints `weights present and verified. The booth can fold
-offline.` — treat any other final line as a failure.
+offline.` — treat any other final line for the first two as a failure.
+
+**The last three are optional and their failure does not fail the install.** Affinity Q&A is
+off by default (opt in with `--questions` — see the README's
+[Asking the booth a question](README.md#asking-the-booth-a-question)), and a booth not opted
+in, or with only one Tenstorrent chip (which never reserves a Q&A worker), never touches
+nesso1 at all, so a dropped connection on that ~3.2 GB must not block a booth that can already
+fold perfectly well. If they warn, `scripts/doctor.sh` names the exact command to resume with
+— it checks nesso1/ESM-2 too, but as a warning, never a failure.
 
 ### The same thing, without dpkg
 
@@ -199,10 +214,27 @@ To see what is on the machine without downloading anything, drop the flag:
 `tt-bio weights protenix-v2` prints one line per artifact with `present` / `missing` /
 `corrupt` and the path it checked.
 
-**Where they land**: `$TT_BIO_CACHE`, else `$BOLTZ_CACHE`, else `~/.boltz` — tt-bio's own
-order. Everything in this project that touches that path (the doctor, preflight, the
-launcher, this postinst) resolves it through one place, so relocating the cache with
-either variable moves all of them together.
+**Where they land**: for a **packaged** install (this document), a fixed, non-home-relative
+`/opt/tt-bio-demo/weights` — unless you have already set `$TT_BIO_CACHE` or `$BOLTZ_CACHE`
+yourself, in which case that always wins. The fixed path exists because this postinst runs
+as **root** (`$HOME=/root`) while the booth's compute daemon later runs as a `systemd --user`
+service under the **desktop user**'s own `$HOME` — two different home-relative defaults that
+would otherwise disagree, letting the postinst report every weight fetched successfully while
+the daemon looks in an empty directory. From **source** (`scripts/setup-venvs.sh`,
+`scripts/run-demo.sh` run directly from a git checkout) it is the plain, tt-bio-native order:
+`$TT_BIO_CACHE`, else `$BOLTZ_CACHE`, else `~/.boltz`. Everything in this project that touches
+either path (the doctor, preflight, `scripts/run-demo.sh`, this postinst, and the systemd
+unit's own launcher script) resolves it through the one shared resolver in
+`scripts/weights-cache.sh`, so relocating the cache with either variable moves all of them
+together, and `scripts/doctor.sh` always reports the path your install actually uses.
+
+**Relocating a packaged install's cache** (e.g. to a bigger disk) needs `$TT_BIO_CACHE` or
+`$BOLTZ_CACHE` set wherever the daemon actually starts — for the `systemd --user` service that
+means the user manager's own environment, not the unit file (a `systemctl --user edit
+tt-bio-demo` override would work too, but is not required): drop a
+`~/.config/environment.d/tt-bio-demo.conf` containing `TT_BIO_CACHE=/your/path`, or run
+`systemctl --user set-environment TT_BIO_CACHE=/your/path` before the service starts, then
+re-run `sudo dpkg-reconfigure tt-bio-demo-weights` so the postinst fetches to the same place.
 
 > **There is no Docker install path.** `scripts/deb-container.sh` runs a throwaway Ubuntu
 > container for *package-install testing* only, and it deliberately passes no `--device`
@@ -339,7 +371,7 @@ published unless it passes.
 and script flags were read from source and are individually tested, but **no full
 clean-machine install has been run against a freshly imaged QB2** — CI has no Tenstorrent
 hardware and never will. Expect step 2 (the venv build, which needs network and the SFPI
-toolchain) and step 3 (3.7 GB of weights) to be where a real first run finds something.
+toolchain) and step 3 (6.9 GB of weights) to be where a real first run finds something.
 
 **Budget the first fold.** Step 4's fold on a machine that has never folded that target costs
 ~94.5 s rather than the warm ~9 s — see [`docs/cold-start.md`](docs/cold-start.md). That is

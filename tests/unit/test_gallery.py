@@ -41,7 +41,7 @@ from gi.repository import GdkPixbuf, Gtk
 import _legibility
 import ui.gallery as ui_gallery
 from ui.gallery import Gallery, MIN_CONTRAST_RATIO, _format_fold_time, contrast_ratio, grid_shape
-from ui.playlist import Target
+from ui.playlist import Question, Target
 
 # The thumbnail-loading/placeholder helpers (_load_thumbnail_texture,
 # _build_thumbnail, _placeholder_glyph) are module-private (leading
@@ -63,6 +63,12 @@ def _target(id="t", name="Trp-cage", blurb="A small fast-folding protein.",
         expected_s=expected_s,
         thumbnail=thumbnail,
     )
+
+
+def _question(id="q1", target_id="t", question="Does the ligand bind here?",
+              ligand_name="LIG"):
+    return Question(id=id, target_id=target_id, question=question,
+                    ligand_name=ligand_name, expected_s=None)
 
 
 def _make_real_png(path):
@@ -312,6 +318,77 @@ def test_gallery_card_of_an_unmeasured_target_says_so_not_a_bogus_time():
 
 
 # ---------------------------------------------------------------------------
+# 5. The affinity-questions "ask" strip (Task 11): a separate row of small
+# buttons below the fold grid, one per `ui.playlist.Question`. Mirrors the
+# fold-card tap tests above -- built, tapped, and checked for the one thing
+# that must never happen: an ask ALSO firing a plain pick, which the daemon
+# already does for itself (runner/daemon.py's `_accept_question`).
+# ---------------------------------------------------------------------------
+
+def test_the_ask_strip_is_hidden_with_no_questions():
+    gallery = Gallery([_target(id="a")], width_px=1280)
+    assert gallery._ask_strip_box.get_visible() is False
+
+
+def test_the_ask_strip_builds_one_button_per_question():
+    questions = [_question(id="q1", target_id="a"), _question(id="q2", target_id="a")]
+    gallery = Gallery([_target(id="a")], width_px=1280, questions=questions)
+    assert set(gallery.ask_buttons) == {"q1", "q2"}
+
+
+def test_the_ask_strip_is_hidden_until_marked_capable():
+    """Mirrors `ui.questions.QuestionQueuePanel.set_qa_capable`: a booth
+    whose daemon has no Q&A worker configured must not offer a tap for a
+    question nothing will ever answer."""
+    questions = [_question(id="q1", target_id="a")]
+    gallery = Gallery([_target(id="a")], width_px=1280, questions=questions)
+    assert gallery._ask_strip_box.get_visible() is False
+    gallery.set_ask_capable(True)
+    assert gallery._ask_strip_box.get_visible() is True
+    gallery.set_ask_capable(False)
+    assert gallery._ask_strip_box.get_visible() is False
+
+
+def test_ask_capable_with_no_questions_never_shows_an_empty_strip():
+    gallery = Gallery([_target(id="a")], width_px=1280)
+    gallery.set_ask_capable(True)
+    assert gallery._ask_strip_box.get_visible() is False
+
+
+def test_tapping_an_ask_button_invokes_on_ask_with_its_question_and_target():
+    """Same negative-control shape as
+    test_tapping_a_card_invokes_on_pick_with_that_cards_own_target_id: two
+    distinct questions, tap the SECOND one, and check both arguments -- a
+    wiring bug that always reports the first question's id, or the wrong
+    question's target, fails this test rather than a weaker one."""
+    questions = [_question(id="q1", target_id="a"), _question(id="q2", target_id="b")]
+    asked = []
+    gallery = Gallery([_target(id="a"), _target(id="b")], width_px=1280,
+                      questions=questions,
+                      on_ask=lambda qid, tid: asked.append((qid, tid)))
+    gallery.ask_buttons["q2"].emit("clicked")
+    assert asked == [("q2", "b")]
+
+
+def test_tapping_an_ask_button_with_no_on_ask_callback_does_not_raise():
+    questions = [_question(id="q1", target_id="a")]
+    gallery = Gallery([_target(id="a")], width_px=1280, questions=questions)
+    gallery.ask_buttons["q1"].emit("clicked")  # must not raise
+
+
+def test_asking_a_question_never_also_fires_a_plain_pick():
+    """The daemon's own `_accept_question` (runner/daemon.py) already
+    enqueues the underlying fold pick itself -- the UI must send only
+    `question`, never `question` AND `pick` for the same tap."""
+    questions = [_question(id="q1", target_id="a")]
+    picked = []
+    gallery = Gallery([_target(id="a")], width_px=1280, questions=questions,
+                      on_pick=picked.append)
+    gallery.ask_buttons["q1"].emit("clicked")
+    assert picked == []
+
+
+# ---------------------------------------------------------------------------
 # 4. Legibility guard, extended from ui/panels.py's (see this task's brief:
 # "extend that guard to cover it rather than leaving ui/gallery.py
 # unprotected"). Both halves reused from tests/unit/_legibility.py, the
@@ -363,6 +440,18 @@ def _all_gallery_states(tmp_path):
     # uses.
     unmeasured = Gallery([_target(id="e", thumbnail=None, expected_s=None)], width_px=1280)
     yield "card with unmeasured fold time", unmeasured
+
+    # The ask strip (Task 11), shown for real -- a hidden strip's labels are
+    # still walked by iter_labels (it does not filter by visibility), so
+    # every gallery above already exercises the heading/hint text even with
+    # zero questions. This state is what exercises the per-question BUTTON
+    # label, which only exists once a question is loaded and the strip is
+    # marked capable.
+    asking = Gallery([_target(id="f", thumbnail=None)], width_px=1280,
+                     questions=[_question(id="q1", target_id="f",
+                                          question="Does the ligand bind here?")])
+    asking.set_ask_capable(True)
+    yield "gallery with an ask strip", asking
 
 
 def test_every_gallery_label_is_legible_in_every_state(tmp_path):
@@ -560,3 +649,41 @@ def test_the_shipped_playlist_ranges_are_ordered_and_measured():
         assert t.expected_slow_s > t.expected_s, (
             f"{t.id}: slow end {t.expected_slow_s} is not slower than "
             f"{t.expected_s}")
+
+
+# ---------------------------------------------------------------------------
+# The screen's own caption (_CAPTION_TITLE/_CAPTION_BODY) -- found stale
+# while trimming its wording for legibility: it hardcoded "Four of these are
+# folding at once," true only on a box with no chip reserved for affinity
+# Q&A (`runner.workers.split_for_qa` reserves one whenever 2+ are detected,
+# so a 4-physical-chip booth with it enabled folds on 3). This screen is
+# built before `hello` ever names the real fold-chip count (see
+# `_CAPTION_BODY`'s own comment), so a hardcoded number here cannot even be
+# re-synced later the way the `?` card's copy is -- it must never claim one
+# at all.
+# ---------------------------------------------------------------------------
+
+def test_the_caption_never_claims_a_specific_chip_count():
+    """The actual regression: an earlier draft said "Four of these are
+    folding at once," true only on a box with no chip reserved for
+    affinity Q&A. Checked as "no digit-word directly counts a chip", not a
+    blanket ban on every number word -- "One protein folds per chip" names
+    no COUNT of chips and must stay allowed."""
+    import re
+
+    from ui.gallery import _CAPTION_BODY
+
+    match = re.search(r"\b(two|three|four|five)\s+(of\s+these|chips?)\b",
+                      _CAPTION_BODY, re.IGNORECASE)
+    assert match is None, (
+        f"{match and match.group()!r} names a specific chip count -- this "
+        "screen has no way to know the real fold-chip count when it is "
+        "built, and cannot re-sync later the way the help card does, so "
+        "it must never name one")
+
+
+def test_the_caption_still_says_a_tap_folds_it_next_and_does_not_interrupt():
+    from ui.gallery import _CAPTION_BODY
+    lowered = _CAPTION_BODY.lower()
+    assert "next" in lowered
+    assert "interrupt" in lowered or "finish" in lowered

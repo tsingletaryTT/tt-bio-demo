@@ -226,6 +226,16 @@ class WorkerPool:
     and a test that collapsed the clock would silently turn the delay into a
     busy loop.
 
+    `total_workers` is how many CO-RESIDENT workers -- across every pool this
+    process runs, not just this one's own `specs` -- `worker_environ`'s host
+    thread cap is sized against. Defaults to `len(specs)`, which is correct
+    for a single pool covering the whole booth and WRONG the moment a second
+    pool exists on the same host (the daemon's dedicated Q&A pool): each
+    pool sizing its own cap from its own spec count claims the box once per
+    pool, not once for the box. See `_spawn_worker` and
+    `tt_bio.runtime.host_thread_cap`'s own docstring, which names this exact
+    failure mode.
+
     All bookkeeping is private (`_workers`, `_ready`, `_busy`, ...), matching
     `EventServer._clients` / `JobQueue._items` / `CardPool._busy`. Tests
     attach their own handles at `pool.workers` / `pool.spawns` / `pool.lost`,
@@ -235,11 +245,32 @@ class WorkerPool:
 
     def __init__(self, specs, on_event, *, log_root, spawn=None,
                  on_worker_lost=None, restart_delay_s=WORKER_RESTART_DELAY_S,
-                 clock=time.monotonic):
+                 clock=time.monotonic, total_workers=None):
         # Insertion-ordered, so `cards`, `start()` and every log line agree on
         # an order without re-sorting a dict view at each call site.
         self._specs = {spec.card: spec for spec in specs}
         self._on_event = on_event
+        # How many co-resident workers `worker_environ`'s host-thread cap is
+        # sized against -- NOT necessarily `len(self._specs)`. A single pool
+        # covering the whole booth is the one case where those agree, and it
+        # is the only case the daemon had until Task 6 of the
+        # affinity-questions plan gave it a SECOND pool (one reserved chip
+        # running `runner.affinity_worker`, split out of the fold pool by
+        # `runner.workers.split_for_qa`). From that point on, a pool that
+        # sizes its own cap from its own spec count is exactly the launcher
+        # `tt_bio.runtime.host_thread_cap`'s own docstring warns about: "an
+        # external launcher runs one single-card job per chip: each process
+        # then sees n_workers == 1 and claims all cores". The Q&A pool always
+        # has one spec, so it would always claim the WHOLE box for a single
+        # nesso1 worker while the three-worker fold pool correctly divided by
+        # three -- `cores + cores` claimed against `cores` available.
+        #
+        # Defaults to `len(specs)` so every existing single-pool caller (every
+        # test that does not pass this, and a one-chip booth where
+        # `split_for_qa` never reserves a second pool at all) keeps exactly
+        # today's behaviour.
+        self._total_workers = (total_workers if total_workers is not None
+                               else len(self._specs))
         # Optional so a caller that only reads events (and every Task 6 test)
         # keeps working. A pool with no `on_worker_lost` still frees, respawns
         # and retires -- it just has nobody to tell about the orphan, which is
@@ -302,6 +333,24 @@ class WorkerPool:
         return [str(_worker_log_path(self._log_root, card))
                 for card in self.cards]
 
+    def all_retired(self):
+        """True once every card this pool manages has been retired for the
+        session -- permanently gone from `ready_cards()`/`any_ready()`, not
+        merely busy, mid-restart, or still loading its model at startup.
+
+        Exists for `Daemon._dispatch_qa_once` (the Q&A pool is always exactly
+        one spec, so this collapses to "will that one chip ever answer
+        another question"), but is written against `self._specs` generally
+        rather than assuming a single-spec pool, so it means the same thing
+        for the fold pool if a caller ever needs it there.
+
+        `all()` of an empty pool is vacuously True, which cannot happen in
+        practice -- both of this daemon's pools are always built from at
+        least one spec.
+        """
+        with self._lock:
+            return all(self._retired.get(card) for card in self._specs)
+
     # -- lifecycle ---------------------------------------------------------
 
     def start(self):
@@ -311,12 +360,34 @@ class WorkerPool:
         booth: it is logged, left not-ready, and the other three start
         normally. Failing closed here would mean one missing device node
         takes the whole demo down.
+
+        A card whose FIRST spawn attempt fails here used to be left in
+        permanent limbo -- not ready, not busy, and (PR review, Copilot)
+        not `_retired` either, because only a worker that had run and then
+        died went through `_worker_exited`'s retry-then-retire bookkeeping.
+        For most cards that is merely a chip that never folds; for the
+        one-spec Q&A pool specifically, `Daemon._dispatch_qa_once` relies
+        on `all_retired()` to convert a permanently unavailable card into
+        `answer_error` for whatever is queued -- so a card stuck outside
+        both "ready" and "retired" left every queued question waiting
+        forever, with no `answer_start` or `answer_error` ever emitted.
+        Handed to `_respawn_later` instead (on its own thread, never inside
+        `self._lock` -- that method acquires it itself), the SAME bounded
+        retry-then-retire path an already-running worker's death already
+        gets, rather than a second, separately-reasoned-about failure mode.
         """
+        retry = []
         with self._lock:
             for spec in self._specs.values():
                 if spec.card in self._workers:
                     continue          # already running; never two per chip
-                self._spawn_worker(spec)
+                if (self._spawn_worker(spec) is None
+                        and not self._retired.get(spec.card)):
+                    retry.append(spec.card)
+        for card in retry:
+            threading.Thread(target=self._respawn_later, args=(card,),
+                             daemon=True,
+                             name=f"worker-respawn-card-{card}").start()
 
     def _spawn_worker(self, spec):
         """Spawn one worker and its reader thread. Call with `_lock` held.
@@ -334,7 +405,7 @@ class WorkerPool:
             return None
         try:
             env = worker_environ(spec, log_root=self._log_root,
-                                 n_workers=len(self._specs))
+                                 n_workers=self._total_workers)
             handle = self._spawn(spec, env)
         except Exception:
             # Deliberately swallowed, deliberately loud. See `start`.
@@ -477,6 +548,33 @@ class WorkerPool:
         """
         reservation = Job(job_id=egg_id, target_id=None, input_path=None)
         command = {"cmd": "egg", "egg_id": egg_id, "seed": seed}
+        self._send(command, reservation, card)
+
+    def dispatch_question(self, question_id, target_id, input_path, card):
+        """Send one affinity-question command to `card`'s worker
+        (`runner/affinity_worker.py`).
+
+        Same shape as `dispatch`/`dispatch_egg` -- same readiness gates, same
+        `_busy` reservation under `_send`, freed by the same `worker.idle` --
+        because this module has no idea (and does not need to know) that the
+        worker on the other end of this particular card is running nesso1
+        rather than protenix-v2. `runner/daemon.py` is the only thing that
+        decides which card this is ever called for (its own reserved Q&A
+        card, from `runner.workers.split_for_qa`), so this pool stays generic
+        over "one command, one reservation, one reader thread" the same way
+        it already is for a fold and an egg.
+
+        The reservation carries a real `target_id` (unlike `dispatch_egg`'s
+        `None`) because a question's failure IS attributable to a target --
+        `Daemon.on_qa_worker_lost` reports it as an `answer_error`, not a
+        `job_error`, so it never touches the fold failure counter or
+        `QUARANTINE_AFTER` either way; the field is carried here only so the
+        daemon's loss-handler knows which target's question died.
+        """
+        reservation = Job(job_id=question_id, target_id=target_id,
+                          input_path=input_path)
+        command = {"cmd": "question", "question_id": question_id,
+                   "target_id": target_id, "input_path": input_path}
         self._send(command, reservation, card)
 
     def _send(self, command, job, card):
@@ -830,7 +928,8 @@ class _SubprocessWorker:
       than unlink them (Task 11).
     """
 
-    def __init__(self, spec, env, *, log_path, python=None):
+    def __init__(self, spec, env, *, log_path, python=None,
+                 module="runner.worker"):
         self.spec = spec
         self._log_path = Path(log_path)
         self._log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -839,7 +938,12 @@ class _SubprocessWorker:
         # makes truncating this file in place correct.
         self._log = open(self._log_path, "a", buffering=1)
         read_fd, write_fd = os.pipe()
-        argv = [python or sys.executable, "-m", "runner.worker",
+        # `module` defaults to the fold worker, and every fold-worker call
+        # site keeps relying on that default -- it exists so the daemon's
+        # dedicated Q&A pool (Task 6) can spawn `runner.affinity_worker`
+        # instead, over this exact same Popen/pipe/log machinery, without a
+        # second copy of it.
+        argv = [python or sys.executable, "-m", module,
                 "--card", str(spec.card), "--event-fd", str(write_fd)]
         try:
             self._proc = subprocess.Popen(
@@ -939,7 +1043,14 @@ class _SubprocessWorker:
                         "stream ended", self.spec.card, self._proc.pid)
 
 
-def _spawn_subprocess(spec, env, *, log_root):
-    """The production `spawn`: one real worker process for one real chip."""
+def _spawn_subprocess(spec, env, *, log_root, module="runner.worker"):
+    """The production `spawn`: one real worker process for one real chip.
+
+    `module` lets a caller run a different worker entry point over this same
+    machinery -- the daemon's dedicated Q&A `WorkerPool` (Task 6) binds this
+    with `module="runner.affinity_worker"` via `functools.partial`, so the
+    fold pool's own default (and every existing caller) is unaffected.
+    """
     return _SubprocessWorker(spec, env,
-                             log_path=_worker_log_path(log_root, spec.card))
+                             log_path=_worker_log_path(log_root, spec.card),
+                             module=module)

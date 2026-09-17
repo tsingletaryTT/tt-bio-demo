@@ -415,6 +415,64 @@ def test_each_worker_gets_the_whole_worker_environment(pool, monkeypatch):
         for card in (0, 1, 2, 3)]
 
 
+def test_total_workers_overrides_the_pools_own_spec_count(tmp_path, monkeypatch):
+    """Finding 3 (task-6 review): a pool's host-thread cap must be sized
+    against every CO-RESIDENT worker across every pool on this host, not
+    just its own spec count. The daemon's dedicated Q&A pool is always one
+    spec -- without `total_workers`, it would size its cap from
+    `n_workers=1` and claim the whole box for a single nesso1 worker while a
+    three-worker fold pool alongside it correctly divides by three, so the
+    two pools together claim `cores + cores` against `cores` actually
+    available. See `tt_bio.runtime.host_thread_cap`'s own docstring, which
+    names this exact failure mode ("an external launcher runs one
+    single-card job per chip").
+
+    Built as its own one-spec pool (not the four-card `pool` fixture) so
+    `total_workers` and `len(specs)` visibly disagree: a pool that ignored
+    the parameter and fell back to `len(self._specs)` would size this
+    worker's cap for ONE co-resident process, not four.
+    """
+    from tt_bio.runtime import host_thread_cap
+    solo, four_up = host_thread_cap(1), host_thread_cap(4)
+    assert solo != four_up, (
+        f"this box cannot tell n_workers=1 ({solo}) from n_workers=4 "
+        f"({four_up}); this test would pass vacuously here")
+    monkeypatch.delenv("OMP_NUM_THREADS", raising=False)
+
+    made = {}
+
+    def spawn(spec, env):
+        worker = _FakeWorker(spec, env)
+        made[spec.card] = worker
+        return worker
+
+    solo_pool = WorkerPool([_spec(3)], on_event=lambda c, e: None,
+                           log_root=str(tmp_path), spawn=spawn,
+                           total_workers=4)
+    try:
+        solo_pool.start()
+        assert made[3].env["OMP_NUM_THREADS"] == str(four_up), (
+            "total_workers=4 must win over this pool's own len(specs)==1")
+    finally:
+        solo_pool.stop()
+
+
+def test_total_workers_defaults_to_the_pools_own_spec_count(pool, monkeypatch):
+    """The other half of the same guard: every EXISTING caller that never
+    passes `total_workers` (every single-pool booth, and every other test in
+    this file) must keep exactly today's behaviour -- this is what makes the
+    parameter additive rather than a silent behaviour change for a pool that
+    is genuinely alone on the host.
+    """
+    from tt_bio.runtime import host_thread_cap
+    monkeypatch.delenv("OMP_NUM_THREADS", raising=False)
+    pool.start()
+    for card, worker in pool.workers.items():
+        assert worker.env["OMP_NUM_THREADS"] == str(host_thread_cap(4)), (
+            "the `pool` fixture has 4 specs and was given no total_workers; "
+            "it must still size against its own count")
+
+
 def test_each_chip_is_spawned_exactly_once(pool):
     """ADDED. The brief's test 1 reads a dict keyed by card, so a pool that
     spawned card 0 twice -- two processes contending for one chip, the exact
@@ -595,6 +653,77 @@ def test_the_pool_lists_every_card_it_manages(pool):
     assert pool.cards == [0, 1, 2, 3]
 
 
+def test_all_retired_is_computed_from_real_worker_death_state(tmp_path):
+    """ADDED (Task 6, fix round 2). `WorkerPool.all_retired()` is the real
+    production method `Daemon._dispatch_qa_once` calls to decide whether the
+    Q&A queue should be failed and drained forever -- but every daemon-side
+    test of that behaviour (tests/unit/runner/test_daemon_qa.py) drives a
+    hand-written `_FakeQaPool` whose `all_retired()` is just a constructor
+    flag (`self._retired`), never the real method computing anything from
+    actual worker-death state. This drives an actual `WorkerPool` -- built
+    with a single spec, the exact shape the Q&A pool is always built in
+    (`runner.workers.split_for_qa` reserves exactly one `WorkerSpec`) --
+    through a real `CONTROL_FATAL` retirement and confirms `all_retired()`
+    reflects it, mirroring `test_the_pool_lists_every_card_it_manages`'s own
+    pattern of emitting real control lines at a real `_FakeWorker` rather
+    than poking private state directly.
+    """
+    made, spawns = {}, []
+
+    def spawn(spec, env):
+        worker = _FakeWorker(spec, env)
+        made[spec.card] = worker
+        spawns.append(spec.card)
+        return worker
+
+    p = WorkerPool([_spec(3)], on_event=lambda c, e: None,
+                   log_root=str(tmp_path), spawn=spawn)
+    p.start()
+    assert p.all_retired() is False, (
+        "a freshly started worker is not retired")
+    made[3].emit({"type": CONTROL_READY})
+    assert _wait(lambda: p.ready_cards() == [3])
+    assert p.all_retired() is False, "ready is the opposite of retired"
+    made[3].emit({"type": CONTROL_FATAL, "reason": "weights not provisioned"})
+    assert _wait(lambda: made[3].drained)             # GUARD: the line was read
+    assert _wait(lambda: p.all_retired() is True), (
+        "the one card this single-spec pool manages is permanently gone; "
+        "all_retired() must compute that from real worker-death state, not "
+        "merely report a stored flag")
+
+
+def test_all_retired_becomes_true_even_when_the_very_first_spawn_fails(tmp_path):
+    """ADDED (PR review, Copilot): a card whose worker could not be spawned
+    at ALL on `start()` -- a `Popen`/environment failure, before any process
+    ever ran -- used to be left forever outside both `ready_cards()` and
+    `all_retired()`: no `_worker_exited` EOF was ever coming to trigger the
+    existing retry-then-retire bookkeeping, because no worker had ever
+    existed to exit. For the Q&A pool (always one spec)
+    `Daemon._dispatch_qa_once` relies on exactly this predicate to convert
+    a permanently unavailable card into `answer_error` for whatever is
+    queued -- so a card stuck in that limbo left every queued question
+    waiting forever, with no `answer_start` or `answer_error` ever reaching
+    the UI.
+
+    `restart_delay_s` is tiny so the retry-then-retire loop this now hands
+    the failure to (`_respawn_later`, already exercised by the sibling test
+    above for a worker that died AFTER running) completes well inside
+    `_wait`'s default timeout.
+    """
+    def spawn(spec, env):
+        raise OSError("no such device")
+
+    p = WorkerPool([_spec(3)], on_event=lambda c, e: None,
+                   log_root=str(tmp_path), spawn=spawn, restart_delay_s=0.01)
+    p.start()
+    assert p.all_retired() is False, (
+        "not yet -- the retry loop has not exhausted WORKER_RETIRE_AFTER")
+    assert _wait(lambda: p.all_retired() is True), (
+        "a card whose worker could never be spawned at all must still "
+        "reach all_retired(), or a permanently unavailable Q&A card hangs "
+        "every queued question forever instead of failing it")
+
+
 # ---------------------------------------------------------------------------
 # The easter egg's dispatch (runner/egg.py). It borrows a chip for about a
 # second and a half, so it must reserve one exactly as a fold does -- and
@@ -643,6 +772,125 @@ def test_an_egg_is_refused_by_a_card_that_is_not_ready(pool):
     pool.dispatch(_job("j1"), card=0)
     with pytest.raises(ValueError):
         pool.dispatch_egg("e1", card=0)
+
+
+def test_a_question_is_sent_as_its_own_command_not_as_a_fold(pool):
+    """Task 6: the worker on the other end of the daemon's reserved Q&A card
+    is running runner/affinity_worker.py, which branches on `cmd` exactly
+    like a fold worker does -- a question arriving as a `fold` would send it
+    looking for `n_residues` and never find `question_id` at all.
+    """
+    pool.start()
+    pool.workers[1].emit({"type": CONTROL_READY})
+    assert _wait(lambda: pool.ready_cards() == [1])
+    pool.dispatch_question("q1", "dhfr", "/p/dhfr.yaml", card=1)
+    assert pool.workers[1].commands == [
+        {"cmd": "question", "question_id": "q1", "target_id": "dhfr",
+         "input_path": "/p/dhfr.yaml"}]
+
+
+def test_a_question_reserves_its_card_exactly_as_a_fold_does(pool):
+    """For the ~8-12s a question takes (docs/spike-nesso1-affinity.md), the
+    chip really is occupied -- a second question (or a fold, if this were
+    ever mistakenly dispatched to this card) must not be sent into a process
+    already mid-call.
+    """
+    pool.start()
+    pool.workers[0].emit({"type": CONTROL_READY})
+    assert _wait(lambda: pool.ready_cards() == [0])
+    pool.dispatch_question("q1", "dhfr", "/p/dhfr.yaml", card=0)
+    assert pool.ready_cards() == []
+    assert pool.busy_job(0) == "q1"
+    with pytest.raises(ValueError):
+        pool.dispatch_question("q2", "trypsin", "/p/trypsin.yaml", card=0)
+    pool.workers[0].emit({"type": CONTROL_IDLE, "job_id": "q1"})
+    assert _wait(lambda: pool.ready_cards() == [0])
+
+
+def test_a_question_is_refused_by_a_card_that_is_not_ready(pool):
+    """The same exception every other dispatch method raises, so the daemon
+    has one thing to catch for 'that chip would not take it'."""
+    pool.start()
+    with pytest.raises(ValueError):
+        pool.dispatch_question("q1", "dhfr", "/p/dhfr.yaml", card=0)
+
+
+def test_a_question_lost_with_its_worker_names_its_target(tmp_path):
+    """Unlike an egg's reservation (target_id=None), a question's reservation
+    DOES carry a real target_id -- Daemon.on_qa_worker_lost reports an
+    answer_error naming it, so a visitor's 'checking whether it binds...'
+    spinner does not hang forever on a dead Q&A worker.
+    """
+    made, lost = {}, []
+
+    def spawn(spec, env):
+        made[spec.card] = _FakeWorker(spec, env)
+        return made[spec.card]
+
+    p = WorkerPool([_spec(3)], on_event=lambda c, e: None,
+                   log_root=str(tmp_path), spawn=spawn, restart_delay_s=30.0,
+                   on_worker_lost=lambda *a: lost.append(a))
+    try:
+        p.start()
+        made[3].emit({"type": CONTROL_READY})
+        assert _wait(lambda: p.ready_cards() == [3])
+        p.dispatch_question("q1", "dhfr", "/p/dhfr.yaml", card=3)
+        made[3].die()
+        assert _wait(lambda: bool(lost))
+        assert lost == [(3, "q1", "dhfr")]
+    finally:
+        p.stop()
+
+
+def test_the_production_spawn_can_run_a_different_worker_module(tmp_path):
+    """Task 6: the daemon's dedicated Q&A pool needs the exact same
+    Popen/pipe/log machinery `_spawn_subprocess` already gives fold workers,
+    just running `runner.affinity_worker` instead of `runner.worker` -- so
+    `module=` has to actually reach the child's argv, not just be accepted
+    and ignored.
+    """
+    from runner.pool import _spawn_subprocess
+
+    captured = {}
+
+    class _FakeHandle:
+        def __init__(self, spec, env, *, log_path, python=None,
+                     module="runner.worker"):
+            captured["module"] = module
+
+    import runner.pool as pool_mod
+    orig = pool_mod._SubprocessWorker
+    pool_mod._SubprocessWorker = _FakeHandle
+    try:
+        _spawn_subprocess(_spec(0), {}, log_root=str(tmp_path),
+                          module="runner.affinity_worker")
+    finally:
+        pool_mod._SubprocessWorker = orig
+    assert captured["module"] == "runner.affinity_worker"
+
+
+def test_the_production_spawns_default_module_is_still_the_fold_worker(tmp_path):
+    """Guard against the mutation this test's sibling exists to catch going
+    the other way -- every EXISTING fold-worker call site must keep getting
+    runner.worker with no changes to any of its call sites.
+    """
+    from runner.pool import _spawn_subprocess
+
+    captured = {}
+
+    class _FakeHandle:
+        def __init__(self, spec, env, *, log_path, python=None,
+                     module="runner.worker"):
+            captured["module"] = module
+
+    import runner.pool as pool_mod
+    orig = pool_mod._SubprocessWorker
+    pool_mod._SubprocessWorker = _FakeHandle
+    try:
+        _spawn_subprocess(_spec(0), {}, log_root=str(tmp_path))
+    finally:
+        pool_mod._SubprocessWorker = orig
+    assert captured["module"] == "runner.worker"
 
 
 def test_an_egg_lost_with_its_worker_names_no_target(tmp_path):

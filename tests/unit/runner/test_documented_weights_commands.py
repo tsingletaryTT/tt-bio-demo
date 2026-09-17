@@ -119,13 +119,26 @@ def test_both_install_paths_tell_you_how_to_get_the_weights(rel):
 
 
 def test_the_model_the_docs_name_is_the_model_the_booth_folds():
-    """The docs, preflight and the playlist must agree on ONE model. A README
-    telling someone to download boltz2 for a booth that folds protenix-v2 is
-    a 4.2 GB detour that ends with the same empty cache."""
+    """The docs, preflight and the playlist must agree on the fold model. A
+    README telling someone to download boltz2 for a booth that folds
+    protenix-v2 is a 4.2 GB detour that ends with the same empty cache.
+
+    `nesso1` is the one deliberate exception: it is the affinity-questions
+    Q&A worker's model (`runner/affinity.py`), a real second model this
+    booth needs that `runner.preflight.MODEL` does not check yet -- the
+    provisioning gap docs/followups.md's "From the affinity-questions
+    feature" section names. Allowing it here, rather than teaching
+    `runner.preflight` about it, is deliberate: this test's job is "the docs
+    name a model tt-bio actually has and this booth actually uses somewhere"
+    (`test_every_documented_model_is_a_real_model` above already checks the
+    former), not "every model is wired into preflight" -- that is the
+    followups.md item's own scope.
+    """
     from runner.preflight import MODEL
 
+    ALLOWED = {MODEL, "nesso1"}
     for rel, n, args in _invocations():
         models = [a for a in args if not a.startswith("-")]
         for m in models:
-            assert m == MODEL, (
-                f"{rel}:{n} names {m}, but the booth folds {MODEL}")
+            assert m in ALLOWED, (
+                f"{rel}:{n} names {m}, but the booth only uses {ALLOWED}")

@@ -24,11 +24,11 @@ from protocol.events import (
 )
 
 
-def test_the_version_is_three_because_the_contract_changed_twice():
+def test_the_version_is_four_because_the_contract_changed_thrice():
     """Not decoration: ui/client.py refuses to interpret a daemon whose
     version differs from its own, so this number is the only thing standing
-    between a v3 UI and a v2 daemon that will never answer its eggs."""
-    assert PROTOCOL_VERSION == 3
+    between a v4 UI and a v3 daemon that will never answer affinity questions."""
+    assert PROTOCOL_VERSION == 4
 
 
 def test_a_pick_is_not_an_event():
@@ -53,9 +53,10 @@ def test_an_event_is_not_a_client_message():
             b'{"type":"job_done","job_id":"j1","cif_path":"/a.cif"}\n')
 
 
-def test_the_client_vocabulary_is_exactly_two_messages():
-    """A general RPC channel is not what this phase is for."""
-    assert CLIENT_MESSAGE_TYPES == frozenset({"pick", "egg"})
+def test_the_client_vocabulary_is_exactly_three_messages():
+    """Pick (a fold), egg (an easter egg), and question (an affinity question).
+    Each addition is a version bump and a deliberate decision."""
+    assert CLIENT_MESSAGE_TYPES == frozenset({"pick", "egg", "question"})
 
 
 def test_an_egg_is_not_an_event_either():
@@ -91,6 +92,59 @@ def test_an_egg_id_is_validated_exactly_as_a_target_id_is(bad):
     happens if `CLIENT_MESSAGE_FIELDS` and `CLIENT_MESSAGE_TYPES` drift."""
     with pytest.raises(ProtocolError):
         decode_client_message(bad)
+
+
+# ---------------------------------------------------------------------------
+# Important 6 (whole-branch review): a `question` message has TWO
+# meaningful fields (`target_id` AND `question_id`), and only `target_id`
+# used to be validated -- `question_id` was bounded by nothing but the
+# overall 64 KiB line-length cap (runner/server.py's CLIENT_LINE_MAX_BYTES),
+# then got echoed into answer_start/answer_error broadcast to every
+# connected UI client, written into a worker's command pipe, and logged.
+# ---------------------------------------------------------------------------
+
+def test_a_question_carries_both_fields_and_round_trips():
+    from protocol.events import question_message
+    message = question_message("q1", "dhfr")
+    assert decode_client_message(encode_client_message(message)) == message
+
+
+@pytest.mark.parametrize("bad", [
+    b'{"type":"question","version":%d,"target_id":"dhfr"}\n'
+    % PROTOCOL_VERSION,
+    b'{"type":"question","version":%d,"target_id":"dhfr","question_id":""}\n'
+    % PROTOCOL_VERSION,
+    b'{"type":"question","version":%d,"target_id":"dhfr","question_id":17}\n'
+    % PROTOCOL_VERSION,
+    b'{"type":"question","version":%d,"target_id":"dhfr","question_id":"%s"}\n'
+    % (PROTOCOL_VERSION, b"q" * (MAX_TARGET_ID_LEN + 1)),
+])
+def test_an_oversized_or_malformed_question_id_is_refused(bad):
+    """The same rejection `target_id`/`egg_id` already get, now applied to
+    `question_id` too -- an absent, empty, non-string, or over-limit
+    `question_id` must never reach the daemon just because `target_id`
+    alone happened to look fine."""
+    with pytest.raises(ProtocolError):
+        decode_client_message(bad)
+
+
+def test_a_question_id_at_the_limit_is_accepted():
+    """The same off-by-one check `target_id`'s own limit test makes."""
+    from protocol.events import question_message
+    ok = "q" * MAX_TARGET_ID_LEN
+    message = question_message(ok, "dhfr")
+    assert decode_client_message(
+        encode_client_message(message))["question_id"] == ok
+
+
+def test_a_question_with_a_fine_question_id_but_an_absurd_target_id_is_still_refused():
+    """The other half of "every field gets checked": a `question_id` that
+    passes must not let an oversized `target_id` slip through beside it."""
+    huge = "a" * (MAX_TARGET_ID_LEN + 1)
+    with pytest.raises(ProtocolError):
+        decode_client_message(encode_client_message(
+            {"type": "question", "version": PROTOCOL_VERSION,
+             "target_id": huge, "question_id": "q1"}))
 
 
 def test_a_pick_carries_the_version_it_was_written_against():

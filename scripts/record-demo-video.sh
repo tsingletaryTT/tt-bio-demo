@@ -56,6 +56,18 @@ T0="$(date +%s)"
 echo "recording to $(basename "$AFTER"); bringing the booth up over it"
 
 # 2. Now the booth, fullscreen, on top.
+#
+# No --questions here: this recording's whole point is the classic
+# four-chip quad view, and the affinity-questions feature (opt-in only,
+# since it reserves one chip for Q&A and leaves only three fold workers)
+# would cost this recording exactly the fourth chip the wait below checks
+# for. Plain run-demo.sh's own default (Q&A off, every detected chip
+# folds) is already what this recording wants -- this used to need
+# --no-questions to get there when Q&A defaulted to ON; it does not need
+# the opposite flag now that the default flipped, and passing --questions
+# here would be the same "capture that reports success but shows the
+# wrong thing" failure this project's own history warns about, just
+# reached from the other direction.
 setsid ./scripts/run-demo.sh --quad > "$S/demo.log" 2>&1 < /dev/null &
 sleep 1
 

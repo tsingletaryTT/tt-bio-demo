@@ -500,6 +500,491 @@ against — the UI can be more than a second behind the socket in reading a
 - **Point size is an absolute pixel value**, so sprites look proportionally
   smaller on a display much denser than the 1280×800 dev default. Scale by
   `get_scale_factor()` in Phase 3, when the booth display is known.
+- **`Ctrl+A` (opt in to affinity Q&A live) has no restart mechanism for the
+  systemd-supervised deployment mode.** Moved here from "Deliberately not
+  doing" (2026-09-16 review round) because the entry that used to sit there
+  was wrong about which deployment actually lacks the mechanism, and a
+  genuine gap filed under "not doing" reads as decided-against rather than
+  open.
+
+  `scripts/run-demo.sh` launches the daemon and the UI as one parent shell
+  and its one foreground child, so a sentinel exit code from the UI is
+  enough for that shell to tear the daemon down and re-exec itself with
+  `--questions` added. The corrected fact: **this covers the normal,
+  documented desktop-entry path**, not only a developer running the script
+  by hand — `debian/com.tenstorrent.ttbio.demo.desktop`'s `Exec=` is
+  literally `/opt/tt-bio-demo/scripts/run-demo.sh`, and INSTALL.md calls
+  that "the normal path". So the standard packaged/desktop-entry deployment
+  DOES get the restart mechanism; the previous version of this entry said
+  the opposite, in both README.md and here, and both were corrected in the
+  same pass that moved this entry.
+
+  The case that genuinely lacks it is INSTALL.md's OTHER documented mode:
+  `systemctl --user enable --now tt-bio-demo`, where the daemon is a
+  supervised systemd `--user` service, not one `run-demo.sh` started at
+  all. In that mode, pressing Ctrl+A would tear down and restart
+  `run-demo.sh`'s OWN (redundant, wrong) daemon instance — if an operator
+  is even running `run-demo.sh` at all in that mode, e.g. to bring up the
+  UI — while the REAL supervised daemon keeps running untouched. The key
+  would appear to work (the log says it restarted, and now so does the
+  diagnostics rail — see the "no observable feedback" fix below) but Q&A
+  would still be off on the daemon actually serving the booth. Building the
+  real fix means either a `systemctl --user restart` triggered from the UI
+  (which needs a way to inject `--questions` into that service's own
+  environment first — `scripts/tt-bio-demo-daemon-launcher.sh`, from the
+  cache-pinning work, is a plausible place a future fix could read an
+  environment file the key-press would update) or some other cross-process
+  coordination, or — cheaper — detecting the supervised case at runtime
+  (e.g. `systemctl --user is-active tt-bio-demo`) and having the key
+  decline with a clear message instead of silently doing the wrong thing.
+  None of that is built yet. Rather than doing nothing today, the key
+  checks `TT_BIO_DEMO_RUN_DEMO_SH` (set by run-demo.sh on the UI's own
+  environment) and, when it is absent — a bare `python3 -m ui.app`, or the
+  packaged deployment launched some OTHER way — logs (and now also notes on
+  the diagnostics rail) that the booth must be restarted manually with
+  `--questions`, instead of pretending a restart happened. It does NOT yet
+  distinguish "launched by run-demo.sh under systemd-supervised mode" from
+  "launched by run-demo.sh normally" — that is this entry's open half.
+
+## From the affinity-questions feature (2026-09-15/16) — all three fixed
+
+The first two were named explicitly in CLAUDE.md's entry for this feature as
+deferred rather than fixed in the branch that shipped it (a "handful of other
+Minor findings from the final review" were mentioned but not itemized there,
+so only these had enough detail to record here); both are now closed. The
+third was found afterward, in PR review, and was initially left open rather
+than patched quickly — see its own entry, now itself marked FIXED
+(2026-09-16), for why.
+
+- **FIXED (2026-09-16). nesso1's weights had no provisioning step.** Neither
+  `scripts/setup-venvs.sh`'s weight fetch nor the `.deb`'s
+  postinst/`scripts/doctor.sh` knew about `nesso1` — both only fetched and
+  checked `protenix-v2`. Same shape as every prior weights gap this project's
+  history records ("The weights were never a checked box", CLAUDE.md,
+  2026-08-31): a real capability shipped ahead of its provisioning story.
+  Closed by extending all three surfaces under the SAME `--skip-weights`
+  flag / debconf question `protenix-v2` already uses, rather than a second
+  flag: `setup-venvs.sh`'s `fetch_weights` now also runs
+  `tt-bio weights --download nesso1` (one call, since
+  `tt_bio.weights.MODEL_ARTIFACTS["nesso1"]` lists both the affinity head
+  and its own CCD dict) and pre-warms the ESM-2 encoder
+  (`facebook/esm2_t33_650M_UR50D`, ~2.6 GB — not in tt_bio's weights registry
+  at all, so this goes straight through `huggingface_hub`, the same library
+  `tt_bio.nesso1_input.setup_esm_model` uses, so it lands in the cache the
+  real featurizer will read from later). `doctor.sh`'s new
+  `doctor_check_affinity_weights` asks the same question `doctor_check_weights`
+  already asks tt-bio about protenix-v2, but WARN-only, never FAIL: a booth
+  not started with `--questions` (the feature's default flipped to off in a
+  later change — see "Q&A off by default" below; at the time this entry was
+  written the flag was `--no-questions` and the feature defaulted to on), or
+  one with one chip (which never reserves a Q&A worker), legitimately needs
+  none of it, and the doctor cannot tell which case it is looking at. The `.deb` postinst fetches and checksum-verifies
+  nesso1/nesso1-ccd too, behind the same debconf question as protenix-v2/mols,
+  but — unlike that pair — a failure there does not fail the install (a
+  marker file, not piped output, carries the verdict back to the shell so
+  protenix-v2/mols's own download progress keeps streaming live). One real
+  finding along the way, worth keeping: nesso1 and nesso1-ccd are "hf-repo"
+  registry rows, and `tt_bio.weights.fetch`/`.resolve`/`.status` SILENTLY
+  IGNORE their `root=`/`--cache` argument for that source type — confirmed
+  empirically (`weights.fetch("nesso1", root=<anything>)` lands under the
+  standard Hugging Face hub cache regardless of `root`), unlike protenix-v2
+  ("hf-file"), which honours it and lands flat at `<cache>/protenix-v2.pt`.
+  That is why nesso1/nesso1-ccd are checksum-verified inside the postinst's
+  Python block, against tt-bio's own resolved path, rather than through the
+  shell's flat-file `ARTIFACTS` table the way protenix-v2.pt/mols.tar are.
+  `test_documented_weights_commands.py`'s command-pinning discipline already
+  covers the new `tt-bio weights --download nesso1` invocations (it scans
+  every doc/script for any `tt-bio weights ...` line), and a new
+  `tests/unit/test_packaging.py::test_the_weights_postinst_uses_the_tt_bio_api_that_actually_exists`
+  pass confirmed the two new literal `weights.fetch("nesso1"/"nesso1-ccd", ...)`
+  calls are checked against the pinned tt-bio's real registry the same way
+  protenix-v2's call always has been.
+- **FIXED (2026-09-16). `runner/affinity.py` imported `torch` and
+  `tt_bio.nesso1` at module scope**, against `runner/folder.py`'s own
+  documented pattern of deferring those imports into `load()` so unit test
+  collection does not need torch installed at all. Moved into `load()`/
+  `_score_real()`, mirroring `Folder.load()`'s own comment exactly, with a
+  test proving `tests/unit/runner/test_affinity.py` collects under a
+  torch-blocked interpreter.
+- **FIXED (2026-09-16). Found in PR review: nesso1/nesso1-ccd/ESM-2 can
+  be fetched successfully during install and still be unreachable by the
+  booth at runtime.** `weights.fetch`/the ESM-2 pre-warm silently ignore
+  `root=`/`--cache` for these "hf-repo" rows (see the bullet above this
+  section) and fall back to Hugging Face's own cache resolution, which is
+  `$HF_HUB_CACHE`, then `$TT_BIO_CACHE`-derived, then `~/.cache/huggingface`
+  under WHOEVER'S `$HOME` the fetching process has. The Debian postinst runs
+  as root during `dpkg`/`apt install` (`$HOME=/root`); the booth's compute
+  daemon runs as a `systemd --user` service under the desktop user's own
+  `$HOME` — and neither the postinst nor `debian/tt-bio-demo/usr/lib/systemd/
+  user/tt-bio-demo.service` ever exports `TT_BIO_CACHE`/`BOLTZ_CACHE`/
+  `HF_HUB_CACHE` to pin the two to the same location. So a `.deb` install can
+  report every affinity-weight fetch successful and the booth can still find
+  none of it, with `AffinityScorer.load()` failing at startup and every
+  question erroring from then on (see `MAX_PENDING_QUESTIONS`' comment in
+  `runner/daemon.py`) — the exact "reports ready, isn't" failure class
+  CLAUDE.md's 2026-08-31 "weights were never a checked box" session was
+  written to close, reopened by an execution-context split that session's
+  fix (making four callers agree with EACH OTHER on a `$HOME`-relative path)
+  never addressed, because it never needed to: `protenix-v2`/`mols` are
+  "hf-file" rows, where `root=` genuinely redirects the destination, so the
+  SAME `$HOME`-relative default is at least *self-consistent* if every
+  caller happens to run as the same user — which the postinst (root) and the
+  systemd unit (desktop user) do not. **Confirmed by direct inspection, not
+  reasoned about**: `scripts/weights-cache.sh`'s only resolution is
+  `${TT_BIO_CACHE:-${BOLTZ_CACHE:-$(_tt_bio_demo_home)/.boltz}}`, and
+  `_tt_bio_demo_home` reads `$HOME` (or `getent passwd "$(id -u)"`) with no
+  user-detection logic anywhere in the postinst or the unit file. Worth
+  doing, and deliberately NOT attempted as a quick patch here because it is
+  a decision about the booth's shared-cache architecture, not a one-file
+  fix: either (a) pin `TT_BIO_CACHE` (or `HF_HUB_CACHE`) to one fixed,
+  non-home-relative, world-readable path (e.g. under `/opt/tt-bio-demo/`)
+  in BOTH the postinst's fetch environment and the systemd unit's
+  `Environment=`, sidestepping per-user `$HOME` entirely for every weight,
+  old and new; or (b) have the postinst identify the actual booth operator
+  account (there is real precedent for this being fragile — no `SUDO_USER`/
+  `runuser`/logind-based detection exists anywhere in this codebase today)
+  and fetch in that user's own context. Either fixes protenix-v2/mols too,
+  which have almost certainly had the identical exposure since before this
+  feature existed and were never caught by the "real Docker container
+  installs" packaging tests (those run everything as one user throughout,
+  which cannot see a root-vs-desktop-user split at all).
+
+  **Resolution: option (a), pinned to `/opt/tt-bio-demo/weights`.** Chosen
+  over identifying the real booth operator account (option (b)) precisely
+  because this codebase has no `SUDO_USER`/`runuser`/logind-based detection
+  today and inventing one for this alone would be new, untested fragility in
+  exchange for avoiding one fixed path. `/opt/tt-bio-demo/weights` sits
+  alongside `.venvs`, `playlist`, `examples` and `scripts` — everything else
+  `debian/tt-bio-demo.install`'s own header comment says goes under
+  `/opt/tt-bio-demo` — and nothing else in the tree used that exact path
+  before this change.
+
+  The literal path is declared in exactly ONE place:
+  `scripts/weights-cache.sh`'s new `TT_BIO_DEMO_PACKAGED_WEIGHTS_CACHE`,
+  right beside the existing home-relative resolver it is a variant of. That
+  file is one of the two `tests/unit/test_weights_cache_is_derived_once.py`
+  already treats as the sole places allowed to read `$TT_BIO_CACHE`/
+  `$BOLTZ_CACHE` directly — an early draft of this fix put the pin-and-export
+  logic straight into the postinst and into `scripts/doctor.sh` themselves,
+  and that guard test caught it immediately: two more files reading those
+  variables directly is the exact shape of bug this project had already
+  fixed once (the doctor reading `$BOLTZ_CACHE` alone while tt-bio itself
+  preferred `$TT_BIO_CACHE`). The corrected shape is a new function pair —
+  `tt_bio_demo_weights_cache_impl_packaged`/`tt_bio_demo_weights_cache_packaged`
+  — that the postinst and `scripts/doctor.sh` both *call* rather than
+  reimplement: guarded (only when the operator has not already set
+  `TT_BIO_CACHE` or `BOLTZ_CACHE` themselves), and `export`ing rather than
+  merely returning, so a child process — the postinst's own inline Python
+  fetch block, or the status-check subprocesses `scripts/doctor.sh` spawns —
+  inherits it too.
+
+  `debian/tt-bio-demo-weights.postinst` calls the packaged resolver (via
+  `debian/helpers.sh`'s wrapper of the same name, which sources
+  `scripts/weights-cache.sh` off the installed prefix) TWICE: once as a bare
+  top-level statement, purely for its exporting side effect to land in the
+  postinst's own shell rather than in a subshell that evaporates on exit,
+  and again inside the `CACHE="$(...)"` command substitution that captures
+  the resolved path — by the second call the pin is already a no-op, so the
+  two cannot disagree. The directory is created with `install -d -m 0755`
+  (not left to the Python block's own `mkdir(parents=True, exist_ok=True)`,
+  which merely *should* land at 0755 under root's default umask) so the
+  desktop user can read it back later regardless of umask, and only inside
+  the `configure)` branch that actually runs a fetch, not unconditionally
+  for every maintainer-script invocation.
+
+  `debian/tt-bio-demo.user.service` pins the identical literal path via
+  `Environment=TT_BIO_CACHE=/opt/tt-bio-demo/weights` — the one place that
+  genuinely has to repeat the literal value, since a static systemd unit
+  cannot call a shell function — so `AffinityScorer.load()`'s own
+  `import tt_bio` resolves the Hugging Face hub cache (via
+  `configure_hf_cache`, which this variable specifically redirects — not
+  `BOLTZ_CACHE`) to the exact directory the postinst populated. This closes
+  the gap for nesso1/nesso1-ccd/the ESM-2 encoder, not only for the flat
+  protenix-v2.pt/mols.tar artifacts this bullet's own analysis above already
+  said would benefit incidentally.
+
+  `scripts/doctor.sh` was extended too, though it was not one of the two
+  files named in option (a) above: an operator running the doctor
+  interactively, diagnosing a packaged install, has neither the postinst's
+  environment (root, install time) nor the unit's (the desktop user, service
+  time), so without a matching pin the doctor would check a `$HOME`-relative
+  path the real daemon never reads from. `doctor_weights_cache` now calls the
+  same shared packaged resolver whenever `doctor_install_mode` reports
+  `"package"` (a source checkout keeps calling the plain, home-relative one,
+  unconditionally, so that separate lower-priority gap is untouched); a
+  sibling `doctor_prime_weights_cache` calls it once more, at the very top of
+  `doctor_main`, as a bare top-level statement rather than inside a `$(...)`
+  — the same "call it once for the export, capture its value separately"
+  shape the postinst uses — so the pin also reaches the Python subprocesses
+  `doctor_ask_tt_bio_about_weights` spawns for the nesso1 check specifically.
+
+  `scripts/run-demo.sh`'s own defaults were deliberately left untouched at
+  the time this section was first written — see the "run-demo.sh resolved
+  home-relative even from a packaged install" entry below (FIXED
+  2026-09-16) for why that turned out to be the wrong call: run-demo.sh is
+  not a dev convenience, it is the packaged install's actual
+  operator-facing launcher. `scripts/setup-venvs.sh`'s own weight-fetch
+  step remains a genuinely open, separate gap — see "setup-venvs.sh's own
+  weight-fetch still uses the plain resolver" below, which replaces this
+  sentence's vague "tracked on its own" with an actual entry, per PR
+  review's finding that no such standalone entry in fact existed.
+  `tt-bio-demo-runtime.postinst` was checked and does not need the same
+  treatment: it never invokes `setup-venvs.sh` itself (a deliberate design
+  choice recorded in its own header comment — building venv-runner inside
+  postinst would hold the dpkg lock for a multi-gigabyte, network-dependent
+  build), it only prints the command for an operator to run by hand, so
+  there is no packaged-install code path there to pin.
+
+  **UPDATE 2026-09-16 — the systemd unit's own `Environment=` line was
+  itself an unconditional override, and the paragraph above no longer
+  describes the unit accurately; see the "the systemd unit's Environment=
+  is unconditional" entry below (FIXED) for the full story and what
+  actually replaced it.** At the time this bullet was originally written,
+  the unit pinned `TT_BIO_CACHE` via a **static** `Environment=` line, and
+  the claim below ("operator's own explicit TT_BIO_CACHE or BOLTZ_CACHE
+  still wins everywhere") was true for the postinst and `scripts/doctor.sh`
+  but not for the unit itself — a static `Environment=` line in a systemd
+  unit always wins over anything the user manager's own environment would
+  otherwise supply, which is the opposite of "explicit always wins over the
+  pin." That gap sat here, unnoticed, until a subsequent review round
+  caught it (docs/followups.md's PR-review section on this feature).
+
+  An operator's own explicit `TT_BIO_CACHE` or `BOLTZ_CACHE` now wins
+  everywhere, including the unit: the ONE pin function
+  (`tt_bio_demo_weights_cache_impl_packaged` in `scripts/weights-cache.sh`)
+  is guarded on both variables being unset before assigning, the same
+  "explicit always wins over the pin" rule its home-relative sibling
+  already applies — the unit now reaches this function through
+  `scripts/tt-bio-demo-daemon-launcher.sh` rather than a static directive
+  that could never call it. Verified by test (all in
+  `tests/unit/test_doctor.py` and `tests/unit/test_packaging.py`): the
+  resolver declares a fixed, non-home-relative path; that path is only ever
+  pinned when neither cache variable is already set; the postinst calls the
+  shared packaged resolver (rather than deriving the path itself) before
+  `CACHE` is computed; the launcher script calls the SAME shared resolver
+  (rather than repeating the literal path, which the unit's old static line
+  used to have to do); `scripts/doctor.sh` and `scripts/run-demo.sh` both
+  call the same shared resolver rather than keeping their own copy of the
+  path, and only for a packaged install, never a source checkout; and —
+  restated as its own test, the same way `test_weights_cache_is_derived_
+  once.py` already checks it project-wide — none of the postinst,
+  `scripts/doctor.sh`, `scripts/run-demo.sh`, the launcher script, or
+  `debian/helpers.sh` reads `$TT_BIO_CACHE`/`$BOLTZ_CACHE` directly any
+  more; only `scripts/weights-cache.sh` and `runner/env.py` do.
+
+## From a review of the affinity-questions cache-pin fix (2026-09-16)
+
+A thorough review of the fix above (commit `77cfc19`) found the mechanism
+itself sound but incomplete: it closed the postinst/unit/doctor triangle and
+missed the actual operator-facing launch path, plus a second unconditional
+pin hiding inside the "fixed" unit. All items below are now closed.
+
+- **FIXED. `scripts/run-demo.sh` — the actual documented "normal path" —
+  still resolved home-relative, so the postinst and the real fold
+  disagreed.** `debian/com.tenstorrent.ttbio.demo.desktop`'s `Exec=` is
+  `/opt/tt-bio-demo/scripts/run-demo.sh`, and INSTALL.md explicitly calls
+  this "the normal path" (the systemd unit is the secondary "runs all day"
+  mode). The original cache-pin fix treated run-demo.sh as "the dev/source
+  workflow" and left it untouched — but it is not dev-only, it is the
+  packaged install's main operator-facing launcher. Its `WEIGHTS="${TT_BIO_
+  DEMO_WEIGHTS:-$(tt_bio_demo_weights_cache)}"` line called the PLAIN
+  (non-packaged) resolver unconditionally. So on a real `.deb` install: the
+  postinst fetched to `/opt/tt-bio-demo/weights`, but launching the booth
+  via the desktop entry (or run-demo.sh directly) resolved `$HOME/.boltz`
+  and handed THAT to the daemon as `--weights` — worse than before the
+  original fix, because the postinst and run-demo.sh used to at least agree
+  with each other (both home-relative); now they actively disagreed, and
+  `scripts/doctor.sh` (correctly pointed at `/opt/tt-bio-demo/weights`)
+  would report the booth healthy while the actual launch path was broken.
+
+  **Fix:** `scripts/weights-cache.sh` gained a shared
+  `tt_bio_demo_install_mode` function (the .git/tests sniff test that used
+  to live only inside `doctor_install_mode`), so run-demo.sh and doctor.sh
+  no longer carry two copies of the same check. `doctor_install_mode` now
+  delegates to it (`doctor_install_mode() { tt_bio_demo_install_mode
+  "$(doctor_prefix)"; }`); run-demo.sh calls it directly with `$REPO_ROOT`
+  (always the checkout the script itself lives in — deliberately NOT
+  run-demo.sh's own `$TT_BIO_DEMO_PREFIX`, which answers a different
+  question there: where the venvs live, not the app tree). When it reports
+  `"package"`, run-demo.sh primes and calls the SAME guarded
+  `tt_bio_demo_weights_cache_packaged` the postinst and doctor.sh use — bare
+  top-level call first (for the export, so the daemon process started later
+  inherits `$TT_BIO_CACHE` too, not just the flat `--weights` argv value —
+  this is what makes nesso1/nesso1-ccd/the ESM-2 encoder resolve correctly
+  as well, since they ignore `--weights` entirely), then captured again for
+  the `--weights` flag. A source checkout keeps the plain resolver,
+  unconditionally, exactly as before.
+
+  Verified by test (`tests/unit/test_run_demo_sh.py`, new "weights-cache
+  resolution" section): a fake packaged tree (real `ui`/`protocol`/
+  `playlist`/`examples` symlinked in, alongside symlinked copies of the real
+  run-demo.sh/weights-cache.sh, into a directory with neither `.git` nor
+  `tests/`) resolves `--weights` to `/opt/tt-bio-demo/weights`; a real
+  source checkout keeps resolving `$HOME/.boltz`; an operator's own
+  `$TT_BIO_CACHE` still wins in packaged mode; and `--weights`/
+  `$TT_BIO_DEMO_WEIGHTS` still override both. Confirmed RED against the
+  pre-fix script (packaged-mode test failed with `/home/ttuser/.boltz`
+  instead of the fixed path) and GREEN after.
+
+- **FIXED. The systemd unit's own `Environment=TT_BIO_CACHE=...` line was
+  unconditional, breaking the "operator's explicit override wins" rule —
+  for the ONE caller that most needed it, since the daemon is what actually
+  folds.** `Environment=` in a static unit file always wins over anything
+  the user manager's own environment would otherwise provide (`systemctl
+  --user import-environment`, `~/.config/environment.d/*.conf`,
+  `systemctl --user set-environment`), and it outranks `$BOLTZ_CACHE` in
+  tt-bio's own resolution order. So an operator who had set `$BOLTZ_CACHE`
+  themselves (e.g. to relocate the cache to a bigger disk) got a postinst
+  that correctly honoured it (the shared resolver's guard works as
+  designed there) — and a daemon, started by systemd, that ALWAYS got
+  `TT_BIO_CACHE=/opt/tt-bio-demo/weights` regardless, silently loading from
+  the wrong (empty) directory on every start. Every other pin in this
+  codebase is guarded ("only if unset"); this was the one place it was not,
+  because a static unit-file directive cannot express that condition.
+
+  **Resolution: a launcher script (option (a) from the original
+  analysis), not documentation (option (b)).** `scripts/tt-bio-demo-daemon-
+  launcher.sh` is what `ExecStart=` now runs, in place of invoking
+  `runner.daemon` directly. Started as an ordinary process, it inherits
+  whatever environment systemd actually assembled (including any operator
+  override — an `environment.d` generator, `set-environment`, or a unit
+  override via `systemctl --user edit tt-bio-demo`), sources
+  `scripts/weights-cache.sh`, and calls the SAME guarded
+  `tt_bio_demo_weights_cache_packaged` the postinst and doctor.sh call —
+  which only pins when neither `$TT_BIO_CACHE` nor `$BOLTZ_CACHE` is
+  already set — then `exec`s the real daemon (replacing its own process
+  image, so systemd's `Restart=`/`TimeoutStopSec=`/signal delivery still
+  reach the actual daemon PID, not a supervising shell in front of it). The
+  unit's `ExecStart=` now reads `.../tt-bio-demo-daemon-launcher.sh
+  %t/tt-bio-demo/runner.sock %t/tt-bio-demo/logs` — the socket/log-root
+  paths stay in the unit file as arguments because systemd's `%t` specifier
+  is only ever expanded inside unit-file text, never inside a script it
+  runs.
+
+  Option (b) (documenting that an override needs `systemctl --user edit`,
+  and teaching `doctor.sh` to read the live unit's environment) was
+  rejected: it would have left the daemon's actual behaviour dependent on
+  an operator successfully editing systemd unit syntax by hand, with no
+  guard forcing doctor.sh's picture of "what the daemon will see" to track
+  reality — exactly the "check that knows LESS than the thing it is
+  checking" pattern this project's own review history keeps finding. A
+  script that runs the same guarded function every other packaged caller
+  uses closes the gap structurally instead of procedurally.
+
+  **A pre-existing bug surfaced while rewriting this exact line, and was
+  fixed in the same change: the old unit's `ExecStart=` never passed
+  `--weights` at all**, and `runner/daemon.py`'s argument parser has it as
+  a REQUIRED argument. The daemon would have exited immediately under
+  systemd (argparse's "the following arguments are required: --weights")
+  every time the unit tried to start it — unrelated to the cache-pin work,
+  found only because this line was being rewritten anyway.
+  `test_the_launcher_requires_the_weights_flag_the_daemon_actually_requires`
+  pins this.
+
+  Verified by test (`tests/unit/test_packaging.py`): the unit no longer
+  contains a live (non-comment) `Environment=TT_BIO_CACHE=` line; the
+  launcher script calls the shared guarded resolver rather than repeating
+  the literal path; the launcher primes before it captures (the same
+  "prime once, capture again" shape as the postinst); the launcher `exec`s
+  rather than spawning a child; the launcher is executable and parses; and
+  the launcher — not the unit — is what invokes `venv-runner/bin/python3
+  -m runner.daemon`.
+
+- **FIXED. `/opt/tt-bio-demo/weights` was root-owned and not writable by
+  the desktop-user daemon, silently breaking an existing self-repair
+  path.** `runner/folder.py`'s `Folder.load()` (and `runner/preflight.py`'s
+  own comment) rely on the cache directory being WRITABLE at runtime: a
+  cache holding `mols.tar` but not yet the extracted `mols/` directory
+  self-repairs on the first fold (`download_mols(cache)` unpacks it in
+  place), and `weights.fetch(...)` can re-fetch a corrupt/incomplete file.
+  `install -d -m 0755` (root-owned) made the directory READABLE by the
+  desktop user but not WRITABLE — so this self-repair raised
+  `PermissionError` inside `Folder.load()`'s own try block for a packaged
+  install, silently converting a booth that used to self-heal into one
+  that gets stuck on "preparing" with no diagnostic.
+
+  **Fix: `install -d -m 0777 "$CACHE"`** in
+  `debian/tt-bio-demo-weights.postinst` — permissions-based rather than
+  ownership-based, since this project has no `SUDO_USER`/`runuser`/
+  logind-based operator-account detection anywhere (checked; none exists),
+  and inventing one for this alone would be new, untested fragility traded
+  for avoiding one fixed path. `0777` is a defensible, simple choice
+  specifically because this is a single-purpose conference-booth appliance
+  with no per-user account separation — the desktop session IS the
+  operator — and that tradeoff (any local account can write into this one
+  directory) is stated plainly in the postinst's own comment rather than
+  left implicit. No existing precedent for a runtime-writable shared
+  directory was found elsewhere under `/opt/tt-bio-demo` (`.venvs`,
+  `playlist`, `examples`, `scripts` are all read-only application data), so
+  this is the first of its kind rather than a pattern being matched.
+  `install -d` sets the mode atomically even when the directory already
+  exists (verified: a directory created at `0755` by an older postinst is
+  corrected to `0777` the next time `dpkg-reconfigure` runs), so an
+  upgrade self-heals without a separate migration step.
+
+  `scripts/doctor.sh`'s `--fix` repair for a missing cache directory was
+  split out of `doctor_main` into its own `doctor_fix_weights_dir` function
+  (matching this file's own convention that every check/repair is directly
+  testable) and taught the same mode: `0777` in packaged mode, plain
+  `mkdir -p` in source mode. See the next entry for why this needed a
+  fail/hint path too.
+
+  Verified by test: `tests/unit/test_packaging.py` checks the postinst's
+  literal `install -d -m 0777 "$CACHE"` and (not just textually) that a
+  real `install -d -m 0777` invocation actually yields a writable
+  directory; `tests/unit/test_doctor.py` checks `doctor_fix_weights_dir`
+  creates a `0777` directory in packaged mode and a plain one in source
+  mode.
+
+- **FIXED (small). `doctor_main`'s `--fix` branch did a bare `mkdir -p
+  "$_c"`, which would fail with a raw `Permission denied` and no
+  doctor-formatted error for a non-root operator against the now-root-owned
+  `/opt/tt-bio-demo/weights`.** Under `set -uo pipefail` (no `-e`), a failed
+  `mkdir -p "$_c" && ok "created $_c"` simply short-circuited the `&&` —
+  nothing from this script reached the operator at all, just mkdir's own
+  raw stderr line, from the one command whose entire job is turning a bare
+  shell error into a doctor-formatted one. Fixed as part of splitting the
+  repair into `doctor_fix_weights_dir` (see above): a failed `mkdir` now
+  calls `fail`/`hint` with the exact `sudo install -d -m 0777 ...` command
+  to run. Verified with a directory this test process genuinely cannot
+  write into (`chmod 0000`, not root) — `test_fix_reports_a_permission_
+  failure_instead_of_a_raw_mkdir_error` confirms both a `[FAIL]` and a
+  hint line where before there was nothing.
+
+- **FIXED (small). The systemd unit's own comment cited a test that does
+  not exist.** It named `test_the_doctor_the_postinst_and_the_unit_pin_the_
+  same_weights_cache`; the real test (which the unit's rewritten comment
+  now correctly cites, alongside the new
+  `test_the_launcher_calls_the_same_guarded_resolver_the_postinst_does`) is
+  `test_the_unit_pins_the_same_weights_cache_the_resolver_declares` in
+  `tests/unit/test_packaging.py` — which itself no longer applies verbatim
+  now that the unit has no literal path to compare (see the
+  Environment=-removal entry above), and has been superseded by tests
+  against the launcher script instead.
+
+- **STILL OPEN. `scripts/setup-venvs.sh`'s own weight-fetch step still
+  uses the plain, `$HOME`-relative resolver (`weights_cache_dir()` →
+  `tt_bio_demo_weights_cache`), even when invoked against a packaged
+  `/opt/tt-bio-demo` prefix.** This is the entry that replaces this
+  section's own former vague "tracked on its own" claim, which a PR review
+  correctly pointed out named no actual tracked item. The gap is real:
+  `debian/tt-bio-demo-runtime.postinst` tells an operator with no venvs yet
+  to run `sudo <prefix>/scripts/setup-venvs.sh --prefix <prefix>` by hand
+  (deliberately not run automatically — see that postinst's own header
+  comment on the dpkg-lock/network-dependency reasoning), and that manual
+  invocation fetches weights by default (unless `--skip-weights`) through
+  the plain resolver regardless of `--prefix`. Under a typical `sudo`
+  invocation (which resets `$HOME` to the target user's home — `/root` when
+  running as root, unless the operator's `sudoers` config keeps `$HOME`),
+  this would fetch to `/root/.boltz` — a THIRD disagreement alongside the
+  ones this whole section has been closing, on a path that is only reached
+  when an operator follows the runtime package's own printed instructions.
+  Not fixed here: it is a different script with a different design
+  question (should `--prefix /opt/tt-bio-demo` imply the packaged resolver
+  for setup-venvs.sh too, given its own header comment already documents
+  `--prefix` as meaning "where to create venv-ui/ and venv-runner/", not
+  "is this a packaged deployment"?) and deserves its own look rather than a
+  patch tacked onto this round.
 
 ## Deliberately not doing
 

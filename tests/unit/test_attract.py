@@ -208,3 +208,60 @@ def test_an_interruption_puts_the_gallery_away_too():
     _run(ch, until=START_AFTER_IDLE_S + 70)
     assert ch.owns("gallery")
     assert HIDE_GALLERY in ch.interrupted()
+
+
+# ── the fourth cue: ask a question ───────────────────────────────────────────
+
+def test_a_question_cue_fires_after_the_existing_cues_rest_period():
+    """Follows this file's own existing cue tests' pattern (SHOW_GALLERY/
+    OPEN_TENSIX timing): the question cue is the LAST beat of the cycle, and
+    it fires only after the gallery cue's own rest period has elapsed."""
+    from ui.attract import ASK_QUESTION, HIDE_GALLERY
+    ch = Choreography()
+    seq = [a for _, a in _run(ch, until=START_AFTER_IDLE_S + CYCLE_S - 1)]
+    assert ASK_QUESTION in seq, seq
+    assert seq.index(ASK_QUESTION) > seq.index(HIDE_GALLERY), seq
+
+
+def test_the_question_cue_fires_only_once_per_cycle():
+    from ui.attract import ASK_QUESTION
+    ch = Choreography()
+    seq = [a for _, a in _run(ch, until=START_AFTER_IDLE_S + CYCLE_S - 1)]
+    assert seq.count(ASK_QUESTION) == 1, seq
+
+
+def test_the_question_cue_repeats_every_cycle():
+    from ui.attract import ASK_QUESTION
+    ch = Choreography()
+    seq = [a for _, a in _run(ch, until=START_AFTER_IDLE_S + 2 * CYCLE_S + 1)]
+    assert seq.count(ASK_QUESTION) >= 2, seq
+
+
+def test_the_question_cue_lands_before_the_cycle_ends():
+    from ui.attract import ASK_QUESTION
+    at = dict((a, o) for o, a in SCORE)
+    assert at[ASK_QUESTION] < CYCLE_S
+
+
+def test_asking_a_question_takes_no_ownership():
+    """Rule 3 only applies to panels the choreography can open and close.
+    A question is fire-and-forget -- there is nothing on screen for it to
+    own, and nothing for `interrupted()` to close on its account."""
+    from ui.attract import ASK_QUESTION
+    ch = Choreography()
+    fired = _run(ch, until=START_AFTER_IDLE_S + CYCLE_S - 1)
+    assert ASK_QUESTION in [a for _, a in fired]
+    assert not ch.owns("ask_question")
+
+
+def test_an_interruption_never_needs_to_close_a_question_cue():
+    """Rule 2, for the one cue that never opens anything: driving straight
+    through a full cycle (which fires every cue, including the question)
+    must still leave nothing pending for `interrupted()` to undo, once the
+    booth is back to idle before the NEXT cycle's opens have fired."""
+    ch = Choreography()
+    # Stop just after ASK_QUESTION (offset 82) but before the next cycle's
+    # OPEN_DIAGNOSTICS would fire again (offset 90 -> +90 more).
+    _run(ch, until=START_AFTER_IDLE_S + 83)
+    assert ch.owned == frozenset()
+    assert ch.interrupted() == []

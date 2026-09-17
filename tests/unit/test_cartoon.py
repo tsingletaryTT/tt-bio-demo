@@ -17,9 +17,9 @@ import pathlib
 import numpy as np
 import pytest
 
-from ui.cartoon import (ARROW_WIDTH, DIMS, NUCLEIC_RADIUS, RING,
-                        cartoon_from_cif, section_dims, side_vectors,
-                        sweep)
+from ui.cartoon import (ARROW_WIDTH, DIMS, NUCLEIC_RADIUS,
+                        POCKET_HIGHLIGHT_BOOST, RING, cartoon_from_cif,
+                        section_dims, side_vectors, sweep)
 from ui.secstruct import COIL, HELIX, STRAND
 
 
@@ -442,3 +442,179 @@ def test_the_nucleic_tube_is_not_drawn_as_thin_as_a_cartoon_loop():
         f"the nucleic tube is only {np.median(d):.2f} A from its anchors -- "
         f"that is coil-thin, not {NUCLEIC_RADIUS} A")
     assert np.median(d) < NUCLEIC_RADIUS * 2.0
+
+
+# ── pocket-residue highlight: additive, never a replacement colour ─────────
+#
+# Affinity questions (docs/superpowers/specs/2026-09-15-affinity-qa-design.md
+# section 6) need the ribbon to call out which residues sit near a bound
+# ligand, WITHOUT hiding what the pLDDT colour already says about those same
+# residues -- the two are different claims (confidence vs. proximity) and
+# must both stay legible at once. So this is additive brightening on top of
+# the existing per-vertex colour, not a second colour that replaces it.
+#
+# Five CA-only residues on a straight line, 10 A apart -- CA-only (no C/O)
+# deliberately routes this fixture through `cartoon_from_cif`'s no-peptide-
+# plane branch (the same one nucleic chains use), which is the simplest way
+# to reach the shared `plddt_colors` per-vertex colouring machinery without
+# needing a real secondary-structure assignment. All five share one pLDDT
+# (95, comfortably inside the "very high" >= 90 stop) so every residue's
+# BASE colour is identical and any difference in the highlighted run is
+# attributable only to the highlight, never to a pLDDT difference between
+# residues. 95 -> PLDDT_STOPS' (0, 0x53, 0xD6) stop = (0.0, 0.325, 0.839):
+# no channel is at 1.0, so an additive boost of POCKET_HIGHLIGHT_BOOST
+# cannot clip and the base colour stays exactly recoverable by subtraction.
+_HIGHLIGHT_CIF = """\
+data_pocket_highlight
+#
+loop_
+_atom_site.group_PDB
+_atom_site.id
+_atom_site.type_symbol
+_atom_site.label_atom_id
+_atom_site.label_alt_id
+_atom_site.label_comp_id
+_atom_site.label_asym_id
+_atom_site.label_entity_id
+_atom_site.label_seq_id
+_atom_site.Cartn_x
+_atom_site.Cartn_y
+_atom_site.Cartn_z
+_atom_site.occupancy
+_atom_site.B_iso_or_equiv
+_atom_site.auth_seq_id
+_atom_site.auth_asym_id
+ATOM   1 C CA . ALA A 1 1 0.000  0.000 0.000 1.00 95.00 1 A
+ATOM   2 C CA . ALA A 1 2 10.000 0.000 0.000 1.00 95.00 2 A
+ATOM   3 C CA . ALA A 1 3 20.000 0.000 0.000 1.00 95.00 3 A
+ATOM   4 C CA . ALA A 1 4 30.000 0.000 0.000 1.00 95.00 4 A
+ATOM   5 C CA . ALA A 1 5 40.000 0.000 0.000 1.00 95.00 5 A
+#
+"""
+
+
+def test_highlighted_residues_keep_their_plddt_color_but_gain_emphasis(tmp_path):
+    """Residue A3 (x=20) is named in `highlight_residues`; A1 (x=0) is not.
+
+    Both runs share the same geometry (`highlight_residues` must never move
+    a vertex), so any colour difference is isolated to the highlighted
+    residue's own neighbourhood, and the un-highlighted residue's colour
+    must be untouched.
+    """
+    path = tmp_path / "pocket_highlight.cif"
+    path.write_text(_HIGHLIGHT_CIF)
+
+    base_verts, _, base_colors, _ = cartoon_from_cif(path)
+    hl_verts, _, hl_colors, _ = cartoon_from_cif(
+        path, highlight_residues={("A", 3)})
+
+    assert np.allclose(hl_verts, base_verts), \
+        "the highlight must not move geometry, only colour"
+
+    # The highlight mask is resampled the same continuous way pLDDT itself
+    # is (see `_colored`), so it ramps smoothly between residues rather than
+    # stepping at a hard boundary -- only the ONE ring whose sample lands
+    # exactly on residue A3's position gets the FULL boost. That ring sits
+    # exactly NUCLEIC_RADIUS (1.6 A) from (20, 0, 0); its neighbours one
+    # sample over are further out (>=2.3 A, since consecutive samples are
+    # ~1.7 A apart along x). A 2.0 A radius isolates that one fully-boosted
+    # ring without pulling in a partially-boosted neighbour, which is what
+    # makes the exact-recoverability assertion below meaningful rather than
+    # an artifact of averaging partial and full boosts together.
+    near_r3 = np.linalg.norm(
+        base_verts - np.array([20.0, 0.0, 0.0]), axis=1) < 2.0
+    near_r1 = np.linalg.norm(
+        base_verts - np.array([0.0, 0.0, 0.0]), axis=1) < 2.0
+    assert near_r3.any(), "fixture geometry does not reach residue A3"
+    assert near_r1.any(), "fixture geometry does not reach residue A1"
+
+    # ADDITIVE: the highlighted residue is brighter, but its base pLDDT
+    # colour is still present underneath and recoverable by subtracting the
+    # boost back out -- it was never replaced by a second, unrelated colour.
+    delta_r3 = hl_colors[near_r3] - base_colors[near_r3]
+    assert np.all(delta_r3 > 0.05), \
+        f"highlighted residue A3 did not brighten: {delta_r3}"
+    recovered = np.clip(hl_colors[near_r3] - POCKET_HIGHLIGHT_BOOST, 0.0, 1.0)
+    assert np.allclose(recovered, base_colors[near_r3], atol=1e-4), (
+        "A3's own pLDDT colour is not recoverable underneath the highlight "
+        "boost -- the highlight replaced it instead of adding to it")
+
+    # An un-highlighted residue must be untouched by another residue's flag.
+    delta_r1 = hl_colors[near_r1] - base_colors[near_r1]
+    assert np.allclose(delta_r1, 0.0, atol=1e-4), (
+        f"residue A1 was not highlighted but its colour changed anyway: "
+        f"{delta_r1}")
+
+
+def test_no_highlight_residues_is_identical_to_the_old_call_signature():
+    """`highlight_residues=None` (the default) must reproduce exactly what
+    every existing caller of `cartoon_from_cif` already gets -- this
+    parameter is additive to the API as well as to the colour."""
+    path = pathlib.Path(__file__).resolve().parents[1] / "fixtures" \
+        / "structures" / "protein_nucleic_cartoon.cif"
+    default_colors = cartoon_from_cif(path)[2]
+    explicit_empty_colors = cartoon_from_cif(path, highlight_residues=set())[2]
+    assert np.array_equal(default_colors, explicit_empty_colors)
+
+
+# ---------------------------------------------------------------------------
+# Item 14 of the deferred-nits batch: a committed regression test for the
+# mock-runner's own affinity-question fixture. Its non-empty pocket and
+# highlight were only ever confirmed manually, once, in the commit that
+# added the fixture (511974f, "test: mock runner replays a question/answer
+# pair end to end") -- nothing pinned it against a future change to either
+# the fixture or the pocket/cartoon geometry code. This uses the exact real,
+# non-mocked call path `ui/app.py`'s `_compute_pocket_residues` and
+# `_highlight_worker_main` chain together: `ui.pocket.pocket_residues` on a
+# real gemmi-parsed structure, then `ui.cartoon.cartoon_from_cif` with that
+# real result as `highlight_residues` -- no fakes, no monkeypatches.
+# ---------------------------------------------------------------------------
+
+_DHFR_WITH_LIGAND_FIXTURE = (
+    pathlib.Path(__file__).resolve().parents[1]
+    / "fixtures" / "structures" / "dhfr_with_ligand.cif")
+
+
+def test_the_mock_questions_fixture_produces_a_real_non_empty_pocket():
+    """tests/fixtures/structures/dhfr_with_ligand.cif (see its own header
+    comment, and item 2 of the deferred-nits batch, for what it actually
+    is: a real Trp-cage backbone plus six synthetic MTX ligand atoms,
+    labeled "dhfr" purely for tests/unit/runner/test_mock_questions.py's
+    end-to-end replay). This is the ONE property that fixture must keep for
+    that test to mean anything -- a synthetic ligand placed too far away, or
+    a future fixture edit that drops it, would make the mock replay's
+    "highlight fires" claim silently false again, exactly as it was before
+    this fixture existed."""
+    import gemmi
+
+    from ui.pocket import pocket_residues
+
+    structure = gemmi.read_structure(str(_DHFR_WITH_LIGAND_FIXTURE))
+    structure.setup_entities()
+    pocket = pocket_residues(structure)
+    assert pocket, "the fixture's synthetic ligand must yield a real pocket"
+
+
+def test_the_mock_questions_fixture_produces_a_real_cartoon_highlight():
+    """The other half of the same claim: feeding that real pocket into
+    `cartoon_from_cif` must actually brighten some vertex's colour (see
+    `POCKET_HIGHLIGHT_BOOST`), never move geometry, and never do nothing.
+    This is what `ui.app._highlight_worker_main` really calls, end to end,
+    against a fixture this project's own mock runner ships and replays."""
+    import gemmi
+
+    from ui.pocket import pocket_residues
+
+    structure = gemmi.read_structure(str(_DHFR_WITH_LIGAND_FIXTURE))
+    structure.setup_entities()
+    pocket = pocket_residues(structure)
+    assert pocket, "guard: the other test in this pair already pins this"
+
+    plain_verts, _, plain_colors, _ = cartoon_from_cif(_DHFR_WITH_LIGAND_FIXTURE)
+    hl_verts, _, hl_colors, _ = cartoon_from_cif(
+        _DHFR_WITH_LIGAND_FIXTURE, highlight_residues=pocket)
+
+    assert np.allclose(plain_verts, hl_verts), \
+        "a highlight must never move geometry"
+    assert not np.allclose(plain_colors, hl_colors), \
+        "the highlight must actually brighten some vertex's colour"

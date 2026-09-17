@@ -33,13 +33,28 @@ behaviors to pin down: absent stays None, explicit null ALSO stays None
 (the two spellings of "not yet measured" must not diverge), and a PRESENT
 but non-numeric value is still a loud PlaylistError -- the leniency is for
 "nothing was said," not for "something wrong was said."
+
+Also covers `load_questions()` / `Question` (the affinity-questions
+playlist, `playlist/questions.yaml`) -- a separate loader from
+`load_playlist`/`Target` above, but held to the same PlaylistError-never-
+raw-exception contract, plus the one thing unique to it: every question's
+`target_id` is validated against the REAL shipped fold manifest at load
+time, so a question naming a target the booth cannot fold is a loud
+config error here rather than a silent no-op later.
 """
 
 from pathlib import Path
 
 import pytest
 
-from ui.playlist import PlaylistError, Target, load_playlist, select_targets
+from ui.playlist import (
+    PlaylistError,
+    Question,
+    Target,
+    load_playlist,
+    load_questions,
+    select_targets,
+)
 from ui.playlist import main as playlist_main
 
 
@@ -547,3 +562,131 @@ def test_a_non_numeric_slow_end_is_loud(tmp_path):
         "  expected_s: 19.7\n  expected_slow_s: soon\n")
     with pytest.raises(PlaylistError, match="expected_slow_s"):
         load_playlist(m)
+
+
+# ---------------------------------------------------------------------------
+# playlist/questions.yaml + load_questions.
+#
+# A "question" ("does this ligand bind this protein?") is a SEPARATE, parallel
+# content file from manifest.yaml -- see ui/playlist.py's own docstring on
+# load_questions. Every question names an existing fold target by
+# `target_id`, and that name is validated against the real fold manifest at
+# load time: a question naming a target this booth cannot fold is a config
+# error, and this project's whole standard (CLAUDE.md's "trust the subject,
+# verify the instrument", the manifest's own required-field checks) says that
+# must fail loudly here, not silently at the moment a visitor asks it.
+# ---------------------------------------------------------------------------
+
+def test_loads_three_questions_from_the_shipped_manifest():
+    """Runs against the REAL shipped playlist/questions.yaml, same reasoning
+    as test_loads_the_shipped_manifest above: a bad entry in the real file
+    fails CI, not the booth."""
+    questions = load_questions()
+    assert {q.id for q in questions} == {"dhfr_mtx", "trypsin_bam", "fkbp12_sb3"}
+    assert all(isinstance(q, Question) for q in questions)
+
+
+def test_every_question_targets_a_real_playlist_entry():
+    """Checked against the REAL manifest's own ids, not a hardcoded set --
+    the point of load_questions's own validation is exactly this fact, so the
+    test should observe it the same way the loader does rather than
+    duplicating a copy of the set that could drift from the manifest."""
+    manifest_ids = {t.id for t in load_playlist("playlist/manifest.yaml")}
+    for q in load_questions():
+        assert q.target_id in manifest_ids
+
+
+def test_unmeasured_expected_s_is_none():
+    """All three shipped questions carry `expected_s: null` -- the hardware
+    spike (docs/spike-nesso1-affinity.md) found a realistic ~8-12s per-answer
+    latency, but that was not this project's usual repeated-measurement
+    discipline (a mean of several warm runs), so it is not yet a citable
+    number. See the header comment in playlist/questions.yaml."""
+    assert all(q.expected_s is None for q in load_questions())
+
+
+def test_a_question_naming_a_nonexistent_target_is_rejected(tmp_path):
+    bad = tmp_path / "questions.yaml"
+    bad.write_text(
+        "- id: x\n  target_id: not_a_real_target\n  question: 'q?'\n"
+        "  ligand_name: 'L'\n"
+    )
+    with pytest.raises(PlaylistError, match="not_a_real_target"):
+        load_questions(bad)
+
+
+def test_a_missing_required_field_names_the_offending_question(tmp_path):
+    bad = tmp_path / "questions.yaml"
+    bad.write_text("- id: x\n  target_id: dhfr\n  question: 'q?'\n")  # no ligand_name
+    with pytest.raises(PlaylistError, match="x"):
+        load_questions(bad)
+
+
+def test_a_missing_questions_file_raises_a_clear_error(tmp_path):
+    with pytest.raises(PlaylistError, match="not found"):
+        load_questions(tmp_path / "nope.yaml")
+
+
+def test_a_list_valued_target_id_is_a_loud_error_not_a_crash(tmp_path):
+    """Found in PR review: the old check (`value is None or (isinstance(
+    value, str) and not value.strip())`) let a YAML collection or number
+    through silently, and a list-valued target_id then raised an
+    uncaught TypeError at the `target_id not in manifest_ids` membership
+    check (a list is unhashable) instead of a clean PlaylistError."""
+    bad = tmp_path / "questions.yaml"
+    bad.write_text(
+        "- id: x\n  target_id: [dhfr, trypsin]\n  question: 'q?'\n"
+        "  ligand_name: 'L'\n"
+    )
+    with pytest.raises(PlaylistError, match="target_id"):
+        load_questions(bad)
+
+
+def test_a_numeric_question_text_is_a_loud_error_not_a_crash(tmp_path):
+    """Same class of gap, the other required field: a bare YAML number for
+    `question` used to pass validation and reach a GTK label downstream,
+    which does not accept it either."""
+    bad = tmp_path / "questions.yaml"
+    bad.write_text(
+        "- id: x\n  target_id: dhfr\n  question: 42\n  ligand_name: 'L'\n"
+    )
+    with pytest.raises(PlaylistError, match="question"):
+        load_questions(bad)
+
+
+def test_duplicate_question_ids_are_rejected(tmp_path):
+    """Same ambiguity load_playlist's own duplicate-id check exists to avoid:
+    two questions sharing an id makes 'which one did the visitor ask'
+    unanswerable."""
+
+    def questions_text(second_id):
+        return (
+            "- id: dup\n  target_id: dhfr\n  question: 'q1?'\n"
+            "  ligand_name: 'L1'\n"
+            f"- id: {second_id}\n  target_id: trypsin\n  question: 'q2?'\n"
+            "  ligand_name: 'L2'\n"
+        )
+
+    # Control: two DIFFERENT ids must load cleanly, same reasoning as
+    # test_duplicate_ids_are_rejected above.
+    ok = tmp_path / "ok.yaml"
+    ok.write_text(questions_text("unique"))
+    assert len(load_questions(ok)) == 2
+
+    bad = tmp_path / "bad.yaml"
+    bad.write_text(questions_text("dup"))
+    with pytest.raises(PlaylistError, match="dup"):
+        load_questions(bad)
+
+
+def test_a_question_with_non_numeric_expected_s_is_rejected(tmp_path):
+    """The leniency (absent/null means 'not yet measured') is not leniency
+    for garbage: a PRESENT but non-numeric expected_s is still a loud
+    PlaylistError, same contract load_playlist enforces for Target."""
+    bad = tmp_path / "questions.yaml"
+    bad.write_text(
+        "- id: x\n  target_id: dhfr\n  question: 'q?'\n"
+        "  ligand_name: 'L'\n  expected_s: soon\n"
+    )
+    with pytest.raises(PlaylistError, match="x"):
+        load_questions(bad)

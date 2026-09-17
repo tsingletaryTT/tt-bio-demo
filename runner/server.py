@@ -33,9 +33,14 @@ log = logging.getLogger(__name__)
 # is dropped. Without a limit, a remote process -- a buggy UI, or a laptop in
 # the room -- decides how much memory this daemon allocates simply by never
 # sending `\n`, and the booth dies of what looks like a leak. 64 KiB is three
-# orders of magnitude more than the only message this protocol has (a `pick` is
-# under 100 bytes, and `MAX_TARGET_ID_LEN` bounds its one variable field), so
-# nothing legitimate can approach it.
+# orders of magnitude more than any legitimate client message: `pick` and
+# `egg` are each under 100 bytes (one `MAX_TARGET_ID_LEN`-bounded field), and
+# `question` -- the largest -- is still under 200 bytes now that BOTH of its
+# fields (`target_id` and `question_id`) are bounded by
+# `protocol.events.CLIENT_MESSAGE_FIELDS`/`decode_client_message` (Important
+# 6, whole-branch review: `question_id` used to be validated by nothing but
+# this 64 KiB line cap, which is a very different thing from being bounded
+# by `MAX_TARGET_ID_LEN` the way `target_id` always has been).
 CLIENT_LINE_MAX_BYTES = 64 * 1024
 
 # How many bytes to ask the kernel for per `recv`. Sized to hold many whole

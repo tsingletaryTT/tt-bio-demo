@@ -27,7 +27,8 @@ import socket
 import threading
 
 from protocol.events import (PROTOCOL_VERSION, ProtocolError, decode,
-                             egg_message, encode_client_message, pick_message)
+                             egg_message, encode_client_message, pick_message,
+                             question_message)
 
 log = logging.getLogger(__name__)
 
@@ -315,6 +316,17 @@ class EventClient:
         descent with the CPU label, which is the honest half of this feature.
         """
         return self.send(egg_message(egg_id))
+
+    def send_question(self, question_id, target_id):
+        """Ask the daemon to answer one affinity question. Mirrors
+        send_pick/send_egg exactly (same shape, same never-raise contract) --
+        see their docstrings. Both of ui/app.py's trigger paths (a visitor's
+        tap and the attract-loop cadence) call this and this alone: the
+        daemon's own `_accept_question` already enqueues the underlying fold
+        pick itself (runner/daemon.py), so nothing here ever also sends a
+        separate `pick`.
+        """
+        return self.send(question_message(question_id, target_id))
 
     def start(self):
         self._thread = threading.Thread(

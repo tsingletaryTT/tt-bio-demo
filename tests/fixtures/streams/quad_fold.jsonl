@@ -1,4 +1,4 @@
-{"type":"hello","version":3,"cards":[0,1,2,3],"models":["protenix-v2"],"preflight":"ok","_delay_ms":0}
+{"type":"hello","version":4,"cards":[0,1,2,3],"models":["protenix-v2"],"preflight":"ok","_delay_ms":0}
 {"type":"job_start","job_id":"q0a","target_id":"trpcage","model":"protenix-v2","card":0,"n_residues":20,"_delay_ms":40}
 {"type":"job_start","job_id":"q1a","target_id":"fkbp12","model":"protenix-v2","card":1,"n_residues":107,"_delay_ms":40}
 {"type":"stage","job_id":"q0a","stage":"msa","frac":0.0,"_delay_ms":30}

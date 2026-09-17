@@ -70,6 +70,12 @@ booth runs unattended all day.
 labeled with the chip it runs on, the protein, and the stage it has reached. Four
 independent folds at four independent points in their pipelines, on one screen.
 
+*(This section describes the base configuration, with the affinity-questions feature
+disabled. When it is enabled on a 4-chip box, one chip is permanently reserved to answer
+questions rather than fold — the quad and the `?` card both then show and say three chips,
+not four, and every count on this page is the real one for whichever configuration is
+actually running, not a hardcoded "four".)*
+
 Each cell names its chip, what it is drawing, and what that chip has moved on to.
 Three of these say `TRUNK`: only the diffusion stage produces coordinates, so a cell in
 `trunk` keeps showing the **previous** fold rather than going black (see
@@ -99,8 +105,8 @@ silicon keeps visibly breathing even if the daemon wedges.
 
 **Four chips on two boards.** A p300c carries two chips, so `tt-smi`'s four entries are four
 chips — not four boards. The panel says so, because a visitor reading "4 cards" would
-picture the wrong machine. Folds are timed on this hardware, warm, on tt-bio 0.7.3: Trp-cage **4.6 s**,
-FKBP12 **9.7 s**, DHFR **14.5 s**, trypsin **17.4 s**, albumin **95.8 s** — mean of two folds
+picture the wrong machine. Folds are timed on this hardware, warm, on tt-bio 0.8.0: Trp-cage **4.6 s**,
+FKBP12 **9.7 s**, DHFR **14.5 s**, trypsin **17.4 s**, albumin **95.5 s** — mean of two folds
 each on chip 0, after discarding one cold-JIT-cache fold per target (a version bump recompiles
 kernels for the new shapes; see `playlist/manifest.yaml`'s header). Chip 1 was not re-measured
 this pass; the 0.5–1.4 s-slower drift measured on tt-bio 0.7.0 is a hardware/thermal property,
@@ -111,13 +117,15 @@ in — its per-target *minima* match chip 0. A visitor's pick takes whichever ch
 long session drifts slower than these fresh-chip numbers. See `playlist/manifest.yaml` for the
 full table.
 
-**Four chips, four proteins — one protein per chip.** The booth runs one worker process per
-chip, each pinned to its own physical device, each holding its own resident copy of the
-model; press `Q` for the 2×2 quad view and you are watching four independent folds at four
-independent points in their pipelines. What that is *not* is one protein folded four times
-faster: **a single target is a single-card fold**, which is tt-bio's own documented limit and
-not something this demo works around. Four chips buy the booth four proteins at once, and
-they buy a visitor's pick a chip to land on sooner — they do not make any one fold quicker.
+**Four chips, four proteins — one protein per chip** (three, not four, when the
+affinity-questions feature has reserved one chip for Q&A — see the note above). The booth
+runs one worker process per fold chip, each pinned to its own physical device, each holding
+its own resident copy of the model; press `Q` for the quad view and you are watching that
+many independent folds at that many independent points in their pipelines. What that is
+*not* is one protein folded faster with more chips: **a single target is a single-card
+fold**, which is tt-bio's own documented limit and not something this demo works around.
+More chips buy the booth more proteins at once, and they buy a visitor's pick a chip to land
+on sooner — they do not make any one fold quicker.
 Measured on this box: four workers reach "model resident, chip open" in **4.8 s** from a cold
 start, and all four then fold Trp-cage concurrently to pLDDT 95.2–95.3.
 
@@ -150,9 +158,11 @@ On a box with a Tenstorrent device, from a fresh clone:
 ./scripts/run-demo.sh              # start the daemon + UI, fold on real silicon
 ```
 
-`setup-venvs.sh` fetches the ~3.7 GB of model weights as its last step, so a fresh clone
-ends up able to fold rather than able to start. Pass `--skip-weights` to opt out; the
-download is resumable and re-running the script is a cheap no-op once they are there.
+`setup-venvs.sh` fetches the ~6.9 GB of model weights as its last step (protenix-v2 + CCD to
+fold, nesso1 + its own CCD dict + the ESM-2 encoder to answer affinity questions), so a fresh
+clone ends up able to fold and answer rather than able to start. Pass `--skip-weights` to opt
+out of all of it; the download is resumable and re-running the script is a cheap no-op once
+they are there.
 
 **If the booth is going to a venue, do this before it leaves** — the venue is offline.
 [`scripts/doctor.sh`](#is-this-machine-ready--scriptsdoctorsh) is the check, and it names
@@ -195,17 +205,31 @@ device handles and cannot be taken down by a wedged chip.
 
 It then fetches the **model weights** — `protenix-v2.pt` (1.86 GB) and the CCD molecule
 library `mols` (1.85 GB unpacked) — by running venv-runner's own
-`tt-bio weights --download protenix-v2`. They land in `$TT_BIO_CACHE`, else `$BOLTZ_CACHE`,
-else `~/.boltz`, which is tt-bio's own order and the one thing in this repo that decides
-where weights live ([`scripts/weights-cache.sh`](scripts/weights-cache.sh) and
-[`runner/env.py`](runner/env.py), pinned to each other by tests).
+`tt-bio weights --download protenix-v2`. From this source checkout they land in
+`$TT_BIO_CACHE`, else `$BOLTZ_CACHE`, else `~/.boltz`, which is tt-bio's own order and the one
+thing in this repo that decides where weights live
+([`scripts/weights-cache.sh`](scripts/weights-cache.sh) and [`runner/env.py`](runner/env.py),
+pinned to each other by tests). **A packaged (`.deb`) install is different**: it defaults to
+a fixed, non-home-relative `/opt/tt-bio-demo/weights` instead, for the reason
+[`INSTALL.md`](INSTALL.md#3-fetch-the-model-weights) explains — see that document if you
+installed from packages rather than from this checkout.
+
+It then does the same for **affinity Q&A**: nesso1's affinity head (165 MB) and its own CCD
+molecule dict (413 MB) via `tt-bio weights --download nesso1` — one call fetches both, since
+`tt_bio.weights.MODEL_ARTIFACTS["nesso1"]` lists both artifacts under that one model name —
+plus the ESM-2 protein-language-model encoder nesso1's featurizer runs (2.6 GB), pre-warmed
+straight through `huggingface_hub` because it has no `tt_bio.weights` row of its own. Unlike
+protenix-v2/mols, a failure fetching any of these three is reported but does not stop the
+script or fail anything: affinity Q&A is off by default (opt in with `--questions`), and a
+single-chip booth that never reserves a Q&A worker never needs them at all regardless.
 
 Useful flags:
 
 - `--dev` — also install pytest into `venv-runner`, needed to run the runner-side tests.
   Off by default, because `venv-runner` is the same artifact a Debian build produces and
   test tooling should not ship to a booth machine.
-- `--skip-weights` — do not fetch the ~3.7 GB of model weights. They are fetched by
+- `--skip-weights` — do not fetch the ~6.9 GB of model weights (folding and affinity Q&A
+  alike — one flag for all of it). They are fetched by
   default, because a booth without them cannot fold: `setup-venvs.sh` used to build both
   venvs and stop, which left a box that looked finished and wasn't. A failed download is
   reported and is **not** fatal — the venvs are the expensive part and they are fine, and
@@ -251,10 +275,12 @@ manifest, so the gallery advertised proteins the daemon had no input file for.
 One command that answers "can this box run the booth, and if not, what is the
 exact command that fixes it?" — the application tree, both venvs and whether
 they can actually *import* their stacks, the tt-bio pin versus what is
-installed, the 3.7 GB of weights (**by size, not existence** — a truncated
-download is the realistic failure and looks healthy to an existence check),
-every playlist input, visible chips, free disk, the systemd unit, and a
-display.
+installed, the 3.7 GB of weights the booth cannot fold without (**by size,
+not existence** — a truncated download is the realistic failure and looks
+healthy to an existence check), nesso1/ESM-2's 3.2 GB for affinity Q&A (as a
+warning, not a failure — off by default, and a booth with one chip never
+needs them regardless), every playlist input, visible chips, free disk, the
+systemd unit, and a display.
 
 **It works the same from a git checkout or from `/opt/tt-bio-demo`** installed
 by the `.deb`s — it finds the tree itself and only the *advice* changes
@@ -283,6 +309,7 @@ the authoritative list. The ones you are most likely to want:
 | `--devices 0,2` | every detected chip | Which physical chips the booth folds on |
 | `--quad` | auto | Force the 2×2 grid, even on a one-chip booth; <kbd>Q</kbd> still toggles at runtime |
 | `--solo` | auto | Force one large protein on a booth that would otherwise come up in the grid |
+| `--questions` | off | Opt in to affinity Q&A: one chip is permanently reserved for it whenever 2+ chips are detected. Also settable live, one-way only — <kbd>Ctrl</kbd>+<kbd>A</kbd> restarts the booth with this added (no-op if already on; there is no key that turns it back off) |
 | `--windowed` | off | Come up in a normal window instead of fullscreen; <kbd>Ctrl</kbd>+<kbd>F</kbd> still toggles |
 | `--log-root PATH` | `<runtime-dir>/logs` | Where tt-metal's own log output is pinned |
 | `--log-budget-gb` | 2 | Sweep budget for tt-metal logs between folds |
@@ -463,6 +490,94 @@ Nothing a visitor reads over-promises this. The gallery, the `?` card and that n
 say a tap puts the protein next and that the folds already running are left to finish —
 which is also why the other three cells keep moving while you wait.
 
+## Asking the booth a question
+
+Folding is not the only thing tt-bio can do: it can also answer a question about two
+molecules together — does this ligand bind this protein — and the booth now asks three of
+them. `playlist/questions.yaml` names the three, each reusing an existing playlist target's
+fold input (`examples/affinity_*.yaml`) that has carried a `properties: affinity:` block
+since Phase 3b with nothing ever reading it:
+
+- **`dhfr_mtx`** — "Does methotrexate block dihydrofolate reductase?"
+- **`trypsin_bam`** — "Does benzamidine block trypsin?"
+- **`fkbp12_sb3`** — "Does SB3 bind FKBP12?"
+
+No new molecules and no new vetting: these are the same three complexes the gallery already
+folds, asked as a question instead of only shown as a shape.
+
+**A visitor meets this two ways.** The attract loop cycles through the three questions on
+its own cadence, the same way it already demonstrates the diagnostics tap and the Tensix
+panel, so an unattended booth asks and answers them without anyone touching it. Or a visitor
+taps a question directly from the gallery's ask strip, which enqueues that question's fold
+(if it isn't already running) exactly the way a protein tap does, plus the question itself.
+
+**The answer is a real score, computed by a different model, plus a highlight — never a
+number alone.** `runner/affinity.py` runs tt-bio's nesso1 on a dedicated chip, resident, and
+needs no prior fold: it scores straight from the input file's sequence and ligand. The
+`QuestionQueuePanel` rail panel shows the question, then an indeterminate spinner while
+nesso1 is running — no fake progress bar, because a single fast scalar call has no stages
+to subdivide — and, once answered, the rounded score with a one-line factual gloss —
+"score: 0.94 — nesso1's predicted probability the ligand binds," never an invented
+"binds tightly/weakly" verdict tt-bio's own docs don't define. On the ribbon, the residues
+within `POCKET_CUTOFF_ANGSTROM` (5.0 Å) of the ligand get an outline — additive to the
+pLDDT confidence ramp, not a replacement for it — computed client-side from the same `.cif`
+already parsed for the cartoon, and captioned as "the residues nearest the ligand," never
+"the binding site," which a distance cutoff alone cannot establish. Verified on real
+hardware twice, including once on trypsin — pLDDT ~38–39, a mostly-orange, low-confidence
+target — where the highlight showed as a clear bright patch against the ribbon, legible at
+a glance rather than the subtle case a high-confidence target alone would have left
+untested.
+
+**The quad has its own cell for this, not just the rail.** Q&A's chip reservation leaves
+one cell of the 2×2 grid with no fold of its own — put to use instead of left blank, showing
+the same question/score at booth scale.
+
+![The quad's own Q&A cell, before an answer lands](docs/screenshots/07-quad-qa-spotlight.png)
+
+Three chips folding, the fourth cell honestly saying "No question answered yet" plus how many
+are still queued — never implying an answer that hasn't arrived.
+
+![The same cell once nesso1 has scored a real question](docs/screenshots/08-quad-qa-answered.png)
+
+FKBP12's trunk, two more folds mid-diffusion, and the spotlight cell showing nesso1's own
+score for "Does methotrexate block dihydrofolate reductase?" — legible from across the room,
+not just in the small rail panel on the right.
+
+**The cost is real and it is paid whether or not anyone asks, which is why it is opt-in.**
+Whenever 2+ chips are detected, one chip is permanently reserved for Q&A rather than folding
+— 25% less fold throughput on a 4-chip box, always, the same way this project states the RSS
+cost of four resident fold workers rather than leaving it implicit. **Off by default.** Two
+ways to opt in:
+
+- **At launch** — `--questions` (see [Usage](#usage)) reserves the chip from the start.
+- **Live, without editing the launch command** — `Ctrl`+`A` in the running booth restarts it
+  with `--questions` added (a few dark seconds, the same as any other startup-time config
+  change in this project). A no-op if Q&A is already on; there is no live "reserve a chip
+  now" path and there will not be one, since that means taking a chip away from a fold loop
+  the daemon may already be running — reserving or releasing a device while the daemon keeps
+  running — a materially bigger and riskier feature than a restart. Works for the normal
+  desktop-entry path (`/opt/tt-bio-demo/scripts/run-demo.sh`, which starts both the daemon
+  and the UI as one parent shell and one foreground child — see [INSTALL.md](INSTALL.md)'s
+  "Desktop entry" section): the key tears that shell's own daemon down and re-execs the
+  script with `--questions` added. It does **not** work correctly for the systemd-supervised
+  mode (`systemctl --user enable --now tt-bio-demo`) — the daemon there is a service systemd
+  owns directly, not one `run-demo.sh` started, so the key would restart `run-demo.sh`'s own
+  redundant daemon instance while the real supervised daemon keeps running, untouched, still
+  without Q&A. A real, tracked follow-up, not something this key currently detects or refuses
+  (see [`docs/followups.md`](docs/followups.md)) — restart the systemd service by hand
+  (`systemctl --user edit tt-bio-demo` to add `--questions`, then `systemctl --user restart
+  tt-bio-demo`) instead of pressing `Ctrl`+`A` in that mode.
+
+Without either, the question queue, the gallery's ask strip and the attract loop's question
+cue all stay hidden — byte-for-byte the pre-Q&A booth.
+
+nesso1's weights (the affinity head, its own CCD molecule dict, and the ESM-2 encoder its
+featurizer runs) are fetched by both install paths now — `setup-venvs.sh` by default,
+alongside protenix-v2, and the `.deb`'s postinst behind the same debconf question — and
+checked by `scripts/doctor.sh`, as a warning rather than a failure: a booth not opted in to
+Q&A, or with only one chip, never needs any of it. See
+[Installing a booth machine](#installing-a-booth-machine).
+
 ## What is on screen
 
 ```
@@ -507,6 +622,7 @@ which is also why the other three cells keep moving while you wait.
 | `Esc` | close the help card, or either rail panel |
 | any other key, or a tap anywhere | wake the booth and show what it folds |
 | `Ctrl` + `F` | leave/return to fullscreen — for the operator |
+| `Ctrl` + `A` | restart the booth with affinity Q&A enabled (no-op if already on) — for the operator |
 | `Ctrl` + `Q` | quit — for the operator |
 
 ## Not yet built
@@ -515,6 +631,19 @@ Pre-cached MSAs — every shipped target is `msa: empty` today, which is why thr
 proteins come back yellow and orange. And a **kernel-cache pre-warm**, which the weights
 package already advertises but does not do — see
 [Installing a booth machine](#installing-a-booth-machine).
+
+**nesso1's weights now have a provisioning step** (they did not for a while — see
+[`CLAUDE.md`](CLAUDE.md)'s "The weights were never a checked box", the same shape one layer
+up). `setup-venvs.sh`'s weight fetch and the `.deb`'s postinst both fetch nesso1's affinity
+head, its own CCD molecule dict, and the ESM-2 encoder its featurizer runs, alongside
+protenix-v2 and under the same opt-out (`--skip-weights`, or the packaged install's single
+debconf question); `doctor.sh` checks all three too, as a warning rather than a failure,
+since a booth not opted in to Q&A (the default), or with one chip, never needs any of it. The one
+command that fetches nesso1's own two artifacts by hand, if you skipped the default fetch:
+
+```bash
+.venvs/venv-runner/bin/tt-bio weights --download nesso1
+```
 
 Debian packaging itself has landed (four packages, via `scripts/build-deb.sh`), as did the 2×2 quad
 view and the visitor's pick in Phase 5 — none of the three are on this list any more: four
@@ -595,8 +724,9 @@ On a QB2 that has just had `tt-installer` run on it, this brings the application
 curated content, the systemd `--user` unit and the desktop entry. Two things it deliberately
 does **not** do: build the Python environments (that downloads gigabytes and cannot run while
 apt holds the dpkg lock — the postinst prints the one command left to run), and fetch the
-~3.7 GB of model weights, which is offered as a debconf question defaulting to *no* because
-the venue is offline and an unattended install should not start a 3.7 GB download on its own.
+~6.9 GB of model weights (3.7 GB to fold, 3.2 GB more for affinity Q&A), which is offered as
+a single debconf question defaulting to *no* because the venue is offline and an unattended
+install should not start a 6.9 GB download on its own.
 
 It also does not pre-warm the tt-metal kernel cache. The `tt-bio-demo-weights` package
 description claims it does; its postinst only downloads and verifies weights. Warm the cache

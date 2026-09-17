@@ -521,7 +521,7 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
         <div class="card-body">
           <h3>Human serum albumin</h3>
           <p>The blood's delivery van — the most abundant protein in plasma, and how most drugs travel.</p>
-          <p class="meta">585 residues &middot; 95.8 s</p>
+          <p class="meta">585 residues &middot; 95.5 s</p>
         </div>
       </article>
 
@@ -561,7 +561,7 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
         <div class="card-body">
           <h3>DNA double helix</h3>
           <p>The double helix, twelve rungs of it &mdash; one of the two things this booth folds that are not proteins.</p>
-          <p class="meta">12 base pairs &middot; 4.9 s</p>
+          <p class="meta">12 base pairs &middot; 4.8 s</p>
         </div>
       </article>
 
@@ -929,6 +929,7 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
           <tr><td>It does</td><td>Stream the model's real denoising trajectory, one step at a time, straight from the sampler on the chip</td></tr>
           <tr><td></td><td>Draw the finished structure as a <strong>cartoon</strong> &mdash; helices as ribbons, sheets as arrows &mdash; the representation used in every paper. The model's output carries no secondary-structure records, so which residues are which is worked out from the geometry</td></tr>
           <tr><td></td><td>Draw any bound ligand beside it, in element colors</td></tr>
+          <tr><td></td><td>Answer a real question about two molecules together &mdash; does this ligand bind this protein &mdash; with a second model, nesso1, run on a chip set aside for it. The answer is the model's own score plus its own binding pocket, highlighted on the ribbon, never a number alone</td></tr>
           <tr><td></td><td>Demonstrate its own instruments. Left alone, it opens the diagnostics tap and the Tensix panel, holds each long enough to read, and puts them back &mdash; nobody has to be told a keyboard shortcut</td></tr>
           <tr><td></td><td>Color every residue by the model's own confidence, including where that is unflattering</td></tr>
           <tr><td></td><td>Fold on four chips at once, one molecule per chip, and show all four if you press <kbd>Q</kbd></td></tr>
