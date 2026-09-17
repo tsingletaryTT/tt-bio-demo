@@ -13,37 +13,38 @@ After=graphical-session.target
 [Service]
 Type=simple
 
-# TT_BIO_CACHE, pinned to the SAME fixed path debian/tt-bio-demo-weights.postinst
-# exports before it fetches anything -- see docs/followups.md's "root's
-# postinst-time HOME vs desktop-user's systemd-service-time HOME" entry
-# (FIXED) for the full history. That postinst runs as ROOT during
-# `dpkg`/`apt install` ($HOME=/root); THIS unit runs the daemon as the
-# DESKTOP USER's own `systemd --user` service, a completely different $HOME.
-# scripts/weights-cache.sh (shell) and runner/env.py (python) both resolve
-# $TT_BIO_CACHE before any $HOME-relative fallback, so without this line the
-# postinst and the daemon would each derive a DIFFERENT ~/.boltz and the
-# package could report every weight fetched successfully while the booth
-# that is supposed to use them finds none. Pinning the identical literal
-# path here closes that for every weight, not only the flat protenix-v2.pt/
-# mols.tar checkpoints: `AffinityScorer.load()`'s own `import tt_bio` calls
-# `tt_bio.weights.configure_hf_cache()`, which reads THIS variable to
-# redirect the Hugging Face hub cache under `$TT_BIO_CACHE/hf` -- the
-# location nesso1/nesso1-ccd/the ESM-2 encoder actually resolve to, since
-# those are "hf-repo" artifacts whose `root=` argument tt-bio silently
-# ignores (see the postinst's own comment on this). `test_the_doctor_the_
-# postinst_and_the_unit_pin_the_same_weights_cache` in
-# tests/unit/test_packaging.py is what would catch this line and the
-# postinst's ever drifting apart.
-Environment=TT_BIO_CACHE=/opt/tt-bio-demo/weights
-
-# venv-runner's interpreter, ALWAYS. venv-ui has GTK and no torch; this venv
-# has torch/ttnn/tt-bio and no GTK. A bare `python3` here imports neither.
-ExecStart=/opt/tt-bio-demo/.venvs/venv-runner/bin/python3 -m runner.daemon \
-    --socket %t/tt-bio-demo/runner.sock \
-    --playlist /opt/tt-bio-demo/playlist \
-    --log-root %t/tt-bio-demo/logs \
-    --log-budget-gb 2.0 \
-    --structures-budget-gb 0.2
+# THE WEIGHTS CACHE PIN LIVES IN THE LAUNCHER SCRIPT NOW, NOT HERE.
+#
+# This used to be a static `Environment=TT_BIO_CACHE=/opt/tt-bio-demo/weights`
+# line. That pinned the postinst's fixed path correctly (see docs/
+# followups.md's "root's postinst-time HOME vs desktop-user's
+# systemd-service-time HOME" entry, FIXED, for why a fixed path is needed at
+# all), but a static `Environment=` line ALWAYS wins over anything the user
+# manager's own environment would otherwise supply -- there is no way to
+# spell "only if the operator hasn't already set this" in unit-file syntax --
+# and it outranks $BOLTZ_CACHE in tt-bio's own resolution order too. So an
+# operator who had set $BOLTZ_CACHE (e.g. to relocate the cache to a bigger
+# disk) before running `dpkg-reconfigure` got a postinst that correctly
+# honoured it and a daemon that ALWAYS loaded from the packaged default
+# instead, silently, on every start. See docs/followups.md's "the systemd
+# unit's Environment= is unconditional" entry (FIXED).
+#
+# `scripts/tt-bio-demo-daemon-launcher.sh` is what ExecStart= actually runs.
+# It sources scripts/weights-cache.sh and calls the SAME GUARDED
+# `tt_bio_demo_weights_cache_packaged` the postinst and scripts/doctor.sh
+# call -- which only pins $TT_BIO_CACHE when NEITHER it nor $BOLTZ_CACHE is
+# already set -- so an operator's override, however it reaches this
+# service's environment (a `~/.config/environment.d/*.conf` generator,
+# `systemctl --user set-environment`, or editing this unit directly with
+# `systemctl --user edit tt-bio-demo`), is honoured rather than overwritten.
+# `test_the_launcher_calls_the_same_guarded_resolver_the_postinst_does` in
+# tests/unit/test_packaging.py is what would catch this drifting from the
+# postinst's own pin again.
+#
+# venv-runner's interpreter, ALWAYS, inside the launcher -- not a bare
+# `python3` here, which would import neither venv-ui's GTK stack nor
+# venv-runner's torch/ttnn one.
+ExecStart=/opt/tt-bio-demo/scripts/tt-bio-demo-daemon-launcher.sh %t/tt-bio-demo/runner.sock %t/tt-bio-demo/logs
 WorkingDirectory=/opt/tt-bio-demo
 
 # --log-root IS NOT OPTIONAL, and this unit is the one place it cannot be
