@@ -649,3 +649,41 @@ def test_the_shipped_playlist_ranges_are_ordered_and_measured():
         assert t.expected_slow_s > t.expected_s, (
             f"{t.id}: slow end {t.expected_slow_s} is not slower than "
             f"{t.expected_s}")
+
+
+# ---------------------------------------------------------------------------
+# The screen's own caption (_CAPTION_TITLE/_CAPTION_BODY) -- found stale
+# while trimming its wording for legibility: it hardcoded "Four of these are
+# folding at once," true only on a box with no chip reserved for affinity
+# Q&A (`runner.workers.split_for_qa` reserves one whenever 2+ are detected,
+# so a 4-physical-chip booth with it enabled folds on 3). This screen is
+# built before `hello` ever names the real fold-chip count (see
+# `_CAPTION_BODY`'s own comment), so a hardcoded number here cannot even be
+# re-synced later the way the `?` card's copy is -- it must never claim one
+# at all.
+# ---------------------------------------------------------------------------
+
+def test_the_caption_never_claims_a_specific_chip_count():
+    """The actual regression: an earlier draft said "Four of these are
+    folding at once," true only on a box with no chip reserved for
+    affinity Q&A. Checked as "no digit-word directly counts a chip", not a
+    blanket ban on every number word -- "One protein folds per chip" names
+    no COUNT of chips and must stay allowed."""
+    import re
+
+    from ui.gallery import _CAPTION_BODY
+
+    match = re.search(r"\b(two|three|four|five)\s+(of\s+these|chips?)\b",
+                      _CAPTION_BODY, re.IGNORECASE)
+    assert match is None, (
+        f"{match and match.group()!r} names a specific chip count -- this "
+        "screen has no way to know the real fold-chip count when it is "
+        "built, and cannot re-sync later the way the help card does, so "
+        "it must never name one")
+
+
+def test_the_caption_still_says_a_tap_folds_it_next_and_does_not_interrupt():
+    from ui.gallery import _CAPTION_BODY
+    lowered = _CAPTION_BODY.lower()
+    assert "next" in lowered
+    assert "interrupt" in lowered or "finish" in lowered

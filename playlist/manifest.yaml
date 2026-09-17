@@ -286,11 +286,10 @@
     Twenty amino acids — one of the smallest proteins that folds itself,
     and it does it in microseconds.
   blurb: >-
-    At just 20 amino acids, Trp-cage is one of the smallest proteins known
-    to reliably fold into a stable shape on its own, snapping into place in
-    only a few microseconds -- fast enough that scientists use it as a
-    stripped-down test case for studying how any protein finds its shape at
-    all.
+    One of the smallest proteins known to fold into a stable shape on its
+    own, snapping into place in only a few microseconds -- fast enough that
+    scientists use it as a stripped-down test case for how any protein
+    finds its shape at all.
   # Measured on this booth's own hardware (docs/followups.md, 30-fold soak):
   # 5.7s cold (first fold after the model loads), 4.35-4.45s warm once the
   # model is resident on the card. The attract loop keeps a fold running
@@ -331,11 +330,10 @@
   tagline: >-
     The blood's delivery van — the most abundant protein in plasma, and how most drugs travel.
   blurb: >-
-    Albumin is the most abundant protein in blood plasma, made by the liver,
-    and it is the blood's general-purpose carrier -- it ferries fatty acids,
-    hormones and calcium, and a great many drugs ride it to where they act.
-    It is also what holds fluid inside the vessels rather than letting it
-    leak into tissue, and the "albumin" on a routine blood test.
+    The most abundant protein in blood plasma, made by the liver -- it
+    ferries fatty acids, hormones, calcium and many drugs to where they
+    act, and keeps fluid inside the vessels rather than leaking into
+    tissue. The "albumin" on a routine blood test.
   # THE LONG ONE, and why it is on the playlist at all.
   #
   # This entry was an explicit EXCLUSION in this file's header from Phase 3b
@@ -379,11 +377,10 @@
     The molecular lock that anti-rejection drugs are shaped to pick, so a
     transplanted organ survives.
   blurb: >-
-    FKBP12 is the molecular lock that a whole class of anti-rejection drugs
-    was built to pick: organ-transplant patients take a daily drug called
-    tacrolimus specifically because it clicks onto FKBP12 and, together,
-    the two jam shut a signal that would otherwise tell the immune system
-    to attack the new organ.
+    The molecular lock anti-rejection drugs are built to pick: transplant
+    patients take a daily drug called tacrolimus because it clicks onto
+    FKBP12, and together they jam shut the signal that would otherwise
+    tell the immune system to attack the new organ.
   expected_s: 9.7
   first_frame_s: 5.3
   # IT LEFT AND CAME BACK, and the number is lower than it ever was.
@@ -444,10 +441,10 @@
     Every dividing cell needs it to build new DNA — which is why a classic
     cancer drug jams it shut.
   blurb: >-
-    Every dividing cell relies on this enzyme, DHFR, to help build the raw
-    material for new DNA -- which is exactly why one of the oldest cancer
-    drugs, methotrexate, is shaped to jam it shut instead, starving
-    fast-dividing cancer cells of what they need to keep copying themselves.
+    Every dividing cell relies on DHFR to help build the raw material for
+    new DNA -- which is why methotrexate, one of the oldest cancer drugs,
+    is shaped to jam it shut, starving fast-dividing cancer cells of what
+    they need to keep copying themselves.
   # THE SLOW END, and why this entry carries a range. Two of this box's four
   # chips (1 and 3) drop to as low as 906 MHz about fifteen minutes into a
   # session and stay there -- they also run 3-4 C hotter at idle, so it is
@@ -497,12 +494,10 @@
   # Both are the kind of thing a biochemist at the booth catches in the
   # first sentence, which is exactly the audience this playlist is for.
   blurb: >-
-    Your pancreas builds trypsin switched off, then releases it into the
-    small intestine where it is armed -- and it spends the next few hours
-    cutting the protein in your meal into pieces small enough to absorb.
-    This is the cow's version, one of the most-studied protein shapes in
-    science and often the very first real structure a biochemistry student
-    ever examines up close.
+    Your pancreas builds trypsin switched off, then arms it in the small
+    intestine to cut up the protein in your meal. This is the cow's
+    version -- one of the most-studied protein shapes in science, often
+    the first structure a biochemistry student examines up close.
   # THE SLOW END, and why this entry carries a range. Two of this box's four
   # chips (1 and 3) drop to as low as 906 MHz about fifteen minutes into a
   # session and stay there -- they also run 3-4 C hotter at idle, so it is
@@ -549,16 +544,11 @@
     folds that are not proteins.
   blurb: >-
     Twelve rungs of the double helix. Both strands spell the same twelve
-    letters, CGCGAATTCGCG, because each one read backwards is the other --
-    which is exactly what lets them clip together -- and the six in the
-    middle, GAATTC, are the mark that EcoRI, one of the first gene-cutting
-    enzymes ever put to work, searches a genome for. Solved in 1980, this
-    twelve-letter piece was the first atom-by-atom look at a full turn of
-    DNA and is still the picture the textbooks are drawn from. Watch the
-    color: the four proteins here come back mostly yellow and orange,
-    because the model is asked to fold them with no evolutionary data to
-    lean on. DNA needs none -- the two strands pair by chemistry -- and it
-    comes back blue.
+    letters, CGCGAATTCGCG -- each read backwards is the other, which is
+    what lets them clip together. Solved in 1980, this piece was the first
+    atom-by-atom look at a full turn of DNA. Watch the color: the proteins
+    here come back mostly yellow and orange, with no evolutionary data to
+    lean on -- DNA pairs by chemistry alone, and comes back blue.
   # The measured facts behind that last sentence, so nobody has to take the
   # copy on trust. Six warm folds on card 0, 2026-08-13, protenix-v2:
   # mean pLDDT 95.7 every time (per-atom B-factors 84.2-97.3, i.e. the
@@ -603,16 +593,13 @@
     The go-between: it reads three letters of the genetic message and
     carries the matching amino acid.
   blurb: >-
-    DNA holds the message and proteins do the work -- this is the molecule
+    DNA holds the message, proteins do the work -- this is the molecule
     that gets from one to the other, and the booth folds all three. Three
-    bases at one end read one word of the genetic code (these three are
-    GAA, which matches the code word for phenylalanine) and the far end of
-    the molecule, the whole length of it away, is where that amino acid
-    rides. Yeast tRNA-Phe was the first RNA whose three-dimensional shape
-    was ever worked out, in 1974, and the surprise then is the thing to
-    watch for now: the flat cloverleaf of base pairs biochemists had drawn
-    on paper folds back on itself in space, putting its two working ends at
-    opposite corners of a compact hinged shape.
+    bases at one end read one word of the genetic code; the other end, the
+    whole length away, is where the matching amino acid rides. Yeast
+    tRNA-Phe was the first RNA whose shape was ever solved, in 1974 -- and
+    the flat cloverleaf biochemists had drawn on paper turns out to fold
+    back on itself into a compact hinged shape.
   # WHAT THE MODEL ACTUALLY PRODUCED, measured on the fold this entry ships
   # a thumbnail of, because the blurb above makes a claim about the SHAPE
   # and this playlist's rule is that a blurb is accurate to the molecule on

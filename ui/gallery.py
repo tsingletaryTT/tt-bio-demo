@@ -474,11 +474,22 @@ def _ensure_css_installed():
 # Visitor-facing copy for the screen as a whole.
 #
 # True as written, and checked against what the code actually does -- see
-# this module's docstring. Three claims, each one the booth can back up:
-# four chips fold at once (Phase 5, measured); a tap puts that protein next
-# (Task 17, `ui/app.py`'s `_on_pick` -> `EventClient.send_pick`); and the
-# folds already running are left to finish, which is why the wait exists and
-# why the other cells keep moving.
+# this module's docstring. Two claims, each one the booth can back up: a tap
+# puts that protein next (Task 17, `ui/app.py`'s `_on_pick` -> `EventClient.
+# send_pick`); and the folds already running are left to finish, which is
+# why the wait exists and why the other cells keep moving.
+#
+# NO CHIP COUNT here, deliberately -- an earlier draft said "Four of these
+# are folding at once," true only on a box with no chip reserved for
+# affinity Q&A (`runner.workers.split_for_qa` takes one whenever 2+ are
+# detected, so a 4-physical-chip booth with it enabled folds on 3). This
+# screen has no access to the real fold-chip count at the point it is
+# built anyway (`ui/app.py`'s `_build_gallery` runs before `hello` ever
+# names one), which is exactly how the stale "four" would have kept
+# reading true on the ONE box it was actually false on. Saying "each chip"
+# instead of a number is honest at any chip count without needing the
+# `_sync_help_copy`-style re-sync machinery the `?` card needs for the
+# same fact.
 #
 # What is deliberately absent: "instantly", "now", "straight away". The pick
 # starts on the next chip to come free, usually within seconds, and the one
@@ -486,10 +497,9 @@ def _ensure_css_installed():
 # ---------------------------------------------------------------------------
 _CAPTION_TITLE = "What this booth folds"
 _CAPTION_BODY = (
-    "Four of these are folding at once, one on each Tenstorrent chip a few "
-    "feet away. Tap any of them to put it next: it starts on the chip that "
-    "finishes first, because the folds already running are left to finish "
-    "rather than interrupted."
+    "One protein folds per Tenstorrent chip, all at once. Tap any of them "
+    "to put it next -- it starts on the chip that finishes first, and "
+    "nothing already running is interrupted."
 )
 
 # The per-card line, in the same place the old "TAP TO FOLD" sat.
