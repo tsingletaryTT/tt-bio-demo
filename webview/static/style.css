@@ -15,6 +15,14 @@
 
 * { box-sizing: border-box; }
 
+/* The whole booth fits one viewport, no scrolling to see the rest of the
+   quad -- `.stage` is the one flexible row (flex: 1 1 auto below); every
+   other row (toolbar, notice, the two panels) keeps its own natural height,
+   so the stage gets exactly what's left over, never more. A viewport too
+   short for that (a small phone) still gets vertical scroll rather than
+   clipped content -- see `overflow-y: auto` below. */
+html, body { height: 100%; }
+
 body {
   margin: 0;
   padding: 1.25rem clamp(12px, 3vw, 32px) 2.5rem;
@@ -22,9 +30,14 @@ body {
   color: var(--fg);
   font-family: "Berkeley Mono", "IBM Plex Mono", ui-monospace, monospace;
   font-size: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  overflow-y: auto;
 }
 
 .toolbar {
+  flex: 0 0 auto;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -55,6 +68,7 @@ button {
 button:hover { color: var(--fg); border-color: var(--accent-bright); }
 
 .notice {
+  flex: 0 0 auto;
   margin: 14px 0 0;
   padding: 8px 12px;
   background: var(--bg-alt);
@@ -63,13 +77,30 @@ button:hover { color: var(--fg); border-color: var(--accent-bright); }
   font-size: 12.5px;
 }
 
+/* `flex: 1 1 auto` + `min-height: 0` is what makes this the one row that
+   absorbs whatever vertical space the toolbar/notice/panels don't need --
+   without `min-height: 0` a flex item's default `min-height: auto` refuses
+   to shrink below its content's "natural" size, which for a grid full of
+   aspect-ratio'd cells is exactly the unbounded height this fixes. No fixed
+   `aspect-ratio` on `.cell` either, for the same reason: it would demand a
+   height derived purely from column width, ignoring how much vertical room
+   is actually left -- see this project's own "measure before declaring
+   contained" habit. The canvas still fills its cell exactly (`width/height:
+   100%` below), just not always at a strict 4:3 -- a minor stretch, not a
+   scrollbar. */
 .stage {
+  flex: 1 1 auto;
+  min-height: 0;
   margin-top: 16px;
   display: grid;
   gap: 10px;
   grid-template-columns: repeat(2, 1fr);
+  grid-template-rows: repeat(2, 1fr);
 }
-.stage[data-mode="solo"] { grid-template-columns: 1fr; }
+.stage[data-mode="solo"] {
+  grid-template-columns: 1fr;
+  grid-template-rows: 1fr;
+}
 .stage[data-mode="solo"] .cell { display: none; }
 .stage[data-mode="solo"] .cell.focused { display: block; }
 
@@ -79,7 +110,7 @@ button:hover { color: var(--fg); border-color: var(--accent-bright); }
   border-radius: 6px;
   overflow: hidden;
   background: var(--bg-cell);
-  aspect-ratio: 4 / 3;
+  min-height: 0;
 }
 .cell.focused { border-color: var(--hairline-strong); }
 .cell canvas { display: block; width: 100%; height: 100%; }
@@ -97,6 +128,7 @@ button:hover { color: var(--fg); border-color: var(--accent-bright); }
 }
 
 .panel {
+  flex: 0 0 auto;
   margin-top: 16px;
   padding: 12px 14px;
   background: var(--bg-alt);
@@ -138,5 +170,16 @@ button:hover { color: var(--fg); border-color: var(--accent-bright); }
 .seen-targets button { font-size: 11px; padding: 4px 9px; }
 
 @media (max-width: 600px) {
-  .stage { grid-template-columns: 1fr; }
+  /* Too narrow to fit a 2x2 grid in the remaining flex height at all --
+     stack instead and let the page scroll (see `overflow-y: auto` on
+     body), rather than squashing four cells into slivers. */
+  .stage {
+    grid-template-columns: 1fr;
+    grid-template-rows: none;
+    grid-auto-rows: minmax(180px, auto);
+    flex: 0 1 auto;
+    overflow-y: auto;
+  }
+  .stage[data-mode="solo"] { grid-template-rows: none; }
+  .cell { aspect-ratio: 4 / 3; }
 }

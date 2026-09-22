@@ -26,6 +26,10 @@ const state = {
   qaCapable: false,
   focusedCard: null,
   seenTargets: [],      // target_ids observed in job_start, most recent first
+  viewModeUserSet: false, // true once the visitor has pressed the toggle --
+                          // an explicit choice always outranks the auto-pick
+                          // below, same rule the native GTK booth's own
+                          // tri-state `quad` follows (ui/app.py).
 };
 
 const POINT_COLOR = "#74c5df";
@@ -203,6 +207,11 @@ function setFocus(card) {
   state.focusedCard = card;
 }
 
+function setStageMode(mode) {
+  stageEl.dataset.mode = mode;
+  viewToggle.textContent = mode === "solo" ? "Quad view" : "Solo view";
+}
+
 function rebuildCellsIfNeeded(cards) {
   const changed = cards.length !== state.cards.length
     || cards.some((c, i) => c !== state.cards[i]);
@@ -217,6 +226,14 @@ function rebuildCellsIfNeeded(cards) {
   }
   if (state.focusedCard === null || !cards.includes(state.focusedCard)) {
     state.focusedCard = cards[0] ?? null;
+  }
+  // Quad by default once more than one chip is actually available, mirroring
+  // the native booth's own tri-state default (ui/app.py, 2026-08-24: "I like
+  // 4 chip by default when available"). Never overrides a visitor's own
+  // press of the toggle, and never downgrades back to solo just because the
+  // card list happened to arrive gradually and briefly had one entry.
+  if (!state.viewModeUserSet && cards.length > 1) {
+    setStageMode("quad");
   }
 }
 
@@ -408,7 +425,7 @@ pickForm.addEventListener("submit", (ev) => {
 });
 
 viewToggle.addEventListener("click", () => {
+  state.viewModeUserSet = true;
   const solo = stageEl.dataset.mode === "solo";
-  stageEl.dataset.mode = solo ? "quad" : "solo";
-  viewToggle.textContent = solo ? "Solo view" : "Quad view";
+  setStageMode(solo ? "quad" : "solo");
 });
