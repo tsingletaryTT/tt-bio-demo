@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tt-bio-demo — remote viewer</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="toolbar">
+    <div class="status">
+      <span id="live-dot" class="dot dot-off"></span>
+      <span id="live-text">connecting…</span>
+    </div>
+    <div class="title-block">
+      <h1 id="booth-title">tt-bio-demo</h1>
+      <div id="booth-sub" class="sub">waiting for a daemon…</div>
+    </div>
+    <button id="view-toggle">Quad view</button>
+  </header>
+
+  <div id="notice" class="notice" hidden></div>
+
+  <main id="stage" class="stage" data-mode="solo"></main>
+
+  <section id="qa-panel" class="panel qa-panel" hidden>
+    <h2>Affinity question</h2>
+    <div id="qa-question" class="qa-question">—</div>
+    <div id="qa-spinner" class="qa-spinner" hidden></div>
+    <div id="qa-score" class="qa-score" hidden></div>
+  </section>
+
+  <section class="panel pick-panel">
+    <h2>Ask the booth to fold</h2>
+    <form id="pick-form">
+      <input id="pick-input" type="text" placeholder="target id, e.g. trpcage" maxlength="64" autocomplete="off">
+      <button type="submit">Pick</button>
+    </form>
+    <div id="pick-error" class="pick-error" hidden></div>
+    <div id="seen-targets" class="seen-targets"></div>
+  </section>
+
+  <script src="/app.js"></script>
+</body>
+</html>

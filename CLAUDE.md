@@ -1685,6 +1685,64 @@ every prior wedge on this box has been: `gozer release` (which resets),
 `gozer status` to confirm all four chips FREE, before touching hardware
 again.
 
+### A thin web viewer, built on the branch that had been waiting for it (2026-09-21)
+
+Grew out of a chat that started as an infrastructure question in an unrelated session
+("would someone using the QB2s via slurm or exobox be able to run a GTK app like
+tt-bio-demo remotely?") — answer: no, tt-bio-demo's INSTALL.md targets a logged-in Wayland
+session and Exabox's Slurm fleet is plain headless SSH with no display forwarding wired up.
+That led to scoping three follow-ups (single-chip, Galaxy-scale, a web alternative), a
+`Foldwatch` visual mock of what a browser viewer could look like, a deep dive into how the
+quad's own affinity-Q&A spotlight cell actually works, and finally: "without access to
+hardware, go ahead and build what this lightweight approach suggests" — on
+`features/webui`, a branch already sitting there waiting for exactly this.
+
+**Built `webview/`, a bridge process, not a daemon change.** `webview/bridge.py` connects
+to the daemon's socket the same way `ui/client.py` does — same `protocol/events.py`, same
+`encode`/`decode` — and re-publishes every event to any number of browser tabs over
+Server-Sent Events, chosen over a WebSocket specifically because the traffic is almost
+entirely one direction and SSE needs nothing beyond the standard library (no new
+dependency, no hand-rolled handshake/framing — the same "reuse, don't reinvent" instinct
+`runner/workers.py` already states out loud). A tab's action (currently: `pick`) arrives as
+a small JSON POST and is re-encoded with the daemon's own `encode_client_message` before
+being written to the one real socket the bridge owns. `webview/static/` is a from-scratch
+browser client: real point-cloud rendering of real `frame` coordinates (base64-decoded
+little-endian float32, the literal inverse of `pack_coords`), a quad/solo toggle, and an
+affinity-Q&A panel wired to `answer_start`/`answer_done`/`answer_error`.
+
+**Verified with no hardware, honestly.** No `.venvs` exist on this machine and building the
+real `venv-runner` means a multi-GB `pip install tt-bio` for a component that needs none of
+it, so `webview.bridge` was written and tested to need nothing beyond stdlib + numpy — the
+same discipline `protocol/events.py` already holds itself to — and verified end to end
+against `runner.mock.MockRunner` replaying real fixtures (`short_fold.jsonl`,
+`with_question.jsonl`) over a real Unix socket: no daemon, no chip, no fabricated data. Ran
+the whole thing live as a human operator would (mock runner in one process, bridge in
+another, `curl`'d the static files, the SSE stream, and a real `POST /pick`) before calling
+it done, not only the unit tests.
+
+**Two real bugs, caught building it, not left for later:** `send_client_message` originally
+checked "is there a live socket" before validating the message, so an empty `target_id`
+came back as a 503 ("daemon unavailable") instead of a 400 — fixed by round-tripping the
+built message through the daemon's own `decode_client_message` as the validation step,
+rather than writing a second copy of "non-empty, under `MAX_TARGET_ID_LEN`" that could
+drift from the real one. And `_serve_events` sent its 200 response before calling
+`daemon_link.subscribe()`, leaving a window where a client could believe it was receiving
+live events and miss the first ones during a fast replay — reordered so subscription is
+guaranteed before the client ever sees success. The subscriber-fan-out test for "a slow tab
+must not block every other tab" was confirmed against a real regression, not just written
+and trusted: changed `put_nowait` to a blocking `put`, watched the test hang under a 5s
+timeout instead of failing cleanly, reverted, watched it pass in 0.05s.
+
+**Scope cuts, written down rather than silently shipped** (`webview/README.md` has the
+full list): no ribbon/cartoon reveal on `job_done` (points hold dimmed instead — the real
+fix is either server-side precompute of `ui/cartoon.py`'s geometry, cached per job rather
+than per viewer, or running that same module unmodified in-browser via Pyodide so there is
+never a second copy to drift); the gallery is "targets seen live" rather than
+`playlist/manifest.yaml`'s real playlist, to avoid taking on a YAML dependency; a question
+shows `target_id` and the model's own score rather than the human-written question text,
+which never travels on the wire by design; the easter egg is decoded and silently dropped,
+matching the native booth's own choice to keep it undocumented.
+
 ## Conventions
 
 - **Keep the README's screenshots current.** The README claims every image on it is the

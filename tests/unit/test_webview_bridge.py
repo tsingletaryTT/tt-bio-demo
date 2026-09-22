@@ -1,0 +1,512 @@
+"""webview.bridge: relaying real protocol events to N browser tabs, and
+turning a tab's POST back into a real client->server message.
+
+Same instrument as tests/unit/test_mock_runner.py -- runner.mock.MockRunner
+replaying a real fixture over a real Unix socket -- so "the bridge forwards
+what the daemon actually said" is proven against recorded protocol traffic,
+not a hand-typed stand-in for it. Neither MockRunner nor webview.bridge
+imports torch or tt-bio, so this runs under venv-ui, exactly like
+test_mock_runner.py.
+"""
+
+import http.client
+import json
+import pathlib
+import queue
+import socket
+import tempfile
+import threading
+import time
+
+import pytest
+
+from protocol.events import PROTOCOL_VERSION, ProtocolError, encode, pick_message
+from runner.mock import MockRunner, load_stream
+from webview.bridge import (
+    MAX_POST_BODY_BYTES,
+    RECONNECT_DELAY_S,
+    DaemonLink,
+    DaemonUnavailable,
+    build_server,
+)
+
+FIXTURE = pathlib.Path("tests/fixtures/streams/short_fold.jsonl")
+QUESTION_FIXTURE = pathlib.Path("tests/fixtures/streams/with_question.jsonl")
+
+
+# ── helpers ──────────────────────────────────────────────────────────────
+
+
+def _temp_socket_path():
+    return tempfile.mktemp(prefix="tt-bio-demo-webview-test-", suffix=".sock")
+
+
+def _drain(q, count, timeout=5.0):
+    """Pull exactly `count` events off a subscriber queue, or fail loudly
+    rather than hang the suite if the bridge silently dropped one."""
+    events = []
+    deadline = time.monotonic() + timeout
+    while len(events) < count:
+        remaining = deadline - time.monotonic()
+        assert remaining > 0, (
+            f"only got {len(events)}/{count} events before the timeout")
+        events.append(q.get(timeout=remaining))
+    return events
+
+
+class _FakeSocket:
+    """A `connect()` stand-in for DaemonLink that never touches a real
+    socket -- for the two tests that need to control exactly what the
+    "daemon" sends without a MockRunner's own timing involved."""
+
+    def __init__(self, incoming=()):
+        self._incoming = list(incoming)
+        self.sent = []
+        self.closed = False
+
+    def settimeout(self, _seconds):
+        pass
+
+    def recv(self, _nbytes):
+        if self._incoming:
+            return self._incoming.pop(0)
+        # Mirrors a real idle socket under DaemonLink's 0.5s recv timeout:
+        # nothing to read yet, connection still open.
+        raise socket.timeout()
+
+    def sendall(self, data):
+        self.sent.append(data)
+
+    def shutdown(self, _how):
+        pass
+
+    def close(self):
+        self.closed = True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        self.close()
+
+
+# ── DaemonLink against a real MockRunner ────────────────────────────────
+
+
+def test_events_are_relayed_in_order_and_unmodified():
+    sock_path = _temp_socket_path()
+    runner = MockRunner(sock_path, load_stream(FIXTURE), speed=100.0)
+    runner.start()
+    link = DaemonLink(sock_path)
+    link.start()
+    try:
+        q = link.subscribe()
+        expected = [{k: v for k, v in e.items() if k != "_delay_ms"}
+                   for e in load_stream(FIXTURE)]
+        got = _drain(q, len(expected))
+        assert got == expected
+    finally:
+        link.stop()
+        runner.stop()
+
+
+def test_two_subscribers_each_see_the_whole_stream():
+    sock_path = _temp_socket_path()
+    runner = MockRunner(sock_path, load_stream(FIXTURE), speed=100.0)
+    runner.start()
+    link = DaemonLink(sock_path)
+    link.start()
+    try:
+        q1 = link.subscribe()
+        q2 = link.subscribe()
+        expected_count = len(load_stream(FIXTURE))
+        got1 = _drain(q1, expected_count)
+        got2 = _drain(q2, expected_count)
+        assert got1 == got2
+        assert got1[0]["type"] == "hello"
+        assert got1[-1]["type"] == "job_done"
+    finally:
+        link.stop()
+        runner.stop()
+
+
+def test_a_late_subscriber_is_caught_up_on_hello():
+    """A tab opened after the booth already said hello must not be left
+    guessing what it is looking at until the daemon's next unprompted
+    event -- see DaemonLink.last_hello's own docstring."""
+    sock_path = _temp_socket_path()
+    runner = MockRunner(sock_path, load_stream(FIXTURE), speed=100.0)
+    runner.start()
+    link = DaemonLink(sock_path)
+    link.start()
+    try:
+        first = link.subscribe()
+        _drain(first, 1)  # make sure hello has actually been broadcast
+        deadline = time.monotonic() + 2.0
+        while link.last_hello is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        late = link.subscribe()
+        assert late.get(timeout=1.0) == link.last_hello
+        assert link.last_hello["type"] == "hello"
+    finally:
+        link.stop()
+        runner.stop()
+
+
+def test_answer_events_from_the_question_fixture_reach_a_subscriber():
+    """The affinity Q&A events (answer_start/answer_done) are ordinary
+    events as far as this bridge is concerned -- no special-casing, and
+    this is what proves that rather than assuming it."""
+    sock_path = _temp_socket_path()
+    events = load_stream(QUESTION_FIXTURE)
+    runner = MockRunner(sock_path, events, speed=100.0)
+    runner.start()
+    link = DaemonLink(sock_path)
+    link.start()
+    try:
+        q = link.subscribe()
+        got = _drain(q, len(events))
+        kinds = [e["type"] for e in got]
+        assert "answer_start" in kinds
+        assert "answer_done" in kinds
+        done = next(e for e in got if e["type"] == "answer_done")
+        assert "score" in done and "affinity_pred_value" in done
+    finally:
+        link.stop()
+        runner.stop()
+
+
+def test_reconnect_against_mock_runner_replays_the_whole_fixture():
+    """Documents a real discrepancy rather than papering over it.
+
+    MockRunner's own docstring promises "each connecting client gets the
+    full stream from the beginning". The real EventServer (runner/server.py)
+    does not: `_accept_loop` sends `hello`/`not_ready` to a fresh connection
+    and everything after that is only ever `broadcast()`, never replayed.
+    So a DaemonLink reconnect exercised against MockRunner shows a full
+    historical re-replay landing on an already-subscribed browser tab --
+    behavior a real daemon reconnect would never produce (it would send a
+    fresh `hello` and nothing else). There is nothing to fix in DaemonLink
+    for this: it is not wrong to relay whatever its one connection actually
+    sends. This test exists so the mock's own replay-on-connect semantics
+    are pinned somewhere explicit instead of silently assumed to match
+    production.
+    """
+    sock_path = _temp_socket_path()
+    events = load_stream(FIXTURE)
+    runner = MockRunner(sock_path, events, speed=100.0)
+    runner.start()
+    link = DaemonLink(sock_path)
+    link.start()
+    try:
+        q = link.subscribe()
+        first_pass = _drain(q, len(events))
+        assert first_pass[0]["type"] == "hello"
+        assert first_pass[-1]["type"] == "job_done"
+        # MockRunner closes each connection after one full replay (its own
+        # `_serve`'s `with conn:` exits at the end of `self.events`);
+        # DaemonLink notices the close and reconnects after
+        # RECONNECT_DELAY_S, and MockRunner replays the SAME fixture again
+        # from scratch for that new connection.
+        second_pass = _drain(q, len(events), timeout=RECONNECT_DELAY_S + 5.0)
+        assert second_pass == first_pass
+    finally:
+        link.stop()
+        runner.stop()
+
+
+# ── protocol version mismatch ─────────────────────────────────────────────
+
+
+def _hello(version):
+    return {"type": "hello", "version": version, "cards": [0],
+            "models": ["protenix-v2"], "preflight": "ok", "qa_capable": False}
+
+
+def test_an_incompatible_hello_is_flagged_and_still_delivered():
+    """The bridge relays an incompatible hello for display (so a viewer can
+    show what happened) but marks it -- see webview/static/app.js's
+    `bridge_incompatible` handling, which is what that flag is for."""
+    fake = _FakeSocket(incoming=[encode(_hello(PROTOCOL_VERSION + 1))])
+    link = DaemonLink("/does/not/matter", connect=lambda: fake)
+    link.start()
+    try:
+        q = link.subscribe()
+        got = q.get(timeout=2.0)
+        assert got["bridge_incompatible"] is True
+        assert got["version"] == PROTOCOL_VERSION + 1
+        deadline = time.monotonic() + 2.0
+        while not link.incompatible and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert link.incompatible
+    finally:
+        link.stop()
+
+
+def test_an_incompatible_daemon_is_never_sent_to_again():
+    """send_client_message must refuse once incompatible=True -- a 204 back
+    to a browser must never claim delivery to a daemon that may not even
+    parse the message the same way this build does."""
+    fake = _FakeSocket(incoming=[encode(_hello(PROTOCOL_VERSION + 1))])
+    link = DaemonLink("/does/not/matter", connect=lambda: fake)
+    link.start()
+    try:
+        deadline = time.monotonic() + 2.0
+        while not link.incompatible and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert link.incompatible
+        with pytest.raises(DaemonUnavailable):
+            link.send_client_message(pick_message("trpcage"))
+        assert fake.sent == []
+    finally:
+        link.stop()
+
+
+def test_a_compatible_hello_is_not_flagged():
+    fake = _FakeSocket(incoming=[encode(_hello(PROTOCOL_VERSION))])
+    link = DaemonLink("/does/not/matter", connect=lambda: fake)
+    link.start()
+    try:
+        q = link.subscribe()
+        got = q.get(timeout=2.0)
+        assert "bridge_incompatible" not in got
+        assert not link.incompatible
+    finally:
+        link.stop()
+
+
+# ── DaemonLink against a fake transport (fast, no real socket timing) ────
+
+
+def test_send_client_message_with_no_connection_raises():
+    link = DaemonLink("/does/not/matter")
+    with pytest.raises(DaemonUnavailable):
+        link.send_client_message(pick_message("trpcage"))
+
+
+def test_send_client_message_writes_the_exact_encoded_bytes():
+    fake = _FakeSocket()
+    link = DaemonLink("/does/not/matter", connect=lambda: fake)
+    link.start()
+    try:
+        deadline = time.monotonic() + 2.0
+        while not link.connected and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert link.connected
+        link.send_client_message(pick_message("trpcage"))
+        assert fake.sent == [encode_client_message_of("trpcage")]
+    finally:
+        link.stop()
+
+
+def encode_client_message_of(target_id):
+    from protocol.events import encode_client_message
+    return encode_client_message(pick_message(target_id))
+
+
+def test_a_full_subscriber_queue_is_dropped_not_blocked_on():
+    """A tab that stops reading must not stall the reader thread for every
+    OTHER tab -- see _broadcast's own comment. Reaches into `_subscribers`
+    directly with a maxsize=1 queue so the full condition is guaranteed
+    rather than raced for."""
+    link = DaemonLink("/does/not/matter")
+    tiny = queue.Queue(maxsize=1)
+    link._subscribers.add(tiny)
+    hello = {"type": "hello", "version": 4, "cards": [0], "models": [],
+             "preflight": "ok", "qa_capable": False}
+    not_ready = {"type": "not_ready", "missing": ["x"]}
+    link._broadcast(hello)
+    link._broadcast(not_ready)  # must not block just because `tiny` is full
+    assert tiny.get_nowait() == hello
+    assert tiny.empty()
+
+
+def test_a_malformed_line_from_the_daemon_is_dropped_not_fatal():
+    hello = {"type": "hello", "version": 4, "cards": [0],
+             "models": ["protenix-v2"], "preflight": "ok",
+             "qa_capable": False}
+    fake = _FakeSocket(incoming=[b"not json at all\n", encode(hello)])
+    link = DaemonLink("/does/not/matter", connect=lambda: fake)
+    link.start()
+    try:
+        q = link.subscribe()
+        got = q.get(timeout=2.0)
+        assert got == hello
+        # The malformed line must not have produced a second (garbage)
+        # broadcast ahead of the real one, and must not have killed the
+        # reader thread before it reached the real one either.
+        assert q.empty()
+    finally:
+        link.stop()
+
+
+# ── the HTTP layer ───────────────────────────────────────────────────────
+
+
+class _Server:
+    """A running bridge HTTP server on an ephemeral port, torn down at the
+    end of the `with` block."""
+
+    def __init__(self, daemon_link):
+        self.server = build_server(daemon_link, "127.0.0.1", 0)
+        self.port = self.server.server_address[1]
+        self.thread = threading.Thread(target=self.server.serve_forever,
+                                       daemon=True)
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc_info):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2.0)
+
+    def connection(self):
+        return http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+
+
+def test_post_pick_forwards_to_the_daemon():
+    fake = _FakeSocket()
+    link = DaemonLink("/does/not/matter", connect=lambda: fake)
+    link.start()
+    try:
+        deadline = time.monotonic() + 2.0
+        while not link.connected and time.monotonic() < deadline:
+            time.sleep(0.01)
+        with _Server(link) as server:
+            conn = server.connection()
+            body = json.dumps({"target_id": "trpcage"}).encode()
+            conn.request("POST", "/pick", body=body,
+                        headers={"Content-Type": "application/json"})
+            resp = conn.getresponse()
+            resp.read()
+            assert resp.status == 204
+        assert fake.sent == [encode_client_message_of("trpcage")]
+    finally:
+        link.stop()
+
+
+def test_post_pick_with_missing_target_id_is_a_400():
+    fake = _FakeSocket()
+    link = DaemonLink("/does/not/matter", connect=lambda: fake)
+    with _Server(link) as server:
+        conn = server.connection()
+        conn.request("POST", "/pick", body=b"{}",
+                    headers={"Content-Type": "application/json"})
+        resp = conn.getresponse()
+        resp.read()
+        assert resp.status == 400
+    assert fake.sent == []
+
+
+def test_post_pick_with_no_daemon_connection_is_a_503():
+    link = DaemonLink("/does/not/exist")  # never started, never connects
+    with _Server(link) as server:
+        conn = server.connection()
+        body = json.dumps({"target_id": "trpcage"}).encode()
+        conn.request("POST", "/pick", body=body,
+                    headers={"Content-Type": "application/json"})
+        resp = conn.getresponse()
+        resp.read()
+        assert resp.status == 503
+
+
+def test_post_with_a_malformed_content_length_is_a_400_not_a_crash():
+    link = DaemonLink("/does/not/matter")
+    with _Server(link) as server:
+        conn = server.connection()
+        # http.client validates headers it builds itself, so the malformed
+        # value is written directly to the wire rather than through
+        # putheader() -- this is exactly the kind of input a real client
+        # (or a fuzzer, on the surface the README documents as optionally
+        # bound to 0.0.0.0) could send.
+        conn.putrequest("POST", "/pick")
+        conn.putheader("Content-Length", "not-a-number")
+        conn.endheaders()
+        resp = conn.getresponse()
+        resp.read()
+        assert resp.status == 400
+
+
+def test_post_with_an_oversized_body_is_refused_before_reading_it_all():
+    link = DaemonLink("/does/not/matter")
+    with _Server(link) as server:
+        conn = server.connection()
+        oversized = b'{"target_id": "' + b"x" * MAX_POST_BODY_BYTES + b'"}'
+        assert len(oversized) > MAX_POST_BODY_BYTES
+        conn.request("POST", "/pick", body=oversized,
+                    headers={"Content-Type": "application/json"})
+        resp = conn.getresponse()
+        resp.read()
+        assert resp.status == 413
+
+
+def test_post_to_an_unknown_action_is_a_404():
+    link = DaemonLink("/does/not/matter")
+    with _Server(link) as server:
+        conn = server.connection()
+        conn.request("POST", "/quit", body=b"{}")
+        resp = conn.getresponse()
+        resp.read()
+        assert resp.status == 404
+
+
+def test_static_files_are_served_and_path_traversal_is_refused():
+    link = DaemonLink("/does/not/matter")
+    with _Server(link) as server:
+        conn = server.connection()
+        conn.request("GET", "/index.html")
+        resp = conn.getresponse()
+        assert resp.status == 200
+        assert b"<title>" in resp.read()
+
+        conn2 = server.connection()
+        conn2.request("GET", "/../bridge.py")
+        resp2 = conn2.getresponse()
+        resp2.read()
+        assert resp2.status in (403, 404)
+
+
+def test_events_endpoint_streams_real_events_from_the_mock_runner():
+    """A real MockRunner replay, decoded once by DaemonLink and delivered
+    over a real HTTP connection -- not a fake standing in for either half.
+
+    `link.start()` is deliberately deferred until AFTER the raw socket has
+    the SSE response's headers in hand: `_serve_events` subscribes before
+    it sends those headers (see the comment there), so seeing the headers
+    proves the subscription already exists, and only then is there no race
+    against how fast MockRunner replays its fixture.
+    """
+    sock_path = _temp_socket_path()
+    runner = MockRunner(sock_path, load_stream(FIXTURE), speed=20.0)
+    runner.start()
+    link = DaemonLink(sock_path)
+    try:
+        with _Server(link) as server:
+            raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            raw.settimeout(5.0)
+            raw.connect(("127.0.0.1", server.port))
+            raw.sendall(b"GET /events HTTP/1.1\r\nHost: x\r\n\r\n")
+            buf = b""
+            while b"\r\n\r\n" not in buf:
+                buf += raw.recv(65536)
+            _headers, buf = buf.split(b"\r\n\r\n", 1)
+
+            link.start()  # only now can any event legally reach this socket
+
+            seen_types = []
+            deadline = time.monotonic() + 5.0
+            while len(seen_types) < 2 and time.monotonic() < deadline:
+                if b"\n\n" not in buf:
+                    buf += raw.recv(65536)
+                    continue
+                frame, buf = buf.split(b"\n\n", 1)
+                if not frame.startswith(b"data: "):
+                    continue  # a ": keep-alive" comment line
+                seen_types.append(json.loads(frame[len(b"data: "):])["type"])
+            raw.close()
+            assert seen_types[:2] == ["hello", "job_start"]
+    finally:
+        link.stop()
+        runner.stop()
