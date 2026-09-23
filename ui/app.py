@@ -178,8 +178,9 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
+gi.require_version("Pango", "1.0")
 
-from gi.repository import Gdk, GLib, Gtk
+from gi.repository import Gdk, GLib, Gtk, Pango
 
 from protocol.events import STAGE_BANDS, STAGE_ORDER, unpack_coords
 from ui.chipviz import ChipVizPanel
@@ -3094,19 +3095,40 @@ class DemoApp(Gtk.Application):
         box.set_vexpand(False)
 
         caption = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        # Takes whatever the legend does not: the tagline wraps into it
-        # rather than pushing the legend off the end of the strip.
+        # Takes whatever the legend does not: at the reference width that is
+        # comfortably enough for every shipped tagline to sit on one line.
         caption.set_hexpand(True)
 
         name = Gtk.Label()
         name.add_css_class("target-info-name")
         name.set_xalign(0.0)
-        name.set_wrap(True)
+        # Same reasoning as the tagline below: a long name ("Human serum
+        # albumin", "Dihydrofolate Reductase") that sits on one line beside
+        # the legend at the reference width can be squeezed onto two by the
+        # legend's fixed width at the floor width, and a second name line
+        # grows the strip exactly as a second tagline line would. Ellipsized
+        # rather than wrapped for the same reason: the strip's height must
+        # not depend on how much room the legend leaves it.
+        name.set_wrap(False)
+        name.set_ellipsize(Pango.EllipsizeMode.END)
 
         tagline = Gtk.Label()
         tagline.add_css_class("target-info-tagline")
         tagline.set_xalign(0.0)
-        tagline.set_wrap(True)
+        # Ellipsized, never wrapped -- the fallback the spec names for a
+        # narrower hero width (docs/superpowers/specs/2026-09-23-responsive-
+        # layout-design.md, S5): the legend beside this line takes a fixed
+        # width regardless of how much room the strip has, so a narrower
+        # window leaves less width for the tagline. Wrapping would answer
+        # that by growing to a second (or third) line, which is exactly the
+        # invariant this strip exists to hold -- the legend must cost the
+        # render NOTHING, at every supported width, not just 1920. A single
+        # ellipsized line costs the same height whether it fits in full or
+        # is cut short, so the strip's height stops depending on the
+        # legend's width at all. See
+        # test_the_confidence_legend_still_costs_nothing_at_the_floor_width.
+        tagline.set_wrap(False)
+        tagline.set_ellipsize(Pango.EllipsizeMode.END)
 
         caption.append(name)
         caption.append(tagline)
