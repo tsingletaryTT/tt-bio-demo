@@ -1301,6 +1301,32 @@ def test_the_diagnostics_panel_is_built_hidden():
 
 
 # ---------------------------------------------------------------------------
+# rail_width_for: the pure sizing function that adapts the rail to different
+# window widths, preserving the exact reference layout at 1920px.
+# ---------------------------------------------------------------------------
+
+def test_rail_width_for_matches_the_reference_layout_exactly():
+    """The one number that must never move: at the booth's own reference
+    resolution, the new formula must reproduce today's fixed 552 exactly."""
+    assert app_module.rail_width_for(1920) == app_module._SIDE_RAIL_WIDTH_PX
+
+
+def test_rail_width_for_is_floor_clamped_at_small_widths():
+    assert app_module.rail_width_for(1024) == app_module._RAIL_MIN_PX
+    assert app_module.rail_width_for(1) == app_module._RAIL_MIN_PX
+
+
+def test_rail_width_for_is_ceiling_clamped_at_large_widths():
+    assert app_module.rail_width_for(10_000) == app_module._RAIL_MAX_PX
+
+
+def test_rail_width_for_is_monotonically_non_decreasing():
+    widths = [800, 1024, 1280, 1366, 1600, 1920, 2560, 3840]
+    computed = [app_module.rail_width_for(w) for w in widths]
+    assert computed == sorted(computed)
+
+
+# ---------------------------------------------------------------------------
 # The Tensix activity panel, as wired into the booth (the panel's own
 # behaviour is tested in test_chipviz.py).
 # ---------------------------------------------------------------------------

@@ -686,6 +686,33 @@ _TELEMETRY_REPAINT_MS = 500
 # arithmetic so a wider cell cannot silently reintroduce the lurch.
 _SIDE_RAIL_WIDTH_PX = 552
 
+# The reference value above (552 at the 1920-wide booth) is now the ANCHOR of a
+# fraction-with-clamp formula rather than a fixed number applied at every width. Preserves
+# today's exact layout at the reference resolution (rail_width_for(1920) == 552, pinned by
+# test_rail_width_for_matches_the_reference_layout_exactly) while adapting below and above
+# it -- see docs/superpowers/specs/2026-09-23-responsive-layout-design.md section 3.
+_RAIL_FRACTION = _SIDE_RAIL_WIDTH_PX / 1920
+# Floor: below this the rail's own panels (telemetry digits, the QuestionQueuePanel's
+# wrapped text) start looking cramped rather than merely narrower. Chosen with headroom
+# under 1024 * _RAIL_FRACTION (~294), which the fraction alone would produce at the stated
+# floor resolution -- the clamp, not the fraction, is what governs the smallest supported
+# size.
+_RAIL_MIN_PX = 420
+# Ceiling: an ultra-wide display should not hand the rail more width than its own fixed-size
+# content (the Tensix panel, the pipeline bars) can use -- past this point extra width is
+# wasted whitespace, not legibility.
+_RAIL_MAX_PX = 700
+
+
+def rail_width_for(total_width_px):
+    """How wide the side rail gets, given the window's actual total width.
+
+    Pure arithmetic, no GTK -- the real allocation-time caller is
+    `_ResponsiveSplitLayout.do_allocate` (see `_build_ui`'s `root` box), and this function's
+    only job is to be independently correct and independently testable from that wiring.
+    """
+    return max(_RAIL_MIN_PX, min(_RAIL_MAX_PX, round(total_width_px * _RAIL_FRACTION)))
+
 
 class _PinnedNaturalBoxLayout(Gtk.BoxLayout):
     """A `Gtk.BoxLayout` that reports its natural WIDTH as its minimum.
