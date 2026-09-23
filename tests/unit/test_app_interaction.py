@@ -3138,3 +3138,28 @@ def test_a_cell_between_job_start_and_its_first_stage_still_says_why():
                         empty=True, awaiting=True)
     assert "atoms appear" in line.lower(), (
         f"a cell that had just started folding said nothing: {line!r}")
+
+
+# ---------------------------------------------------------------------------
+# Window sizing before the window is realized
+# ---------------------------------------------------------------------------
+
+def test_expected_window_width_uses_the_windowed_default_when_windowed():
+    app = _app()
+    app.windowed = True
+    assert app._expected_window_width() == 1280
+
+
+def test_expected_window_width_falls_back_when_no_monitor_is_reported():
+    """A headless/virtual display or a Gdk backend that reports zero monitors must not
+    crash construction or hand a 0-width request three modules downstream -- it falls back
+    to the reference resolution's width."""
+    app = _app()
+    app.windowed = False
+
+    class _EmptyMonitors:
+        def get_n_items(self):
+            return 0
+
+    app._get_monitors_for_test = lambda: _EmptyMonitors()
+    assert app._expected_window_width() == 1920

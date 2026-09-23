@@ -2459,6 +2459,40 @@ class DemoApp(Gtk.Application):
 
     # ── layout ───────────────────────────────────────────────────────────
 
+    def _get_monitors_for_test(self):
+        """The real monitor list. A tiny seam so a test can hand this method
+        something that reports zero monitors without needing a real (or
+        fully faked) `Gdk.Display` -- see `_expected_window_width`'s own
+        docstring for why this can't just read `window.get_width()`."""
+        return Gdk.Display.get_default().get_monitors()
+
+    def _expected_window_width(self):
+        """The width this window will actually end up at, usable BEFORE the
+        window is realized (`window.get_width()` reads 0 until well after
+        `present()` -- verified empirically, not assumed, before this method
+        was written).
+
+        `--windowed` requests a literal size (`set_default_size`, see
+        `do_activate`) that this method must match exactly, not guess at
+        from a monitor. The normal, fullscreen path has no such literal
+        request -- fullscreen always becomes whatever the display's own
+        monitor reports -- so THAT path reads `Gdk.Display`'s monitor
+        geometry instead, which is available immediately, with no window
+        realized at all.
+
+        Falls back to the reference resolution if no monitor is reported at
+        all (an unusual Gdk backend, or a virtual display returning zero
+        items) -- a 0-width fallback would hand a `width_px=0` construction
+        argument three modules downstream for something that would have
+        no clear connection back to this method.
+        """
+        if self.windowed:
+            return 1280
+        monitors = self._get_monitors_for_test()
+        if monitors.get_n_items() == 0:
+            return 1920
+        return monitors.get_item(0).get_geometry().width
+
     def _build_side_rail(self):
         """The fixed-width column: identity, then what the machine is doing,
         then what the silicon is doing.
