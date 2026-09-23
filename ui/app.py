@@ -1675,18 +1675,24 @@ def _help_panels(n_chips, wide=True):
 
       - the diffusion-takes-longest fact, stated without implying it ends
         the pipeline (`protocol.events.STAGE_ORDER` has two more stages
-        after it);
+        after it) -- in `wide=False` it rides inside the Tensix ring's
+        own parenthesis, which is where the room was;
       - the Tensix panel's three real states, each tied to WHEN it
-        happens, not just named: `wide=True` says "a ring while
-        denoising, a steady glow while reasoning at trunk, quiet between
-        folds"; `wide=False` says the same three timings more tersely
-        ("ring (diffusion), glow (trunk), quiet (between folds)") --
-        naming the states without their timing is not enough for a
-        visitor to tell what's normal from what's wrong, which is why a
-        round 3 draft that did exactly that was rejected in review. The
-        ring is `ui/chipviz.py`'s own "headline" animation, not a detail
-        to drop for space;
-      - what the header count and clock number actually show;
+        happens, not just named. The two texts word this differently
+        (read the return values below rather than a copy quoted here --
+        a quoted copy in this docstring has already drifted from the
+        real text once): `wide=True` describes each state in a full
+        clause, `wide=False` puts each state's trigger in a parenthesis
+        right after it. Naming the states without their timing is not
+        enough for a visitor to tell what's normal from what's wrong,
+        which is why a draft that did exactly that was rejected in
+        review. The ring is `ui/chipviz.py`'s own "headline" animation,
+        not a detail to drop for space;
+      - what the Tensix panel's header shows: how many chips are folding
+        (`ChipVizPanel`'s title) and the fastest clock among the chips
+        (`chipviz.readout_text`, a peak AICLK) -- a bare "header/clock
+        live" that names the readouts without saying what they mean does
+        not count;
       - that nesso1 produces a SCORE (not just a highlight);
       - the affinity disclaimer's actual substance -- a distance cutoff is
         not a claim about where the ligand truly binds, stated as that,
@@ -1718,11 +1724,16 @@ def _help_panels(n_chips, wide=True):
         return (
             quad_help_line(n_chips),
 
-            "Diffusion is the pipeline's longest stage. Tensix — ring "
-            "(diffusion), glow (trunk), quiet (between folds); "
-            "header/clock live. Affinity — nesso1's score, residues "
-            f"nearest the ligand, {POCKET_CUTOFF_ANGSTROM:g} Å — never "
-            "a claim about where it binds.",
+            # Every clause is load-bearing and pinned by a test in
+            # tests/unit/test_app_interaction.py's "narrow help-card copy"
+            # section. Measured at 765px of the 1024x768 floor's 768px
+            # budget -- re-run that file's size-matrix test after ANY edit
+            # here; one extra wrapped line (~23px) is enough to overflow.
+            "Tensix — ring (diffusion, the pipeline's longest stage), "
+            "glow (trunk), quiet (between folds); header: chips folding, "
+            "fastest clock. Affinity — nesso1's score, residues nearest "
+            f"the ligand, {POCKET_CUTOFF_ANGSTROM:g} Å — never a claim "
+            "about where it binds.",
         )
     return (
         # The quad view's own line, from `ui/quad.py` rather than re-typed

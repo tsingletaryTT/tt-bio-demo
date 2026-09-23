@@ -875,102 +875,190 @@ def test_the_help_card_still_fits_the_booth_s_own_screen():
 # height-only matrix test would still pass.
 # ---------------------------------------------------------------------------
 
-def _tied_together(text, word, trigger, max_distance=30):
-    """Assert `word` and `trigger` both appear in `text` and land close
-    enough together to read as ONE stated fact ("a ring during diffusion"),
-    not as two words that both happen to be somewhere in the same
-    paragraph. A bare `"ring" in text and "diffusion" in text` check would
-    pass even if the two were in unrelated sentences -- which is exactly
-    the shape of the round-3 regression this guards: naming all three
-    Tensix states without saying when any of them happens.
+#
+# Strengthened in fix round 5, after a mutation pass showed the round-4
+# versions of these tests were real but too weak: an INVERTED Tensix
+# pairing, a disclaimer with its "never" deleted, a `_sync_help_copy` that
+# ignored `_help_card_wide`, and a narrow text with the header/clock fact
+# removed all left them green. Each test below names the mutation it is
+# there to catch, and each was watched going red against it.
 
-    Checks EVERY occurrence of each against every occurrence of the other
-    (not just the first of each), since a word can legitimately appear
-    more than once in the same paragraph -- "diffusion" names both the
-    fold stage earlier in this sentence and the Tensix ring's trigger
-    later in it, and only the second occurrence is the one `word` needs
-    to be near.
-    """
+# The Tensix panel's three visual states, each with the phrase that states
+# WHEN it happens in the narrow text. The pairing is the claim, so it is
+# data here rather than three separate calls that could each be satisfied
+# by the wrong trigger.
+_TENSIX_STATE_TRIGGERS = {
+    "ring": "diffusion",
+    "glow": "trunk",
+    "quiet": "between folds",
+}
+
+
+def _narrow_tensix_clause():
+    """The narrow text's Tensix clause alone -- from "tensix" up to
+    "affinity" -- so a trigger word elsewhere in the merged paragraph
+    ("fold" in an affinity sentence, say) can never satisfy a pairing it
+    is not part of."""
+    from ui.app import _help_panels
+    text = _help_panels(1, wide=False)[1].lower()
+    start = text.index("tensix")
+    end = text.index("affinity", start)
+    return text[start:end]
+
+
+def _distance(text, a, b):
+    """Smallest gap, in characters, between any occurrence of `a` and any
+    occurrence of `b` in `text` (every pair, not just the first of each).
+    None if either is absent."""
     import re
-    word_positions = [m.start() for m in re.finditer(re.escape(word), text)]
-    trigger_positions = [m.start() for m in re.finditer(re.escape(trigger), text)]
-    assert word_positions, f"{word!r} not found in {text!r}"
-    assert trigger_positions, f"{trigger!r} not found in {text!r}"
-    closest = min(abs(w - t) for w in word_positions for t in trigger_positions)
-    assert closest <= max_distance, (
-        f"closest {word!r}/{trigger!r} pair is {closest} chars apart -- too "
-        f"far apart to read as one tied-together fact in {text!r}")
+    a_at = [m.start() for m in re.finditer(re.escape(a), text)]
+    b_at = [m.start() for m in re.finditer(re.escape(b), text)]
+    if not a_at or not b_at:
+        return None
+    return min(abs(x - y) for x in a_at for y in b_at)
 
 
 def test_the_narrow_tensix_sentence_ties_each_state_to_when_it_happens():
     """Important 4 (whole-branch review, twice): naming the Tensix panel's
     three visual states without saying WHEN each one happens leaves a
-    visitor with no way to tell what's normal from what's wrong -- a round
-    3 draft named all three ("ring, glow (trunk), quiet") and was rejected
-    in review for exactly this, because "ring" and "quiet" on their own
-    named no trigger at all.
+    visitor with no way to tell what's normal from what's wrong.
 
-    Checked with real proximity, not bare substring presence: `"ring" in
-    text and "diffusion" in text` would have passed the round-3 draft too,
-    since both words appeared somewhere in the same paragraph.
+    Checks the PAIRING, not proximity to "some trigger": in a clause this
+    compact every state word lands within a few characters of every
+    trigger, so "is `ring` near a trigger" passed with the pairings
+    inverted ("ring (trunk), glow (diffusion)"). The claim a visitor reads
+    is that each state belongs to ITS OWN stage, so each state word must
+    be strictly nearer its own trigger than to either of the other two --
+    and near enough (<= 30 chars) to read as one stated fact at all.
+
+    Mutation this catches: swapping any two states' triggers.
     """
-    from ui.app import _help_panels
-    text = _help_panels(1, wide=False)[1].lower()
-    assert "tensix" in text
-    _tied_together(text, "ring", "diffusion")
-    _tied_together(text, "glow", "trunk")
-    _tied_together(text, "quiet", "fold")
+    clause = _narrow_tensix_clause()
+    for state, own in _TENSIX_STATE_TRIGGERS.items():
+        own_gap = _distance(clause, state, own)
+        assert own_gap is not None, f"{state!r}/{own!r} missing from {clause!r}"
+        assert own_gap <= 30, (
+            f"{state!r} is {own_gap} chars from {own!r} -- too far to read "
+            f"as one fact in {clause!r}")
+        for other_state, other in _TENSIX_STATE_TRIGGERS.items():
+            if other_state == state:
+                continue
+            other_gap = _distance(clause, state, other)
+            assert other_gap is None or own_gap < other_gap, (
+                f"{state!r} sits nearer {other!r} ({other_gap} chars) than "
+                f"its own trigger {own!r} ({own_gap} chars) -- reads as the "
+                f"wrong pairing in {clause!r}")
+
+
+def test_the_narrow_tensix_sentence_says_what_the_header_shows():
+    """The Tensix panel's header carries two live readouts: how many chips
+    are folding (`ChipVizPanel`'s title, "N CHIPS FOLDING") and the peak
+    AICLK across the chips (`chipviz.readout_text`). The wide text says so
+    in full; the narrow text dropped it -- or reduced it to a contentless
+    "header/clock live" -- in three separate fix rounds with nothing
+    noticing, because no test looked.
+
+    Requires the header to be named AND both of its meanings stated near
+    it: that the count is of chips FOLDING, and that the number is the
+    FASTEST (peak) clock, not just "a clock".
+
+    Mutations this catches: deleting the header clause, or reverting it to
+    "header/clock live".
+    """
+    clause = _narrow_tensix_clause()
+    assert "header" in clause, f"the header is not mentioned in {clause!r}"
+    after = clause[clause.index("header"):][:60]
+    assert "folding" in after or "working" in after, (
+        f"nothing says the header COUNTS chips at work: {after!r}")
+    assert "clock" in after and ("fastest" in after or "peak" in after), (
+        f"nothing says the number is the FASTEST clock: {after!r}")
 
 
 def test_the_narrow_affinity_disclaimer_keeps_its_actual_substance():
-    """Important 5 (whole-branch review, twice): a round 3 draft shipped
-    "not a claim" with the substance of what is not being claimed cut
-    away -- a token with no meaning, not a disclaimer. The distance cutoff
-    is a checkable geometric fact; what it must NOT be read as is a claim
-    about where the ligand truly binds, and that second half is the part
-    that has to survive, not just the word "claim" on its own.
+    """Important 5 (whole-branch review, twice): a draft shipped "not a
+    claim" with the substance of what is not being claimed cut away -- a
+    token with no meaning, not a disclaimer. The distance cutoff is a
+    checkable geometric fact; what it must NOT be read as is a claim about
+    where the ligand truly binds.
 
-    Also pins that nesso1 is credited with a SCORE, not just "a highlight"
-    -- the other half of Important 5 dropped in the same round-3 draft.
+    The NEGATION is the disclaimer. Checking for the nouns ("claim",
+    "where it binds") alone passed with "never" deleted, which turns the
+    sentence into "a claim about where it binds" -- the exact overclaim it
+    exists to prevent. So the negation is required to govern the claim
+    directly.
+
+    Also pins that nesso1 is credited with a SCORE, not just "a highlight".
+
+    Mutations this catches: deleting "never"; cutting the substance back
+    to a bare "not a claim".
     """
+    import re
     from ui.app import _help_panels
     text = _help_panels(1, wide=False)[1].lower()
     assert "nesso1" in text
     assert "score" in text
     assert "residues nearest the ligand" in text
-    assert "claim" in text
-    assert "where it binds" in text or "where the ligand" in text, (
-        "the disclaimer's substance (what is NOT being claimed) is "
-        "missing -- a bare \"claim\"/\"not a claim\" says nothing")
+    assert re.search(r"\b(never|not)\s+a\s+claim\s+about\s+where\s+"
+                     r"(it|the\s+ligand)\s+(truly\s+)?binds\b", text), (
+        "the disclaimer must NEGATE a claim about where the ligand binds "
+        f"-- not name the claim, and not drop what is disclaimed: {text!r}")
     assert "the binding site" not in text
+
+
+def _rendered_help_text(app):
+    """Everything the built card's intro and panel labels currently SHOW,
+    in order -- read off the real Gtk.Labels, not recomputed from the
+    text functions, since which text function the labels were fed is the
+    thing under test."""
+    return ([label.get_label() for label in app._help_intro_labels],
+            [label.get_label() for label in app._help_panel_labels])
 
 
 def test_a_narrow_booth_gets_the_narrow_copy_and_a_wide_booth_gets_the_wide_copy():
     """`_build_help_overlay` computes `wide` from the real window width and
-    stores it on `self._help_card_wide`, which `_sync_help_copy` later
-    reuses to keep re-fetching text from the SAME function the labels were
-    built from. Neither the computation nor the resulting text had a test
-    exercising them directly before now -- only the card's overall HEIGHT
-    was checked, which cannot tell a mismatched wide/narrow selection from
-    a correct one.
-    """
-    narrow = _app()
-    narrow._expected_window_width = lambda w=1024: w
-    app_module.DemoApp._build_help_overlay(narrow)
-    assert narrow._help_card_wide is False
-    narrow_text = " ".join(
-        label.get_label() for label in narrow._help_panel_labels).lower()
-    assert "diffusion is the pipeline's longest stage" in narrow_text
-    assert "one row per fold stage" not in narrow_text
+    stores it on `self._help_card_wide`; `_sync_help_copy` must re-fetch
+    text from the SAME variant when the fold-chip count later changes.
 
-    wide = _app()
-    wide._expected_window_width = lambda w=1920: w
-    app_module.DemoApp._build_help_overlay(wide)
-    assert wide._help_card_wide is True
-    wide_text = " ".join(
-        label.get_label() for label in wide._help_panel_labels).lower()
-    assert "one row per fold stage" in wide_text
-    assert "diffusion is the pipeline's longest stage" not in wide_text
+    The round-4 version of this test only read `_help_card_wide` and the
+    build-time labels, never calling `_sync_help_copy` -- so hardcoding
+    `wide = True` inside `_sync_help_copy` left it green, while a real
+    narrow booth would have had the wide text spliced into labels sized
+    for the narrow one the first time a `hello` changed the chip count.
+    This drives the real sync after a real chip-count change and compares
+    what the labels SHOW against each variant.
+
+    Mutation this catches: `_sync_help_copy` ignoring `_help_card_wide`
+    (in either direction).
+    """
+    from ui.app import _help_intro, _help_panels
+    for width, wide in ((1024, False), (1920, True)):
+        app = _app()
+        app._expected_window_width = lambda w=width: w
+        app_module.DemoApp._build_help_overlay(app)
+        assert app._help_card_wide is wide
+
+        # Build time: the variant for this width, at the build-time count.
+        n_built = len(app.cards)
+        intro, panels = _rendered_help_text(app)
+        assert intro == list(_help_intro(n_built, wide=wide))
+        assert panels == list(_help_panels(n_built, wide=wide))
+
+        # A later chip-count change (a `hello`, or the Q&A reservation)
+        # goes through `_sync_help_copy` -- which must stay on the SAME
+        # variant, at the NEW count.
+        app.cards = [0, 1, 2]
+        app_module.DemoApp._sync_help_copy(app)
+        intro, panels = _rendered_help_text(app)
+        assert "three" in panels[0].lower(), (
+            "the sync did not run at the new chip count, so this test "
+            "proves nothing about which variant it chose")
+        assert intro == list(_help_intro(3, wide=wide)), (
+            f"{width}px booth's intro switched variant on sync")
+        assert panels == list(_help_panels(3, wide=wide)), (
+            f"{width}px booth's panels switched variant on sync")
+        # And the two variants genuinely differ at this count, so the
+        # equality above is a real discrimination and not a tautology.
+        assert list(_help_panels(3, wide=not wide)) != panels
 
 
 def test_the_help_card_explains_both_rail_panels():
@@ -1046,18 +1134,17 @@ def test_help_panels_and_key_help_are_functions_of_the_real_chip_count():
     fold-chip count, never a hardcoded one.
 
     Checked against the QUAD line specifically (`_help_panels(n)[0]`), not
-    the whole joined column: the separate "Chips" (telemetry) paragraph
-    (this test calls `_help_panels` at its default `wide=True` -- the
-    original, side-by-side-layout text, where Chips is still its own
-    paragraph, unchanged from before responsive-layout Task 6) deliberately
-    keeps saying "four" when the box genuinely has four physical chips --
-    it samples every chip via tt-smi independently of the daemon and of how
-    many are reserved for folding vs. Q&A, so its claim is about hardware
-    inventory, not about how many chips are folding, and stays true
-    regardless of `n_chips`. (The narrower `wide=False` text used at the
-    1024x768/1366x768 floor sizes drops this sentence for space -- see
-    `_help_panels`'s own docstring -- but nothing calls it with `wide=False`
-    here, so that text is untested by this function.)
+    the whole joined column. The separate "Chips" (telemetry) paragraph
+    (this test calls `_help_panels` at its default `wide=True`, where Chips
+    is its own paragraph, unchanged since before responsive-layout Task 6)
+    names no chip count at all -- it says "every chip on this machine",
+    because it samples every physical chip via tt-smi independently of the
+    daemon and of how many are reserved for folding vs. Q&A. A count
+    belongs in the lines that describe how many chips are FOLDING, which
+    is why the quad line is the one checked here. (The narrower
+    `wide=False` text used at the 1024x768/1366x768 floor sizes drops the
+    Chips sentence for space -- see `_help_panels`'s own docstring -- and
+    nothing here calls it with `wide=False`.)
     """
     from ui.app import _help_panels, _key_help
     quad_line = _help_panels(3)[0].lower()
