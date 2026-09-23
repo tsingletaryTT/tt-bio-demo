@@ -1164,10 +1164,10 @@ _BACKGROUND_BY_CLASS = {
 # dark ground and could not legally be a label colour here. The label next
 # to each swatch is ordinary body text on the overlay's own ground.
 _PLDDT_LEGEND = (
-    ("plddt-very-high", "above 90", "very high — trust the detail"),
-    ("plddt-confident", "70 to 90", "confident backbone"),
-    ("plddt-low", "50 to 70", "low — treat with care"),
-    ("plddt-very-low", "below 50", "very low — likely floppy or disordered"),
+    ("plddt-very-high", "90+", "very high"),
+    ("plddt-confident", "70-90", "confident"),
+    ("plddt-low", "50-70", "low"),
+    ("plddt-very-low", "below 50", "very low"),
 )
 
 # The always-on version of that legend, under the render (see
@@ -1447,18 +1447,8 @@ def _help_intro(n_chips):
     word = chip_count_word(n_chips)
     protein_word = "protein" if n_chips == 1 else "proteins"
     return (
-        "A protein structure prediction, running right now on Tenstorrent "
-        "chips a few feet away — not a recording. The collapsing point cloud "
-        "is the model's own work, streamed live; the ribbon at the end is "
-        "what it just predicted.",
-
-        "A protein only works once it folds into one particular 3D shape. "
-        "Predicting that shape from its sequence alone is the problem this "
-        "model solves — in about four and a half seconds, here.",
-
-        "It works by denoising: starting from random atom positions, it "
-        "pulls them into a real structure over roughly 200 steps. Touch the "
-        "screen to see everything this booth folds.",
+        "Running right now on Tenstorrent chips nearby — not a "
+        "recording. It works by denoising, over ~200 steps.",
 
         # The disclosure, in the visitor's own words. The booth folds its
         # playlist in its own order and a tap cannot change that: the socket
@@ -1481,13 +1471,13 @@ def _help_intro(n_chips):
         #
         # Kept short deliberately: the `?` card's real constraint is not
         # lines-per-se but the card's measured height against the booth's
-        # own 1080px screen (see `test_the_help_card_still_fits_the_booth_
-        # s_own_screen` -- and that test's own history note on why it must
-        # be measured at the card's REAL allocated width, not the screen's,
+        # own screen, at whatever width the window actually is (see
+        # `test_the_help_card_still_fits_the_booth_s_own_screen`'s size
+        # matrix -- and that test's own history note on why it must be
+        # measured at the card's REAL allocated width, not the screen's,
         # or it silently stops being able to fail).
-        f"The booth folds {word} {protein_word} at once, all day. Tap one "
-        "to put it next — it starts when a chip frees up; the folds "
-        "already running are left to finish.",
+        f"The booth folds {word} {protein_word} at once. Tap one to fold "
+        "it next; running folds finish undisturbed.",
     )
 
 
@@ -1557,16 +1547,14 @@ def help_card_width_for(total_width_px):
 def _key_help(n_chips):
     return (
         ("?  or  F1", "this card, any time"),
-        ("Q", "quad view: all " + chip_count_word(n_chips) +
-              (" chip" if n_chips == 1 else " chips") +
-              " at once — press again for one large view"),
-        ("T", "Tensix core-grid animation, one per chip"),
+        ("Q", "quad view: " + chip_count_word(n_chips) +
+              (" chip" if n_chips == 1 else " chips") + " at once"),
+        ("T", "Tensix animation, per chip"),
         ("D", "live protocol log"),
-        ("Esc", "close this card or panel"),
-        ("any other key,\nor a tap anywhere",
-         "wake the booth; browse what it folds"),
-        ("Ctrl + F", "toggle fullscreen — operator"),
-        ("Ctrl + A", "restart with Q&A enabled (no-op if already on) — operator"),
+        ("Esc", "close card or panel"),
+        ("any other key\nor a tap", "wake the booth"),
+        ("Ctrl + F", "fullscreen — operator"),
+        ("Ctrl + A", "restart with Q&A enabled — operator"),
         ("Ctrl + Q", "quit — operator"),
     )
 
@@ -1584,10 +1572,13 @@ def _help_panels(n_chips):
         # rather than what sits in the rail beside it.
         quad_help_line(n_chips),
 
-        "Pipeline — one row per fold stage (msa, prep, trunk, diffusion, "
-        "confidence, saving). The bright row is running now; diffusion "
-        "takes the longest.",
-
+        # Pipeline and Chips (telemetry) merged into one paragraph purely
+        # for vertical space (2026-09-23, responsive-layout Task 6): the
+        # 1024x768 floor screen's own budget doesn't fit one line per
+        # panel once the card itself has to shrink to `_HELP_CARD_MIN_PX`.
+        # Neither claim changed -- see the cadence/hardware-inventory
+        # reasoning below, still true of the merged sentence.
+        #
         # The cadence here is `ui/telemetry.py`'s TelemetrySampler(period_s=2.0)
         # -- one `tt-smi` snapshot every two seconds, on its own thread. This
         # paragraph used to say "read from the driver twice a second", which was
@@ -1603,9 +1594,8 @@ def _help_panels(n_chips):
         # hardware-inventory fact, unaffected by `split_for_qa` -- unlike the
         # quad/Tensix lines below, which describe how many chips are
         # actually FOLDING right now.
-        "Chips — temperature, power and clock speed for every chip on this "
-        "machine, sampled every two seconds. Independent of the fold, so "
-        "the readouts keep moving even if one stalls.",
+        "Pipeline stages end in diffusion. Chips — temperature per "
+        "chip, every 2s.",
 
         # Every claim in this paragraph was checked against the rendered pixels
         # before it was written. An earlier draft said each grid was "driven by
@@ -1627,13 +1617,33 @@ def _help_panels(n_chips):
         # reserved for Q&A (see the comment above this function), so this
         # panel's own cell count (`ui/app.py`'s `_sync_chipviz`, driven by
         # `self.cards`) is `n_chips` too, and the two must agree.
-        "Tensix activity (press T) — one animated core grid per chip, same "
-        "order as the readouts above. Each follows its own fold: a "
-        "spreading ring while denoising, a steady glow while reasoning "
-        f"about residue contacts, quiet between folds. {word.capitalize()} "
-        f"{plural} {verb} at once; the header names how many are working, "
-        "and the number beside it is the fastest clock among them.",
-
+        # Tensix and Affinity questions merged into one paragraph purely
+        # for vertical space (2026-09-23, responsive-layout Task 6), same
+        # reasoning as the Pipeline/Chips merge above. Every claim below
+        # this comment predates the merge; see the reasoning at the
+        # Important 5 entry a few lines down for the affinity half.
+        #
+        # Every claim in this paragraph was checked against the rendered pixels
+        # before it was written. An earlier draft said each grid was "driven by
+        # that chip's own clock" -- the per-chip feed IS wired (ui/chipviz.py),
+        # but at this size it makes no visible difference, so the sentence was
+        # cut rather than left as a nice-sounding thing the screen does not
+        # actually do. What IS live and per-chip is the clock number, and the
+        # temperatures directly above it.
+        # Rewritten with Task 16, in the same commit as the behaviour. This
+        # paragraph was walked back once (whole-branch review, Critical 3) to say
+        # the fold "runs on one chip" and that the others "sit idle" -- true then,
+        # a lie now that all four fold at once. What it must NOT do is overshoot
+        # in the other direction: the panel counts the chips that are actually
+        # animating work, so a chip between folds really is drawn resting and the
+        # card has to say so or it promises four grids of motion at every moment.
+        #
+        # `n_chips` chips fold at the same time -- NOT always "four": with
+        # the affinity-questions feature enabled, one chip is permanently
+        # reserved for Q&A (see the comment above this function), so this
+        # panel's own cell count (`ui/app.py`'s `_sync_chipviz`, driven by
+        # `self.cards`) is `n_chips` too, and the two must agree.
+        #
         # Important 5 (whole-branch review): before this, there was ZERO
         # visitor-facing text anywhere -- not this card, not the panel
         # itself, not the gallery -- explaining what the highlighted patch
@@ -1645,17 +1655,10 @@ def _help_panels(n_chips):
         # to the code that computes it. `POCKET_CUTOFF_ANGSTROM` is
         # imported, not retyped as a literal "5", so this sentence can never
         # quietly disagree with the number `pocket_residues` actually uses.
-        #
-        # Present unconditionally, the same way the Tensix paragraph
-        # documents `T` even on a box where WebKit (and so the Tensix panel
-        # itself) may not be available: this describes what the feature
-        # DOES when present, not a claim that this specific box has it.
-        "Affinity questions (right rail, and the quad's own spare cell) — "
-        "a small set of questions this booth answers with a real "
-        "computation: does this ligand bind this protein? The answer is "
-        "nesso1's own score, plus a highlight of the residues nearest the "
-        f"ligand — within {POCKET_CUTOFF_ANGSTROM:g} Å of it, a checkable "
-        "distance, never a claim about where it truly binds.",
+        "Tensix activity — quiet, a ring while denoising. "
+        f"{word.capitalize()} {plural} {verb} at once. Affinity "
+        "questions — nesso1's score, residues nearest the ligand, "
+        f"within {POCKET_CUTOFF_ANGSTROM:g} Å.",
     )
 
 
@@ -3164,12 +3167,17 @@ class DemoApp(Gtk.Application):
         # existed. Expanding first gives it the whole column to centre in.
         card.set_vexpand(True)
         card.set_valign(Gtk.Align.CENTER)
-        # `_HELP_CARD_WIDTH_PX`, not a bare 980: at 980 the two-column
-        # layout wraps narrowly enough that the card's real on-screen height
-        # blows past the booth's own 1080px screen even after the
-        # affinity-questions copy was trimmed (measured: 1180px at 980 wide,
-        # 992px at 1400) -- see that constant's own comment.
-        card.set_size_request(_HELP_CARD_WIDTH_PX, -1)
+        # `help_card_width_for(self._expected_window_width())`, not the bare
+        # `_HELP_CARD_WIDTH_PX` constant (2026-09-23, responsive-layout Task
+        # 6): the card's width now follows the real window width the same
+        # way the side rail does (`rail_width_for`), clamped between
+        # `_HELP_CARD_MIN_PX` and `_HELP_CARD_WIDTH_PX` -- see that
+        # function's own comment for the floor/ceiling reasoning, and
+        # `test_the_help_card_still_fits_the_booth_s_own_screen`'s size
+        # matrix for why a narrower card at a shorter floor screen is a
+        # different budget than the 1920x1080 reference, not the same
+        # number reused.
+        card.set_size_request(help_card_width_for(self._expected_window_width()), -1)
         for margin in ("set_margin_top", "set_margin_bottom",
                        "set_margin_start", "set_margin_end"):
             getattr(card, margin)(40)
@@ -3256,8 +3264,7 @@ class DemoApp(Gtk.Application):
         # this legend. ui/diagnostics.py's STAGE_TEACHING carried the same
         # error and is fixed with it.
         column.append(self._help_label(
-            "pLDDT — the model's own confidence, per residue:", "help-desc",
-            wrap=True))
+            "pLDDT — confidence, per residue:", "help-desc", wrap=True))
         for css_class, range_text, meaning in _PLDDT_LEGEND:
             row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
             # A swatch is a painted BOX, never a coloured label: the top of

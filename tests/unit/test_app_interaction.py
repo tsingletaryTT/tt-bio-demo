@@ -801,6 +801,21 @@ def test_the_help_card_explains_what_a_visitor_is_actually_looking_at():
     assert "200" in intro              # ...over how many steps
 
 
+def test_help_card_shrinks_to_fit_a_narrow_windowed_booth():
+    app = _app()
+    app.windowed = True
+    ground = app_module.DemoApp._build_help_overlay(app)
+    # `_build_help_overlay` returns the overlay wrapper ("ground"), not the
+    # inner card box `set_size_request` is actually called on -- GTK's
+    # `get_size_request` reads only the exact widget it was set on, unlike
+    # `measure()` below (which recurses through children and so doesn't care
+    # which of the two is held). The card is `ground`'s only child.
+    card = ground.get_first_child()
+    expected = app_module.help_card_width_for(1280)
+    assert card.get_size_request()[0] == expected
+    assert expected < app_module._HELP_CARD_WIDTH_PX
+
+
 def test_the_help_card_still_fits_the_booth_s_own_screen():
     """Every line added to this card costs vertical space, and a card taller
     than the glass silently loses its last rows -- the operator keys are at
@@ -819,24 +834,36 @@ def test_the_help_card_still_fits_the_booth_s_own_screen():
     casualty. Fixed on both sides: the copy was trimmed and the card widened
     (`_HELP_CARD_WIDTH_PX`), and this test now measures the width that can
     actually fail it again.
+
+    Extended 2026-09-23 to a size matrix per
+    docs/superpowers/specs/2026-09-23-responsive-layout-design.md -- each
+    shipped resolution gets checked against ITS OWN screen height, not the
+    reference 1080 reused for every width, which would silently pass a card
+    that overflows a shorter floor-size screen.
     """
-    app = _app()
-    card = app_module.DemoApp._build_help_overlay(app)
+    matrix = [(1024, 768), (1366, 768), (1920, 1080), (2560, 1440)]
+    too_tall = []
+    for total_width, total_height in matrix:
+        app = _app()
+        app._expected_window_width = lambda w=total_width: w
+        card_width = app_module.help_card_width_for(total_width)
+        card = app_module.DemoApp._build_help_overlay(app)
 
-    # A widget measures 0 while it is hidden, and the card is built hidden.
-    def show(widget):
-        widget.set_visible(True)
-        child = widget.get_first_child()
-        while child is not None:
-            show(child)
-            child = child.get_next_sibling()
+        # A widget measures 0 while it is hidden, and the card is built hidden.
+        def show(widget):
+            widget.set_visible(True)
+            child = widget.get_first_child()
+            while child is not None:
+                show(child)
+                child = child.get_next_sibling()
+        show(card)
 
-    show(card)
-    _minimum, natural, _, _ = card.measure(Gtk.Orientation.VERTICAL,
-                                           app_module._HELP_CARD_WIDTH_PX)
-    assert natural <= 1080, (
-        f"the help card wants {natural}px of a 1080px screen; its last rows "
-        f"(the operator's Ctrl+Q among them) are off the bottom")
+        _minimum, natural, _, _ = card.measure(Gtk.Orientation.VERTICAL,
+                                               card_width)
+        if natural > total_height:
+            too_tall.append(
+                f"{total_width}x{total_height}: card wants {natural}px tall")
+    assert not too_tall, "\n".join(too_tall)
 
 
 def test_the_help_card_explains_both_rail_panels():
