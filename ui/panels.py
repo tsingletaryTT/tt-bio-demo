@@ -370,10 +370,17 @@ _BACKGROUND_BY_CLASS = {
 _HAIRLINE = "rgba(199, 217, 216, 0.18)"  # _BG_ALT at 18% opacity
 _TROUGH_TRACK = "rgba(199, 217, 216, 0.12)"  # _BG_ALT at 12% opacity
 
+# `.telemetry-panel`'s horizontal padding, named because it is part of the
+# panel's reserved width (`TELEMETRY_PANEL_RESERVED_WIDTH_PX`, below) and
+# therefore of the side rail's real minimum. The stylesheet is generated from
+# this, so a padding change moves the arithmetic with it instead of silently
+# making ui/app.py's rail floor a lie again.
+TELEMETRY_PANEL_PADDING_X_PX = 16
+
 _PANEL_CSS = f"""
 .telemetry-panel {{
     background-color: {_BACKGROUND_BY_CLASS["telemetry-panel"]};
-    padding: 12px 16px;
+    padding: 12px {TELEMETRY_PANEL_PADDING_X_PX}px;
     border-radius: 6px;
 }}
 .telemetry-status {{
@@ -659,6 +666,18 @@ CHIP_CELL_HEIGHT_PX = 65
 # that says so (`chip_count_text`), rather than a rail that silently grows
 # a cell at a time. `test_panels.py` pins the two constants together.
 MAX_CHIP_CELLS = 4
+
+# The whole panel's reserved width: `MAX_CHIP_CELLS` cells of
+# `CHIP_CELL_WIDTH_PX`, plus `.telemetry-panel`'s own left and right padding
+# (`TELEMETRY_PANEL_PADDING_X_PX`, which the stylesheet above is generated
+# from, so the two cannot disagree). This is the panel's real minimum width
+# and therefore the narrowest the side rail can EVER be allocated, whatever
+# size it is asked for: ui/app.py's `_RAIL_MIN_PX` is this number, derived,
+# not retyped. The responsive-layout branch's final review found a 420px
+# rail floor that never once engaged in production, because this reservation
+# (552px) always won -- see `_RAIL_MIN_PX`'s own comment.
+TELEMETRY_PANEL_RESERVED_WIDTH_PX = (
+    MAX_CHIP_CELLS * CHIP_CELL_WIDTH_PX + 2 * TELEMETRY_PANEL_PADDING_X_PX)
 
 
 class TelemetryPanel(Gtk.Box):

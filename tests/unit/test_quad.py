@@ -423,15 +423,39 @@ def test_even_a_saturated_notice_fits_the_hero_slot():
     rail a fixed width and the hero slot everything else; a quad whose
     natural width exceeded that would be asking `GtkBoxLayout` for space
     the rail is holding -- the exact mechanism that moved the hero slot
-    1332 -> 1300px last time."""
-    from ui.app import _SIDE_RAIL_WIDTH_PX
-    hero_slot = 1920 - _SIDE_RAIL_WIDTH_PX
-    quad = QuadView(cards=[0, 1, 2, 3])
-    quad.set_notice("A" * 4000)
-    for slot in range(4):
-        quad.set_caption(slot, "HAEMOGLOBIN ALPHA CHAIN " * 200)
-    assert _natural_width(quad) < hero_slot, (
-        _natural_width(quad), hero_slot)
+    1332 -> 1300px last time.
+
+    The slot is `ui.app.hero_width_for(...)` -- window minus rail minus the
+    rail's margins, the same helper `ui/app.py` lays the booth out with.
+    (This used to be `1920 - _SIDE_RAIL_WIDTH_PX`, 1368, which forgot the
+    margins.)
+
+    NATURAL width is checked at the reference width and up, where this
+    test's original claim was made. Below it, only the MINIMUM is: measured,
+    the saturated quad is min 40 / natural 444px (the notice label's
+    capped natural), 8px over the 436px floor hero. That excess cannot move
+    the rail: at every width up to 1920 the rail is ALREADY at its minimum
+    (552px, its telemetry reservation), GTK never allocates below a
+    minimum, and the rail's natural is pinned to that minimum
+    (`_FixedWidthBox`) so it never competes for spare width either -- the
+    hero just gets the 436px that is left and the notice ellipsizes into
+    it. A MINIMUM over the slot is different: it forces the whole window
+    wider, which is the defect that matters at the floor (see
+    test_the_booth_fits_its_own_window_at_every_supported_width in
+    test_app_interaction.py)."""
+    from ui.app import hero_width_for
+    for total_width in (1024, 1280, 1366, 1920, 2560):
+        hero_slot = hero_width_for(total_width)
+        quad = QuadView(cards=[0, 1, 2, 3])
+        quad.set_notice("A" * 4000)
+        for slot in range(4):
+            quad.set_caption(slot, "HAEMOGLOBIN ALPHA CHAIN " * 200)
+        measured = quad.measure(Gtk.Orientation.HORIZONTAL, -1)
+        assert measured.minimum < hero_slot, (
+            total_width, measured.minimum, hero_slot)
+        if total_width >= 1920:
+            assert _natural_width(quad) < hero_slot, (
+                total_width, _natural_width(quad), hero_slot)
 
 
 def test_a_long_caption_does_not_widen_the_quad():
@@ -481,10 +505,12 @@ def test_at_a_real_booth_size_no_label_is_ellipsized_away():
     for slot, text in enumerate(_DISTINCT_CAPTIONS):
         quad.set_caption(slot, text)
     quad.set_notice("HEMOGLOBIN — NEXT UP")
-    # 1368x860 is the hero slot on the booth's own 1920x1080 fullscreen
-    # window (1920 minus ui/app.py's `_SIDE_RAIL_WIDTH_PX`), i.e. the size
-    # this actually has to be right at.
-    quad.allocate(1368, 860, -1, None)
+    # The hero slot on the booth's own 1920x1080 fullscreen window
+    # (`ui.app.hero_width_for(1920)`, 1332 -- the window minus the rail and
+    # its margins), i.e. the size this actually has to be right at. It was
+    # a literal 1368, which forgot the rail's 2x18px margins.
+    from ui.app import hero_width_for
+    quad.allocate(hero_width_for(1920), 860, -1, None)
 
     ellipsized = [label.get_label() for label in iter_labels(quad)
                   if label.get_label() and label.get_layout().is_ellipsized()]

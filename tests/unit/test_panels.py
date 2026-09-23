@@ -1022,11 +1022,18 @@ def test_the_reserved_footprint_is_what_the_rail_was_sized_for():
     the panel's minimum exceeds the rail's size request again and GTK
     quietly hands the rail the larger of the two -- which is the original
     defect, back."""
-    from ui.app import _SIDE_RAIL_WIDTH_PX
+    from ui.app import _RAIL_MIN_PX, _SIDE_RAIL_WIDTH_PX
 
     panel_padding = 2 * 16     # .telemetry-panel { padding: 12px 16px; }
     assert (ui_panels.MAX_CHIP_CELLS * ui_panels.CHIP_CELL_WIDTH_PX
             + panel_padding) == _SIDE_RAIL_WIDTH_PX
+    # The named footprint is the same arithmetic, the stylesheet really is
+    # generated from the named padding, and the responsive rail's floor is
+    # that footprint -- not a chosen number GTK would silently overrule.
+    assert ui_panels.TELEMETRY_PANEL_RESERVED_WIDTH_PX == _SIDE_RAIL_WIDTH_PX
+    assert (f"padding: 12px {ui_panels.TELEMETRY_PANEL_PADDING_X_PX}px;"
+            in ui_panels._PANEL_CSS)
+    assert _RAIL_MIN_PX == ui_panels.TELEMETRY_PANEL_RESERVED_WIDTH_PX
 
     panel = TelemetryPanel()
     window = Gtk.Window()

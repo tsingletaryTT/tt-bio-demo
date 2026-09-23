@@ -190,7 +190,8 @@ from ui.gallery import Gallery
 from ui.geometry import PLDDT_STOPS, ribbon_from_cif
 from ui.pocket import POCKET_CUTOFF_ANGSTROM, pocket_residues
 from ui.structure_view import structure_mesh
-from ui.panels import PipelinePanel, TelemetryPanel
+from ui.panels import (TELEMETRY_PANEL_RESERVED_WIDTH_PX, PipelinePanel,
+                       TelemetryPanel)
 from ui.playlist import PlaylistError, load_playlist, load_questions, select_targets
 from ui.qa_spotlight import QASpotlightCell
 from ui.questions import QuestionQueuePanel
@@ -693,16 +694,36 @@ _SIDE_RAIL_WIDTH_PX = 552
 # test_rail_width_for_matches_the_reference_layout_exactly) while adapting below and above
 # it -- see docs/superpowers/specs/2026-09-23-responsive-layout-design.md section 3.
 _RAIL_FRACTION = _SIDE_RAIL_WIDTH_PX / 1920
-# Floor: below this the rail's own panels (telemetry digits, the QuestionQueuePanel's
-# wrapped text) start looking cramped rather than merely narrower. Chosen with headroom
-# under 1024 * _RAIL_FRACTION (~294), which the fraction alone would produce at the stated
-# floor resolution -- the clamp, not the fraction, is what governs the smallest supported
-# size.
-_RAIL_MIN_PX = 420
+# Floor: the rail's REAL content minimum, derived from the one thing that sets it -- the
+# telemetry panel's reserved four-cell footprint (`ui.panels.
+# TELEMETRY_PANEL_RESERVED_WIDTH_PX`, 552). Not a chosen number.
+#
+# It was a chosen number, 420, and it was a lie: `set_size_request` is only a floor (see
+# `_SIDE_RAIL_WIDTH_PX` above), so whenever this formula answered less than 552 the
+# telemetry panel's own minimum won and the rail allocated 552 anyway. Measured by the
+# branch's final review against the real, fully-built rail: `rail_width_for` said
+# 420/420/552/700 at 1024/1366/1920/2560 and the rail allocated 552/552/552/700. Every
+# caller that trusted the formula -- the gallery's width, the floor-width caption test --
+# was reasoning about a narrower rail than the booth ever drew, and the booth could not
+# fit its own 1280px `--windowed` window (content minimum 1336px).
+#
+# So at and below the reference width the rail is now honestly a fixed 552px, and the
+# fraction only ever WIDENS it (above 1920). Making it genuinely narrower would mean
+# redesigning the telemetry panel's reservation, which exists to stop the rail lurching
+# sideways (see ui/panels.py) -- a different change from this one.
+# `test_rail_min_px_is_the_real_rails_content_minimum` measures the real rail against
+# this number so it cannot drift from what GTK actually does again.
+_RAIL_MIN_PX = TELEMETRY_PANEL_RESERVED_WIDTH_PX
 # Ceiling: an ultra-wide display should not hand the rail more width than its own fixed-size
 # content (the Tensix panel, the pipeline bars) can use -- past this point extra width is
 # wasted whitespace, not legibility.
 _RAIL_MAX_PX = 700
+# The rail's own margin on each side (`_build_side_rail` applies it to all four). Margins
+# sit OUTSIDE a widget's allocated width in GTK4, so the rail really takes
+# `rail_width_for(w) + 2 * _RAIL_MARGIN_PX` of the window -- 588px at the reference size,
+# which is why the hero slot there is 1332px, not the 1368px the old `1920 - 552`
+# arithmetic assumed. `hero_width_for` below is the one place that sum is done.
+_RAIL_MARGIN_PX = 18
 
 
 def rail_width_for(total_width_px):
@@ -711,8 +732,26 @@ def rail_width_for(total_width_px):
     Pure arithmetic, no GTK -- the real allocation-time caller is
     `_ResponsiveSplitLayout.do_allocate` (see `_build_ui`'s `root` box), and this function's
     only job is to be independently correct and independently testable from that wiring.
+    This is the rail's allocated (content) width; its margins are extra -- see
+    `hero_width_for` for what that leaves the protein.
     """
     return max(_RAIL_MIN_PX, min(_RAIL_MAX_PX, round(total_width_px * _RAIL_FRACTION)))
+
+
+def hero_width_for(total_width_px):
+    """How wide the hero slot (the protein, or the gallery) really is, given the window's
+    total width: the window minus the rail AND the rail's margins.
+
+    The ONE place this is computed. Production (`_build_gallery`, `_build_target_info`)
+    and the tests that measure the hero's contents all call it, so the width a test
+    checks is the width the booth draws -- the floor-width caption test was once green
+    at a 604px hero that did not exist (the real one was 436px) because it did its own
+    subtraction and ignored both the rail's real floor and its margins.
+
+    Never negative: a window narrower than the rail alone gets a 0px answer, not a
+    negative width handed to a constructor downstream.
+    """
+    return max(0, total_width_px - rail_width_for(total_width_px) - 2 * _RAIL_MARGIN_PX)
 
 
 class _PinnedNaturalBoxLayout(Gtk.BoxLayout):
@@ -825,10 +864,16 @@ class _ResponsiveSplitLayout(Gtk.BoxLayout):
         Gtk.BoxLayout.do_allocate(self, widget, width, height, baseline)
 
 
-# What the gallery gets to lay its cards out in: the window minus the rail.
-# 1920 is this booth's screen; `ui.gallery.grid_shape` turns it into a
-# column count, so a different screen simply gets a different one.
-_GALLERY_WIDTH_PX = 1920 - _SIDE_RAIL_WIDTH_PX
+# The hero slot's width at the booth's reference 1920px screen: 1332px, the
+# number the rail's own `_FixedWidthBox` measurements record. It used to be
+# `1920 - _SIDE_RAIL_WIDTH_PX` (1368), which forgot the rail's 2x18px
+# margins. Production no longer reads this constant (it asks `hero_width_for`
+# about the window it actually has); it survives as the reference-size hero
+# for tests that pin the 1920 layout, and it is derived from the same helper
+# so it cannot disagree with it. (The gallery's column count at 1920 is the
+# same either way: `ui.gallery.grid_shape` gives 3 columns for both 1332 and
+# 1368.)
+_GALLERY_WIDTH_PX = hero_width_for(1920)
 
 # tt-bio's ASCII logo, verbatim from the upstream README. Rendered as TEXT
 # in a monospace face rather than shipped as a bitmap: crisp at any size,
@@ -1203,6 +1248,43 @@ _PLDDT_LEGEND_BRIEF = (
 _CONFIDENCE_LEGEND_CAPTION = "Colour: how sure the model is, residue by residue"
 _CONFIDENCE_LEGEND_LOW = "less sure"
 _CONFIDENCE_LEGEND_HIGH = "more sure"
+
+# The narrowest hero slot at which the caption strip keeps its WIDE
+# arrangement (name and tagline stacked on the left, the full two-line legend
+# beside them); below it, `_build_target_info` builds the COMPACT one (name on
+# its own full-width line, tagline beside a one-line legend).
+#
+# Measured, at the real hero widths `hero_width_for` gives (the strip's own
+# 2x32px padding and 32px spacing included; legend 292px wide):
+#
+#   window  hero   wide: name gets   compact: name gets
+#   1024     436        48px              372px
+#   1280     692       304px              628px
+#   1366     778       390px              714px
+#   1920    1332       944px             1268px
+#
+# The longest shipped names are "Dihydrofolate Reductase" (318px at 26px
+# bold) and "Human serum albumin" (301px). So the wide arrangement ELLIPSIZES
+# every shipped name at 1024 -- "D…", "H…", "T…", effectively no name at
+# all -- and DHFR's at 1280, while the compact one shows all of them in full
+# at every size down to the floor. The ellipsis the floor-width test once
+# approved was measured at a 604px hero that did not exist.
+#
+# Why compact rather than letting the name wrap: at 48px a wrapped name is a
+# column of letters, and any second name line grows the strip -- the render
+# pays for it. Compact keeps the strip at exactly the wide arrangement's
+# height (its second line is the tagline's own 28px; the one-line ramp is
+# 17px) and costs the render nothing, at the price of the legend's one-line
+# "Colour: ..." sentence below this width. The ramp and its named ends stay.
+#
+# 760 sits between the 706px the wide arrangement needs for the longest
+# shipped name (64 + 318 + 32 + 292) and the 778px hero of a 1366 laptop, so
+# 1366 and up keep today's full legend. It is tied to the copy, not just the
+# widget -- `test_every_shipped_name_is_shown_whole_at_every_supported_width`
+# builds the arrangement production picks at each supported size and fails if
+# any shipped name comes back ellipsized, so a longer name in the manifest is
+# caught by the suite rather than by a visitor.
+_CAPTION_STRIP_WIDE_MIN_HERO_PX = 760
 
 
 def _plddt_swatch_css():
@@ -2258,6 +2340,9 @@ class DemoApp(Gtk.Application):
         self._target_info_caption_box = None
         self._target_info_name_label = None
         self._target_info_tagline_label = None
+        # Which arrangement `_build_target_info` chose (see
+        # `_CAPTION_STRIP_WIDE_MIN_HERO_PX`); None until it has run.
+        self._target_info_compact = None
         # The colour key beside that caption (`_build_confidence_legend`).
         # Stateless once built -- it describes the ramp, not the fold -- so
         # nothing ever updates it; the handle exists so tests and any future
@@ -2719,7 +2804,9 @@ class DemoApp(Gtk.Application):
         side.set_valign(Gtk.Align.START)
         for margin in ("set_margin_top", "set_margin_bottom",
                        "set_margin_start", "set_margin_end"):
-            getattr(side, margin)(18)
+            # `_RAIL_MARGIN_PX`, named: `hero_width_for` subtracts exactly
+            # this from the window, so the two must be one number.
+            getattr(side, margin)(_RAIL_MARGIN_PX)
 
         title = Gtk.Label(label="Folding on Tenstorrent Blackhole")
         title.add_css_class("booth-title")
@@ -2891,8 +2978,13 @@ class DemoApp(Gtk.Application):
             for slot in self.router.slots:
                 slot.dwell_caps = dict(self.states.dwell_caps)
 
-        expected_width = self._expected_window_width()
-        gallery_width = expected_width - rail_width_for(expected_width)
+        # `hero_width_for`, not a local subtraction: this used to be
+        # `expected - rail_width_for(expected)`, which trusted a rail floor
+        # the real rail never honoured and ignored its margins -- so at 1280
+        # it handed the gallery 860px for a 692px slot, `grid_shape` chose
+        # two 374px columns, and the window's content minimum became 1336px:
+        # the booth could not fit its own `--windowed` window.
+        gallery_width = hero_width_for(self._expected_window_width())
         self.gallery = Gallery(self.targets, on_pick=self._on_pick,
                                width_px=gallery_width,
                                questions=self.questions, on_ask=self._on_ask)
@@ -3063,8 +3155,25 @@ class DemoApp(Gtk.Application):
         return {t.id: t.first_frame_s for t in self.targets
                 if t.first_frame_s is not None}
 
-    def _build_target_info(self):
+    def _build_target_info(self, hero_width_px=None):
         """The caption under the render: what this protein actually is.
+
+        `hero_width_px` is the hero slot's real width; None (production)
+        means `hero_width_for(self._expected_window_width())`. It picks one
+        of two arrangements, once, at build time -- the same build-time
+        choice `_build_gallery` and `_build_help_overlay` make (a `--windowed`
+        window dragged to a new size keeps the arrangement it opened with):
+
+        - WIDE (hero >= `_CAPTION_STRIP_WIDE_MIN_HERO_PX`, which includes the
+          1920 reference): the caption's two lines on the left, the full
+          two-line legend beside them. Byte-for-byte the layout that shipped
+          before the responsive work.
+        - COMPACT (narrower): the name on a line of its OWN, full width, and
+          the tagline beside a one-line legend (the ramp and its named ends,
+          without the "Colour: ..." sentence above it) on the second line.
+          See `_CAPTION_STRIP_WIDE_MIN_HERO_PX` for the measurement that
+          made this necessary: at the 1024 floor the wide arrangement left
+          the name 48px and every shipped name read "D…", "H…", "T…".
 
         A strip in the layout, below the GL area -- NOT an overlay over it.
         An overlay would either cover the structure or have to dodge it;
@@ -3087,17 +3196,10 @@ class DemoApp(Gtk.Application):
         nothing at all. `tests/unit/test_app_interaction.py` measures that.
         """
         _ensure_app_css_installed()
-        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=32)
-        box.add_css_class("target-info")
-        box.set_halign(Gtk.Align.FILL)
-        # Never steals height from the protein: this strip is exactly as
-        # tall as its two lines, and the viewer above it takes the rest.
-        box.set_vexpand(False)
-
-        caption = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        # Takes whatever the legend does not: at the reference width that is
-        # comfortably enough for every shipped tagline to sit on one line.
-        caption.set_hexpand(True)
+        if hero_width_px is None:
+            hero_width_px = hero_width_for(self._expected_window_width())
+        compact = hero_width_px < _CAPTION_STRIP_WIDE_MIN_HERO_PX
+        self._target_info_compact = compact
 
         name = Gtk.Label()
         name.add_css_class("target-info-name")
@@ -3130,16 +3232,48 @@ class DemoApp(Gtk.Application):
         tagline.set_wrap(False)
         tagline.set_ellipsize(Pango.EllipsizeMode.END)
 
-        caption.append(name)
-        caption.append(tagline)
-        box.append(caption)
-        box.append(self._build_confidence_legend())
+        if compact:
+            # Name alone on the first line, full width -- the one piece of
+            # this strip a visitor must be able to read. Tagline and a
+            # one-line legend share the second line: the ramp row is shorter
+            # than the tagline's own line (measured 17px against 28px), so
+            # the strip stays exactly as tall as the wide arrangement's two
+            # lines and the legend still costs the render nothing.
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            second_line = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
+                                  spacing=32)
+            tagline.set_hexpand(True)
+            second_line.append(tagline)
+            second_line.append(self._build_confidence_legend(compact=True))
+            box.append(name)
+            box.append(second_line)
+            # No single widget holds only the words here (the tagline shares
+            # a row with the legend), so `_sync_target_info` hides the two
+            # labels themselves instead.
+            caption = None
+        else:
+            box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=32)
+            caption = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            # Takes whatever the legend does not: at the reference width that
+            # is comfortably enough for every shipped tagline to sit on one
+            # line.
+            caption.set_hexpand(True)
+            caption.append(name)
+            caption.append(tagline)
+            box.append(caption)
+            box.append(self._build_confidence_legend())
+        box.add_css_class("target-info")
+        box.set_halign(Gtk.Align.FILL)
+        # Never steals height from the protein: this strip is exactly as
+        # tall as its two lines, and the viewer above it takes the rest.
+        box.set_vexpand(False)
 
         self._target_info_box = box
         # The half of the strip that disappears when the playlist cannot
         # name what is on screen -- the caption only. The legend describes
         # the RIBBON, which is still there and still coloured either way, so
         # it is deliberately not hidden with the words about the molecule.
+        # None in the compact arrangement (see above).
         self._target_info_caption_box = caption
         self._target_info_name_label = name
         self._target_info_tagline_label = tagline
@@ -3148,7 +3282,7 @@ class DemoApp(Gtk.Application):
         self._sync_target_info()
         return box
 
-    def _build_confidence_legend(self):
+    def _build_confidence_legend(self, compact=False):
         """The subtle, always-on key to the ribbon's colours.
 
         Four booth targets out of five come back in visibly different
@@ -3177,12 +3311,21 @@ class DemoApp(Gtk.Application):
         column.set_halign(Gtk.Align.END)
         # Bottom-aligned against the caption beside it: the legend sits on
         # the tagline's baseline rather than floating in the middle of a
-        # strip whose height is set by two much larger lines.
-        column.set_valign(Gtk.Align.END)
+        # strip whose height is set by two much larger lines. In the
+        # compact strip it shares the tagline's own line, so it is centred
+        # on that line instead.
+        column.set_valign(Gtk.Align.CENTER if compact else Gtk.Align.END)
 
-        caption = Gtk.Label(label=_CONFIDENCE_LEGEND_CAPTION, xalign=1.0)
-        caption.add_css_class("confidence-legend-caption")
-        column.append(caption)
+        # `compact` (the narrow caption strip, see `_build_target_info`)
+        # drops only this sentence: at 292px it is what makes the legend
+        # too wide to share a line with anything at the floor width. The
+        # ramp and its two named ends -- "less sure" ... "more sure" -- stay,
+        # and still say which way the colours run; the `?` card still
+        # spells out every band in full (`_PLDDT_LEGEND`).
+        if not compact:
+            caption = Gtk.Label(label=_CONFIDENCE_LEGEND_CAPTION, xalign=1.0)
+            caption.add_css_class("confidence-legend-caption")
+            column.append(caption)
 
         ramp = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         ramp.set_halign(Gtk.Align.END)
@@ -3247,7 +3390,7 @@ class DemoApp(Gtk.Application):
         self._target_info = (
             (name, self._target_tagline(subject)) if name else None)
 
-        if self._target_info_caption_box is None:
+        if self._target_info_name_label is None:
             return
         try:
             # No name means the playlist cannot identify what is on screen.
@@ -3255,10 +3398,15 @@ class DemoApp(Gtk.Application):
             # wire id -- the same choice `_target_name` makes. Only the
             # words: the legend beside them describes the ribbon's colours,
             # which are on screen and meaningful whether or not this booth
-            # can put a name to the molecule they belong to.
-            self._target_info_caption_box.set_visible(
-                self._target_info is not None)
-            if self._target_info is None:
+            # can put a name to the molecule they belong to. The compact
+            # strip has no words-only box (its tagline shares a line with
+            # the legend), so there the labels themselves are hidden.
+            shown = self._target_info is not None
+            if self._target_info_caption_box is not None:
+                self._target_info_caption_box.set_visible(shown)
+            self._target_info_name_label.set_visible(shown)
+            if not shown:
+                self._target_info_tagline_label.set_visible(False)
                 return
             shown_name, shown_tagline = self._target_info
             self._target_info_name_label.set_label(shown_name)

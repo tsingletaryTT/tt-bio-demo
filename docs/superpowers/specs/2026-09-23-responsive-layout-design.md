@@ -72,6 +72,18 @@ The hero/gallery width is always `total_width_px - rail_width_for(total_width_px
 second independent formula, so the two sides can never disagree about how much space exists
 between them.
 
+> **Amended 2026-09-23 (final whole-branch review), by measurement.** `_RAIL_MIN_PX = 420`
+> never engaged: the rail's real content minimum is the telemetry panel's reserved
+> four-cell footprint, 552px, and `set_size_request` is only a floor, so the real rail
+> allocated 552 whenever this formula said less. `_RAIL_MIN_PX` is now derived from that
+> footprint (`ui.panels.TELEMETRY_PANEL_RESERVED_WIDTH_PX`), which makes the rail an honest
+> fixed 552px at and below 1920 (the fraction only widens it above). And the hero is not
+> `total - rail_width_for(total)`: the rail's 2×18px margins sit outside its allocation, so
+> the one helper `hero_width_for(total)` subtracts them too (1332px at 1920, 692px at the
+> 1280 `--windowed` default, 436px at the 1024 floor). The caption strip (§5) gained a
+> compact arrangement below a 760px hero, because at 436px the side-by-side legend left
+> every name one character wide. 1280×800 joins the §2 matrix.
+
 **Wiring into the real layout:** today the rail gets `set_size_request(_SIDE_RAIL_WIDTH_PX,
 -1)` once, at construction. This becomes a recompute on every resize — the window's own
 `notify::default-width` (or equivalent resize signal) recalculates `rail_width_for(...)` and

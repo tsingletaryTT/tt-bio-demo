@@ -29,7 +29,10 @@ if ! command -v weston >/dev/null 2>&1; then
   exit 1
 fi
 
-SIZES=("1024x768" "1366x768" "1920x1080" "2560x1440")
+# 1280x800 is `--windowed`'s own default and the case that started the whole
+# responsive-layout plan; it was missing from this matrix until the final
+# whole-branch review found the booth still could not fit its own 1280 window.
+SIZES=("1024x768" "1280x800" "1366x768" "1920x1080" "2560x1440")
 SOCKET="${OUT_DIR}/mock.sock"
 
 for size in "${SIZES[@]}"; do
@@ -45,7 +48,13 @@ for size in "${SIZES[@]}"; do
   # pixman is also load-bearing under --backend=headless with no GPU present --
   # without it weston can silently select a no-op renderer and
   # weston-screenshooter dies on `Assertion 'width > 0' failed`.
-  weston --debug --backend=headless --renderer=pixman \
+  #
+  # --shell=kiosk-shell.so, not weston's default desktop-shell: desktop-shell
+  # draws its own ~32px top panel over every output, which appeared in every
+  # screenshot and was once misread in review as the booth failing to fit
+  # vertically. kiosk-shell has no chrome, so a screenshot shows only what
+  # the booth itself renders.
+  weston --debug --backend=headless --renderer=pixman --shell=kiosk-shell.so \
     --width="$width" --height="$height" --socket="$wl_socket" --idle-time=0 \
     > "${OUT_DIR}/weston-${size}.log" 2>&1 &
   weston_pid=$!

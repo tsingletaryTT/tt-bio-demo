@@ -21,6 +21,7 @@ from pathlib import Path
 import gi
 
 gi.require_version("Gtk", "4.0")
+gi.require_version("Gdk", "4.0")
 
 import pytest
 from gi.repository import Gdk, Gtk
@@ -109,6 +110,16 @@ class FakeGesture:
 
     def set_state(self, state):
         self.states.append(state)
+
+
+# The (width, height) matrix every responsive-layout test in this file
+# checks (docs/superpowers/specs/2026-09-23-responsive-layout-design.md, S2).
+# 1280x800 is `--windowed`'s own default (`do_activate`'s `set_default_size`)
+# and the case that motivated the whole responsive-layout plan -- it was
+# missing from every matrix until the final whole-branch review found the
+# booth still could not fit its own 1280px window.
+_LAYOUT_MATRIX = [(1024, 768), (1280, 800), (1366, 768), (1920, 1080),
+                  (2560, 1440)]
 
 
 def _app(clock=None, *, stack=True):
@@ -841,9 +852,8 @@ def test_the_help_card_still_fits_the_booth_s_own_screen():
     reference 1080 reused for every width, which would silently pass a card
     that overflows a shorter floor-size screen.
     """
-    matrix = [(1024, 768), (1366, 768), (1920, 1080), (2560, 1440)]
     too_tall = []
-    for total_width, total_height in matrix:
+    for total_width, total_height in _LAYOUT_MATRIX:
         app = _app()
         app._expected_window_width = lambda w=total_width: w
         card_width = app_module.help_card_width_for(total_width)
@@ -1455,7 +1465,12 @@ def test_gallery_width_shrinks_the_rail_out_at_the_floor_size():
     app.targets = [_target("dna", "DNA double helix", "tagline")]
     app._load_questions()
     app._build_gallery()
-    expected = 1280 - app_module.rail_width_for(1280)
+    # The shared helper, not a local `1280 - rail_width_for(1280)`: that
+    # subtraction is exactly the second formula that once disagreed with
+    # the real layout (it forgot the rail's margins and trusted a rail floor
+    # GTK never honoured). 1280 - 552 - 2*18 = 692.
+    expected = app_module.hero_width_for(1280)
+    assert expected == 692
     assert app.gallery.width_px == expected
     assert expected < app_module._GALLERY_WIDTH_PX
 
@@ -1556,9 +1571,17 @@ def _allocate(root, width, height):
     wrong diagnosis. Built the correct way (attribute assignment on a
     default-constructed `Gdk.Rectangle`), a bare `size_allocate` call is in
     fact fully deterministic across repeated, differently-sized calls on the
-    same tree -- confirmed by alternating 1024/1920/1024/1920 through this
-    exact helper and getting 420/552/420/552 every time, including against
-    the real, fully-built side rail (not just a bare throwaway `Gtk.Box`)."""
+    same tree.
+
+    This docstring used to add "alternating 1024/1920 gives 420/552,
+    including against the real, fully-built side rail". The first half was
+    true of a bare `Gtk.Box` rail; the second was false -- the real rail
+    allocated 552/552, because its telemetry panel's reserved footprint
+    outvoted a 420px size request (the final whole-branch review measured
+    it). `_RAIL_MIN_PX` is now that real footprint, so formula and rail
+    agree: alternating 1024/2560/1024/2560 through this helper against the
+    real `_build_side_rail()` gives 552/700/552/700, which is what
+    `test_the_real_rail_allocates_exactly_what_rail_width_for_says` pins."""
     rect = Gdk.Rectangle()
     rect.width = width
     rect.height = height
@@ -1649,11 +1672,105 @@ def test_the_responsive_split_layout_gives_the_rail_the_live_width():
     root.append(hero)
     root.append(rail)
 
+    # 1024 and 2560, not 1024 and 1920: with the rail floor now its real
+    # 552px content minimum, `rail_width_for` answers 552 at both 1024 and
+    # 1920, and an A/B between two equal answers could not tell a live
+    # recompute from a constant.
     _allocate(root, 1024, 768)
     assert rail.get_width() == app_module.rail_width_for(1024)
 
+    _allocate(root, 2560, 1440)
+    assert rail.get_width() == app_module.rail_width_for(2560)
+    assert app_module.rail_width_for(2560) != app_module.rail_width_for(1024)
+
     _allocate(root, 1920, 1080)
     assert rail.get_width() == app_module._SIDE_RAIL_WIDTH_PX
+
+
+def test_rail_min_px_is_the_real_rails_content_minimum():
+    """`_RAIL_MIN_PX` was once 420 while the real rail could not go below
+    552, so the clamp never engaged and every caller that trusted the
+    formula reasoned about a rail the booth never drew. This measures the
+    real, fully-built rail's own horizontal minimum -- margins included,
+    since GTK counts them in `measure` -- and requires the formula's floor
+    to be exactly its content part.
+
+    Mutation this catches: setting `_RAIL_MIN_PX` back to any chosen number
+    below the telemetry reservation (420 fails it: 420 + 36 != 588)."""
+    app = _app()
+    rail = app._build_side_rail()
+    minimum = rail.measure(Gtk.Orientation.HORIZONTAL, -1).minimum
+    assert minimum == app_module._RAIL_MIN_PX + 2 * app_module._RAIL_MARGIN_PX
+
+
+def test_the_real_rail_allocates_exactly_what_rail_width_for_says():
+    """The reviewer's table, as a test: the REAL `_build_side_rail()` inside
+    the real `_ResponsiveSplitLayout`, allocated at every matrix width,
+    must come out at exactly `rail_width_for(width)` -- not at whatever its
+    content minimum happens to be when the formula asks for less.
+
+    Mutation this catches: `_RAIL_MIN_PX = 420` (1024/1280/1366 then
+    allocate 552 against a formula saying 420)."""
+    wrong = []
+    for width, height in _LAYOUT_MATRIX:
+        app = _app()
+        rail = app._build_side_rail()
+        hero = Gtk.Label(label="hero")
+        hero.set_hexpand(True)
+        root = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        root.set_layout_manager(app_module._ResponsiveSplitLayout(
+            rail, orientation=Gtk.Orientation.HORIZONTAL))
+        root.append(hero)
+        root.append(rail)
+        _allocate(root, width, height)
+        if rail.get_width() != app_module.rail_width_for(width):
+            wrong.append(f"{width}: rail_width_for says "
+                         f"{app_module.rail_width_for(width)}, the real rail "
+                         f"allocated {rail.get_width()}")
+        # ...and the hero gets exactly what `hero_width_for` says it does,
+        # which is what the gallery and the caption strip are built for.
+        if hero.get_width() != app_module.hero_width_for(width):
+            wrong.append(f"{width}: hero_width_for says "
+                         f"{app_module.hero_width_for(width)}, the real hero "
+                         f"allocated {hero.get_width()}")
+    assert not wrong, "\n".join(wrong)
+
+
+def test_the_booth_fits_its_own_window_at_every_supported_width():
+    """The bug the responsive-layout plan exists to fix, checked on the tree
+    the booth actually builds (`do_activate`, not a hand-built one).
+
+    A GTK window cannot be narrower than its content's minimum width. At
+    1280 -- `--windowed`'s default -- that minimum was 1336px after every
+    other task in the plan had landed: `_build_gallery` sized the gallery
+    for an 860px hero that was really 692px, `grid_shape` picked two
+    374px columns, and the window was forced 56px wider than it was asked
+    to be. Every narrower-width test was green because none of them built
+    the real tree at 1280.
+
+    Mutation this catches: `_RAIL_MIN_PX = 420` (the gallery is then sized
+    for an 824px hero at 1280, gets two columns, and the window needs
+    1336px again -- measured red). Reverting `_build_gallery` alone to
+    `expected - rail_width_for(expected)` does NOT turn this red with the
+    honest rail floor (728px still rounds down to one gallery column at
+    1280); `test_gallery_width_shrinks_the_rail_out_at_the_floor_size`
+    catches that one instead.
+    """
+    too_wide = []
+    for width, _height in _LAYOUT_MATRIX:
+        app = _app()
+        app.windowed = True  # do not fullscreen a real window under test
+        app._expected_window_width = lambda w=width: w
+        app.do_activate()
+        try:
+            content = app._window.get_child()
+            minimum = content.measure(Gtk.Orientation.HORIZONTAL, -1).minimum
+            if minimum > width:
+                too_wide.append(f"{width}: the window's content needs at "
+                                f"least {minimum}px")
+        finally:
+            app._window.destroy()
+    assert not too_wide, "\n".join(too_wide)
 
 
 def test_the_responsive_split_layout_does_not_raise_on_a_tiny_width():
@@ -2192,7 +2309,11 @@ def test_a_target_with_no_tagline_is_captioned_with_its_name_alone():
     assert app._target_info_tagline_label.get_visible() is False
 
 
-def test_a_protein_the_playlist_cannot_name_gets_no_caption_at_all():
+@pytest.mark.parametrize("hero_width", [
+    app_module._GALLERY_WIDTH_PX,          # wide arrangement (the reference)
+    app_module.hero_width_for(1024),       # compact arrangement (the floor)
+], ids=["wide", "compact"])
+def test_a_protein_the_playlist_cannot_name_gets_no_caption_at_all(hero_width):
     """`_target_name` returns None rather than the raw wire id for an
     unknown target. The caption follows it: the words disappear rather than
     showing `trpcage_no_msa` to a visitor.
@@ -2203,13 +2324,21 @@ def test_a_protein_the_playlist_cannot_name_gets_no_caption_at_all():
     -- so hiding it here would remove a key from a picture that still needs
     one. (Before the legend existed this assertion was on the whole strip,
     which is why it is spelled out now.)
+
+    Run against both caption-strip arrangements: the compact one has no
+    words-only box to hide (its tagline shares a line with the legend), so
+    the labels are hidden individually there -- and the visible-labels
+    check at the end is what proves that actually happened.
     """
     app = _app()
     app.targets = []
     app._slots[0].shown_target_id = "some_id_the_playlist_never_heard_of"
-    info = app._build_target_info()
+    info = app._build_target_info(hero_width_px=hero_width)
+    compact = app._target_info_compact
+    assert compact is (hero_width < app_module._CAPTION_STRIP_WIDE_MIN_HERO_PX)
     assert app._target_info is None
-    assert app._target_info_caption_box.get_visible() is False
+    if not compact:
+        assert app._target_info_caption_box.get_visible() is False
     assert app._confidence_legend_box.get_visible() is True
     assert info.get_visible() is True
     # ...and nothing readable is left behind by the hidden half. `is_visible`
@@ -2218,9 +2347,11 @@ def test_a_protein_the_playlist_cannot_name_gets_no_caption_at_all():
     # that would have passed no matter what this strip actually shows.
     shown = [label.get_label() for label in _legibility.iter_labels(info)
              if label.is_visible()]
-    assert shown == [app_module._CONFIDENCE_LEGEND_CAPTION,
-                     app_module._CONFIDENCE_LEGEND_LOW,
+    legend_labels = [app_module._CONFIDENCE_LEGEND_LOW,
                      app_module._CONFIDENCE_LEGEND_HIGH]
+    if not compact:
+        legend_labels.insert(0, app_module._CONFIDENCE_LEGEND_CAPTION)
+    assert shown == legend_labels
 
 
 def test_target_info_subject_prefers_what_is_on_screen():
@@ -2386,7 +2517,7 @@ def test_the_confidence_legend_costs_the_protein_no_height():
         app = _app()
         app.targets = [target]
         app._slots[0].shown_target_id = target.id
-        strip = app._build_target_info()
+        strip = app._build_target_info(hero_width_px=hero_width)
         with_legend = _strip_height(strip, hero_width)
         # `unparent`, not `strip.remove(...)`: the legend has to come out of
         # WHEREVER it was put, and `remove` on a widget that is not a direct
@@ -2406,28 +2537,123 @@ def test_the_confidence_legend_costs_the_protein_no_height():
 def test_the_confidence_legend_still_costs_nothing_at_the_floor_width():
     """The reference-size version of this test (above) already proved the
     legend costs the render no height AT 1920. This proves the same
-    invariant at the narrowest supported width, where a tagline that fit
-    comfortably beside the legend at 1920 might wrap differently in a
-    meaningfully narrower column -- checked, not assumed, per the spec."""
-    floor_width = 1024 - app_module.rail_width_for(1024)
+    invariant at every supported width, down to the floor -- in whichever
+    arrangement production picks there (`_build_target_info` builds the
+    compact one below `_CAPTION_STRIP_WIDE_MIN_HERO_PX`).
+
+    At the REAL hero width, from `hero_width_for` -- the same helper
+    `_build_gallery` and `_build_target_info` use. This test was first
+    written with its own `1024 - rail_width_for(1024)`, which gave 604px:
+    a hero that did not exist (the rail could not shrink to the 420px that
+    formula assumed, and its margins were forgotten). The real floor hero
+    is 436px, where the arrangement this test had approved left every
+    shipped name one character and an ellipsis wide."""
     targets = load_playlist(app_module._DEFAULT_PLAYLIST)
     assert targets
 
     too_tall = []
-    for target in targets:
-        app = _app()
-        app.targets = [target]
-        app._slots[0].shown_target_id = target.id
-        strip = app._build_target_info()
-        with_legend = _strip_height(strip, floor_width)
-        app._confidence_legend_box.unparent()
-        without_legend = _strip_height(strip, floor_width)
-        if with_legend != without_legend:
-            too_tall.append(
-                f"{target.id} at {floor_width}px: {with_legend}px with the legend, "
-                f"{without_legend}px without -- the render loses "
-                f"{with_legend - without_legend}px at the floor width")
+    for total_width, _height in _LAYOUT_MATRIX:
+        hero_width = app_module.hero_width_for(total_width)
+        for target in targets:
+            app = _app()
+            app.targets = [target]
+            app._slots[0].shown_target_id = target.id
+            strip = app._build_target_info(hero_width_px=hero_width)
+            with_legend = _strip_height(strip, hero_width)
+            app._confidence_legend_box.unparent()
+            without_legend = _strip_height(strip, hero_width)
+            if with_legend != without_legend:
+                too_tall.append(
+                    f"{target.id} at {total_width} (hero {hero_width}px): "
+                    f"{with_legend}px with the legend, {without_legend}px "
+                    f"without -- the render loses "
+                    f"{with_legend - without_legend}px")
     assert not too_tall, "\n".join(too_tall)
+
+
+def test_the_compact_caption_strip_is_as_tall_as_the_wide_one():
+    """The A/B above proves the legend adds nothing WITHIN an arrangement.
+    This is the other half: switching arrangements must not cost the render
+    height either -- the compact strip's second line (tagline beside a
+    one-line ramp) must be no taller than the wide strip's two lines.
+
+    Mutation this catches: keeping the two-line legend (with its "Colour:"
+    sentence) in the compact strip's second line -- 39px against the
+    tagline's 28px, so the strip grows by 11px."""
+    targets = load_playlist(app_module._DEFAULT_PLAYLIST)
+    taller = []
+    for target in targets:
+        heights = {}
+        for hero_width in (app_module._GALLERY_WIDTH_PX,
+                           app_module.hero_width_for(1024)):
+            app = _app()
+            app.targets = [target]
+            app._slots[0].shown_target_id = target.id
+            strip = app._build_target_info(hero_width_px=hero_width)
+            heights[app._target_info_compact] = _strip_height(strip, hero_width)
+        assert set(heights) == {True, False}, "both arrangements must be built"
+        if heights[True] > heights[False]:
+            taller.append(f"{target.id}: compact {heights[True]}px, wide "
+                          f"{heights[False]}px")
+    assert not taller, "\n".join(taller)
+
+
+def _allocated_strip(target, hero_width):
+    """The caption strip for `target`, built and ALLOCATED at `hero_width`
+    (so its labels have real widths and Pango layouts to ask about)."""
+    app = _app()
+    app.targets = [target]
+    app._slots[0].shown_target_id = target.id
+    strip = app._build_target_info(hero_width_px=hero_width)
+    _allocate(strip, hero_width, _strip_height(strip, hero_width))
+    return app
+
+
+def test_every_shipped_name_is_shown_whole_at_every_supported_width():
+    """The legibility half of the caption strip's contract, which the
+    height tests above cannot see: an ellipsized single line is EXACTLY as
+    tall as a whole one, so "costs no height" was green while the floor
+    width reduced "Dihydrofolate Reductase" to "D…".
+
+    The name is the one thing in this strip a visitor must be able to read
+    -- it is what the protein on screen IS. So at every supported width, in
+    the arrangement production picks there, every name the manifest ships
+    must come back un-ellipsized. Tied to the copy as much as the widget: a
+    longer name added to playlist/manifest.yaml fails here, not at a booth.
+
+    Mutations this catches: raising `_CAPTION_STRIP_WIDE_MIN_HERO_PX` out
+    of the way (the wide arrangement at 1024 and 1280 ellipsizes names), or
+    building the compact strip with the name sharing a row again.
+    """
+    targets = load_playlist(app_module._DEFAULT_PLAYLIST)
+    cut = []
+    for total_width, _height in _LAYOUT_MATRIX:
+        hero_width = app_module.hero_width_for(total_width)
+        for target in targets:
+            app = _allocated_strip(target, hero_width)
+            label = app._target_info_name_label
+            assert label.get_label() == target.name
+            if label.get_layout().is_ellipsized():
+                cut.append(f"{total_width} (hero {hero_width}px, "
+                           f"{'compact' if app._target_info_compact else 'wide'}): "
+                           f"{target.name!r} is ellipsized to {label.get_width()}px")
+    assert not cut, "\n".join(cut)
+
+
+def test_the_reference_and_laptop_widths_keep_the_full_legend():
+    """The compact strip trades away the legend's "Colour: ..." sentence,
+    so it must only ever be used where the wide one cannot show a name:
+    1920 (the booth's reference) must be byte-for-byte the shipped layout,
+    and 1366 still has the room. 1024 and 1280 are where it is needed."""
+    for total_width, compact in ((1024, True), (1280, True), (1366, False),
+                                 (1920, False), (2560, False)):
+        app = _app()
+        app._expected_window_width = lambda w=total_width: w
+        app._build_target_info()   # production's own width, no override
+        assert app._target_info_compact is compact, total_width
+        labels = [label.get_label() for label
+                  in _legibility.iter_labels(app._confidence_legend_box)]
+        assert (app_module._CONFIDENCE_LEGEND_CAPTION in labels) is (not compact)
 
 
 def test_the_confidence_legend_never_takes_the_screen_from_the_protein():
@@ -2448,10 +2674,16 @@ def test_the_confidence_legend_never_takes_the_screen_from_the_protein():
                            "The double helix, twelve rungs of it — and the "
                            "only thing this booth folds that is not a protein.")]
     app._slots[0].shown_target_id = "dna"
-    strip = app._build_target_info()
     hero_width = app_module._GALLERY_WIDTH_PX
+    strip = app._build_target_info(hero_width_px=hero_width)
 
     assert strip.measure(Gtk.Orientation.HORIZONTAL, -1).minimum < hero_width
+    # ...and at the real floor hero too, in the arrangement built for it:
+    # the strip sits in the hero slot, so its minimum is a floor under the
+    # whole window's (see test_the_booth_fits_its_own_window_...).
+    floor_hero = app_module.hero_width_for(1024)
+    floor_strip = _app()._build_target_info(hero_width_px=floor_hero)
+    assert floor_strip.measure(Gtk.Orientation.HORIZONTAL, -1).minimum <= floor_hero
     legend_width = app._confidence_legend_box.measure(
         Gtk.Orientation.HORIZONTAL, -1).natural
     assert legend_width < hero_width // 3
