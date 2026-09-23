@@ -2403,6 +2403,33 @@ def test_the_confidence_legend_costs_the_protein_no_height():
     assert not too_tall, "\n".join(too_tall)
 
 
+def test_the_confidence_legend_still_costs_nothing_at_the_floor_width():
+    """The reference-size version of this test (above) already proved the
+    legend costs the render no height AT 1920. This proves the same
+    invariant at the narrowest supported width, where a tagline that fit
+    comfortably beside the legend at 1920 might wrap differently in a
+    meaningfully narrower column -- checked, not assumed, per the spec."""
+    floor_width = 1024 - app_module.rail_width_for(1024)
+    targets = load_playlist(app_module._DEFAULT_PLAYLIST)
+    assert targets
+
+    too_tall = []
+    for target in targets:
+        app = _app()
+        app.targets = [target]
+        app._slots[0].shown_target_id = target.id
+        strip = app._build_target_info()
+        with_legend = _strip_height(strip, floor_width)
+        app._confidence_legend_box.unparent()
+        without_legend = _strip_height(strip, floor_width)
+        if with_legend != without_legend:
+            too_tall.append(
+                f"{target.id} at {floor_width}px: {with_legend}px with the legend, "
+                f"{without_legend}px without -- the render loses "
+                f"{with_legend - without_legend}px at the floor width")
+    assert not too_tall, "\n".join(too_tall)
+
+
 def test_the_confidence_legend_never_takes_the_screen_from_the_protein():
     """The width half of the same rule.
 
