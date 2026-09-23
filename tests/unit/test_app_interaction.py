@@ -47,6 +47,15 @@ from test_app_wiring import (FakeClock, FakeStack, FakeViewer,
                              RecordingPanel, _cell)
 
 
+# Add add_named method to FakeStack for gallery construction tests.
+def _fakestack_add_named(self, widget, name):
+    if not hasattr(self, '_named'):
+        self._named = {}
+    self._named[name] = widget
+
+FakeStack.add_named = _fakestack_add_named
+
+
 class FakeSampler:
     def latest(self):
         return None
@@ -1195,6 +1204,22 @@ def test_the_gallery_module_docstring_no_longer_describes_a_one_way_socket():
     text = ui.gallery.__doc__.lower()
     assert "one-way" not in text
     assert "cannot be reached from here yet" not in text
+
+
+def test_gallery_width_shrinks_the_rail_out_at_the_floor_size():
+    """Not a pixel-exact assertion (Gallery's own grid_shape rounds to whole
+    columns) -- the invariant is that the width handed to Gallery at the
+    floor size is meaningfully smaller than at the reference size, proving
+    the live window width is actually reaching this call and not the old
+    fixed constant."""
+    app = _app()
+    app.windowed = True  # _expected_window_width returns the literal 1280 default
+    app.targets = [_target("dna", "DNA double helix", "tagline")]
+    app._load_questions()
+    app._build_gallery()
+    expected = 1280 - app_module.rail_width_for(1280)
+    assert app.gallery.width_px == expected
+    assert expected < app_module._GALLERY_WIDTH_PX
 
 
 def test_the_readme_no_longer_says_a_tap_queues_nothing():

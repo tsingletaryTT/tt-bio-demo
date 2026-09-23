@@ -2719,8 +2719,10 @@ class DemoApp(Gtk.Application):
             for slot in self.router.slots:
                 slot.dwell_caps = dict(self.states.dwell_caps)
 
+        expected_width = self._expected_window_width()
+        gallery_width = expected_width - rail_width_for(expected_width)
         self.gallery = Gallery(self.targets, on_pick=self._on_pick,
-                               width_px=_GALLERY_WIDTH_PX,
+                               width_px=gallery_width,
                                questions=self.questions, on_ask=self._on_ask)
         # Cards at their natural width, centred -- NOT stretched to fill.
         # `Gallery` sets hexpand(True) on itself, which is right for a grid
