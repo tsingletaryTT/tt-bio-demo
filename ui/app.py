@@ -2525,14 +2525,20 @@ class DemoApp(Gtk.Application):
         return monitors.get_item(0).get_geometry().width
 
     def _build_side_rail(self):
-        """The fixed-width column: identity, then what the machine is doing,
+        """The narrow column: identity, then what the machine is doing,
         then what the silicon is doing.
 
-        `set_hexpand(False)` plus an explicit width is load-bearing, not a
-        preference -- see `_SIDE_RAIL_WIDTH_PX`. So is `_FixedWidthBox`:
-        `set_size_request` pins only the floor, and it was the rail's
-        NATURAL width (which the Tensix panel moved by 32px) that shifted
-        the hero slot every time a visitor pressed `T`.
+        `set_hexpand(False)` is load-bearing, not a preference -- without
+        it the rail negotiates its way to two thirds of the window. The
+        FLOOR width itself is no longer set here: `_ResponsiveSplitLayout`
+        (the `root` box's layout manager, installed in `do_activate`) sets
+        it on every real allocation via `rail_width_for`, using the
+        window's actual current width -- see that class and
+        `_SIDE_RAIL_WIDTH_PX`/`rail_width_for` for the reasoning. So is
+        `_FixedWidthBox`, still: `set_size_request` (wherever it is set)
+        pins only the floor, and it was the rail's NATURAL width (which the
+        Tensix panel moved by 32px) that shifted the hero slot every time a
+        visitor pressed `T`.
         """
         _ensure_app_css_installed()
         side = _FixedWidthBox(orientation=Gtk.Orientation.VERTICAL, spacing=14)
