@@ -797,6 +797,33 @@ class _FixedWidthBox(Gtk.Box):
             _PinnedNaturalBoxLayout(orientation=orientation, spacing=spacing))
 
 
+class _ResponsiveSplitLayout(Gtk.BoxLayout):
+    """The rail/hero split's own layout manager: on every real allocation
+    (window build, and any later live resize), recomputes the rail's width
+    from the container's actual current width via `rail_width_for` and
+    re-applies it as the rail's size request BEFORE delegating to the
+    ordinary box-layout allocation that actually places both children.
+
+    Proven against a real, running, off-screen GTK4 window before this
+    class was written (see this task's docstring in the plan this class
+    was implemented from) -- `do_allocate` receives the container's live
+    width on every real layout pass, a child's `set_size_request` called
+    from inside it takes effect in that same pass, and this is the same
+    "subclass the layout manager, not the widget" shape
+    `_PinnedNaturalBoxLayout` above already uses (`gtk_widget_measure`
+    delegates to the layout manager, not to a widget subclass's own
+    vfunc -- confirmed once already, for that class).
+    """
+
+    def __init__(self, rail_widget, **kwargs):
+        super().__init__(**kwargs)
+        self._rail = rail_widget
+
+    def do_allocate(self, widget, width, height, baseline):
+        self._rail.set_size_request(rail_width_for(width), -1)
+        Gtk.BoxLayout.do_allocate(self, widget, width, height, baseline)
+
+
 # What the gallery gets to lay its cards out in: the window minus the rail.
 # 1920 is this booth's screen; `ui.gallery.grid_shape` turns it into a
 # column count, so a different screen simply gets a different one.
@@ -2347,10 +2374,14 @@ class DemoApp(Gtk.Application):
         hero.set_child(self.screens)
         hero.add_overlay(self._build_egg_overlay())
 
+        side_rail = self._build_side_rail()
         root = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
         root.add_css_class("booth-root")
+        root.set_layout_manager(
+            _ResponsiveSplitLayout(side_rail, orientation=Gtk.Orientation.HORIZONTAL,
+                                    spacing=0))
         root.append(hero)
-        root.append(self._build_side_rail())
+        root.append(side_rail)
 
         logo = Gtk.Label(label=TT_BIO_LOGO)
         logo.add_css_class("booth-logo")
@@ -2506,7 +2537,6 @@ class DemoApp(Gtk.Application):
         _ensure_app_css_installed()
         side = _FixedWidthBox(orientation=Gtk.Orientation.VERTICAL, spacing=14)
         side.add_css_class("booth-side")
-        side.set_size_request(_SIDE_RAIL_WIDTH_PX, -1)
         side.set_hexpand(False)
         side.set_valign(Gtk.Align.START)
         for margin in ("set_margin_top", "set_margin_bottom",

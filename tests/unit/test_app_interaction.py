@@ -22,8 +22,10 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 
+import time
+
 import pytest
-from gi.repository import Gtk
+from gi.repository import Gtk, GLib
 
 import _legibility
 from _appfakes import _FakeQuad
@@ -1279,17 +1281,75 @@ def test_the_plddt_legend_matches_the_ramp_the_ribbon_is_actually_coloured_by():
 # Layout: the rail must not swallow the screen.
 # ---------------------------------------------------------------------------
 
+def _pump(seconds=0.3):
+    """Drain the default GLib main context for a fixed wall-clock dwell.
+
+    A bare `Gtk.Box.size_allocate(...)` call (the technique this task's own
+    plan started with) does not reliably re-measure a widget whose
+    `set_size_request` just changed mid-allocation: a throwaway probe showed
+    the FIRST allocation land correctly and a SECOND, different-width
+    allocation on the same tree silently keep the first width -- no
+    exception, just a stale answer. A real, presented window's allocation
+    is driven by the compositor through the main loop instead of by one
+    synchronous call, so draining that loop is what actually reproduces a
+    live resize -- but a PREDICATE-gated drain that returns the instant the
+    target width first appears was ALSO tried and ALSO proven unreliable
+    here: it exits before the toplevel's resize handshake with the
+    compositor has actually finished, and a second `set_default_size` issued
+    immediately after is silently dropped (measured: the second phase then
+    never reaches its target, indefinitely). A fixed dwell that keeps
+    draining the loop past the first sighting of the new width is what
+    measurably works, confirmed over 5 repeated trials."""
+    ctx = GLib.MainContext.default()
+    end = time.time() + seconds
+    while time.time() < end:
+        while ctx.iteration(False):
+            pass
+
+
+def _realize(root, width, height):
+    """Build a real, presented `Gtk.Window` around `root` at `width`x`height`
+    and let one real layout pass happen. Returns the window (call
+    `_resize_to` to simulate a live resize on the same window)."""
+    win = Gtk.Window()
+    win.set_child(root)
+    win.set_default_size(width, height)
+    win.present()
+    _pump()
+    return win
+
+
+def _resize_to(win, width, height):
+    win.set_default_size(width, height)
+    _pump()
+
+
 def test_the_side_rail_stays_a_fixed_narrow_column_with_the_panel_in_it():
     """The load-bearing layout fact (see `_SIDE_RAIL_WIDTH_PX`): without
     hexpand(False) and an explicit width, the rail negotiates its way to two
     thirds of the window and the protein -- the reason anyone stopped to
     look -- ends up in a corner. Adding a wide monospace log to that rail is
-    exactly the change that could break it."""
+    exactly the change that could break it.
+
+    The width itself is no longer set by `_build_side_rail` in isolation --
+    `_ResponsiveSplitLayout` (Task 4) now applies it at real allocation time
+    via `rail_width_for` -- so this test wraps the rail the same way
+    `do_activate` does, in a real presented window (see `_realize`), and
+    checks the reference-size invariant through that real mechanism instead
+    of reading a size request `_build_side_rail` no longer sets."""
     app = _app()
     rail = app._build_side_rail()
     assert rail.get_hexpand() is False
-    width, _height = rail.get_size_request()
-    assert width == app_module._SIDE_RAIL_WIDTH_PX
+    hero = Gtk.Label(label="hero")
+    hero.set_hexpand(True)
+    root = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+    root.set_layout_manager(
+        app_module._ResponsiveSplitLayout(rail, orientation=Gtk.Orientation.HORIZONTAL))
+    root.append(hero)
+    root.append(rail)
+    win = _realize(root, 1920, 1080)
+    assert rail.get_width() == app_module._SIDE_RAIL_WIDTH_PX
+    win.close()
     assert app.diagnostics_panel is not None
     assert app.diagnostics_panel.get_hexpand() is False
 
@@ -1326,6 +1386,51 @@ def test_rail_width_for_is_monotonically_non_decreasing():
     assert computed == sorted(computed)
 
 
+# ---------------------------------------------------------------------------
+# _ResponsiveSplitLayout: the mechanism that actually applies rail_width_for
+# to the rail's real, live allocation.
+# ---------------------------------------------------------------------------
+
+def test_the_responsive_split_layout_gives_the_rail_the_live_width():
+    """The brief's own version of this test drove allocation with a single,
+    bare `root.size_allocate(Gdk.Rectangle(...), -1)` call on an unparented
+    box -- proven NOT reliable here: it does not raise, but a SECOND
+    differently-sized allocation on the same tree silently kept the first
+    call's width (420 at both 1024 and 1920, confirmed by hand before this
+    test was written this way). A real, presented `Gtk.Window` whose
+    allocation is driven by draining the main loop (`_realize`/
+    `_resize_to`) is the fallback this task's own brief names for exactly
+    this failure mode, and it is what reproduces a live resize."""
+    rail = Gtk.Box()
+    hero = Gtk.Label(label="hero")
+    hero.set_hexpand(True)
+
+    root = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+    root.set_layout_manager(
+        app_module._ResponsiveSplitLayout(rail, orientation=Gtk.Orientation.HORIZONTAL))
+    root.append(hero)
+    root.append(rail)
+
+    win = _realize(root, 1024, 768)
+    assert rail.get_width() == app_module.rail_width_for(1024)
+
+    _resize_to(win, 1920, 1080)
+    assert rail.get_width() == app_module._SIDE_RAIL_WIDTH_PX
+    win.close()
+
+
+def test_the_responsive_split_layout_does_not_raise_on_a_tiny_width():
+    rail = Gtk.Box()
+    hero = Gtk.Label(label="hero")
+    root = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+    root.set_layout_manager(
+        app_module._ResponsiveSplitLayout(rail, orientation=Gtk.Orientation.HORIZONTAL))
+    root.append(hero)
+    root.append(rail)
+    win = _realize(root, 1, 1)  # must not raise
+    win.close()
+
+
 # help_card_width_for: the pure sizing function for the `?` card, preserving
 # the exact reference layout at 1920px, independently from rail_width_for.
 # ---------------------------------------------------------------------------
@@ -1351,13 +1456,28 @@ def test_help_card_width_for_never_exceeds_the_reference_card_width():
 
 def test_the_tensix_panel_is_in_the_rail_and_never_expands_it():
     """Adding a WebView to a fixed column is exactly the change that could
-    break the rail -- and with it, the protein's claim on the screen."""
+    break the rail -- and with it, the protein's claim on the screen.
+
+    See `test_the_side_rail_stays_a_fixed_narrow_column_with_the_panel_in_it`
+    for why this reads the allocated width through a real, presented window
+    rather than `_build_side_rail`'s own size request (which Task 4 moved
+    out of this method entirely) or a bare `size_allocate` call (which does
+    not reliably drive this fully-built rail's real content)."""
     app = _app()
     rail = app._build_side_rail()
     assert app.chipviz_panel is not None
     assert app.chipviz_panel.get_hexpand() is False
     assert rail.get_hexpand() is False
-    assert rail.get_size_request()[0] == app_module._SIDE_RAIL_WIDTH_PX
+    hero = Gtk.Label(label="hero")
+    hero.set_hexpand(True)
+    root = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+    root.set_layout_manager(
+        app_module._ResponsiveSplitLayout(rail, orientation=Gtk.Orientation.HORIZONTAL))
+    root.append(hero)
+    root.append(rail)
+    win = _realize(root, 1920, 1080)
+    assert rail.get_width() == app_module._SIDE_RAIL_WIDTH_PX
+    win.close()
 
 
 def _rail_width_request(rail):
