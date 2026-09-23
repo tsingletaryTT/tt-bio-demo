@@ -44,16 +44,7 @@ from ui.telemetry import ChipReading
 # also what keeps "what a FakeViewer models" a single decision (see
 # test_app_wiring.py's module docstring on why FakeViewer models `blend`).
 from test_app_wiring import (FakeClock, FakeStack, FakeViewer,
-                             RecordingPanel, _cell)
-
-
-# Add add_named method to FakeStack for gallery construction tests.
-def _fakestack_add_named(self, widget, name):
-    if not hasattr(self, '_named'):
-        self._named = {}
-    self._named[name] = widget
-
-FakeStack.add_named = _fakestack_add_named
+                             RecordingPanel, _cell, _NamingStack)
 
 
 class FakeSampler:
@@ -1214,6 +1205,7 @@ def test_gallery_width_shrinks_the_rail_out_at_the_floor_size():
     fixed constant."""
     app = _app()
     app.windowed = True  # _expected_window_width returns the literal 1280 default
+    app.screens = _NamingStack()  # Replace FakeStack with _NamingStack for _build_gallery
     app.targets = [_target("dna", "DNA double helix", "tagline")]
     app._load_questions()
     app._build_gallery()
