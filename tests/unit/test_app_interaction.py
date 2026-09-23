@@ -950,6 +950,25 @@ def test_the_narrow_tensix_sentence_ties_each_state_to_when_it_happens():
                 f"wrong pairing in {clause!r}")
 
 
+def test_the_narrow_text_says_diffusion_is_the_longest_stage():
+    """The narrow text's only mention of the fold pipeline's timing: that
+    diffusion is its longest stage (rides inside the ring's parenthesis,
+    where the room was). Round 5's rewording dropped the round-4 assertion
+    that pinned it, and deleting the clause then left the whole suite
+    green -- so it is pinned here with the same distance check the state
+    pairings use, and stated without implying diffusion ENDS the pipeline
+    (`protocol.events.STAGE_ORDER` has two stages after it).
+
+    Mutation this catches: deleting ", the pipeline's longest stage".
+    """
+    clause = _narrow_tensix_clause()
+    gap = _distance(clause, "longest", "diffusion")
+    assert gap is not None and gap <= 30, (
+        f"nothing ties 'longest' to 'diffusion' in {clause!r}")
+    assert "last stage" not in clause and "final stage" not in clause
+    assert "ends in diffusion" not in clause
+
+
 def test_the_narrow_tensix_sentence_says_what_the_header_shows():
     """The Tensix panel's header carries two live readouts: how many chips
     are folding (`ChipVizPanel`'s title, "N CHIPS FOLDING") and the peak
