@@ -193,6 +193,7 @@ from ui.structure_view import structure_mesh
 from ui.panels import (TELEMETRY_PANEL_RESERVED_WIDTH_PX, PipelinePanel,
                        TelemetryPanel)
 from ui.playlist import PlaylistError, load_playlist, load_questions, select_targets
+from ui.questioning import select_question
 from ui.qa_spotlight import QASpotlightCell
 from ui.questions import QuestionQueuePanel
 from ui.attract import (ASK_QUESTION, CLOSE_DIAGNOSTICS, CLOSE_TENSIX,
@@ -2034,10 +2035,14 @@ class DemoApp(Gtk.Application):
         # (always 0) result, since `Gio.Application.quit()` has no notion of
         # a custom process exit code of its own.
         self.exit_code = None
-        # Round-robin cursor into `self.questions` for the attract loop's
-        # ASK_QUESTION cue (`_ask_next_question`) -- a plain int, not read
-        # back off anything, so a headless test can drive it directly.
-        self._ask_question_index = 0
+        # Recency history for the attract loop's ASK_QUESTION cue
+        # (`_ask_next_question`): the ids of the questions asked most
+        # recently, most-recent first. Bounded to the size of the question
+        # pool (see `_note_question_asked`) so "least recently asked" stays
+        # meaningful across the whole pool. Replaces the old blind
+        # round-robin cursor -- the choice itself now lives in
+        # ui/questioning.py.
+        self._recently_asked = []
         # target_id -> the most recent, not-yet-VISUALLY-APPLIED `answer_done`
         # event for that target (Critical fix, whole-branch review). See
         # `_handle_answer_event`/`_spawn_ribbon_worker`/`_apply_ribbon`'s own
@@ -4806,8 +4811,8 @@ class DemoApp(Gtk.Application):
             return False
 
     def _ask_next_question(self):
-        """The attract loop's `ASK_QUESTION` cue: round-robin through
-        `load_questions()` and ask the daemon the next one.
+        """The attract loop's `ASK_QUESTION` cue: ask the daemon the next
+        affinity question, chosen by `ui.questioning.select_question`.
 
         Fire-and-forget, matching `ui.attract.Choreography`'s own cue: no
         visitor input is recorded (`_note_input()` is deliberately NOT
@@ -4819,18 +4824,57 @@ class DemoApp(Gtk.Application):
         `qa_capable` guard of its own for correctness -- but it checks
         anyway, so the booth does not narrate a capability it has already
         told its own rail panel and gallery strip is not there.
+
+        The choice itself is delegated to `ui.questioning.select_question`:
+        it prefers a question about whatever is on screen, then the
+        least-recently-asked question, and never repeats the last question
+        while an alternative exists. The recency it ranks against is the
+        bounded deque kept in `_recently_asked` (see `_note_question_asked`).
         """
         if not self.qa_capable or not self.questions:
             return
-        index = self._ask_question_index % len(self.questions)
-        self._ask_question_index += 1
-        question = self.questions[index]
+        question = select_question(
+            self.questions,
+            on_screen_target_id=self._on_screen_target_id(),
+            recently_asked=self._recently_asked,
+        )
+        if question is None:
+            return
+        self._note_question_asked(question.id)
         log.info("attract loop asking %s (target %s)",
                  question.id, question.target_id)
         self._note_diagnostics(
             self.diagnostics.note,
             f"attract loop asked: {question.question}", KIND_MARK)
         self._send_question(question.id, question.target_id)
+
+    def _on_screen_target_id(self):
+        """The target_id on the hero screen right now, or None.
+
+        The same "what is on screen" rule `_sync_target_info` uses: the
+        focus slot's shown target, else the one it is folding. This is what
+        the adaptive selector (ui/questioning.py) asks about, so the booth
+        narrates the protein a visitor is actually looking at rather than
+        cycling a fixed list.
+        """
+        if self.router is None:
+            return None
+        focus = self._slot_view(self.router.focus_slot)
+        if focus is None:
+            return None
+        return target_info_subject(
+            shown_target_id=focus.shown_target_id,
+            folding_target_id=focus.current_target_id,
+        )
+
+    def _note_question_asked(self, question_id):
+        """Record a question as just-asked, keeping the recency window
+        bounded to the size of the pool so "least recently asked" stays
+        meaningful across the whole pool (see ui/questioning.py)."""
+        self._recently_asked.insert(0, question_id)
+        limit = max(len(self.questions), 1)
+        if len(self._recently_asked) > limit:
+            del self._recently_asked[limit:]
 
     def _sync_quad_notice(self, now):
         """Say one thing across the quad about the visitor's pick, or stop

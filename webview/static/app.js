@@ -305,6 +305,14 @@ function rebuildCellsIfNeeded(cards) {
   if (!state.viewModeUserSet && foldCards.length > 1) {
     setStageMode("quad");
   }
+  // Quad by default once more than one chip is actually available, mirroring
+  // the native booth's own tri-state default (ui/app.py, 2026-08-24: "I like
+  // 4 chip by default when available"). Never overrides a visitor's own
+  // press of the toggle, and never downgrades back to solo just because the
+  // card list happened to arrive gradually and briefly had one entry.
+  if (!state.viewModeUserSet && cards.length > 1) {
+    setStageMode("quad");
+  }
 }
 
 function addSeenTarget(targetId) {

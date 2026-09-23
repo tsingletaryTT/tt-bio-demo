@@ -14,34 +14,57 @@
 # a question rides the existing pick pathway only for its reveal theatre,
 # never for the score itself.
 #
-# `expected_s` stays `null` for all three, and that is deliberate rather than
-# an oversight. The implementation's hardware spike
-# (docs/spike-nesso1-affinity.md, section 4) measured a realistic per-question
-# latency of roughly 8-12s (about 6-8s of host-side feature prep that does not
-# get cheaper on a repeat call, plus about 2-4s of on-device prediction with
-# the model resident) -- but that was one spike run, not this project's usual
-# repeated-measurement discipline (a mean of several back-to-back warm runs on
-# real hardware, the standard every `expected_s` in manifest.yaml is held to).
-# So it is not yet a citable number, and it stays null until a proper
-# measurement pass runs -- never a guess dressed up as a measurement. Absent
-# or explicit `null` both mean "not yet measured," the same convention
-# manifest.yaml's own `expected_s` uses; ui/questions.py renders a null
+# ONE QUESTION PER TARGET, DELIBERATELY. `runner/daemon.py::_accept_question`
+# resolves the affinity scoring input purely from `target_id` -- it reuses
+# the SAME fold file `playlist/manifest.yaml` already points that target at
+# (`self._playlist_target(target_id)`), because that file is the one place
+# each of these three proteins' baked-in ligand actually lives. A 2026-09-22
+# pass tried to grow this to six curated additions naming a SECOND ligand per
+# protein (trimethoprim alongside methotrexate for dhfr, etc.) and shipped it
+# untested on hardware. Running it for real found two distinct failures:
+#
+#   - Every "second ligand" question (dhfr_tm, trypsin_pmsf,
+#     fkbp12_rapamycin, fkbp12_tacrolimus) silently scored the SAME baked-in
+#     ligand as its target's real question, because there is no per-question
+#     input file, only a per-TARGET one. Asking "does trimethoprim inhibit
+#     DHFR?" returned a real nesso1 score for methotrexate, captioned as
+#     trimethoprim -- confirmed by running dhfr_mtx and dhfr_tm back to back
+#     on real hardware and getting the same score within noise (0.9764 vs
+#     0.9770). That is exactly the fabrication this project's content-honesty
+#     rule exists to prevent, just arrived at silently instead of by a typo.
+#   - hsa_warfarin/hsa_ibuprofen named a ligand that plain does not exist in
+#     hsa's fold input (`examples/hsa_no_msa.yaml` has no ligand entity at
+#     all) -- confirmed to always fail with `ValueError: No protein or
+#     ligand tokens found in the batch`.
+#
+# Supporting a real second ligand per protein needs a per-question input
+# file (a new vendored example with the correct CCD ligand code) AND a daemon
+# change to route the affinity score off `question_id`, not `target_id` --
+# real work, not a data fix, and worth its own spec if picked back up. Until
+# then this file stays at the three pairs that are actually, verifiably
+# correct: one target, one ligand, one question.
+#
+# `expected_s` is the measured per-question latency on THIS hardware: mean of
+# 3 back-to-back warm calls on chip 0 with the model resident, one discarded
+# cold call per shape first (2026-09-22), same repeated-measurement
+# discipline as every `expected_s` in manifest.yaml. Absent or explicit
+# `null` both mean "not yet measured;" ui/questions.py renders a null
 # expected_s as "not yet timed," mirroring ui/gallery.py's existing handling
 # of an unmeasured fold target.
 - id: dhfr_mtx
   target_id: dhfr
   question: "Does methotrexate block dihydrofolate reductase?"
   ligand_name: "Methotrexate"
-  expected_s: null
+  expected_s: 10.1
 
 - id: trypsin_bam
   target_id: trypsin
   question: "Does benzamidine block trypsin?"
   ligand_name: "Benzamidine"
-  expected_s: null
+  expected_s: 10.7
 
 - id: fkbp12_sb3
   target_id: fkbp12
   question: "Does SB3 bind FKBP12?"
   ligand_name: "SB3"
-  expected_s: null
+  expected_s: 8.3

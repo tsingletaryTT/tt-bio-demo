@@ -215,6 +215,13 @@ class Question(object):
     # (see this module's docstring and playlist/questions.yaml's own header
     # comment): absent or explicit YAML `null`, never a fabricated number.
     expected_s: float | None = None
+    # Optional provenance for the pair: a short, verifiable note that this is
+    # a real, citable protein-ligand pair (e.g. a well-known drug target or a
+    # PDB reference). Absent means "no citation recorded yet" -- it is never
+    # fabricated, mirroring the expected_s "measured or absent, never guessed"
+    # rule. See the content-honesty guardrails in the generative-questions
+    # plan (docs/superpowers/plans/2026-09-22-generative-questions.md).
+    source: str | None = None
 
 
 # Every field a question entry must supply explicitly, beyond `id` (checked
@@ -552,12 +559,28 @@ def load_questions(path=None):
                     f"{raw_expected_s!r}"
                 ) from exc
 
+        # Optional provenance for the pair (see Question.source). Absent or
+        # null means "no citation recorded yet"; a PRESENT value must be a
+        # non-blank string -- a number or list here is a config error, not a
+        # citation, so it is rejected loudly rather than coerced.
+        raw_source = entry.get("source")
+        if raw_source is None:
+            source = None
+        elif not isinstance(raw_source, str) or not raw_source.strip():
+            raise PlaylistError(
+                f"{entry_id}: 'source' must be a non-empty string, got "
+                f"{raw_source!r}"
+            )
+        else:
+            source = raw_source.strip()
+
         questions.append(Question(
             id=entry_id,
             target_id=target_id,
             question=entry["question"],
             ligand_name=entry["ligand_name"],
             expected_s=expected_s,
+            source=source,
         ))
 
     return questions
