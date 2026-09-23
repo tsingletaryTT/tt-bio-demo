@@ -866,6 +866,113 @@ def test_the_help_card_still_fits_the_booth_s_own_screen():
     assert not too_tall, "\n".join(too_tall)
 
 
+# ---------------------------------------------------------------------------
+# The narrow (`wide=False`) help-card copy, used at the 1024x768/1366x768
+# floor sizes -- added 2026-09-23 (responsive-layout Task 6, fix round 4)
+# because nothing exercised this text's actual WORDING before now, only its
+# HEIGHT. That gap is why the same content-honesty findings kept
+# almost-regressing round after round: a merge could drop a fact and the
+# height-only matrix test would still pass.
+# ---------------------------------------------------------------------------
+
+def _tied_together(text, word, trigger, max_distance=30):
+    """Assert `word` and `trigger` both appear in `text` and land close
+    enough together to read as ONE stated fact ("a ring during diffusion"),
+    not as two words that both happen to be somewhere in the same
+    paragraph. A bare `"ring" in text and "diffusion" in text` check would
+    pass even if the two were in unrelated sentences -- which is exactly
+    the shape of the round-3 regression this guards: naming all three
+    Tensix states without saying when any of them happens.
+
+    Checks EVERY occurrence of each against every occurrence of the other
+    (not just the first of each), since a word can legitimately appear
+    more than once in the same paragraph -- "diffusion" names both the
+    fold stage earlier in this sentence and the Tensix ring's trigger
+    later in it, and only the second occurrence is the one `word` needs
+    to be near.
+    """
+    import re
+    word_positions = [m.start() for m in re.finditer(re.escape(word), text)]
+    trigger_positions = [m.start() for m in re.finditer(re.escape(trigger), text)]
+    assert word_positions, f"{word!r} not found in {text!r}"
+    assert trigger_positions, f"{trigger!r} not found in {text!r}"
+    closest = min(abs(w - t) for w in word_positions for t in trigger_positions)
+    assert closest <= max_distance, (
+        f"closest {word!r}/{trigger!r} pair is {closest} chars apart -- too "
+        f"far apart to read as one tied-together fact in {text!r}")
+
+
+def test_the_narrow_tensix_sentence_ties_each_state_to_when_it_happens():
+    """Important 4 (whole-branch review, twice): naming the Tensix panel's
+    three visual states without saying WHEN each one happens leaves a
+    visitor with no way to tell what's normal from what's wrong -- a round
+    3 draft named all three ("ring, glow (trunk), quiet") and was rejected
+    in review for exactly this, because "ring" and "quiet" on their own
+    named no trigger at all.
+
+    Checked with real proximity, not bare substring presence: `"ring" in
+    text and "diffusion" in text` would have passed the round-3 draft too,
+    since both words appeared somewhere in the same paragraph.
+    """
+    from ui.app import _help_panels
+    text = _help_panels(1, wide=False)[1].lower()
+    assert "tensix" in text
+    _tied_together(text, "ring", "diffusion")
+    _tied_together(text, "glow", "trunk")
+    _tied_together(text, "quiet", "fold")
+
+
+def test_the_narrow_affinity_disclaimer_keeps_its_actual_substance():
+    """Important 5 (whole-branch review, twice): a round 3 draft shipped
+    "not a claim" with the substance of what is not being claimed cut
+    away -- a token with no meaning, not a disclaimer. The distance cutoff
+    is a checkable geometric fact; what it must NOT be read as is a claim
+    about where the ligand truly binds, and that second half is the part
+    that has to survive, not just the word "claim" on its own.
+
+    Also pins that nesso1 is credited with a SCORE, not just "a highlight"
+    -- the other half of Important 5 dropped in the same round-3 draft.
+    """
+    from ui.app import _help_panels
+    text = _help_panels(1, wide=False)[1].lower()
+    assert "nesso1" in text
+    assert "score" in text
+    assert "residues nearest the ligand" in text
+    assert "claim" in text
+    assert "where it binds" in text or "where the ligand" in text, (
+        "the disclaimer's substance (what is NOT being claimed) is "
+        "missing -- a bare \"claim\"/\"not a claim\" says nothing")
+    assert "the binding site" not in text
+
+
+def test_a_narrow_booth_gets_the_narrow_copy_and_a_wide_booth_gets_the_wide_copy():
+    """`_build_help_overlay` computes `wide` from the real window width and
+    stores it on `self._help_card_wide`, which `_sync_help_copy` later
+    reuses to keep re-fetching text from the SAME function the labels were
+    built from. Neither the computation nor the resulting text had a test
+    exercising them directly before now -- only the card's overall HEIGHT
+    was checked, which cannot tell a mismatched wide/narrow selection from
+    a correct one.
+    """
+    narrow = _app()
+    narrow._expected_window_width = lambda w=1024: w
+    app_module.DemoApp._build_help_overlay(narrow)
+    assert narrow._help_card_wide is False
+    narrow_text = " ".join(
+        label.get_label() for label in narrow._help_panel_labels).lower()
+    assert "diffusion is the pipeline's longest stage" in narrow_text
+    assert "one row per fold stage" not in narrow_text
+
+    wide = _app()
+    wide._expected_window_width = lambda w=1920: w
+    app_module.DemoApp._build_help_overlay(wide)
+    assert wide._help_card_wide is True
+    wide_text = " ".join(
+        label.get_label() for label in wide._help_panel_labels).lower()
+    assert "one row per fold stage" in wide_text
+    assert "diffusion is the pipeline's longest stage" not in wide_text
+
+
 def test_the_help_card_explains_both_rail_panels():
     panels_copy = " ".join(app_module._HELP_PANELS).lower()
     assert "pipeline" in panels_copy and "diffusion" in panels_copy
@@ -939,14 +1046,18 @@ def test_help_panels_and_key_help_are_functions_of_the_real_chip_count():
     fold-chip count, never a hardcoded one.
 
     Checked against the QUAD line specifically (`_help_panels(n)[0]`), not
-    the whole joined column: the "Chips" (telemetry) sentence merged into
-    the Pipeline paragraph (2026-09-23, responsive-layout Task 6, for
-    space at the 1024x768 floor screen) never names a chip count at all
-    any more -- it samples every chip via tt-smi independently of the
-    daemon and of how many are reserved for folding vs. Q&A, so its claim
-    is about hardware inventory, not about how many chips are folding, and
-    the safest way to keep that true regardless of `n_chips` turned out to
-    be not putting a number there in the first place.
+    the whole joined column: the separate "Chips" (telemetry) paragraph
+    (this test calls `_help_panels` at its default `wide=True` -- the
+    original, side-by-side-layout text, where Chips is still its own
+    paragraph, unchanged from before responsive-layout Task 6) deliberately
+    keeps saying "four" when the box genuinely has four physical chips --
+    it samples every chip via tt-smi independently of the daemon and of how
+    many are reserved for folding vs. Q&A, so its claim is about hardware
+    inventory, not about how many chips are folding, and stays true
+    regardless of `n_chips`. (The narrower `wide=False` text used at the
+    1024x768/1366x768 floor sizes drops this sentence for space -- see
+    `_help_panels`'s own docstring -- but nothing calls it with `wide=False`
+    here, so that text is untested by this function.)
     """
     from ui.app import _help_panels, _key_help
     quad_line = _help_panels(3)[0].lower()

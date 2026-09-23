@@ -1469,8 +1469,8 @@ def _help_intro(n_chips, wide=True):
       this file checks) is the copy this card has always shipped,
       unabridged, used at the reference size and above -- the side-by-side
       KEYS/panels layout always had headroom to spare there (measured:
-      875px of a 1080px budget at 1920x1080, even before this task touched
-      the copy at all).
+      992px of a 1080px budget at 1920x1080 -- this card's own pre-task
+      comment already recorded this exact number).
     - `wide=False` is a genuinely DIFFERENT, shorter text used at the
       1024x768/1366x768 floor sizes, where the SAME side-by-side layout's
       half-width columns do not have that headroom. It says the same
@@ -1510,10 +1510,11 @@ def _help_intro(n_chips, wide=True):
         )
     return (
         # Full, unabridged copy. Shared by the reference two-column layout
-        # and above -- it always had headroom for it (measured: 875px of a
-        # 1080px budget at 1920x1080, even before this task touched the
-        # copy at all). See this function's own docstring for the
-        # narrower `wide=False` text used below the reference width.
+        # and above -- it always had headroom for it (measured: 992px of a
+        # 1080px budget at 1920x1080; this card's own pre-task comment
+        # already recorded this exact number). See this function's own
+        # docstring for the narrower `wide=False` text used below the
+        # reference width.
         "A protein structure prediction, running right now on Tenstorrent "
         "chips a few feet away — not a recording. The collapsing point cloud "
         "is the model's own work, streamed live; the ribbon at the end is "
@@ -1552,14 +1553,10 @@ def _help_intro(n_chips, wide=True):
         # `test_the_help_card_still_fits_the_booth_s_own_screen`'s size
         # matrix -- and that test's own history note on why it must be
         # measured at the card's REAL allocated width, not the screen's,
-        # or it silently stops being able to fail). Content honesty comes
-        # first, though (whole-branch review, 2026-09-23): the wait
-        # disclosure ("it starts when a chip frees up") and the finish
-        # guarantee are both restored below after an earlier draft of this
-        # trim dropped them for space -- neither is optional decoration.
-        f"The booth folds {word} {protein_word} at once. Tap one to "
-        "fold it next — it starts when a chip frees up; folds "
-        "already running finish undisturbed.",
+        # or it silently stops being able to fail).
+        f"The booth folds {word} {protein_word} at once, all day. Tap one "
+        "to put it next — it starts when a chip frees up; the folds "
+        "already running are left to finish.",
     )
 
 
@@ -1679,8 +1676,14 @@ def _help_panels(n_chips, wide=True):
       - the diffusion-takes-longest fact, stated without implying it ends
         the pipeline (`protocol.events.STAGE_ORDER` has two more stages
         after it);
-      - the Tensix panel's three real states (a ring while denoising, a
-        steady glow while reasoning at trunk, quiet between folds) -- the
+      - the Tensix panel's three real states, each tied to WHEN it
+        happens, not just named: `wide=True` says "a ring while
+        denoising, a steady glow while reasoning at trunk, quiet between
+        folds"; `wide=False` says the same three timings more tersely
+        ("ring (diffusion), glow (trunk), quiet (between folds)") --
+        naming the states without their timing is not enough for a
+        visitor to tell what's normal from what's wrong, which is why a
+        round 3 draft that did exactly that was rejected in review. The
         ring is `ui/chipviz.py`'s own "headline" animation, not a detail
         to drop for space;
       - what the header count and clock number actually show;
@@ -1715,11 +1718,11 @@ def _help_panels(n_chips, wide=True):
         return (
             quad_help_line(n_chips),
 
-            "Diffusion is pipeline's longest stage. Tensix — ring, glow "
-            "(trunk), quiet; header shows count, clock shows speed. "
-            "Affinity — nesso1's score, residues nearest the ligand, "
-            f"{POCKET_CUTOFF_ANGSTROM:g} Å — never a claim where it "
-            "binds.",
+            "Diffusion is the pipeline's longest stage. Tensix — ring "
+            "(diffusion), glow (trunk), quiet (between folds); "
+            "header/clock live. Affinity — nesso1's score, residues "
+            f"nearest the ligand, {POCKET_CUTOFF_ANGSTROM:g} Å — never "
+            "a claim about where it binds.",
         )
     return (
         # The quad view's own line, from `ui/quad.py` rather than re-typed
@@ -3354,8 +3357,9 @@ class DemoApp(Gtk.Application):
         # screen`'s size matrix). So the layout stays exactly what it
         # always was, and only the COPY is now width-aware: `wide=True`
         # (the original, unabridged text, still used at the reference size
-        # and above, which always had headroom to spare -- measured 875px
-        # of a 1080px budget even before this task touched the copy) or
+        # and above, which always had headroom to spare -- measured 992px
+        # of a 1080px budget; this card's own pre-task comment already
+        # recorded this exact number) or
         # `wide=False` (a shorter but not gutted text for the floor sizes
         # -- see `_help_intro`'s and `_help_panels`'s own docstrings for
         # exactly what "not gutted" means here and what it cost to verify).
