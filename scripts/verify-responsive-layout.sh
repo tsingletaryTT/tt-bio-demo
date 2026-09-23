@@ -14,6 +14,16 @@ VENV_UI="${REPO_ROOT}/.venvs/venv-ui"
 OUT_DIR="${1:-/tmp/responsive-layout-shots}"
 mkdir -p "$OUT_DIR"
 
+# Both the MockRunner invocation below (a relative fixture path) and
+# `-m ui.app` (a package import) are cwd-sensitive: without this, running the
+# script from anywhere other than the repo root makes both background
+# processes die instantly with ModuleNotFoundError/FileNotFoundError -- and,
+# without the liveness checks further down, the script would still exit 0 and
+# hand back 4 correctly-sized screenshots of a blank weston desktop, reporting
+# success for a run that never actually drew the app. Pin cwd explicitly
+# rather than relying on the caller's.
+cd "$REPO_ROOT"
+
 if ! command -v weston >/dev/null 2>&1; then
   echo "weston not found -- sudo apt-get install -y weston" >&2
   exit 1
@@ -57,6 +67,21 @@ time.sleep(3600)
     > "${OUT_DIR}/app-${size}.log" 2>&1 &
   app_pid=$!
   sleep 5
+
+  # A crashed mock or app process must be a loud failure, not a screenshot of
+  # a blank weston desktop reported as success -- the exact failure class a
+  # cwd-sensitive invocation hit when run from outside the repo root.
+  for pid_var in mock_pid app_pid; do
+    pid="${!pid_var}"
+    if ! kill -0 "$pid" 2>/dev/null; then
+      echo "FATAL: ${pid_var} (pid ${pid}) is not running ahead of the" \
+           "${size} screenshot -- see ${OUT_DIR}/mock-${size}.log and" \
+           "${OUT_DIR}/app-${size}.log" >&2
+      kill -TERM "$weston_pid" 2>/dev/null || true
+      wait "$weston_pid" 2>/dev/null || true
+      exit 1
+    fi
+  done
 
   (cd "$OUT_DIR" && WAYLAND_DISPLAY="$wl_socket" weston-screenshooter) \
     > "${OUT_DIR}/shot-${size}.log" 2>&1 || true
