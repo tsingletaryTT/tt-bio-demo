@@ -1164,6 +1164,23 @@ _BACKGROUND_BY_CLASS = {
 # dark ground and could not legally be a label colour here. The label next
 # to each swatch is ordinary body text on the overlay's own ground.
 _PLDDT_LEGEND = (
+    ("plddt-very-high", "above 90", "very high — trust the detail"),
+    ("plddt-confident", "70 to 90", "confident backbone"),
+    ("plddt-low", "50 to 70", "low — treat with care"),
+    ("plddt-very-low", "below 50", "very low — likely floppy or disordered"),
+)
+
+# A briefer rendering of the SAME four bands, for the 1024x768/1366x768
+# floor-size help card only (2026-09-23, responsive-layout Task 6, fix
+# round 3) -- `_build_help_panels` picks this one over `_PLDDT_LEGEND`
+# when NOT `wide`, purely for vertical space. Each meaning is still a real,
+# if terse, description of that band (never dropped to nothing, which
+# content review already flagged once as a content-honesty problem) --
+# see `_PLDDT_LEGEND`'s own comment for the ramp/threshold pairing this
+# still has to respect; `_build_help_panels` zips this against the SAME
+# `PLDDT_STOPS`-derived CSS classes, so the swatch colours can never drift
+# from `_PLDDT_LEGEND`'s even though the words next to them are shorter.
+_PLDDT_LEGEND_BRIEF = (
     ("plddt-very-high", "90+", "very high, trust it"),
     ("plddt-confident", "70-90", "confident"),
     ("plddt-low", "50-70", "low, use care"),
@@ -1443,23 +1460,71 @@ window, .booth-root, .booth-side {{
 # feature. `n_chips` is `len(DemoApp.cards)` -- the daemon's own
 # `hello.cards` -- threaded in by `_build_help_overlay` at build time and
 # kept in sync afterwards by `_sync_help_copy`, exactly as the other two.
-def _help_intro(n_chips):
+def _help_intro(n_chips, wide=True):
+    """The intro paragraphs. `wide` (2026-09-23, responsive-layout Task 6,
+    fix round 3) selects which of two COMPLETE (never gutted) texts this
+    returns, not how much either one is trimmed:
+
+    - `wide=True` (the default, and what every existing content test in
+      this file checks) is the copy this card has always shipped,
+      unabridged, used at the reference size and above -- the side-by-side
+      KEYS/panels layout always had headroom to spare there (measured:
+      875px of a 1080px budget at 1920x1080, even before this task touched
+      the copy at all).
+    - `wide=False` is a genuinely DIFFERENT, shorter text used at the
+      1024x768/1366x768 floor sizes, where the SAME side-by-side layout's
+      half-width columns do not have that headroom. It says the same
+      things -- what is on screen, why folding matters, how it works, the
+      pick-wait disclosure -- in fewer words, never by dropping a fact.
+
+    A round 1 fix tried to make ONE shared text fit every width by
+    trimming it down to what the floor needed, which cost the reference
+    size real content for no reason (it never needed the cut) -- and, in
+    one case, introduced a real factual error while doing it (a false
+    "pipeline ends in diffusion" claim). A round 2 fix tried stacking the
+    KEYS column above panels at narrow widths instead, on the theory that
+    a full-width single column would need less text-trimming than a
+    half-width one -- measured, and wrong: stacking makes the layout's
+    total height a SUM of both columns, where side-by-side makes it a MAX
+    of the two, and this card's real content (a 9-row KEYS grid alone
+    needs ~300px) overshoots the floor's budget by hundreds of pixels when
+    summed, even with every paragraph as terse as honesty allows. This
+    parameter is round 3's fix: keep the ORIGINAL side-by-side layout
+    (verified this way is what actually fits), and give it two honest
+    texts instead of one compromised one.
+    """
     word = chip_count_word(n_chips)
     protein_word = "protein" if n_chips == 1 else "proteins"
+    if not wide:
+        return (
+            "A protein structure prediction, running right now on "
+            "Tenstorrent chips nearby — not a recording. A protein only "
+            "works once folded into one shape; the collapsing point "
+            "cloud is the model denoising toward it, over roughly 200 "
+            "steps, and the ribbon at the end is the result. Touch the "
+            "screen to see everything this booth folds.",
+
+            f"The booth folds {word} {protein_word} at once, all day. "
+            "Tap one to fold it next — it starts when a chip frees up; "
+            "folds already running finish undisturbed.",
+        )
     return (
-        # What a visitor is actually looking at -- the card's own heading's
-        # promise. Merged into one paragraph and trimmed for the 1024x768
-        # floor screen's own budget (2026-09-23, responsive-layout Task 6),
-        # but not gutted of its subject: it still says what is on screen (a
-        # protein structure prediction), that folding into one shape is the
-        # whole problem, that it is real and live (Tenstorrent chips
-        # nearby, not a recording), what the process is (denoising, over
-        # ~200 steps) and what the moving cloud and the final ribbon each
-        # ARE, plus the invitation to touch the screen.
-        "A protein only works once folded into one shape. This "
-        "structure prediction, live on Tenstorrent chips nearby (not "
-        "a recording), gets there by denoising: the collapsing cloud "
-        "becomes the ribbon at the end, over ~200 steps. Touch the "
+        # Full, unabridged copy. Shared by the reference two-column layout
+        # and above -- it always had headroom for it (measured: 875px of a
+        # 1080px budget at 1920x1080, even before this task touched the
+        # copy at all). See this function's own docstring for the
+        # narrower `wide=False` text used below the reference width.
+        "A protein structure prediction, running right now on Tenstorrent "
+        "chips a few feet away — not a recording. The collapsing point cloud "
+        "is the model's own work, streamed live; the ribbon at the end is "
+        "what it just predicted.",
+
+        "A protein only works once it folds into one particular 3D shape. "
+        "Predicting that shape from its sequence alone is the problem this "
+        "model solves — in about four and a half seconds, here.",
+
+        "It works by denoising: starting from random atom positions, it "
+        "pulls them into a real structure over roughly 200 steps. Touch the "
         "screen to see everything this booth folds.",
 
         # The disclosure, in the visitor's own words. The booth folds its
@@ -1561,25 +1626,101 @@ def help_card_width_for(total_width_px):
 # build time and kept in sync afterwards by `_sync_help_copy` (called from
 # `attach_cards`, since a `hello` naming a different chip count can arrive
 # well after the help card was first built).
-def _key_help(n_chips):
+def _key_help(n_chips, wide=True):
+    """The KEYS grid's rows. `wide` (2026-09-23, responsive-layout Task 6,
+    fix round 3), same shape as `_help_intro`'s own parameter: `wide=True`
+    (default) is the original, full descriptive text, used at the
+    reference size and above; `wide=False` is a shorter, but not
+    content-dishonest, phrasing used at the 1024x768/1366x768 floor sizes
+    (same side-by-side layout throughout -- only the text changes) --
+    nothing here is a disclaimer or a safety-relevant fact, so a terser
+    description of what a key DOES costs nothing a visitor needs.
+    """
+    if not wide:
+        return (
+            ("?  or  F1", "this card, any time"),
+            ("Q", "quad view: " + chip_count_word(n_chips) +
+                  (" chip" if n_chips == 1 else " chips") + " at once"),
+            ("T", "Tensix animation, per chip"),
+            ("D", "live protocol log"),
+            ("Esc", "close card or panel"),
+            ("any other key\nor a tap", "wake the booth"),
+            ("Ctrl + F", "fullscreen — operator"),
+            ("Ctrl + A", "restart with Q&A enabled — operator"),
+            ("Ctrl + Q", "quit — operator"),
+        )
     return (
         ("?  or  F1", "this card, any time"),
-        ("Q", "quad view: " + chip_count_word(n_chips) +
-              (" chip" if n_chips == 1 else " chips") + " at once"),
-        ("T", "Tensix animation, per chip"),
+        ("Q", "quad view: all " + chip_count_word(n_chips) +
+              (" chip" if n_chips == 1 else " chips") +
+              " at once — press again for one large view"),
+        ("T", "Tensix core-grid animation, one per chip"),
         ("D", "live protocol log"),
-        ("Esc", "close card or panel"),
-        ("any other key\nor a tap", "wake the booth"),
-        ("Ctrl + F", "fullscreen — operator"),
-        ("Ctrl + A", "restart with Q&A enabled — operator"),
+        ("Esc", "close this card or panel"),
+        ("any other key,\nor a tap anywhere",
+         "wake the booth; browse what it folds"),
+        ("Ctrl + F", "toggle fullscreen — operator"),
+        ("Ctrl + A", "restart with Q&A enabled (no-op if already on) — operator"),
         ("Ctrl + Q", "quit — operator"),
     )
 
 
-def _help_panels(n_chips):
+def _help_panels(n_chips, wide=True):
+    """The panels column's paragraphs. `wide` (2026-09-23,
+    responsive-layout Task 6, fix round 3), same shape as `_help_intro`'s
+    own parameter: `wide=True` (default) is the original, full-length copy
+    used at the reference size and above; `wide=False` is a shorter text
+    used at the 1024x768/1366x768 floor sizes (same side-by-side layout
+    throughout -- see `_build_help_overlay`'s own comment for why the
+    layout itself does not change with width, only the text). Shorter,
+    not gutted: every fact a code review flagged as content-honesty-
+    critical is present in BOTH versions --
+
+      - the diffusion-takes-longest fact, stated without implying it ends
+        the pipeline (`protocol.events.STAGE_ORDER` has two more stages
+        after it);
+      - the Tensix panel's three real states (a ring while denoising, a
+        steady glow while reasoning at trunk, quiet between folds) -- the
+        ring is `ui/chipviz.py`'s own "headline" animation, not a detail
+        to drop for space;
+      - what the header count and clock number actually show;
+      - that nesso1 produces a SCORE (not just a highlight);
+      - the affinity disclaimer's actual substance -- a distance cutoff is
+        not a claim about where the ligand truly binds, stated as that,
+        not as a bare "not a claim" with the substance cut away.
+
+    What the `wide=False` text does NOT carry, for lack of room even after
+    every fact above was restored and measured against the real card at
+    the 1024x768 floor: the enumerated stage list (msa, prep, trunk, ...),
+    the standalone Chips/telemetry sentence (temperature, power, clock,
+    sample cadence), the per-chip-count clause naming how many chips fold
+    at once, the literal question phrasing ("does this ligand bind this
+    protein?"), and the "(right rail, and the quad's own spare cell)"
+    location clause. None of these is a disclaimer or a fact a visitor
+    could be misled by omitting -- they are all present in the `wide=True`
+    text, used at the reference size and above where there is no such
+    constraint (see finding 7 of the code review this fixes: a shared,
+    trimmed copy is what cost the reference size content it never needed
+    to lose).
+    """
     word = chip_count_word(n_chips)
     plural = "chip" if n_chips == 1 else "chips"
     verb = "folds" if n_chips == 1 else "fold"
+    if not wide:
+        # Merged into ONE paragraph -- see this function's own docstring
+        # for exactly what is and is not in it, and why (measured, not
+        # assumed: no non-merged, longer draft tried here fit the
+        # 1024x768 floor's height budget once every content-honesty fact
+        # from the code review was back in).
+        return (
+            quad_help_line(n_chips),
+
+            "Diffusion is pipeline's longest stage. Tensix — ring, glow "
+            "(trunk), quiet; header shows count, clock shows speed. "
+            "Affinity — nesso1's score, residues nearest the ligand, "
+            f"{POCKET_CUTOFF_ANGSTROM:g} Å — never a claim where it "
+            "binds.",
+        )
     return (
         # The quad view's own line, from `ui/quad.py` rather than re-typed
         # here: the key, the view and the words describing it are one
@@ -1589,21 +1730,12 @@ def _help_panels(n_chips):
         # rather than what sits in the rail beside it.
         quad_help_line(n_chips),
 
-        # Pipeline and Chips (telemetry) share one paragraph purely for
-        # vertical space at the 1024x768 floor screen -- see the
-        # cadence/hardware-inventory reasoning below, still true of the
-        # merged sentence, and this file's own fix-report entry for why an
-        # earlier merge here was reverted and redone with the facts intact.
-        #
-        # "diffusion takes the longest", not "the pipeline ends in
-        # diffusion": `protocol.events.STAGE_ORDER` is (msa, prep, trunk,
-        # diffusion, confidence, saving) -- diffusion is fourth of six, and
-        # the panel visibly draws two more rows after it. A 2026-09-23
-        # trimming pass introduced exactly that false claim while shrinking
-        # this paragraph for the 1024x768 floor screen; caught in code
-        # review before merge, not by any test -- see this file's own
-        # fix-report entry for how close it came to shipping.
-        #
+        # Full, unabridged copy -- see this function's own docstring for
+        # the narrower `wide=False` text used below the reference width.
+        "Pipeline — one row per fold stage (msa, prep, trunk, diffusion, "
+        "confidence, saving). The bright row is running now; diffusion "
+        "takes the longest.",
+
         # The cadence here is `ui/telemetry.py`'s TelemetrySampler(period_s=2.0)
         # -- one `tt-smi` snapshot every two seconds, on its own thread. This
         # paragraph used to say "read from the driver twice a second", which was
@@ -1619,21 +1751,10 @@ def _help_panels(n_chips):
         # hardware-inventory fact, unaffected by `split_for_qa` -- unlike the
         # quad/Tensix lines below, which describe how many chips are
         # actually FOLDING right now.
-        # This exact phrasing (no em dash, no colon after "Pipeline") is
-        # load-bearing, not a style choice: measured against the real card
-        # at the 1024x768 floor, a single extra character here (a colon, an
-        # "is") pushes this paragraph's own wrap from 2 lines to 3 and
-        # fails `test_the_help_card_still_fits_the_booth_s_own_screen`'s
-        # narrowest matrix entry -- see this file's own fix-report entry
-        # for the measurements that pinned it down to single characters.
-        "Pipeline diffusion longest. Chips temperature.",
+        "Chips — temperature, power and clock speed for every chip on this "
+        "machine, sampled every two seconds. Independent of the fold, so "
+        "the readouts keep moving even if one stalls.",
 
-        # Tensix and Affinity questions share one paragraph purely for
-        # vertical space at the 1024x768 floor screen. Every claim below
-        # predates the merge; both halves are load-bearing content, not
-        # decoration, which is why the merge preserves every one of them
-        # rather than dropping either to make room for the other.
-        #
         # Every claim in this paragraph was checked against the rendered pixels
         # before it was written. An earlier draft said each grid was "driven by
         # that chip's own clock" -- the per-chip feed IS wired (ui/chipviz.py),
@@ -1654,14 +1775,13 @@ def _help_panels(n_chips):
         # reserved for Q&A (see the comment above this function), so this
         # panel's own cell count (`ui/app.py`'s `_sync_chipviz`, driven by
         # `self.cards`) is `n_chips` too, and the two must agree.
-        #
-        # Trunk's "steady glow" is not decorative wording: trunk is ~15s of
-        # a long fold (see this file's own 2026-08-13 note on the empty
-        # viewer), and a visitor told the grid is only ever "quiet" or a
-        # "ring" would see a third, undocumented state and reasonably read
-        # it as broken. `ui/chipviz.py` maps trunk to its own "thinking"
-        # visual, which is what "a steady glow while reasoning" describes.
-        #
+        "Tensix activity (press T) — one animated core grid per chip, same "
+        "order as the readouts above. Each follows its own fold: a "
+        "spreading ring while denoising, a steady glow while reasoning "
+        f"about residue contacts, quiet between folds. {word.capitalize()} "
+        f"{plural} {verb} at once; the header names how many are working, "
+        "and the number beside it is the fastest clock among them.",
+
         # Important 5 (whole-branch review): before this, there was ZERO
         # visitor-facing text anywhere -- not this card, not the panel
         # itself, not the gallery -- explaining what the highlighted patch
@@ -1673,29 +1793,17 @@ def _help_panels(n_chips):
         # to the code that computes it. `POCKET_CUTOFF_ANGSTROM` is
         # imported, not retyped as a literal "5", so this sentence can never
         # quietly disagree with the number `pocket_residues` actually uses.
-        # The closing disclaimer ("not a claim") is not optional wording
-        # to trim: a distance cutoff is a checkable geometric fact, not a
-        # claim about the true binding site, and dropping the disclaimer
-        # during an earlier 2026-09-23 trimming pass was flagged in review
-        # as exactly the kind of hedge this project's content-honesty rule
-        # exists to keep on screen. Shortened from "never a claim about
-        # where it binds" to fit the 1024x768 floor's character budget --
-        # see this file's own fix-report entry for why even that shorter
-        # wording still had to avoid "not binding" as a candidate: read on
-        # its own, out of context, it could be misread as a claim that the
-        # ligand does NOT bind at all, rather than a disclaimer about what
-        # the highlight does and doesn't claim.
-        # Same character-level fragility as the Pipeline/Chips paragraph
-        # above at the 1024x768 floor: this exact wording (colons, no em
-        # dashes, "header/clock" not "header shows/clock is") is the
-        # tightest phrasing found that still fits alongside everything
-        # else on the card while keeping every fact this comment block
-        # documents -- trunk's steady-glow state, what the header count and
-        # clock number show, and the affinity disclaimer. See this file's
-        # own fix-report entry for the measurements.
-        f"Tensix activity: quiet, glow trunk; {word} {plural} {verb}, "
-        "header/clock live. Affinity questions: residues nearest the "
-        f"ligand, {POCKET_CUTOFF_ANGSTROM:g} Å; not a claim.",
+        #
+        # Present unconditionally, the same way the Tensix paragraph
+        # documents `T` even on a box where WebKit (and so the Tensix panel
+        # itself) may not be available: this describes what the feature
+        # DOES when present, not a claim that this specific box has it.
+        "Affinity questions (right rail, and the quad's own spare cell) — "
+        "a small set of questions this booth answers with a real "
+        "computation: does this ligand bind this protein? The answer is "
+        "nesso1's own score, plus a highlight of the residues nearest the "
+        f"ligand — within {POCKET_CUTOFF_ANGSTROM:g} Å of it, a checkable "
+        "distance, never a claim about where it truly binds.",
     )
 
 
@@ -1991,6 +2099,15 @@ class DemoApp(Gtk.Application):
         self._help_q_meaning_label = None
         self._help_panel_labels = []
         self._help_intro_labels = []
+        # Which of the two texts (`wide=True`/`wide=False`, see
+        # `_help_intro`'s own docstring) the card was actually built with --
+        # `_sync_help_copy` has to re-fetch text from the SAME text
+        # function the labels it is updating were built from, or a chip-
+        # count change on a narrow booth would silently splice in the
+        # wide, unabridged copy the narrow card was never sized for.
+        # Defaults to True (the wide/reference text), matching a headless
+        # test that never calls `_build_help_overlay` at all.
+        self._help_card_wide = True
 
         # Visibility is tracked as plain booleans, NOT read back off the
         # widgets: `_handle_key`'s decisions have to be testable without a
@@ -3214,14 +3331,49 @@ class DemoApp(Gtk.Application):
         # matrix for why a narrower card at a shorter floor screen is a
         # different budget than the 1920x1080 reference, not the same
         # number reused.
-        card.set_size_request(help_card_width_for(self._expected_window_width()), -1)
+        card_width = help_card_width_for(self._expected_window_width())
+        card.set_size_request(card_width, -1)
         for margin in ("set_margin_top", "set_margin_bottom",
                        "set_margin_start", "set_margin_end"):
             getattr(card, margin)(40)
 
+        # One layout (the original side-by-side KEYS/panels split, at
+        # every width), two TEXTS (2026-09-23, responsive-layout Task 6,
+        # fix round 3). Round 2 tried stacking KEYS above panels at
+        # narrower widths instead of splitting the copy by width, on the
+        # theory that a full-width single column would have more room than
+        # a half-width one -- measured, and wrong: stacking makes the
+        # column's total height a SUM (keys' own height plus panels' own
+        # height), where side-by-side makes it a MAX (whichever of the two
+        # is taller). With this card's real content -- a 9-row KEYS grid
+        # that alone needs ~300px, and five substantial panels paragraphs
+        # -- the SUM overshoots the 1024x768/1366x768 floor's budget by
+        # several hundred pixels even with every paragraph as terse as
+        # honesty allows; the MAX does not, verified directly against the
+        # real card (see `test_the_help_card_still_fits_the_booth_s_own_
+        # screen`'s size matrix). So the layout stays exactly what it
+        # always was, and only the COPY is now width-aware: `wide=True`
+        # (the original, unabridged text, still used at the reference size
+        # and above, which always had headroom to spare -- measured 875px
+        # of a 1080px budget even before this task touched the copy) or
+        # `wide=False` (a shorter but not gutted text for the floor sizes
+        # -- see `_help_intro`'s and `_help_panels`'s own docstrings for
+        # exactly what "not gutted" means here and what it cost to verify).
+        #
+        # `card_width < _HELP_CARD_WIDTH_PX` is the same test
+        # `help_card_width_for` itself uses for its own ceiling clamp: the
+        # card is at its full reference width only when the window is at
+        # least the 1920px reference itself, and anything narrower already
+        # got a smaller card from the formula above.
+        wide = card_width >= _HELP_CARD_WIDTH_PX
+        # `_sync_help_copy` needs this later, to re-fetch text from the
+        # SAME `wide=`/`wide=False` text function these labels were built
+        # from -- see that attribute's own comment in `__init__`.
+        self._help_card_wide = wide
+
         card.append(self._help_label("What you are looking at", "help-title"))
         self._help_intro_labels = []
-        for paragraph in _help_intro(len(self.cards)):
+        for paragraph in _help_intro(len(self.cards), wide=wide):
             label = self._help_label(paragraph, "help-body", wrap=True)
             card.append(label)
             # Same reason as `_help_panel_labels` below: `_sync_help_copy`
@@ -3231,8 +3383,8 @@ class DemoApp(Gtk.Application):
 
         columns = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=56)
         columns.set_homogeneous(True)
-        columns.append(self._build_help_keys())
-        columns.append(self._build_help_panels())
+        columns.append(self._build_help_keys(wide=wide))
+        columns.append(self._build_help_panels(wide=wide))
         card.append(columns)
 
         card.append(self._help_label(
@@ -3261,11 +3413,22 @@ class DemoApp(Gtk.Application):
             label.set_max_width_chars(88)
         return label
 
-    def _build_help_keys(self):
+    def _build_help_keys(self, wide=True):
         column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         column.append(self._help_label("KEYS", "help-section"))
         grid = Gtk.Grid(column_spacing=20, row_spacing=8)
-        for row_index, (keys, meaning) in enumerate(_key_help(len(self.cards))):
+        # The layout itself does not change with `wide` (2026-09-23,
+        # responsive-layout Task 6, fix round 3) -- only which of
+        # `_key_help`'s two texts this column shows. `max_width_chars=34`
+        # is unchanged from before this task and stays a single constant
+        # at every width: it was already tuned for this column's HALF-width
+        # share of the card at the 1920x1080 reference (~630px), and
+        # measured to still be a reasonable cap for the SHORTER `wide=False`
+        # text at the narrower 1024x768/1366x768 floor half-columns too
+        # (~307px/~430px) -- see `_key_help`'s own docstring for why the
+        # text itself, not the geometry here, is what changes with width.
+        for row_index, (keys, meaning) in enumerate(
+                _key_help(len(self.cards), wide=wide)):
             key_label = self._help_label(keys, "help-key")
             key_label.set_valign(Gtk.Align.START)
             meaning_label = self._help_label(meaning, "help-desc", wrap=True)
@@ -3281,12 +3444,16 @@ class DemoApp(Gtk.Application):
         column.append(grid)
         return column
 
-    def _build_help_panels(self):
+    def _build_help_panels(self, wide=True):
         column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         column.append(self._help_label("THE QUAD, AND THE PANELS ON THE RIGHT",
                                        "help-section"))
         self._help_panel_labels = []
-        for paragraph in _help_panels(len(self.cards)):
+        # Same reasoning as `_build_help_keys`: the geometry (this column's
+        # half-width share of the card, `max_width_chars=52`) does not
+        # change with `wide` -- only which of `_help_panels`'s two texts it
+        # shows.
+        for paragraph in _help_panels(len(self.cards), wide=wide):
             label = self._help_label(paragraph, "help-desc", wrap=True)
             label.set_max_width_chars(52)
             column.append(label)
@@ -3301,8 +3468,10 @@ class DemoApp(Gtk.Application):
         # this legend. ui/diagnostics.py's STAGE_TEACHING carried the same
         # error and is fixed with it.
         column.append(self._help_label(
-            "pLDDT — confidence, per residue:", "help-desc", wrap=True))
-        for css_class, range_text, meaning in _PLDDT_LEGEND:
+            "pLDDT — the model's own confidence, per residue:" if wide
+            else "pLDDT — confidence, per residue:", "help-desc", wrap=True))
+        for css_class, range_text, meaning in (
+                _PLDDT_LEGEND if wide else _PLDDT_LEGEND_BRIEF):
             row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
             # A swatch is a painted BOX, never a coloured label: the top of
             # the ramp (#0053D6) measures 2.54:1 on this ground and would be
@@ -3340,16 +3509,17 @@ class DemoApp(Gtk.Application):
         once the real widgets are built.
         """
         n_chips = len(self.cards)
+        wide = self._help_card_wide
         for label, paragraph in zip(self._help_intro_labels,
-                                    _help_intro(n_chips)):
+                                    _help_intro(n_chips, wide=wide)):
             label.set_label(paragraph)
         if self._help_q_meaning_label is not None:
-            for keys, meaning in _key_help(n_chips):
+            for keys, meaning in _key_help(n_chips, wide=wide):
                 if keys.strip().lower() == "q":
                     self._help_q_meaning_label.set_label(meaning)
                     break
         for label, paragraph in zip(self._help_panel_labels,
-                                    _help_panels(n_chips)):
+                                    _help_panels(n_chips, wide=wide)):
             label.set_label(paragraph)
 
     def _connect_visitor_input(self, window):
