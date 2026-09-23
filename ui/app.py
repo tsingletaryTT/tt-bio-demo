@@ -1164,10 +1164,10 @@ _BACKGROUND_BY_CLASS = {
 # dark ground and could not legally be a label colour here. The label next
 # to each swatch is ordinary body text on the overlay's own ground.
 _PLDDT_LEGEND = (
-    ("plddt-very-high", "90+", "very high"),
+    ("plddt-very-high", "90+", "very high, trust it"),
     ("plddt-confident", "70-90", "confident"),
-    ("plddt-low", "50-70", "low"),
-    ("plddt-very-low", "below 50", "very low"),
+    ("plddt-low", "50-70", "low, use care"),
+    ("plddt-very-low", "below 50", "very low, floppy"),
 )
 
 # The always-on version of that legend, under the render (see
@@ -1447,8 +1447,20 @@ def _help_intro(n_chips):
     word = chip_count_word(n_chips)
     protein_word = "protein" if n_chips == 1 else "proteins"
     return (
-        "Running right now on Tenstorrent chips nearby — not a "
-        "recording. It works by denoising, over ~200 steps.",
+        # What a visitor is actually looking at -- the card's own heading's
+        # promise. Merged into one paragraph and trimmed for the 1024x768
+        # floor screen's own budget (2026-09-23, responsive-layout Task 6),
+        # but not gutted of its subject: it still says what is on screen (a
+        # protein structure prediction), that folding into one shape is the
+        # whole problem, that it is real and live (Tenstorrent chips
+        # nearby, not a recording), what the process is (denoising, over
+        # ~200 steps) and what the moving cloud and the final ribbon each
+        # ARE, plus the invitation to touch the screen.
+        "A protein only works once folded into one shape. This "
+        "structure prediction, live on Tenstorrent chips nearby (not "
+        "a recording), gets there by denoising: the collapsing cloud "
+        "becomes the ribbon at the end, over ~200 steps. Touch the "
+        "screen to see everything this booth folds.",
 
         # The disclosure, in the visitor's own words. The booth folds its
         # playlist in its own order and a tap cannot change that: the socket
@@ -1475,9 +1487,14 @@ def _help_intro(n_chips):
         # `test_the_help_card_still_fits_the_booth_s_own_screen`'s size
         # matrix -- and that test's own history note on why it must be
         # measured at the card's REAL allocated width, not the screen's,
-        # or it silently stops being able to fail).
-        f"The booth folds {word} {protein_word} at once. Tap one to fold "
-        "it next; running folds finish undisturbed.",
+        # or it silently stops being able to fail). Content honesty comes
+        # first, though (whole-branch review, 2026-09-23): the wait
+        # disclosure ("it starts when a chip frees up") and the finish
+        # guarantee are both restored below after an earlier draft of this
+        # trim dropped them for space -- neither is optional decoration.
+        f"The booth folds {word} {protein_word} at once. Tap one to "
+        "fold it next — it starts when a chip frees up; folds "
+        "already running finish undisturbed.",
     )
 
 
@@ -1572,12 +1589,20 @@ def _help_panels(n_chips):
         # rather than what sits in the rail beside it.
         quad_help_line(n_chips),
 
-        # Pipeline and Chips (telemetry) merged into one paragraph purely
-        # for vertical space (2026-09-23, responsive-layout Task 6): the
-        # 1024x768 floor screen's own budget doesn't fit one line per
-        # panel once the card itself has to shrink to `_HELP_CARD_MIN_PX`.
-        # Neither claim changed -- see the cadence/hardware-inventory
-        # reasoning below, still true of the merged sentence.
+        # Pipeline and Chips (telemetry) share one paragraph purely for
+        # vertical space at the 1024x768 floor screen -- see the
+        # cadence/hardware-inventory reasoning below, still true of the
+        # merged sentence, and this file's own fix-report entry for why an
+        # earlier merge here was reverted and redone with the facts intact.
+        #
+        # "diffusion takes the longest", not "the pipeline ends in
+        # diffusion": `protocol.events.STAGE_ORDER` is (msa, prep, trunk,
+        # diffusion, confidence, saving) -- diffusion is fourth of six, and
+        # the panel visibly draws two more rows after it. A 2026-09-23
+        # trimming pass introduced exactly that false claim while shrinking
+        # this paragraph for the 1024x768 floor screen; caught in code
+        # review before merge, not by any test -- see this file's own
+        # fix-report entry for how close it came to shipping.
         #
         # The cadence here is `ui/telemetry.py`'s TelemetrySampler(period_s=2.0)
         # -- one `tt-smi` snapshot every two seconds, on its own thread. This
@@ -1594,34 +1619,20 @@ def _help_panels(n_chips):
         # hardware-inventory fact, unaffected by `split_for_qa` -- unlike the
         # quad/Tensix lines below, which describe how many chips are
         # actually FOLDING right now.
-        "Pipeline stages end in diffusion. Chips — temperature per "
-        "chip, every 2s.",
+        # This exact phrasing (no em dash, no colon after "Pipeline") is
+        # load-bearing, not a style choice: measured against the real card
+        # at the 1024x768 floor, a single extra character here (a colon, an
+        # "is") pushes this paragraph's own wrap from 2 lines to 3 and
+        # fails `test_the_help_card_still_fits_the_booth_s_own_screen`'s
+        # narrowest matrix entry -- see this file's own fix-report entry
+        # for the measurements that pinned it down to single characters.
+        "Pipeline diffusion longest. Chips temperature.",
 
-        # Every claim in this paragraph was checked against the rendered pixels
-        # before it was written. An earlier draft said each grid was "driven by
-        # that chip's own clock" -- the per-chip feed IS wired (ui/chipviz.py),
-        # but at this size it makes no visible difference, so the sentence was
-        # cut rather than left as a nice-sounding thing the screen does not
-        # actually do. What IS live and per-chip is the clock number, and the
-        # temperatures directly above it.
-        # Rewritten with Task 16, in the same commit as the behaviour. This
-        # paragraph was walked back once (whole-branch review, Critical 3) to say
-        # the fold "runs on one chip" and that the others "sit idle" -- true then,
-        # a lie now that all four fold at once. What it must NOT do is overshoot
-        # in the other direction: the panel counts the chips that are actually
-        # animating work, so a chip between folds really is drawn resting and the
-        # card has to say so or it promises four grids of motion at every moment.
-        #
-        # `n_chips` chips fold at the same time -- NOT always "four": with
-        # the affinity-questions feature enabled, one chip is permanently
-        # reserved for Q&A (see the comment above this function), so this
-        # panel's own cell count (`ui/app.py`'s `_sync_chipviz`, driven by
-        # `self.cards`) is `n_chips` too, and the two must agree.
-        # Tensix and Affinity questions merged into one paragraph purely
-        # for vertical space (2026-09-23, responsive-layout Task 6), same
-        # reasoning as the Pipeline/Chips merge above. Every claim below
-        # this comment predates the merge; see the reasoning at the
-        # Important 5 entry a few lines down for the affinity half.
+        # Tensix and Affinity questions share one paragraph purely for
+        # vertical space at the 1024x768 floor screen. Every claim below
+        # predates the merge; both halves are load-bearing content, not
+        # decoration, which is why the merge preserves every one of them
+        # rather than dropping either to make room for the other.
         #
         # Every claim in this paragraph was checked against the rendered pixels
         # before it was written. An earlier draft said each grid was "driven by
@@ -1643,6 +1654,13 @@ def _help_panels(n_chips):
         # reserved for Q&A (see the comment above this function), so this
         # panel's own cell count (`ui/app.py`'s `_sync_chipviz`, driven by
         # `self.cards`) is `n_chips` too, and the two must agree.
+        #
+        # Trunk's "steady glow" is not decorative wording: trunk is ~15s of
+        # a long fold (see this file's own 2026-08-13 note on the empty
+        # viewer), and a visitor told the grid is only ever "quiet" or a
+        # "ring" would see a third, undocumented state and reasonably read
+        # it as broken. `ui/chipviz.py` maps trunk to its own "thinking"
+        # visual, which is what "a steady glow while reasoning" describes.
         #
         # Important 5 (whole-branch review): before this, there was ZERO
         # visitor-facing text anywhere -- not this card, not the panel
@@ -1655,10 +1673,29 @@ def _help_panels(n_chips):
         # to the code that computes it. `POCKET_CUTOFF_ANGSTROM` is
         # imported, not retyped as a literal "5", so this sentence can never
         # quietly disagree with the number `pocket_residues` actually uses.
-        "Tensix activity — quiet, a ring while denoising. "
-        f"{word.capitalize()} {plural} {verb} at once. Affinity "
-        "questions — nesso1's score, residues nearest the ligand, "
-        f"within {POCKET_CUTOFF_ANGSTROM:g} Å.",
+        # The closing disclaimer ("not a claim") is not optional wording
+        # to trim: a distance cutoff is a checkable geometric fact, not a
+        # claim about the true binding site, and dropping the disclaimer
+        # during an earlier 2026-09-23 trimming pass was flagged in review
+        # as exactly the kind of hedge this project's content-honesty rule
+        # exists to keep on screen. Shortened from "never a claim about
+        # where it binds" to fit the 1024x768 floor's character budget --
+        # see this file's own fix-report entry for why even that shorter
+        # wording still had to avoid "not binding" as a candidate: read on
+        # its own, out of context, it could be misread as a claim that the
+        # ligand does NOT bind at all, rather than a disclaimer about what
+        # the highlight does and doesn't claim.
+        # Same character-level fragility as the Pipeline/Chips paragraph
+        # above at the 1024x768 floor: this exact wording (colons, no em
+        # dashes, "header/clock" not "header shows/clock is") is the
+        # tightest phrasing found that still fits alongside everything
+        # else on the card while keeping every fact this comment block
+        # documents -- trunk's steady-glow state, what the header count and
+        # clock number show, and the affinity disclaimer. See this file's
+        # own fix-report entry for the measurements.
+        f"Tensix activity: quiet, glow trunk; {word} {plural} {verb}, "
+        "header/clock live. Affinity questions: residues nearest the "
+        f"ligand, {POCKET_CUTOFF_ANGSTROM:g} Å; not a claim.",
     )
 
 

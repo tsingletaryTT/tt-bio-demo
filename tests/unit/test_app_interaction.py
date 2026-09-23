@@ -939,12 +939,14 @@ def test_help_panels_and_key_help_are_functions_of_the_real_chip_count():
     fold-chip count, never a hardcoded one.
 
     Checked against the QUAD line specifically (`_help_panels(n)[0]`), not
-    the whole joined column: the separate "Chips" (telemetry) paragraph
-    deliberately keeps saying "four" when the box genuinely has four
-    physical chips -- it samples every chip via tt-smi independently of the
-    daemon and of how many are reserved for folding vs. Q&A, so its claim is
-    about hardware inventory, not about how many chips are folding, and
-    stays true regardless of `n_chips`.
+    the whole joined column: the "Chips" (telemetry) sentence merged into
+    the Pipeline paragraph (2026-09-23, responsive-layout Task 6, for
+    space at the 1024x768 floor screen) never names a chip count at all
+    any more -- it samples every chip via tt-smi independently of the
+    daemon and of how many are reserved for folding vs. Q&A, so its claim
+    is about hardware inventory, not about how many chips are folding, and
+    the safest way to keep that true regardless of `n_chips` turned out to
+    be not putting a number there in the first place.
     """
     from ui.app import _help_panels, _key_help
     quad_line = _help_panels(3)[0].lower()
