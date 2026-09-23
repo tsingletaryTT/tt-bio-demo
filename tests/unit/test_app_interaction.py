@@ -1326,6 +1326,24 @@ def test_rail_width_for_is_monotonically_non_decreasing():
     assert computed == sorted(computed)
 
 
+# help_card_width_for: the pure sizing function for the `?` card, preserving
+# the exact reference layout at 1920px, independently from rail_width_for.
+# ---------------------------------------------------------------------------
+
+def test_help_card_width_for_matches_the_reference_layout_exactly():
+    assert app_module.help_card_width_for(1920) == app_module._HELP_CARD_WIDTH_PX
+
+
+def test_help_card_width_for_is_floor_clamped():
+    assert app_module.help_card_width_for(1024) == app_module._HELP_CARD_MIN_PX
+
+
+def test_help_card_width_for_never_exceeds_the_reference_card_width():
+    """Wider than 1920 does not mean a wider card -- past the reference size extra
+    width is not more readable, so the ceiling is the reference value itself."""
+    assert app_module.help_card_width_for(3840) == app_module._HELP_CARD_WIDTH_PX
+
+
 # ---------------------------------------------------------------------------
 # The Tensix activity panel, as wired into the booth (the panel's own
 # behaviour is tested in test_chipviz.py).

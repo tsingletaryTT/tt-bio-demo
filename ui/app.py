@@ -1484,6 +1484,27 @@ _HELP_INTRO = _help_intro(4)
 # quietly disagree about which width that is.
 _HELP_CARD_WIDTH_PX = 1400
 
+# Same fraction-with-clamp shape as rail_width_for, independently: the help card's ideal
+# width is not derived from the rail's, it happens to need its own anchor at the reference
+# size. The ceiling is the reference value itself (1400) rather than a larger number --
+# past 1920 wide, a wider card is not more readable, only surrounded by more whitespace, and
+# _HELP_CARD_WIDTH_PX's own comment already measured 1400 as the width that keeps this
+# card's content within the booth's own screen height.
+_HELP_CARD_FRACTION = _HELP_CARD_WIDTH_PX / 1920
+# Floor: below this the two-column KEYS/intro layout the card's own comment describes would
+# need to wrap narrow enough to blow past a short screen's own height again -- the exact
+# defect _HELP_CARD_WIDTH_PX was raised to fix once already, one axis over. Set at 750
+# to ensure floor clamping triggers at 1024px, where the base formula yields 747.
+_HELP_CARD_MIN_PX = 750
+_HELP_CARD_MAX_PX = _HELP_CARD_WIDTH_PX
+
+
+def help_card_width_for(total_width_px):
+    """How wide the `?` help card gets, given the window's actual total width."""
+    return max(_HELP_CARD_MIN_PX,
+               min(_HELP_CARD_MAX_PX, round(total_width_px * _HELP_CARD_FRACTION)))
+
+
 # Every key the booth answers to, and what it does. This table is the ONE
 # place the bindings are described to a visitor, and the test
 # `test_every_key_the_booth_answers_to_is_listed_in_the_help` walks
