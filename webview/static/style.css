@@ -127,6 +127,33 @@ button:hover { color: var(--fg); border-color: var(--accent-bright); }
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
+/* The Q&A-reserved chip's cell (app.js's renderQaPlaceholder): no canvas, so
+   the chip-label/caption positioning above (anchored to an image that isn't
+   there) is replaced with plain centered text instead of dark-on-dark
+   illegible labels sitting over the empty `--bg-cell` background. */
+.cell.qa-reserved {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  text-align: center;
+  padding: 0 14px;
+}
+.cell.qa-reserved .chip-label {
+  position: static;
+  color: var(--fg-muted);
+  text-shadow: none;
+}
+.cell.qa-reserved .caption {
+  position: static;
+  color: var(--fg-muted);
+  text-shadow: none;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: unset;
+}
+
 .panel {
   flex: 0 0 auto;
   margin-top: 16px;
@@ -145,6 +172,33 @@ button:hover { color: var(--fg); border-color: var(--accent-bright); }
 }
 
 .qa-question { font-size: 13px; margin-bottom: 6px; }
+
+/* A little marching-band bounce for a question actively being asked --
+   see app.js's setQuestionText for why this only ever runs while nesso1 is
+   working, never over a settled result. Per-letter bob plus a warm color
+   cycle, staggered by each <span>'s --i so the letters march rather than
+   bounce in unison. Original animation and palette (this project's own
+   accent/warning/danger tokens) -- not any specific song or character
+   design. */
+.oompa-bounce span {
+  display: inline-block;
+  animation: oompa-bob 0.9s ease-in-out infinite,
+             oompa-hue 2.7s linear infinite;
+  animation-delay: calc(var(--i) * 0.045s);
+}
+@keyframes oompa-bob {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-4px); }
+}
+@keyframes oompa-hue {
+  0%   { color: var(--accent-bright); }
+  33%  { color: var(--warning); }
+  66%  { color: var(--danger); }
+  100% { color: var(--accent-bright); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .oompa-bounce span { animation: none; }
+}
 .qa-score { font-size: 22px; color: var(--accent-bright); }
 .qa-spinner {
   width: 14px; height: 14px; border-radius: 50%;

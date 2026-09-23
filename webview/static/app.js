@@ -24,6 +24,7 @@ const state = {
   cells: new Map(),    // card id -> Cell
   jobToCard: new Map(),// job_id -> card id, for stage/frame/job_done/job_error
   qaCapable: false,
+  qaCard: null,        // the physical chip reserved for Q&A, or null (hello.qa_card)
   focusedCard: null,
   seenTargets: [],      // target_ids observed in job_start, most recent first
   viewModeUserSet: false, // true once the visitor has pressed the toggle --
@@ -207,32 +208,101 @@ function setFocus(card) {
   state.focusedCard = card;
 }
 
+// A question "on screen" gets a little marching-band bounce while it's
+// actively being asked -- an ORIGINAL animation (per-letter bob + a warm
+// color cycle over this project's own palette), not a reproduction of any
+// particular song, lyric, or character design: nothing here is copied from
+// anywhere, just evoking a jaunty, playful energy for the moment nesso1 is
+// working. Settles to plain static text once a result exists (`answered`
+// false below) -- motion means "pending," stillness means "here's the
+// answer," which is its own small piece of honesty: nothing keeps
+// performing once there is a real number to read.
+function setQuestionText(el, text, { animated }) {
+  el.innerHTML = "";
+  if (!animated) {
+    el.textContent = text;
+    el.classList.remove("oompa-bounce");
+    return;
+  }
+  el.classList.add("oompa-bounce");
+  [...text].forEach((ch, i) => {
+    const span = document.createElement("span");
+    span.textContent = ch === " " ? " " : ch;
+    span.style.setProperty("--i", i);
+    el.appendChild(span);
+  });
+}
+
 function setStageMode(mode) {
   stageEl.dataset.mode = mode;
   viewToggle.textContent = mode === "solo" ? "Quad view" : "Solo view";
 }
 
+function renderQaPlaceholder(card) {
+  // A real chip, deliberately never given a fold Cell -- see the "hello"
+  // handler's comment on state.qaCard. No canvas, no animation: nothing to
+  // draw for a chip that never receives frame/job_start events, and drawing
+  // something anyway would be exactly the kind of fabricated activity this
+  // project's content-honesty rule forbids.
+  const el = document.createElement("div");
+  el.className = "cell qa-reserved";
+  el.dataset.card = String(card);
+  const label = document.createElement("div");
+  label.className = "chip-label";
+  label.textContent = `CHIP ${card}`;
+  el.appendChild(label);
+  const caption = document.createElement("div");
+  caption.className = "caption";
+  caption.textContent = "reserved for Q&A -- see the panel below";
+  el.appendChild(caption);
+  return el;
+}
+
 function rebuildCellsIfNeeded(cards) {
+  // `cards` is the full inventory (runner/daemon.py's _hello: "a card
+  // legitimately busy, quarantined, or RESERVED has not stopped existing")
+  // and includes the Q&A chip when one is reserved -- the "changed" check
+  // below is against that full list, so a real hardware change (a chip
+  // added or retired) is still detected even though the Q&A chip never gets
+  // a fold Cell.
   const changed = cards.length !== state.cards.length
     || cards.some((c, i) => c !== state.cards[i]);
   if (!changed) return;
   state.cards = cards.slice();
   stageEl.innerHTML = "";
   state.cells.clear();
-  for (const card of cards) {
+  // `cards` is the FOLD inventory only -- confirmed directly against a real
+  // daemon: `hello.cards` is [0,1,2] on a 4-chip booth with Q&A on, never
+  // [0,1,2,3]. The reserved chip is real (it is chip 3), it is simply never
+  // in this list at all -- so this filter is a no-op today and exists only
+  // so a future daemon that DOES include it (matching the `_hello` comment
+  // that reads as if it should) doesn't silently grow a duplicate cell.
+  const foldCards = cards.filter((c) => c !== state.qaCard);
+  for (const card of foldCards) {
     const cell = new Cell(card);
     state.cells.set(card, cell);
     stageEl.appendChild(cell.el);
   }
-  if (state.focusedCard === null || !cards.includes(state.focusedCard)) {
-    state.focusedCard = cards[0] ?? null;
+  // The placeholder is keyed on qaCard being SET, not on it appearing in
+  // `cards` -- it deliberately does not, so gating on `cards.includes(...)`
+  // would mean this branch never runs. Without it, the reserved chip's grid
+  // slot was simply empty: no label, no explanation, indistinguishable at a
+  // glance from "nothing is happening here" -- which is the exact
+  // "chip 3 idle" confusion this was built to fix in the first place.
+  if (state.qaCard !== null) {
+    stageEl.appendChild(renderQaPlaceholder(state.qaCard));
   }
-  // Quad by default once more than one chip is actually available, mirroring
-  // the native booth's own tri-state default (ui/app.py, 2026-08-24: "I like
-  // 4 chip by default when available"). Never overrides a visitor's own
-  // press of the toggle, and never downgrades back to solo just because the
-  // card list happened to arrive gradually and briefly had one entry.
-  if (!state.viewModeUserSet && cards.length > 1) {
+  if (state.focusedCard === null || !foldCards.includes(state.focusedCard)) {
+    state.focusedCard = foldCards[0] ?? null;
+  }
+  // Quad by default once more than one FOLD chip is actually available (the
+  // reserved Q&A chip doesn't count -- a booth with one fold chip and Q&A on
+  // is still a solo booth), mirroring the native booth's own tri-state
+  // default (ui/app.py, 2026-08-24: "I like 4 chip by default when
+  // available"). Never overrides a visitor's own press of the toggle, and
+  // never downgrades back to solo just because the card list happened to
+  // arrive gradually and briefly had one entry.
+  if (!state.viewModeUserSet && foldCards.length > 1) {
     setStageMode("quad");
   }
 }
@@ -280,6 +350,17 @@ function handleEvent(event) {
       boothTitle.textContent = `${event.cards.length} chip${event.cards.length === 1 ? "" : "s"} · protocol v${event.version}`;
       boothSub.textContent = event.models.join(", ");
       state.qaCapable = !!event.qa_capable;
+      // Which physical chip is reserved for Q&A, if any (runner/daemon.py's
+      // `_hello`: "qa_card"). It is still a real, present chip -- `cards`
+      // below is the FULL inventory and includes it -- but it is never
+      // scheduled a fold (runner/workers.py's split_for_qa), so a normal
+      // fold Cell for it would sit "idle" forever: real, but misleading
+      // next to the native GTK booth, which excludes this same chip from
+      // its own fold quad and shows the Q&A spotlight in its place
+      // (ui/quad.py's set_extra_cell). Mirrored here in
+      // rebuildCellsIfNeeded/renderQaPlaceholder rather than left to read
+      // as a stuck chip.
+      state.qaCard = event.qa_card ?? null;
       qaPanel.hidden = !state.qaCapable;
       setNotice("");
       rebuildCellsIfNeeded(event.cards);
@@ -327,14 +408,14 @@ function handleEvent(event) {
     }
     case "answer_start": {
       qaPanel.hidden = false;
-      qaQuestion.textContent = `Scoring affinity for ${event.target_id}…`;
+      setQuestionText(qaQuestion, `Scoring affinity for ${event.target_id}…`, { animated: true });
       qaSpinner.hidden = false;
       qaScore.hidden = true;
       break;
     }
     case "answer_done": {
       qaPanel.hidden = false;
-      qaQuestion.textContent = `Affinity result for ${event.target_id}`;
+      setQuestionText(qaQuestion, `Affinity result for ${event.target_id}`, { animated: false });
       qaSpinner.hidden = true;
       qaScore.hidden = false;
       const pct = Math.round(event.score * 100);
@@ -343,7 +424,7 @@ function handleEvent(event) {
     }
     case "answer_error": {
       qaPanel.hidden = false;
-      qaQuestion.textContent = `Scoring failed for ${event.target_id}.`;
+      setQuestionText(qaQuestion, `Scoring failed for ${event.target_id}.`, { animated: false });
       qaSpinner.hidden = true;
       qaScore.hidden = true;
       break;
