@@ -17,6 +17,7 @@ to a temporary directory instead of depending on this machine's hardware.
 """
 
 import json
+import subprocess
 
 import pytest
 
@@ -34,6 +35,7 @@ from ui.chipviz import (  # noqa: E402
     AICLK_IDLE_MHZ,
     MAX_CHIPS,
     POLL_INTERVAL_MS,
+    POWER_POLL_INTERVAL_S,
     STAGE_STALE_AFTER_S,
     WORKING_ANIMATION_FPS,
     ChipVizPanel,
@@ -46,8 +48,12 @@ from ui.chipviz import (  # noqa: E402
     grid_layout,
     grid_width_px,
     mode_caption,
+    parse_powers,
+    power_activity,
+    power_readout_text,
     read_assets,
     read_chip_clocks,
+    read_chip_power_watts,
     readout_text,
     viz_mode,
 )
@@ -211,6 +217,121 @@ def test_no_sensor_value_can_cost_the_booth_an_exception(value):
     """This feeds an animation. Every junk value must land somewhere in
     [0, 1], quietly."""
     assert 0.0 <= clock_activity(value) <= 1.0
+
+
+# ── power telemetry ──────────────────────────────────────────────────────
+
+def _snapshot(*powers):
+    """A minimal `tt-smi -s` snapshot dict naming the given per-chip powers,
+    device order preserved. `None` in the list becomes a device whose
+    telemetry has no numeric power at all -- the real shape a chip that
+    cannot report power takes, not merely a missing key."""
+    devices = []
+    for watts in powers:
+        telemetry = {} if watts is None else {"power": watts}
+        devices.append({"telemetry": telemetry})
+    return {"device_info": devices}
+
+
+def test_parse_powers_reads_every_chip_in_order():
+    assert parse_powers(_snapshot(15.2, 47.8, 90.1)) == [15.2, 47.8, 90.1]
+
+
+def test_parse_powers_a_chip_with_no_power_reads_as_none_not_dropped():
+    """The same 'index i always means chip i' rule `read_chip_clocks`
+    already holds itself to (see that function's own docstring) -- a
+    silently shifted index would feed one chip's animation off another
+    chip's telemetry."""
+    assert parse_powers(_snapshot(15.2, None, 90.1)) == [15.2, None, 90.1]
+
+
+def test_parse_powers_an_empty_snapshot_reads_as_no_chips():
+    assert parse_powers({"device_info": []}) == []
+    assert parse_powers({}) == []
+
+
+def test_read_chip_power_watts_parses_a_real_tt_smi_stdout(monkeypatch):
+    """Runs the real parsing path against a canned subprocess result --
+    never a real `tt-smi`."""
+    import ui.chipviz as chipviz_module
+
+    class FakeCompletedProcess:
+        stdout = json.dumps(_snapshot(18.0, 76.5))
+
+    monkeypatch.setattr(
+        chipviz_module.subprocess, "run", lambda *a, **k: FakeCompletedProcess())
+    assert read_chip_power_watts() == [18.0, 76.5]
+
+
+@pytest.mark.parametrize("failure", [
+    "no_tt_smi", "bad_json", "timeout",
+])
+def test_read_chip_power_watts_any_failure_reads_as_no_powers(monkeypatch, failure):
+    """No `tt-smi` on this box, malformed output, or a timeout must all fall
+    back the same honest way -- `[]`, so `_tick` falls back to AICLK exactly
+    as if this function had never been called. Never an exception, never a
+    hung caller."""
+    import ui.chipviz as chipviz_module
+
+    def boom(*a, **k):
+        if failure == "no_tt_smi":
+            raise FileNotFoundError("tt-smi not found")
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(cmd="tt-smi", timeout=8)
+
+        class FakeCompletedProcess:
+            stdout = "not json"
+        return FakeCompletedProcess()
+
+    monkeypatch.setattr(chipviz_module.subprocess, "run", boom)
+    assert read_chip_power_watts() == []
+
+
+def test_an_idle_chips_power_reads_as_no_activity():
+    """15W is this project's own measured idle floor (this module's top
+    docstring: 12-17W idle)."""
+    assert power_activity(15.0) == pytest.approx(0.0)
+
+
+def test_a_folding_chips_power_reads_as_full_activity():
+    """90W is this project's own measured folding ceiling (this module's top
+    docstring: 72-91W across all four chips)."""
+    assert power_activity(90.0) == pytest.approx(1.0)
+
+
+def test_power_activity_is_curved_not_linear():
+    """The same perceptual curve tt-local-generator's own `power_activity`
+    uses: a load exactly halfway between floor and ceiling reads as MORE
+    than half activity, so mid loads already look clearly busy rather than
+    only lighting up near the very top of the range.
+
+    Mutation this catches: `_POWER_CURVE = 1.0` (a silent return to linear).
+    """
+    midpoint_watts = 15.0 + (90.0 - 15.0) / 2.0
+    assert power_activity(midpoint_watts) > 0.5
+
+
+@pytest.mark.parametrize("value", [None, "n/a", float("nan"), float("inf"), -5])
+def test_no_power_value_can_cost_the_booth_an_exception(value):
+    assert 0.0 <= power_activity(value) <= 1.0
+
+
+def test_power_readout_shows_the_peak_watt():
+    assert power_readout_text([15.0, 47.0, 90.0], 3, 3) == "90 W"
+
+
+def test_power_readout_says_when_the_display_is_capped():
+    assert power_readout_text([90.0, 47.0], 2, 4) == "90 W · 2/4"
+
+
+def test_power_readout_with_nothing_readable_is_unknown_never_zero():
+    assert power_readout_text([None, None], 2, 2) == "—"
+
+
+def test_the_power_poll_interval_is_a_light_cadence_not_a_frame_rate():
+    """tt-smi is a real subprocess (~0.2-0.3s measured); polling it at frame
+    rate would spend the booth's whole day spawning it."""
+    assert POWER_POLL_INTERVAL_S >= 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -458,6 +579,109 @@ def test_the_first_sample_is_painted_immediately(tmp_path, monkeypatch):
     panel.set_running(True)
     try:
         assert panel._readout_label.get_label() == "1350 MHz"
+    finally:
+        panel.set_running(False)
+
+
+def test_the_power_thread_is_started_once_and_stopped(tmp_path, monkeypatch):
+    """Same bound as the AICLK poll, for the same reason: the booth runs
+    unattended all day, and a background thread that outlives the panel is
+    the resource leak this project has already been bitten by once, one
+    layer down from a GLib timer.
+
+    Mutation this catches: `set_running(False)` clearing `_power_thread`
+    without setting `_power_stop`, which would forget the thread rather
+    than actually stop it.
+    """
+    panel = _panel(monkeypatch, tmp_path)
+    if not panel.available:
+        pytest.skip("WebKit unavailable in this environment")
+    monkeypatch.setattr(chipviz_module, "read_chip_power_watts", lambda: [])
+    panel.set_running(True)
+    thread = panel._power_thread
+    assert thread is not None
+    assert thread.is_alive()
+    panel.set_running(True)
+    assert panel._power_thread is thread, "a second start must not spawn a second thread"
+    panel.set_running(False)
+    assert panel._power_thread is None
+    thread.join(timeout=2.0)
+    assert not thread.is_alive(), (
+        "the background thread must actually stop, not just be forgotten")
+    panel.set_running(False)  # idempotent
+
+
+def test_an_unavailable_panel_starts_no_power_thread(tmp_path, monkeypatch):
+    monkeypatch.setattr(chipviz_module, "SYSFS_ROOT", tmp_path / "nothing-here")
+    panel = ChipVizPanel()
+    panel.set_running(True)
+    assert panel._power_thread is None
+
+
+def test_stopping_clears_a_stale_power_sample(tmp_path, monkeypatch):
+    """A sample must not keep steering the animation after power telemetry
+    has been told to stop -- the same reason `_tick` itself goes back to
+    an em dash rather than a frozen number once its own poll stops."""
+    panel = _panel(monkeypatch, tmp_path)
+    if not panel.available:
+        pytest.skip("WebKit unavailable in this environment")
+    monkeypatch.setattr(chipviz_module, "read_chip_power_watts", lambda: [])
+    panel.set_running(True)
+    panel._latest_powers = [90.0, 90.0, 90.0, 90.0]
+    panel.set_running(False)
+    assert panel._latest_powers is None
+
+
+def test_no_power_sample_yet_falls_back_to_aiclk(tmp_path, monkeypatch):
+    """Before the background thread's first sample has landed (or on a box
+    with no `tt-smi` at all), the readout and animation must read exactly as
+    they did before this feature existed."""
+    panel = _panel(monkeypatch, tmp_path, clocks=(1350, 1350, 1350, 1350))
+    if not panel.available:
+        pytest.skip("WebKit unavailable in this environment")
+    monkeypatch.setattr(chipviz_module, "read_chip_power_watts", lambda: [])
+    panel.set_running(True)
+    try:
+        assert panel._readout_label.get_label() == "1350 MHz"
+    finally:
+        panel.set_running(False)
+
+
+def test_a_real_power_sample_wins_the_readout_over_aiclk(tmp_path, monkeypatch):
+    """Once a real sample has arrived, `_tick` prefers it over AICLK for both
+    the readout and the animation -- the whole point of adding it.
+
+    Mutation this catches: `_tick` reading `clocks` instead of
+    `self._latest_powers` when both are present.
+    """
+    panel = _panel(monkeypatch, tmp_path, clocks=(800, 800, 800, 800))
+    if not panel.available:
+        pytest.skip("WebKit unavailable in this environment")
+    monkeypatch.setattr(chipviz_module, "read_chip_power_watts", lambda: [])
+    panel.set_running(True)
+    try:
+        panel._latest_powers = [90.0, 90.0, 90.0, 90.0]
+        panel._tick()
+        assert panel._readout_label.get_label() == "90 W"
+    finally:
+        panel.set_running(False)
+
+
+def test_a_chip_missing_from_the_power_sample_falls_back_to_its_own_aiclk(
+        tmp_path, monkeypatch):
+    """Per chip, not per sample: one chip's real power reading must not be
+    thrown away just because a DIFFERENT chip in the same sample came back
+    `None` (the same 'index i always means chip i' rule `parse_powers`
+    holds itself to)."""
+    panel = _panel(monkeypatch, tmp_path, clocks=(800, 1350, 800, 800))
+    if not panel.available:
+        pytest.skip("WebKit unavailable in this environment")
+    monkeypatch.setattr(chipviz_module, "read_chip_power_watts", lambda: [])
+    panel.set_running(True)
+    try:
+        panel._latest_powers = [90.0, None, 90.0, 90.0]
+        assert panel._activity_for(0, 800) == pytest.approx(power_activity(90.0))
+        assert panel._activity_for(1, 1350) == pytest.approx(clock_activity(1350))
     finally:
         panel.set_running(False)
 

@@ -1879,6 +1879,54 @@ tests fail, restoring it makes them pass again. `ui/chipviz.py`'s own module doc
 both the original gap and the specific way the first repair attempt failed to close it, so a
 future reader does not repeat either mistake.
 
+### Power telemetry: the panel gets the thread it always documented not needing (2026-09-24)
+
+Prompted directly after the activity-tracking work above landed: "I want it to feel more
+vibrant." AICLK (this panel's only signal until now) is close to binary on Blackhole -- ~800
+MHz idle, ~1350 MHz boosted -- so even with `clock_activity` genuinely reaching
+`setActivity`, a chip only ever reads as "resting" or "fully on," never anywhere honestly in
+between. Real per-chip POWER is graded and tracks load directly; `tt-local-generator/app/
+activity_viz.py` has shipped exactly this (a background thread running `tt-smi`) since before
+this project existed, and `ui/chipviz.py`'s own docstring already named not doing that as a
+simplicity trade, not a hard constraint.
+
+**Adopted the reference's shape rather than inventing a second one.** A `threading.Thread`
+(daemon, started/stopped in lockstep with the existing `GLib.timeout` poll source) samples
+`tt-smi -s --snapshot_no_tty` every 1.5s and hands the parsed per-chip watts back via
+`GLib.idle_add`; `_tick` (still the only thing that touches JS, still on the main loop) prefers
+a real power sample per chip and falls back to AICLK the instant one is missing -- no
+`tt-smi` on this box, a timeout, a chip a sample came back `None` for, or simply no sample
+having landed yet. A box with neither signal behaves exactly as this panel always has.
+
+**Floor/ceiling are this project's own measured numbers, not the reference's generic ones.**
+15W idle / 90W folding, straight from this same file's own already-recorded measurement (12-17W
+idle, 72-91W across four folding chips) -- the same "cite what was actually measured on this
+hardware" discipline the activity-tracking bullet above just re-earned back for the clock
+signal, applied to the new one from the start instead of needing a second pass to fix it.
+
+Pure functions (`parse_powers`, `read_chip_power_watts`, `power_activity`,
+`power_readout_text`) are unit-tested directly with no subprocess and no hardware --
+`read_chip_power_watts`'s own contract is that no `tt-smi` failure mode (missing binary, bad
+JSON, a timeout) may ever raise or hang the caller, only ever return `[]` so the fallback
+engages exactly as if the function had never been called. The thread's own lifecycle gets the
+same bound the GLib poll source already had to earn: added once, genuinely stopped (not merely
+forgotten) on `set_running(False)`, and a sample that lands after stop is discarded rather than
+reviving a cleared reading.
+
+### The affinity panel stopped moving when the Tensix panel opens (2026-09-24)
+
+Reported live, on the running booth, right after the power-telemetry work above: opening the
+Tensix panel with `T` pushed the affinity Q&A panel roughly 160px down the rail -- reproduced
+and measured with a headless-weston before/after screenshot, not just read off the code.
+
+The Tensix panel has to stay directly below the telemetry panel (`test_the_tensix_panel_sits_
+directly_below_the_telemetry_panel` already pins that -- chip N's animation must sit under
+chip N's own readout), so the affinity panel moved instead: it now sits right after the
+pipeline panel, before the telemetry/Tensix pair, so toggling `T` only ever displaces the hint
+row and the diagnostics panel below it -- never the panel a visitor is actively watching a live
+answer land in. `test_opening_the_tensix_panel_does_not_move_the_affinity_panel` pins the new
+order and was confirmed red against the old one before being restored.
+
 ## Conventions
 
 - **Keep the README's screenshots current.** The README claims every image on it is the

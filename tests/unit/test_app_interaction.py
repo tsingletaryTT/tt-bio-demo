@@ -1978,6 +1978,25 @@ def test_the_tensix_panel_sits_directly_below_the_telemetry_panel():
     assert app.telemetry_panel.get_next_sibling() is app.chipviz_panel
 
 
+def test_opening_the_tensix_panel_does_not_move_the_affinity_panel():
+    """A visitor watching a live Q&A answer land must not have it hop ~160px
+    down the rail the instant someone else presses `T` -- reported live on a
+    running booth (2026-09-24). `question_panel` sits BEFORE the telemetry/
+    chipviz pair (which must stay adjacent to each other, see the test
+    above) specifically so toggling the Tensix panel only ever displaces the
+    hint row and diagnostics panel below it, never the panel a visitor is
+    actively watching.
+
+    Mutation this catches: appending `question_panel` after `chipviz_panel`
+    again.
+    """
+    app = _app()
+    rail = app._build_side_rail()
+    assert rail is not None
+    assert app.pipeline_panel.get_next_sibling() is app.question_panel
+    assert app.question_panel.get_next_sibling() is app.telemetry_panel
+
+
 def test_a_stage_event_re_aims_the_animation():
     app = _app()
     app.chipviz_panel = _RecordingChipViz()

@@ -2848,6 +2848,17 @@ class DemoApp(Gtk.Application):
         # really there" discipline `ChipVizPanel`'s own availability check
         # follows, applied to a daemon-level capability instead of a
         # host-level one.
+        #
+        # Built BEFORE the telemetry/chipviz pair below, and appended before
+        # them too (2026-09-24): a visitor watching a live Q&A answer land
+        # must not have it hop ~160px down the rail the instant someone else
+        # presses `T` to open the Tensix panel. `telemetry_panel` and
+        # `chipviz_panel` still have to stay adjacent to each other (the
+        # comment above, and test_app_interaction.py's own
+        # `test_the_animation_sits_directly_under_its_own_chips_readout`
+        # pin that), so this panel moves instead -- toggling `T` now only
+        # ever displaces the hint row and the diagnostics panel below it,
+        # neither of which anyone is watching for a live answer.
         self.question_panel = QuestionQueuePanel(self.questions)
         # The same Q&A facts, large, in the quad's own empty fourth cell
         # (see ui/qa_spotlight.py). Built here rather than inside
@@ -2856,8 +2867,8 @@ class DemoApp(Gtk.Application):
         # into whichever `QuadView` is current); it is not appended to
         # `side` below, since it lives in the quad, not the rail.
         self.qa_spotlight = QASpotlightCell(self.questions)
-        for panel in (self.pipeline_panel, self.telemetry_panel,
-                      self.chipviz_panel, self.question_panel):
+        for panel in (self.pipeline_panel, self.question_panel,
+                      self.telemetry_panel, self.chipviz_panel):
             panel.set_hexpand(False)
             panel.set_vexpand(False)
             side.append(panel)
