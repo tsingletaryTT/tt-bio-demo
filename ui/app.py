@@ -534,7 +534,8 @@ class _SlotView:
 
     __slots__ = ("awaiting_first_frame", "current_job_id", "current_target_id",
                  "shown_target_id", "has_structure", "ribbon_generation",
-                 "pending_ribbon", "stage", "shown_cif_path", "pending_highlight")
+                 "pending_ribbon", "stage", "stage_frac", "shown_cif_path",
+                 "pending_highlight")
 
     def __init__(self):
         self.awaiting_first_frame = False
@@ -545,6 +546,7 @@ class _SlotView:
         self.ribbon_generation = 0
         self.pending_ribbon = None
         self.stage = None
+        self.stage_frac = 0.0
         self.shown_cif_path = None
         # (target_id, outcome) from a finished `_highlight_worker_main`, not
         # yet applied -- guarded by the same `_ribbon_lock` `pending_ribbon`
@@ -5203,11 +5205,24 @@ class DemoApp(Gtk.Application):
                     # reached it.
                     view.stage = (event.get("stage") if kind == "stage"
                                   else None)
+                    # `frac` is wire data and is coerced the same defensive
+                    # way the `stage` branch below coerces it -- cleared to
+                    # 0.0 in lockstep with `stage` clearing to None, so a
+                    # chip between folds never reports a stale progress
+                    # value for a stage it is no longer in.
+                    if kind == "stage":
+                        try:
+                            view.stage_frac = float(event.get("frac", 0.0))
+                        except (TypeError, ValueError):
+                            view.stage_frac = 0.0
+                    else:
+                        view.stage_frac = 0.0
             elif kind == "not_ready":
                 # The daemon has stopped folding entirely -- every cell, not
                 # just one.
                 for view in self._slots:
                     view.stage = None
+                    view.stage_frac = 0.0
             self._sync_chipviz()
 
             if kind == "job_start":
@@ -5812,13 +5827,18 @@ class DemoApp(Gtk.Application):
             log.exception("quad caption for slot %r dropped", slot)
 
     def _chip_stages(self):
-        """`{chip index: that chip's own current stage}` for every cell.
+        """`{chip index: that chip's own current (stage, stage_frac), or
+        None}` for every cell.
 
         The mapping the Tensix panel wants (ui/chipviz.py's
         `set_chip_stages`), built from the only place that knows it: each
-        cell's own `_SlotView.stage`, set by that cell's `stage` events and
-        cleared when its fold starts, ends or fails. A cell between folds
-        contributes `None`, which the panel draws as a resting chip.
+        cell's own `_SlotView.stage`/`stage_frac`, set by that cell's `stage`
+        events and cleared when its fold starts, ends or fails. A cell
+        between folds contributes a bare `None` (not a tuple -- there is no
+        stage to pair a fraction with), which the panel draws as a resting
+        chip with no progress to show. A cell WITH a stage contributes
+        `(stage, stage_frac)` so the panel can drive real progress instead of
+        a free-running clock.
 
         Keyed by CHIP, not by slot. `self.cards` is the daemon's own card
         list in the order the cells were built, and the panel's canvases are
@@ -5830,7 +5850,9 @@ class DemoApp(Gtk.Application):
         stages = {}
         for slot, view in enumerate(self._slots):
             if slot < len(self.cards):
-                stages[self.cards[slot]] = view.stage
+                stages[self.cards[slot]] = (
+                    (view.stage, view.stage_frac) if view.stage is not None
+                    else None)
         return stages
 
     def _sync_chipviz(self):

@@ -1986,7 +1986,7 @@ def test_a_stage_event_re_aims_the_animation():
     app._handle_event({"type": "stage", "job_id": "j1", "stage": "diffusion",
                        "frac": 0.5})
     assert app.chipviz_panel.states[-1] == "attract"
-    assert app.chipviz_panel.chip_stages[-1] == {0: "diffusion"}
+    assert app.chipviz_panel.chip_stages[-1] == {0: ("diffusion", 0.5)}
 
 
 def test_a_non_stage_event_refreshes_the_state_without_inventing_a_stage():
@@ -2016,7 +2016,7 @@ def test_not_ready_stands_every_chip_down_not_just_one():
                            "target_id": "t", "n_residues": 20, "card": card})
         app._handle_event({"type": "stage", "job_id": f"j{card}",
                            "stage": "diffusion", "frac": 0.5})
-    assert app.chipviz_panel.chip_stages[-1] == {c: "diffusion"
+    assert app.chipviz_panel.chip_stages[-1] == {c: ("diffusion", 0.5)
                                                  for c in range(4)}
     app._handle_event({"type": "not_ready", "missing": ["weights"]})
     assert app.chipviz_panel.chip_stages[-1] == {c: None for c in range(4)}
@@ -2041,7 +2041,7 @@ def test_each_cell_carries_its_own_stage_to_the_panel():
         app._handle_event({"type": "stage", "job_id": f"j{card}",
                            "stage": stage, "frac": 0.5})
     assert app.chipviz_panel.chip_stages[-1] == {
-        0: "diffusion", 1: "trunk", 2: "confidence", 3: None}
+        0: ("diffusion", 0.5), 1: ("trunk", 0.5), 2: ("confidence", 0.5), 3: None}
 
 
 def test_a_finished_fold_stops_claiming_its_chip_is_working():
@@ -2797,7 +2797,7 @@ def test_the_chip_that_is_folding_is_named_to_the_tensix_panel():
                        "n_residues": 20, "card": 2})
     app._handle_event({"type": "stage", "job_id": "j1", "stage": "diffusion",
                        "frac": 0.5})
-    assert app.chipviz_panel.chip_stages[-1] == {2: "diffusion", 3: None}
+    assert app.chipviz_panel.chip_stages[-1] == {2: ("diffusion", 0.5), 3: None}
 
 
 def test_a_stage_event_does_not_reattribute_the_fold_to_another_chip():
@@ -2814,7 +2814,37 @@ def test_a_stage_event_does_not_reattribute_the_fold_to_another_chip():
     app._handle_event({"type": "stage", "job_id": "j1", "stage": "diffusion",
                        "frac": 0.5})
     assert app.chipviz_panel.chip_stages[-1] == {
-        0: None, 1: None, 2: "diffusion", 3: None}
+        0: None, 1: None, 2: ("diffusion", 0.5), 3: None}
+
+
+def test_chip_stages_carries_the_wire_fraction_alongside_stage():
+    """`stage`'s wire `frac` is real, per-chip progress (tt-bio's own
+    (step, total) counts for trunk/diffusion) that used to reach
+    `_handle_event` and go no further than the pipeline panel. A chip WITH a
+    stage now reports `(stage, frac)` so `ChipVizPanel` can drive real
+    progress instead of a free-running clock; a chip with none still reports
+    a bare `None` (see `test_a_stage_event_does_not_reattribute_the_fold_to_
+    another_chip`, unchanged, for that shape)."""
+    app = _app()
+    app.chipviz_panel = _RecordingChipViz()
+    app._handle_event(_a_fold_starting())
+    app._handle_event({"type": "stage", "job_id": "j1", "stage": "diffusion",
+                       "frac": 0.55})
+    assert app.chipviz_panel.chip_stages[-1] == {0: ("diffusion", 0.55)}
+
+
+def test_stage_frac_clears_when_stage_clears():
+    """A chip between folds must not keep reporting the stale progress of
+    the fold that just ended -- `stage_frac` clears in lockstep with
+    `stage`, the same way it clears to None on job_done/job_error."""
+    app = _app()
+    app.chipviz_panel = _RecordingChipViz()
+    app._handle_event(_a_fold_starting())
+    app._handle_event({"type": "stage", "job_id": "j1", "stage": "diffusion",
+                       "frac": 0.55})
+    app._handle_event({"type": "job_done", "job_id": "j1", "wall_s": 1.0,
+                       "cif_path": ""})
+    assert app.chipviz_panel.chip_stages[-1] == {0: None}
 
 
 # ---------------------------------------------------------------------------
