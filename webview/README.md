@@ -50,8 +50,40 @@ exercises the affinity Q&A panel as well as an ordinary fold;
 `quad_fold.jsonl` exercises four interleaved chips at once.
 
 Against a **real** daemon, the only difference is `--daemon-socket` pointing
-at the daemon's own `--socket` path -- same host, or (with an SSH tunnel or
-by binding `--host 0.0.0.0`) a different one. Nothing else changes.
+at the daemon's own `--socket` path -- same host, or (with an SSH tunnel, or
+`--host 0.0.0.0` plus `--auth-token` -- see the next section) a different
+one. Nothing else changes.
+
+## Binding beyond loopback
+
+The default `--host 127.0.0.1` is reachable only from this same machine.
+Binding anywhere else -- `0.0.0.0`, a LAN address, anything not
+`127.0.0.1`/`localhost`/`::1` -- makes `/pick`, `/question`, and `/egg`
+reachable to every client that can reach the port, with nothing in front of
+them. The bridge refuses to start in that configuration unless a token is
+configured:
+
+```bash
+.venvs/venv-ui/bin/python3 -m webview.bridge --daemon-socket /tmp/tt-bio-demo.sock \
+    --host 0.0.0.0 --port 8080 --auth-token 'some-long-random-secret'
+```
+
+(`WEBVIEW_AUTH_TOKEN` works the same way as an environment variable, so the
+secret needn't appear in `ps` output.) Every request -- the SSE stream, every
+static file, every action -- must then present that same token, either as
+`Authorization: Bearer <token>` or as a `?token=<token>` query parameter
+(`EventSource` cannot set custom headers, so the query form is what a plain
+page load and the live event stream both use). A visitor's URL becomes:
+
+```
+http://<host>:8080/?token=some-long-random-secret
+```
+
+An **SSH tunnel to the loopback default is still the recommended path** for
+a booth on someone else's network -- it needs no token at all, since nothing
+beyond `127.0.0.1` on the far end is ever listening. The token exists for the
+case where a tunnel genuinely isn't available and an explicit LAN/venue-Wi-Fi
+bind is the only option.
 
 ## Why Server-Sent Events, not a WebSocket
 

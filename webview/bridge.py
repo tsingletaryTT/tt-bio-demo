@@ -27,12 +27,19 @@ runs under EITHER of the project's own venvs -- `.venvs/venv-ui` or
 `.venvs/venv-runner` -- with no preference between them; use whichever you
 already have set up. Per this project's convention, run it through one of
 those, never a bare interpreter.
+
+Auth: binding beyond loopback (--host anything other than 127.0.0.1/
+localhost/::1) exposes unauthenticated fold/Q&A control endpoints to every
+client that can reach the port, so a non-loopback bind refuses to start
+unless --auth-token/WEBVIEW_AUTH_TOKEN is set. See webview/README.md.
 """
 
 import argparse
+import hmac
 import http.server
 import json
 import logging
+import os
 import queue
 import socket
 import threading
@@ -90,6 +97,21 @@ SUBSCRIBER_QUEUE_MAX = 200
 # connection is dead during a quiet stretch between folds.
 SSE_KEEPALIVE_S = 15.0
 
+# Bound on reading a POST body once Content-Length is known-good. Without
+# this, a client that sends headers and then only part of the body (or
+# nothing further) leaves rfile.read() blocked forever on that one
+# ThreadingHTTPServer thread -- and since this bridge's public HTTP surface
+# is exactly the non-loopback mode the README documents, a handful of such
+# slow POSTs can exhaust threads and starve every legitimate tab/action.
+POST_BODY_READ_TIMEOUT_S = 5.0
+
+# A bridge bound to one of these is reachable only from this same machine --
+# an SSH tunnel or a local browser, never a client elsewhere on the network.
+# Anything else (including 0.0.0.0) is a non-loopback bind and, per the
+# module docstring above, requires an auth token before this process will
+# start.
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
 _STATIC_CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",
@@ -123,6 +145,28 @@ class DaemonUnavailable(Exception):
     connection to forward a client message over."""
 
 
+def is_loopback_host(host):
+    return host in LOOPBACK_HOSTS
+
+
+def check_non_loopback_requires_auth(host, auth_token):
+    """Refuse to proceed if `host` is not a loopback address and no
+    auth_token is configured. Pulled out of main() as a pure function so it
+    is directly unit-testable without argv/subprocess plumbing.
+
+    A message passed to SystemExit is printed to stderr and the process
+    exits 1 -- exactly the behavior a CLI script wants here, with no
+    separate print() call to keep in sync with it.
+    """
+    if not is_loopback_host(host) and not auth_token:
+        raise SystemExit(
+            f"refusing to bind the webview bridge to {host} without "
+            "--auth-token or WEBVIEW_AUTH_TOKEN set: a non-loopback bridge "
+            "exposes fold/Q&A controls to anyone who can reach this host. "
+            "Use the default loopback bind behind an SSH tunnel, or set a "
+            "token.")
+
+
 class DaemonLink:
     """The one connection to the daemon, decoded once and fanned out.
 
@@ -136,6 +180,13 @@ class DaemonLink:
         self._connect = connect or self._default_connect
         self._sock = None
         self._sock_lock = threading.Lock()
+        # Guards the actual write, not just the pointer read -- see
+        # send_client_message. ThreadingHTTPServer runs one thread per
+        # connection, so two browser POSTs can call send_client_message
+        # concurrently; without a lock held across the write itself, their
+        # newline-delimited payloads can interleave on the one real socket
+        # this process owns, and the daemon reads garbage.
+        self._send_lock = threading.Lock()
         self._subscribers = set()
         self._subscribers_lock = threading.Lock()
         self._stop = threading.Event()
@@ -236,7 +287,12 @@ class DaemonLink:
         if sock is None:
             raise DaemonUnavailable("not connected to a daemon")
         try:
-            sock.sendall(payload)
+            # The connection lock above only protects reading `self._sock`;
+            # the write itself is serialized separately so two concurrent
+            # callers can never interleave their payloads on the wire (see
+            # `_send_lock`'s own comment).
+            with self._send_lock:
+                sock.sendall(payload)
         except OSError as exc:
             raise DaemonUnavailable(f"daemon connection lost: {exc}") from exc
 
@@ -332,12 +388,21 @@ class DaemonLink:
                            "one slow client")
 
 
-def make_handler(daemon_link):
+def make_handler(daemon_link, auth_token=None,
+                  body_read_timeout_s=POST_BODY_READ_TIMEOUT_S):
     """Build a BaseHTTPRequestHandler bound to this one DaemonLink.
 
     A factory rather than a module-level class because http.server hands the
     class itself to the socket server, with no constructor hook for extra
-    arguments -- this closes over `daemon_link` instead.
+    arguments -- this closes over `daemon_link` (and `auth_token`,
+    `body_read_timeout_s`) instead.
+
+    `auth_token`, when set, is required on EVERY request -- GET (/events,
+    static files) and POST alike. Leaving any one of them open would be
+    exactly the "a check that knows less than the thing it's protecting"
+    mistake this project's own history calls out repeatedly: /events in
+    particular streams live, otherwise-private demo state, not just the
+    mutating actions.
     """
 
     class Handler(http.server.BaseHTTPRequestHandler):
@@ -347,7 +412,37 @@ def make_handler(daemon_link):
         def log_message(self, fmt, *args):
             log.info("%s - %s", self.address_string(), fmt % args)
 
+        def _authorized(self):
+            if auth_token is None:
+                return True
+            provided = None
+            auth_header = self.headers.get("Authorization", "")
+            if auth_header.startswith("Bearer "):
+                provided = auth_header[len("Bearer "):]
+            if provided is None:
+                query = urllib.parse.urlsplit(self.path).query
+                values = urllib.parse.parse_qs(query).get("token")
+                if values:
+                    provided = values[0]
+            if provided is None:
+                return False
+            # Constant-time comparison: a client guessing the token one
+            # character at a time should not be able to use response-time
+            # differences to confirm each correct prefix.
+            return hmac.compare_digest(provided, auth_token)
+
+        def _send_unauthorized(self):
+            body = json.dumps({"error": "unauthorized"}).encode("utf-8")
+            self.send_response(401)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
         def do_GET(self):
+            if not self._authorized():
+                self._send_unauthorized()
+                return
             path = urllib.parse.urlsplit(self.path).path
             if path == "/events":
                 self._serve_events()
@@ -355,6 +450,9 @@ def make_handler(daemon_link):
                 self._serve_static(path)
 
         def do_POST(self):
+            if not self._authorized():
+                self._send_unauthorized()
+                return
             path = urllib.parse.urlsplit(self.path).path
             builder = _ACTION_BUILDERS.get(path.lstrip("/"))
             if builder is None:
@@ -365,11 +463,32 @@ def make_handler(daemon_link):
             except ValueError:
                 self.send_error(400, "malformed Content-Length header")
                 return
+            if length < 0:
+                # A negative value passes the upper-bound check below (it is
+                # less than MAX_POST_BODY_BYTES) and would reach rfile.read()
+                # with a negative count, which reads until EOF instead of
+                # respecting any bound at all.
+                self.send_error(400, "negative Content-Length")
+                return
             if length > MAX_POST_BODY_BYTES:
                 self.send_error(
                     413, f"body too large (max {MAX_POST_BODY_BYTES} bytes)")
                 return
-            raw = self.rfile.read(length) if length else b"{}"
+            self.connection.settimeout(body_read_timeout_s)
+            try:
+                raw = self.rfile.read(length) if length else b"{}"
+            except (socket.timeout, TimeoutError):
+                # A client that sent valid, under-the-limit headers and then
+                # stalled mid-body must not be allowed to hold this thread
+                # (one per connection, under ThreadingHTTPServer) forever.
+                self.send_error(
+                    408, "timed out waiting for the request body")
+                return
+            finally:
+                # Reset for whatever this (persistent, HTTP/1.1) connection
+                # does next -- a lowered read timeout must not leak into the
+                # framework's own between-requests header read.
+                self.connection.settimeout(None)
             try:
                 body = json.loads(raw)
                 if not isinstance(body, dict):
@@ -449,8 +568,12 @@ def make_handler(daemon_link):
     return Handler
 
 
-def build_server(daemon_link, host, port):
-    return http.server.ThreadingHTTPServer((host, port), make_handler(daemon_link))
+def build_server(daemon_link, host, port, auth_token=None,
+                  body_read_timeout_s=POST_BODY_READ_TIMEOUT_S):
+    return http.server.ThreadingHTTPServer(
+        (host, port),
+        make_handler(daemon_link, auth_token=auth_token,
+                    body_read_timeout_s=body_read_timeout_s))
 
 
 def main(argv=None):
@@ -461,17 +584,27 @@ def main(argv=None):
                              "or a runner.mock.MockRunner's socket_path.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8080)
+    parser.add_argument("--auth-token", default=None,
+                        help="Shared secret every request must present "
+                             "(query ?token=... or Authorization: Bearer "
+                             "...) -- also settable via WEBVIEW_AUTH_TOKEN. "
+                             "Required when --host is not a loopback "
+                             "address (127.0.0.1/localhost/::1).")
     args = parser.parse_args(argv)
 
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
+    auth_token = args.auth_token or os.environ.get("WEBVIEW_AUTH_TOKEN")
+    check_non_loopback_requires_auth(args.host, auth_token)
+
     link = DaemonLink(args.daemon_socket)
     link.start()
-    server = build_server(link, args.host, args.port)
-    log.info("serving http://%s:%d (daemon socket: %s)",
-             args.host, args.port, args.daemon_socket)
+    server = build_server(link, args.host, args.port, auth_token=auth_token)
+    log.info("serving http://%s:%d (daemon socket: %s)%s",
+             args.host, args.port, args.daemon_socket,
+             " [auth token required]" if auth_token else "")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

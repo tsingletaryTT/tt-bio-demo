@@ -24,10 +24,13 @@ from protocol.events import PROTOCOL_VERSION, ProtocolError, encode, pick_messag
 from runner.mock import MockRunner, load_stream
 from webview.bridge import (
     MAX_POST_BODY_BYTES,
+    POST_BODY_READ_TIMEOUT_S,
     RECONNECT_DELAY_S,
     DaemonLink,
     DaemonUnavailable,
     build_server,
+    check_non_loopback_requires_auth,
+    is_loopback_host,
 )
 
 FIXTURE = pathlib.Path("tests/fixtures/streams/short_fold.jsonl")
@@ -304,6 +307,51 @@ def encode_client_message_of(target_id):
     return encode_client_message(pick_message(target_id))
 
 
+def test_concurrent_send_client_messages_never_interleave_on_the_wire():
+    """Two browser tabs' actions arrive on two different HTTP threads and
+    both call send_client_message concurrently -- without a lock held
+    across the actual write (not just the socket-pointer read), their
+    payloads can interleave on the daemon's one real connection. Uses
+    _SlowFakeSocket, whose sendall() deliberately takes real time mid-write,
+    to make that race reproducible rather than hoping to catch it by luck."""
+    fake = _SlowFakeSocket()
+    link = DaemonLink("/does/not/matter", connect=lambda: fake)
+    link.start()
+    try:
+        deadline = time.monotonic() + 2.0
+        while not link.connected and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert link.connected
+
+        errors = []
+
+        def send(target_id):
+            try:
+                link.send_client_message(pick_message(target_id))
+            except Exception as exc:  # pragma: no cover - surfaced via errors
+                errors.append(exc)
+
+        t1 = threading.Thread(target=send, args=("aaaaaaaaaaaaaaaa",))
+        t2 = threading.Thread(target=send, args=("bbbbbbbbbbbbbbbb",))
+        t1.start()
+        t2.start()
+        t1.join(timeout=5.0)
+        t2.join(timeout=5.0)
+        assert not errors
+
+        joined = b"".join(fake.sent)
+        lines = joined.splitlines(keepends=True)
+        # Two complete, unmangled JSON lines -- if the two sendall() calls
+        # had interleaved their chunks, this would either be more than two
+        # lines (a stray newline landing mid-payload) or a line that fails
+        # to parse as JSON (two half-payloads glued together).
+        assert len(lines) == 2
+        for line in lines:
+            json.loads(line)
+    finally:
+        link.stop()
+
+
 def test_a_full_subscriber_queue_is_dropped_not_blocked_on():
     """A tab that stops reading must not stall the reader thread for every
     OTHER tab -- see _broadcast's own comment. Reaches into `_subscribers`
@@ -343,12 +391,29 @@ def test_a_malformed_line_from_the_daemon_is_dropped_not_fatal():
 # ── the HTTP layer ───────────────────────────────────────────────────────
 
 
+class _SlowFakeSocket(_FakeSocket):
+    """A connect() stand-in whose sendall() writes in two chunks with a
+    sleep between them -- long enough that, without DaemonLink's own send
+    lock serializing concurrent callers, a second thread's sendall() can
+    interleave its own chunks in between and corrupt both messages on the
+    "wire" (here: the `sent` list, in write order)."""
+
+    def sendall(self, data):
+        mid = max(1, len(data) // 2)
+        self.sent.append(data[:mid])
+        time.sleep(0.05)
+        self.sent.append(data[mid:])
+
+
 class _Server:
     """A running bridge HTTP server on an ephemeral port, torn down at the
     end of the `with` block."""
 
-    def __init__(self, daemon_link):
-        self.server = build_server(daemon_link, "127.0.0.1", 0)
+    def __init__(self, daemon_link, auth_token=None,
+                 body_read_timeout_s=POST_BODY_READ_TIMEOUT_S):
+        self.server = build_server(daemon_link, "127.0.0.1", 0,
+                                   auth_token=auth_token,
+                                   body_read_timeout_s=body_read_timeout_s)
         self.port = self.server.server_address[1]
         self.thread = threading.Thread(target=self.server.serve_forever,
                                        daemon=True)
@@ -510,3 +575,137 @@ def test_events_endpoint_streams_real_events_from_the_mock_runner():
     finally:
         link.stop()
         runner.stop()
+
+
+# ── request body: negative Content-Length, and a bounded read timeout ────
+
+
+def test_post_with_a_negative_content_length_is_a_400():
+    """A negative value passes the `> MAX_POST_BODY_BYTES` upper-bound check
+    and would otherwise reach rfile.read(negative), which reads until EOF
+    instead of respecting any bound at all."""
+    link = DaemonLink("/does/not/matter")
+    with _Server(link) as server:
+        conn = server.connection()
+        conn.putrequest("POST", "/pick")
+        conn.putheader("Content-Length", "-1")
+        conn.endheaders()
+        resp = conn.getresponse()
+        resp.read()
+        assert resp.status == 400
+
+
+def test_a_stalled_partial_body_times_out_as_a_408_not_a_hang():
+    """A client that declares a Content-Length and then sends only part of
+    the body (or nothing further) must not be able to hold this connection's
+    one ThreadingHTTPServer thread forever."""
+    link = DaemonLink("/does/not/matter")
+    with _Server(link, body_read_timeout_s=0.2) as server:
+        raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        raw.settimeout(5.0)
+        raw.connect(("127.0.0.1", server.port))
+        raw.sendall(
+            b"POST /pick HTTP/1.1\r\nHost: x\r\nContent-Length: 100\r\n\r\n"
+            b"only-ten-b"  # 10 bytes -- far short of the declared 100
+        )
+        buf = b""
+        deadline = time.monotonic() + 5.0
+        while b"\r\n" not in buf and time.monotonic() < deadline:
+            buf += raw.recv(65536)
+        raw.close()
+        status_line = buf.split(b"\r\n", 1)[0]
+        assert b"408" in status_line
+
+
+# ── auth: a non-loopback bind and the token it requires ──────────────────
+
+
+def test_is_loopback_host_classifies_correctly():
+    assert is_loopback_host("127.0.0.1")
+    assert is_loopback_host("localhost")
+    assert is_loopback_host("::1")
+    assert not is_loopback_host("0.0.0.0")
+    assert not is_loopback_host("10.0.0.5")
+    assert not is_loopback_host("")
+
+
+def test_non_loopback_without_a_token_refuses_to_start():
+    with pytest.raises(SystemExit, match="refusing to bind"):
+        check_non_loopback_requires_auth("0.0.0.0", None)
+
+
+def test_non_loopback_with_a_token_is_allowed():
+    check_non_loopback_requires_auth("0.0.0.0", "some-secret")  # must not raise
+
+
+def test_loopback_without_a_token_is_allowed():
+    check_non_loopback_requires_auth("127.0.0.1", None)  # must not raise -- today's default
+
+
+def test_a_request_without_a_token_is_401_when_one_is_configured():
+    link = DaemonLink("/does/not/matter")
+    with _Server(link, auth_token="secret123") as server:
+        conn = server.connection()
+        conn.request("GET", "/index.html")
+        resp = conn.getresponse()
+        resp.read()
+        assert resp.status == 401
+
+
+def test_a_request_with_the_correct_query_token_is_allowed():
+    link = DaemonLink("/does/not/matter")
+    with _Server(link, auth_token="secret123") as server:
+        conn = server.connection()
+        conn.request("GET", "/index.html?token=secret123")
+        resp = conn.getresponse()
+        assert resp.status == 200
+        resp.read()
+
+
+def test_a_request_with_the_correct_bearer_header_is_allowed():
+    link = DaemonLink("/does/not/matter")
+    with _Server(link, auth_token="secret123") as server:
+        conn = server.connection()
+        conn.request("GET", "/index.html",
+                    headers={"Authorization": "Bearer secret123"})
+        resp = conn.getresponse()
+        assert resp.status == 200
+        resp.read()
+
+
+def test_a_request_with_the_wrong_token_is_401():
+    link = DaemonLink("/does/not/matter")
+    with _Server(link, auth_token="secret123") as server:
+        conn = server.connection()
+        conn.request("GET", "/index.html?token=wrong-guess")
+        resp = conn.getresponse()
+        resp.read()
+        assert resp.status == 401
+
+
+def test_post_actions_are_gated_by_the_token_too_not_just_get():
+    """The Review Focus for this fix: /events streams live demo state and a
+    POST can trigger a fold -- both must require the token when one is
+    configured, not just one or the other."""
+    link = DaemonLink("/does/not/matter")
+    with _Server(link, auth_token="secret123") as server:
+        conn = server.connection()
+        body = json.dumps({"target_id": "trpcage"}).encode()
+        conn.request("POST", "/pick", body=body,
+                    headers={"Content-Type": "application/json"})
+        resp = conn.getresponse()
+        resp.read()
+        assert resp.status == 401
+
+
+def test_no_configured_token_means_every_request_is_allowed():
+    """The default, unmodified behavior for every other test in this file --
+    stated as its own explicit test so a future change to the auth gate
+    cannot silently start requiring a token when none was ever configured."""
+    link = DaemonLink("/does/not/matter")
+    with _Server(link) as server:  # auth_token=None, the default
+        conn = server.connection()
+        conn.request("GET", "/index.html")
+        resp = conn.getresponse()
+        assert resp.status == 200
+        resp.read()
