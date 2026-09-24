@@ -1309,6 +1309,9 @@ class ChipVizPanel(Gtk.Box):
                     "window.__viz&&window.__viz.setChipStats(%d,"
                     "{dram_bw:%.3f,l1_fill:%.3f,writeback:%.3f})"
                     % (index, dram, l1, writeback))
+                self._eval(
+                    "window.__viz&&window.__viz.setActivity(%d,%.3f)"
+                    % (index, clock_activity(mhz)))
         except Exception:
             log.exception("Tensix activity poll failed")
         return True

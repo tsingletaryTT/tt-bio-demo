@@ -419,3 +419,25 @@ def test_the_flow_floor_follows_each_chips_own_stage(tmp_path, monkeypatch):
     assert working and f"dram_bw:{active_dram:.3f}" in working[-1]
     assert resting and f"dram_bw:{idle_dram:.3f}" in resting[-1]
     assert active_dram != idle_dram, "this test proves nothing if they match"
+
+
+def test_tick_also_pushes_activity(tmp_path, monkeypatch):
+    """`_tick` already computes `clock_activity(mhz)` for `flow_params` --
+    this pins that the SAME value also reaches `setActivity`, not only the
+    memory overlay, which is the whole reason the per-core animation used to
+    look identical regardless of load."""
+    root = tmp_path / "tenstorrent"
+    root.mkdir()
+    chip = root / "tenstorrent!0"
+    chip.mkdir()
+    (chip / "tt_aiclk").write_text("1350\n")
+    monkeypatch.setattr("ui.chipviz.SYSFS_ROOT", root)
+    panel = ChipVizPanel()
+    if not panel.available:
+        pytest.skip("WebKit unavailable in this environment")
+    calls = []
+    monkeypatch.setattr(panel, "_eval", calls.append)
+    panel._tick()
+    activity_calls = [c for c in calls if "setActivity(0," in c]
+    assert activity_calls, "no setActivity call was pushed for chip 0"
+    assert "setActivity(0,1.000)" in activity_calls[-1]
