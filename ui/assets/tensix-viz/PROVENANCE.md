@@ -54,14 +54,22 @@ the booth, and this is the record of the decision:
 
 ## Updating
 
-Copy the two files again from an upstream checkout and update the version and
-commit above:
+    scripts/update-tensix-viz.sh [path-to-tensix-viz-checkout]
 
-    cp ~/code/tensix-viz/tensix-viz.{js,css} ui/assets/tensix-viz/
+Copies both files from the upstream checkout (default `~/code/tensix-viz`)
+and rewrites this file's own Version/Commit/Copied-on lines to match, in one
+step -- previously two manual edits and a `cp`, the exact shape of drift this
+project has been burned by before (a manual `cp` nobody had written down for
+the thumbnails, a shell/Python cache-path pair that quietly disagreed). It
+refuses an upstream checkout that is not git, or is git but has uncommitted
+changes, so this file never attributes a vendored copy to a commit that
+does not actually exist. `tests/unit/test_update_tensix_viz_sh.py` runs the
+real script against a synthetic upstream repo.
 
-`tests/unit/test_chipviz.py` asserts both files are present and non-trivial, so
-a half-finished update fails the suite rather than silently shipping a blank
-animation. Do **not** hand-edit these files: local edits would be lost on the
-next copy, and `ui/chipviz.py` deliberately keeps every project-specific
-decision (grid layout, per-chip fan-out, telemetry mapping) on the Python side
-for exactly that reason.
+Look at the panel afterwards (`T` in the running booth, or
+`scripts/refresh-screenshots.sh`) and run `scripts/test.sh` before
+committing -- a half-finished update should fail the suite rather than
+silently ship a blank animation. Do **not** hand-edit these files: local
+edits would be lost on the next copy, and `ui/chipviz.py` deliberately keeps
+every project-specific decision (grid layout, per-chip fan-out, telemetry
+mapping) on the Python side for exactly that reason.
