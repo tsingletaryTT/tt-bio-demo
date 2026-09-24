@@ -611,6 +611,9 @@ def main(argv=None):
 
     link = DaemonLink(args.daemon_socket)
     link.start()
+    from webview.telemetry_broadcaster import TelemetryBroadcaster
+    telemetry = TelemetryBroadcaster(link)
+    telemetry.start()
     server = build_server(link, args.host, args.port, auth_token=auth_token)
     log.info("serving http://%s:%d (daemon socket: %s)%s",
              args.host, args.port, args.daemon_socket,
@@ -620,6 +623,7 @@ def main(argv=None):
     except KeyboardInterrupt:
         pass
     finally:
+        telemetry.stop()
         server.shutdown()
         link.stop()
 
