@@ -26,6 +26,7 @@ from webview.bridge import (
     MAX_POST_BODY_BYTES,
     POST_BODY_READ_TIMEOUT_S,
     RECONNECT_DELAY_S,
+    SUBSCRIBER_QUEUE_MAX,
     DaemonLink,
     DaemonUnavailable,
     build_server,
@@ -354,7 +355,7 @@ def test_concurrent_send_client_messages_never_interleave_on_the_wire():
 
 def test_a_full_subscriber_queue_is_dropped_not_blocked_on():
     """A tab that stops reading must not stall the reader thread for every
-    OTHER tab -- see _broadcast's own comment. Reaches into `_subscribers`
+    OTHER tab -- see publish's own comment. Reaches into `_subscribers`
     directly with a maxsize=1 queue so the full condition is guaranteed
     rather than raced for."""
     link = DaemonLink("/does/not/matter")
@@ -363,10 +364,28 @@ def test_a_full_subscriber_queue_is_dropped_not_blocked_on():
     hello = {"type": "hello", "version": 4, "cards": [0], "models": [],
              "preflight": "ok", "qa_capable": False}
     not_ready = {"type": "not_ready", "missing": ["x"]}
-    link._broadcast(hello)
-    link._broadcast(not_ready)  # must not block just because `tiny` is full
+    link.publish(hello)
+    link.publish(not_ready)  # must not block just because `tiny` is full
     assert tiny.get_nowait() == hello
     assert tiny.empty()
+
+
+def test_publish_reaches_every_subscriber_the_same_way_dispatch_does():
+    """publish() is the SAME broadcast _dispatch uses for relayed daemon
+    events -- a later publisher (telemetry, ribbon cache) must not need a
+    second fan-out mechanism, and must inherit the same backpressure."""
+    link = DaemonLink("/nonexistent")
+    q = link.subscribe()
+    link.publish({"type": "telemetry", "chips": []})
+    assert q.get_nowait() == {"type": "telemetry", "chips": []}
+
+
+def test_publish_drops_for_a_full_subscriber_only_never_raises():
+    link = DaemonLink("/nonexistent")
+    q = link.subscribe()
+    for _ in range(SUBSCRIBER_QUEUE_MAX):
+        q.put_nowait({"type": "telemetry", "chips": []})
+    link.publish({"type": "telemetry", "chips": []})  # must not raise queue.Full outward
 
 
 def test_a_malformed_line_from_the_daemon_is_dropped_not_fatal():

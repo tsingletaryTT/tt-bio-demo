@@ -21,12 +21,14 @@ serving one of tests/fixtures/streams/*.jsonl (see webview/README.md) and
 every event this module forwards is real, recorded protocol traffic -- not
 fabricated for the demo.
 
-Import discipline: this module reaches into `runner.*` for nothing.
-Everything it knows about the wire comes from `protocol/events.py`, so it
-runs under EITHER of the project's own venvs -- `.venvs/venv-ui` or
-`.venvs/venv-runner` -- with no preference between them; use whichever you
-already have set up. Per this project's convention, run it through one of
-those, never a bare interpreter.
+Import discipline: this module still reaches into no `runner.*` code -- everything it
+knows about the daemon's own wire comes from `protocol/events.py`. It DOES reach into
+several `ui.*` modules for their pure, GTK-free logic (ui.telemetry's tt-smi sampler,
+ui.questions'/ui.chipviz's text-formatting functions, ui.playlist's loaders,
+ui.cartoon's mesh builder) rather than reimplementing any of it -- which means, since
+2026-09-24, this module requires `.venvs/venv-ui` specifically (PyGObject + gemmi +
+numpy), not `.venvs/venv-runner`. Run it through `.venvs/venv-ui/bin/python3`, per this
+project's convention.
 
 Auth: binding beyond loopback (--host anything other than 127.0.0.1/
 localhost/::1) exposes unauthenticated fold/Q&A control endpoints to every
@@ -89,7 +91,7 @@ MAX_POST_BODY_BYTES = 4096
 # Bound on one subscriber's backlog. A tab that stops reading (backgrounded,
 # a dead network path) must not be allowed to grow without limit, and it must
 # not be allowed to make the daemon-reading thread block on ITS queue while
-# every other tab waits behind it -- see _broadcast.
+# every other tab waits behind it -- see publish.
 SUBSCRIBER_QUEUE_MAX = 200
 
 # How long GET /events waits for a real event before writing a comment line,
@@ -239,7 +241,7 @@ class DaemonLink:
         daemon sends exactly one hello/not_ready per connection (it is the
         greeting, not a periodic status), so there is nothing for a live
         broadcast to race against here -- but adding to `_subscribers` first
-        would let a concurrent `_broadcast` of some other event deliver into
+        would let a concurrent `publish` of some other event deliver into
         this queue before the priming put, handing the caller
         [live_event, hello] instead of [hello, live_event]. Priming first
         means the very worst case is a subscriber occasionally missing a
@@ -371,9 +373,17 @@ class DaemonLink:
             event = {**event, "bridge_incompatible": True}
         if event["type"] in ("hello", "not_ready"):
             self.last_hello = event
-        self._broadcast(event)
+        self.publish(event)
 
-    def _broadcast(self, event):
+    def publish(self, event):
+        """Broadcast `event` to every subscriber, the same fan-out
+        `_dispatch` uses for a relayed daemon event. The one entry point
+        every OTHER publisher in this module (TelemetryBroadcaster,
+        RibbonCache, the Q&A tracker) uses too -- so a slow/backgrounded
+        tab's queue filling up drops an event for THAT tab only, for a
+        bridge-originated event exactly as it already does for a relayed
+        one. See SUBSCRIBER_QUEUE_MAX.
+        """
         with self._subscribers_lock:
             subscribers = list(self._subscribers)
         for q in subscribers:

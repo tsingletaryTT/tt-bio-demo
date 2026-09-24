@@ -280,6 +280,16 @@ fi
 run_half RUNNER "${VENV_RUNNER}/bin/python3" "${RUNNER_PATHS[@]}"
 
 echo
+echo "run: JS unit tests (scripts/test-webview-js.sh)"
+if scripts/test-webview-js.sh > /tmp/webview-js-test-output.$$ 2>&1; then
+  js_result="passed"
+else
+  js_result="FAILED"
+fi
+cat /tmp/webview-js-test-output.$$
+rm -f /tmp/webview-js-test-output.$$
+
+echo
 echo "==================== combined result ===================="
 overall_rc=0
 if [[ "$UI_RC" -eq 0 ]]; then
@@ -311,6 +321,12 @@ if [[ -d "${REPO_ROOT}/tests/integration" ]]; then
   # line has scrolled past. A reader glancing at the verdict must not mistake
   # a software-only pass for a pass that also exercised the silicon.
   echo "hardware:    ${HW_NOTE}"
+fi
+if [[ "$js_result" == "passed" ]]; then
+  echo "JS unit tests: passed"
+else
+  echo "JS unit tests: FAILED"
+  overall_rc=1
 fi
 if [[ "$overall_rc" -eq 0 ]]; then
   if [[ "$RUN_HW" -eq 1 ]]; then
