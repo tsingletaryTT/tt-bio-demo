@@ -6,7 +6,7 @@ code**. They are copied verbatim from:
 - **Project:** tensix-viz — "Tenstorrent hardware topology visualizer, chip to cluster"
 - **Upstream:** https://github.com/tsingletaryTT/tensix-viz
 - **Version:** 1.3.0
-- **Commit:** `ddf626705641ab09815fd9cb6a1fd6267af740a5` (`chore(release): bump version to 1.3.0`)
+- **Commit:** `8f3bed4372f0d5cf216557500d5ba8183ea04e9b` (`fix: apply activityGain at the render layer, not the pre-normalisation value`)
 - **Licence:** Apache-2.0 — the same licence this repository ships under
   (see `../../../LICENSE`), so no additional licence text is required here;
   this file is the attribution.

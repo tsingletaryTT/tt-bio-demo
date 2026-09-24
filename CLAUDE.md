@@ -1843,17 +1843,41 @@ field alongside `stage`, threaded through `_chip_stages()` and `ChipVizPanel.set
 contract — every existing caller and test kept working unmodified) into `setProgress`, using
 the same `within_stage_frac` conversion the pipeline panel already trusted.
 
-**Re-measured rather than asserted fixed**, per this project's own "measure it, do not guess"
-standard the flicker fix above set: `activityGain(1)/activityGain(0) = 8.33x` is a peak-
-brightness swing derived directly from the shipped formula, not simulated separately. For
-`idle` specifically — the mode three-of-four canvases show throughout a fold and all four
-between folds, the same mode the flicker fix was about — pop PROBABILITY and pop MAGNITUDE
-both scale with the same gain and compound: steady-state expected cell brightness works out to
-`0.000756` at activity 0 vs. `0.0525` at activity 1, a **69.4x** swing (`increment/(1-decay)`
-against the mode's own decay/pop constants). Both numbers dwarf the ±0.3% whole-panel frame
-noise floor the flicker fix measured — the specific gap this bullet used to document is
-closed. `ui/chipviz.py`'s own module docstring is updated in place with these numbers rather
-than left describing the old, now-false claim.
+**The same review also caught a real/absent-progress mixup.** `set_chip_stages` and
+`_SlotView.stage_frac` both defaulted a missing or unparseable `frac` to `0.0` — indistinguishable
+from a REAL `0.0` (the very start of a stage). A bare-stage caller (the module's original
+contract, still used throughout `test_chipviz_multichip.py`) therefore froze `diffusion`'s ring
+at the centre instead of falling back to the wall clock, and a malformed wire `frac` did the
+same rather than being dropped as the design intended. `frac` is now `None` (never `0.0`)
+whenever it was never given, failed to parse, or came back non-finite (`within_stage_frac`
+clamps `nan` to an implementation-specific value rather than raising, so `math.isfinite` is
+checked explicitly), and both `_progress_from_stage_entry`/`_push_progress` skip the push
+entirely on `None`. A mutation check confirmed the positive case actually needed a test: deleting
+`set_chip_stages`' call to `_push_progress()` left every pre-existing test green.
+
+**The first activity fix was wrong, and an independent review caught it, not the test suite.** The
+first cut baked `activityGain` into each mode's own simulated heatmap VALUE and shipped an
+analytical claim (`activityGain(1)/activityGain(0) = 8.33x`, plus a derived 69x figure for
+`idle`) computed from that raw value — without rendering a single frame. A fresh review of the
+branch found the actual bug this project's own "measure it, do not guess" standard exists to
+catch: `_drawHeatmap` renormalises every frame to its own floored, decaying maximum
+(`HEAT_FLOOR = 0.35`), which divides any gain that leaves a mode's peak above that floor
+straight back out. `diffusion`/`thinking`/`inference`/etc. rendered pixel-identical at
+activity 0.5 and 1.0 — the exact class of failure this whole task exists to fix, reintroduced
+by the fix itself, and invisible to the new unit tests because they asserted on the
+pre-normalisation heatmap value rather than what `_drawHeatmap` actually draws. `idle` alone
+looked fixed by coincidence: its raw magnitude sits under the floor, so nothing renormalised it
+away.
+
+**The corrected fix** moves `activityGain` to `ctx.globalAlpha` at the point `_drawHeatmap`
+fills a cell — the one quantity nothing upstream rescales — so every mode, uniformly, gets a
+real, uncancellable 8.33x swing in rendered opacity between activity 0 and 1. This time the
+claim is backed by a test that renders through the real code path (tensix-viz's
+`tests/chip.test.js`, "activityGain applied at the render layer") and was verified against its
+own regression: reintroducing the bug (reverting the alpha multiplier) makes all ten of those
+tests fail, restoring it makes them pass again. `ui/chipviz.py`'s own module docstring records
+both the original gap and the specific way the first repair attempt failed to close it, so a
+future reader does not repeat either mistake.
 
 ## Conventions
 

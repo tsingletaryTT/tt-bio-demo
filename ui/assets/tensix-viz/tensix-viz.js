@@ -524,6 +524,7 @@ var _TensixVizBundle = (() => {
     this._heatScale = Math.max(maxVal, prevScale * 0.94, HEAT_FLOOR);
     if (maxVal === 0) return;
     maxVal = this._heatScale;
+    const gain = activityGain(this._activityCurrent);
     for (let row = cg.rowStart; row <= cg.rowEnd; row++) {
       for (let col = cg.colStart; col <= cg.colEnd; col++) {
         if (chip.coreType(col, row) !== "tensix") continue;
@@ -531,7 +532,7 @@ var _TensixVizBundle = (() => {
         const r = this._cellRect(col, row);
         const color = this._heatColor(v, this._theme);
         ctx.save();
-        ctx.globalAlpha = 0.6;
+        ctx.globalAlpha = 0.6 * gain;
         ctx.fillStyle = color;
         this._roundRect(ctx, r.x, r.y, r.w, r.h, 3);
         ctx.fill();
@@ -920,52 +921,48 @@ var _TensixVizBundle = (() => {
     var MODES = {
       idle: function(c2, r2) {
         var k = typeof _dtScale === "number" && _dtScale > 0 ? _dtScale : 1;
-        var gain = activityGain(self._activityCurrent);
         var decay = Math.pow(0.9, k);
-        var pop = (1 - Math.pow(1 - 0.03, k)) * gain;
-        return Math.min(1, prev[r2][c2] * decay + (Math.random() < pop ? Math.random() * 0.35 * gain : 0));
+        var pop = 1 - Math.pow(1 - 0.03, k);
+        return Math.min(1, prev[r2][c2] * decay + (Math.random() < pop ? Math.random() * 0.35 : 0));
       },
       inference: function(c2, r2) {
         var wave = t % 1 * W;
-        return Math.max(0, 1 - Math.abs(c2 - wave) / 3) * 0.9 * activityGain(self._activityCurrent);
+        return Math.max(0, 1 - Math.abs(c2 - wave) / 3) * 0.9;
       },
       diffusion: function(c2, r2) {
         var cx = W / 2, cy = H / 2;
         var dist = Math.sqrt((c2 - cx) * (c2 - cx) + (r2 - cy) * (r2 - cy));
         var ring = activePhase(t % 1) * Math.sqrt(cx * cx + cy * cy);
-        return Math.max(0, 1 - Math.abs(dist - ring) / 2) * 0.9 * activityGain(self._activityCurrent);
+        return Math.max(0, 1 - Math.abs(dist - ring) / 2) * 0.9;
       },
       agents: function(c2, r2) {
-        var gain = activityGain(self._activityCurrent);
-        return Math.min(1, prev[r2][c2] * 0.85 + (Math.random() < 0.06 * gain ? Math.random() * 0.8 * gain : 0));
+        return Math.min(1, prev[r2][c2] * 0.85 + (Math.random() < 0.06 ? Math.random() * 0.8 : 0));
       },
       explore: function(c2, r2) {
-        return (Math.sin(c2 * 0.6 + t * Math.PI * 4) * Math.cos(r2 * 0.4 + t * Math.PI * 2) + 1) / 2 * 0.85 * activityGain(self._activityCurrent);
+        return (Math.sin(c2 * 0.6 + t * Math.PI * 4) * Math.cos(r2 * 0.4 + t * Math.PI * 2) + 1) / 2 * 0.85;
       },
       // ── LLM-specific states ──────────────────────────────────────────────────
       thinking: function(c2, r2) {
-        return ((Math.sin(t * Math.PI * 0.7 + c2 * 0.18 + r2 * 0.12) + 1) / 2 * 0.4 + 0.45) * activityGain(self._activityCurrent);
+        return (Math.sin(t * Math.PI * 0.7 + c2 * 0.18 + r2 * 0.12) + 1) / 2 * 0.4 + 0.45;
       },
       prefill: function(c2, r2) {
         var wave = activePhase(t * 1.5 % 1) * (W + 6) - 3;
-        return Math.max(0, 1 - Math.abs(c2 - wave) / (W * 0.5)) * 0.95 * activityGain(self._activityCurrent);
+        return Math.max(0, 1 - Math.abs(c2 - wave) / (W * 0.5)) * 0.95;
       },
       video: function(c2, r2) {
         var cx = W / 2, cy = H / 2;
         var dist = Math.sqrt((c2 - cx) * (c2 - cx) + (r2 - cy) * (r2 - cy));
         var maxR = Math.sqrt(cx * cx + cy * cy);
-        var gain = activityGain(self._activityCurrent);
         var basePhase = t % 1;
-        var r1 = Math.max(0, 1 - Math.abs(dist - activePhase(basePhase) * maxR) / 1.8) * 0.9 * gain;
-        var r22 = Math.max(0, 1 - Math.abs(dist - activePhase((basePhase + 0.5) % 1) * maxR) / 1.8) * 0.9 * gain;
+        var r1 = Math.max(0, 1 - Math.abs(dist - activePhase(basePhase) * maxR) / 1.8) * 0.9;
+        var r22 = Math.max(0, 1 - Math.abs(dist - activePhase((basePhase + 0.5) % 1) * maxR) / 1.8) * 0.9;
         return Math.max(r1, r22);
       },
       batch: function(c2, r2) {
         var speed = 0.7;
-        var gain = activityGain(self._activityCurrent);
-        var w1 = Math.max(0, 1 - Math.abs(c2 - t * speed % 1 * W) / 2) * 0.85 * gain;
-        var w2 = Math.max(0, 1 - Math.abs(c2 - (t * speed + 0.33) % 1 * W) / 2) * 0.85 * gain;
-        var w3 = Math.max(0, 1 - Math.abs(c2 - (t * speed + 0.66) % 1 * W) / 2) * 0.85 * gain;
+        var w1 = Math.max(0, 1 - Math.abs(c2 - t * speed % 1 * W) / 2) * 0.85;
+        var w2 = Math.max(0, 1 - Math.abs(c2 - (t * speed + 0.33) % 1 * W) / 2) * 0.85;
+        var w3 = Math.max(0, 1 - Math.abs(c2 - (t * speed + 0.66) % 1 * W) / 2) * 0.85;
         return Math.max(w1, w2, w3);
       },
       kernel_dispatch: function(c2, r2) {
