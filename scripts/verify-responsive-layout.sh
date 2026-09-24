@@ -92,10 +92,26 @@ time.sleep(3600)
     fi
   done
 
-  (cd "$OUT_DIR" && WAYLAND_DISPLAY="$wl_socket" weston-screenshooter) \
-    > "${OUT_DIR}/shot-${size}.log" 2>&1 || true
-  mv "${OUT_DIR}"/wayland-screenshot*.png "${OUT_DIR}/${size}.png" 2>/dev/null || \
-    echo "WARNING: no screenshot produced for ${size}, see ${OUT_DIR}/shot-${size}.log" >&2
+  # A failed screenshooter call or a missing output PNG must be a loud
+  # failure here, not a warning the script survives -- this is a
+  # verification gate, and this project's own convention ("a capture you
+  # have not looked at is not verified") applies just as much to a capture
+  # that was never actually taken as to one nobody looked at afterward.
+  if ! (cd "$OUT_DIR" && WAYLAND_DISPLAY="$wl_socket" weston-screenshooter) \
+      > "${OUT_DIR}/shot-${size}.log" 2>&1; then
+    echo "FATAL: weston-screenshooter failed for ${size} -- see" \
+         "${OUT_DIR}/shot-${size}.log" >&2
+    kill -TERM "$app_pid" "$mock_pid" "$weston_pid" 2>/dev/null || true
+    wait "$app_pid" "$mock_pid" "$weston_pid" 2>/dev/null || true
+    exit 1
+  fi
+  if ! mv "${OUT_DIR}"/wayland-screenshot*.png "${OUT_DIR}/${size}.png" 2>/dev/null; then
+    echo "FATAL: no screenshot produced for ${size} -- see" \
+         "${OUT_DIR}/shot-${size}.log" >&2
+    kill -TERM "$app_pid" "$mock_pid" "$weston_pid" 2>/dev/null || true
+    wait "$app_pid" "$mock_pid" "$weston_pid" 2>/dev/null || true
+    exit 1
+  fi
 
   kill -TERM "$app_pid" "$mock_pid" "$weston_pid" 2>/dev/null || true
   wait "$app_pid" "$mock_pid" "$weston_pid" 2>/dev/null || true

@@ -67,9 +67,19 @@ class Cell {
     this.meanPlddt = null;
     this.cardState = "idle";
     this.angle = Math.random() * Math.PI * 2;
+    // The job_id this cell is CURRENTLY showing. stage/frame/job_done/
+    // job_error events are only applied when they carry this exact id --
+    // see the module-level handleEvent switch. Without this, a stale event
+    // from a superseded fold (the daemon starts fold N+1 the instant fold N
+    // ends, and nothing here orders their arrival) could still resolve to
+    // this cell via state.jobToCard and overwrite what the CURRENT fold is
+    // showing -- the same class of bug ui/app.py's own history already
+    // paid to find and fix once on the native side.
+    this.activeJobId = null;
   }
 
-  onJobStart(targetId) {
+  onJobStart(jobId, targetId) {
+    this.activeJobId = jobId;
     this.targetId = targetId;
     this.stage = "starting";
     this.points = null;
@@ -305,14 +315,6 @@ function rebuildCellsIfNeeded(cards) {
   if (!state.viewModeUserSet && foldCards.length > 1) {
     setStageMode("quad");
   }
-  // Quad by default once more than one chip is actually available, mirroring
-  // the native booth's own tri-state default (ui/app.py, 2026-08-24: "I like
-  // 4 chip by default when available"). Never overrides a visitor's own
-  // press of the toggle, and never downgrades back to solo just because the
-  // card list happened to arrive gradually and briefly had one entry.
-  if (!state.viewModeUserSet && cards.length > 1) {
-    setStageMode("quad");
-  }
 }
 
 function addSeenTarget(targetId) {
@@ -332,6 +334,19 @@ function addSeenTarget(targetId) {
 function cellForJob(jobId) {
   const card = state.jobToCard.get(jobId);
   return card === undefined ? null : state.cells.get(card);
+}
+
+// Read once at load, from this PAGE's own URL -- a visitor opens
+// http://host:port/?token=SECRET, and every request this page makes
+// (the SSE connection and every fetch()) carries the same token back to
+// the bridge. If the bridge has no --auth-token/WEBVIEW_AUTH_TOKEN
+// configured, it ignores this entirely and nothing here changes behavior.
+const AUTH_TOKEN = new URLSearchParams(location.search).get("token");
+
+function withToken(url) {
+  if (!AUTH_TOKEN) return url;
+  const sep = url.includes("?") ? "&" : "?";
+  return `${url}${sep}token=${encodeURIComponent(AUTH_TOKEN)}`;
 }
 
 // --- protocol event handling -------------------------------------------
@@ -383,29 +398,34 @@ function handleEvent(event) {
     case "job_start": {
       state.jobToCard.set(event.job_id, event.card);
       const cell = state.cells.get(event.card);
-      if (cell) cell.onJobStart(event.target_id);
+      if (cell) cell.onJobStart(event.job_id, event.target_id);
       addSeenTarget(event.target_id);
       break;
     }
     case "stage": {
+      // Gated on activeJobId, not just cellForJob's card lookup: cellForJob
+      // resolves the right CELL (a job_id always maps to the card it
+      // started on), but that cell may have already moved on to a newer
+      // job by the time a straggler for THIS job_id arrives -- see
+      // Cell.activeJobId's own comment.
       const cell = cellForJob(event.job_id);
-      if (cell) cell.onStage(event.stage);
+      if (cell && cell.activeJobId === event.job_id) cell.onStage(event.stage);
       break;
     }
     case "frame": {
       const cell = cellForJob(event.job_id);
-      if (cell) cell.onFrame(unpackCoords(event.coords_b64));
+      if (cell && cell.activeJobId === event.job_id) cell.onFrame(unpackCoords(event.coords_b64));
       break;
     }
     case "job_done": {
       const cell = cellForJob(event.job_id);
-      if (cell) cell.onJobDone(event.mean_plddt);
+      if (cell && cell.activeJobId === event.job_id) cell.onJobDone(event.mean_plddt);
       state.jobToCard.delete(event.job_id);
       break;
     }
     case "job_error": {
       const cell = cellForJob(event.job_id);
-      if (cell) cell.onJobError();
+      if (cell && cell.activeJobId === event.job_id) cell.onJobError();
       state.jobToCard.delete(event.job_id);
       break;
     }
@@ -455,7 +475,7 @@ requestAnimationFrame(drawLoop);
 // --- SSE connection ------------------------------------------------------
 
 function connect() {
-  const source = new EventSource("/events");
+  const source = new EventSource(withToken("/events"));
   source.onopen = () => {
     liveDot.className = "dot dot-on";
     liveText.textContent = "live";
@@ -483,7 +503,7 @@ connect();
 async function sendPick(targetId) {
   pickError.hidden = true;
   try {
-    const resp = await fetch("/pick", {
+    const resp = await fetch(withToken("/pick"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ target_id: targetId }),
