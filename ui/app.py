@@ -167,6 +167,7 @@ three on. Both are the same four viewers.
 import argparse
 import collections
 import logging
+import math
 import os
 import pathlib
 import sys
@@ -546,7 +547,7 @@ class _SlotView:
         self.ribbon_generation = 0
         self.pending_ribbon = None
         self.stage = None
-        self.stage_frac = 0.0
+        self.stage_frac = None
         self.shown_cif_path = None
         # (target_id, outcome) from a finished `_highlight_worker_main`, not
         # yet applied -- guarded by the same `_ribbon_lock` `pending_ribbon`
@@ -5205,24 +5206,30 @@ class DemoApp(Gtk.Application):
                     # reached it.
                     view.stage = (event.get("stage") if kind == "stage"
                                   else None)
-                    # `frac` is wire data and is coerced the same defensive
-                    # way the `stage` branch below coerces it -- cleared to
-                    # 0.0 in lockstep with `stage` clearing to None, so a
-                    # chip between folds never reports a stale progress
+                    # `frac` is wire data, coerced defensively -- but a
+                    # value that fails to parse becomes `None`, never `0.0`.
+                    # `0.0` is a REAL progress value (the very start of a
+                    # stage); `None` means "no frac to show at all," which
+                    # is what `ui.chipviz._progress_from_stage_entry` needs
+                    # to fall back to the mode's own wall-clock phase instead
+                    # of pinning the ring at a fabricated start. Cleared to
+                    # `None` in lockstep with `stage` clearing to `None`, so
+                    # a chip between folds never reports a stale progress
                     # value for a stage it is no longer in.
                     if kind == "stage":
                         try:
-                            view.stage_frac = float(event.get("frac", 0.0))
+                            frac = float(event.get("frac", 0.0))
+                            view.stage_frac = frac if math.isfinite(frac) else None
                         except (TypeError, ValueError):
-                            view.stage_frac = 0.0
+                            view.stage_frac = None
                     else:
-                        view.stage_frac = 0.0
+                        view.stage_frac = None
             elif kind == "not_ready":
                 # The daemon has stopped folding entirely -- every cell, not
                 # just one.
                 for view in self._slots:
                     view.stage = None
-                    view.stage_frac = 0.0
+                    view.stage_frac = None
             self._sync_chipviz()
 
             if kind == "job_start":

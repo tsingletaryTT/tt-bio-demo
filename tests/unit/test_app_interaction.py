@@ -2847,6 +2847,21 @@ def test_stage_frac_clears_when_stage_clears():
     assert app.chipviz_panel.chip_stages[-1] == {0: None}
 
 
+def test_a_malformed_stage_frac_is_none_not_a_fake_zero():
+    """`0.0` is a real progress value (the very start of a stage);
+    `_chip_stages()` must not manufacture one out of wire junk it could not
+    parse. `ui.chipviz._progress_from_stage_entry` treats a bare `None` frac
+    as "fall back to the wall clock" and a real `0.0` as "pin the ring at
+    the start" -- conflating them here would pin every malformed-frac event
+    at the wrong end instead of falling back."""
+    app = _app()
+    app.chipviz_panel = _RecordingChipViz()
+    app._handle_event(_a_fold_starting())
+    app._handle_event({"type": "stage", "job_id": "j1", "stage": "diffusion",
+                       "frac": "not-a-number"})
+    assert app.chipviz_panel.chip_stages[-1] == {0: ("diffusion", None)}
+
+
 # ---------------------------------------------------------------------------
 # The Tensix activity panel is CHROME now: off by default, `T` to open.
 # ---------------------------------------------------------------------------

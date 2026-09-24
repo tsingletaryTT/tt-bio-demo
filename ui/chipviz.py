@@ -471,6 +471,15 @@ def _progress_from_stage_entry(entry):
     the within-stage progress fraction `setProgress` wants, or `None` when
     there is nothing to push.
 
+    `frac=None` is a real, distinct case -- "no frac was ever given" (a bare
+    stage, from a caller using this module's original contract, or wire junk
+    that failed to parse) -- and it is NOT the same thing as `frac=0.0` (a
+    real progress value: the very start of a stage). Confusing the two would
+    pin a mode's ring at whatever `within_stage_frac(stage, 0.0)` computes
+    instead of leaving it on the mode's own wall-clock fallback, which is
+    exactly backwards: the entire point of `frac=None` is "nothing real to
+    show here."
+
     `within_stage_frac` never raises (an unrecognized stage passes `frac`
     through unchanged, per its own docstring), so this needs no try/except
     of its own -- the caller's broad guard covers a malformed `entry` itself
@@ -480,7 +489,7 @@ def _progress_from_stage_entry(entry):
     if entry is None:
         return None
     stage, frac = entry
-    if stage is None:
+    if stage is None or frac is None:
         return None
     return within_stage_frac(stage, frac)
 
@@ -1097,7 +1106,13 @@ class ChipVizPanel(Gtk.Box):
                     continue
                 stage, frac = value
             else:
-                stage, frac = value, 0.0
+                # Bare stage: no frac was ever given. `None`, not `0.0` --
+                # `0.0` is a real progress value (the very start of a stage)
+                # and pushing it as though it were real would pin a mode's
+                # ring at the wrong position instead of leaving it on the
+                # mode's own wall-clock fallback. See `_progress_from_stage_
+                # entry`.
+                stage, frac = value, None
             if stage is None:
                 continue
             if isinstance(card, bool):
@@ -1105,10 +1120,15 @@ class ChipVizPanel(Gtk.Box):
                 # wire should ever produce it, which is exactly why it is
                 # worth refusing rather than silently attributing.
                 continue
-            try:
-                frac = float(frac)
-            except (TypeError, ValueError):
-                frac = 0.0
+            if frac is not None:
+                try:
+                    frac = float(frac)
+                    if not math.isfinite(frac):
+                        frac = None
+                except (TypeError, ValueError):
+                    # A frac that fails to parse is exactly as absent as one
+                    # that was never given -- `None`, never `0.0` (see above).
+                    frac = None
             try:
                 cleaned[int(card)] = (stage, frac)
             except (TypeError, ValueError):

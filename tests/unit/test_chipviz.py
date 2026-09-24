@@ -196,6 +196,16 @@ def test_progress_is_none_for_a_chip_with_no_stage():
     assert _progress_from_stage_entry(None) is None
 
 
+def test_progress_is_none_when_frac_itself_is_none():
+    """A bare stage (no frac at all) must fall back to the mode's own
+    wall-clock phase, not pin the ring at whatever `within_stage_frac(stage,
+    0.0)` happens to compute. `frac=None` is the sentinel for "no frac was
+    ever provided" -- distinct from a real `frac=0.0` (the very start of a
+    stage), which DOES have a progress value to push."""
+    from ui.chipviz import _progress_from_stage_entry
+    assert _progress_from_stage_entry(("diffusion", None)) is None
+
+
 @pytest.mark.parametrize("value", [None, "n/a", float("nan"), float("inf"), -5])
 def test_no_sensor_value_can_cost_the_booth_an_exception(value):
     """This feeds an animation. Every junk value must land somewhere in
