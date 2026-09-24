@@ -1,14 +1,21 @@
+/* Same palette as the native GTK booth (ui/app.py's _DARK_BASE/_BG/_BG_ALT/
+   _ACCENT_TEXT/_TEAL) -- not a separately-invented "web" scheme. `--fg-muted`
+   in particular used to be a hand-picked #8fb6b2 that had no counterpart in
+   the native app at all; it is _BG_ALT now, the exact color the GTK booth
+   uses for every quiet body line (viewer-caption-sub, target-info-tagline,
+   help-body), at the same 11.36:1 contrast on this same #092221 ground. */
 :root {
   color-scheme: dark;
-  --dark-base: #092221;
+  --dark-base: #092221;      /* _DARK_BASE */
   --bg-alt: #0d2b28;
   --bg-cell: #0b2725;
   --hairline: rgba(199, 217, 216, 0.18);
   --hairline-strong: rgba(116, 197, 223, 0.4);
-  --fg: #F1F8F8;
-  --fg-muted: #8fb6b2;
+  --fg: #F1F8F8;              /* _BG -- the booth's brightest line */
+  --fg-muted: #C7D9D8;        /* _BG_ALT -- quiet body text, 11.36:1 */
   --accent: #1B8EB1;
-  --accent-bright: #74C5DF;
+  --accent-text: #3299B9;     /* _ACCENT_TEXT -- section headers/hints, 4.5:1+ */
+  --accent-bright: #74C5DF;   /* _TEAL -- "what this is": titles, focus, facts */
   --danger: #FA512E;
   --warning: #F6BC42;
 }
@@ -70,9 +77,9 @@ button:hover { color: var(--fg); border-color: var(--accent-bright); }
 .notice {
   flex: 0 0 auto;
   margin: 14px 0 0;
-  padding: 8px 12px;
+  padding: 10px 14px;
   background: var(--bg-alt);
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--fg);
   font-size: 12.5px;
 }
@@ -107,7 +114,7 @@ button:hover { color: var(--fg); border-color: var(--accent-bright); }
 .cell {
   position: relative;
   border: 2px solid var(--hairline);
-  border-radius: 6px;
+  border-radius: 8px;
   overflow: hidden;
   background: var(--bg-cell);
   min-height: 0;
@@ -117,7 +124,14 @@ button:hover { color: var(--fg); border-color: var(--accent-bright); }
 .cell .chip-label {
   position: absolute; top: 8px; left: 10px;
   font-size: 11px; letter-spacing: .08em; font-weight: 600;
-  color: var(--bg-alt); text-shadow: 0 1px 4px rgba(0,0,0,.5);
+  /* Was `var(--bg-alt)` -- a near-black BACKGROUND tone, not a text color,
+     reused here by mistake. `--bg-alt` (#0d2b28) sits almost on top of this
+     very cell's own background (--bg-cell, #0b2725), so every unfocused
+     chip's label rendered at ~1.05:1 contrast: there, but not legible from
+     more than a few inches away. `--fg-muted` is the booth's real quiet-text
+     color (11.36:1 on this ground) -- still visibly quieter than the
+     focused cell's bright teal, but actually readable. */
+  color: var(--fg-muted); text-shadow: 0 1px 4px rgba(0,0,0,.5);
 }
 .cell.focused .chip-label { color: var(--accent-bright); }
 .cell .caption {
@@ -139,6 +153,12 @@ button:hover { color: var(--fg); border-color: var(--accent-bright); }
   gap: 6px;
   text-align: center;
   padding: 0 14px;
+  /* Dashed, not the fold cells' solid hairline: this chip was never going to
+     show a protein, which a solid border (identical to a cell that simply
+     hasn't started folding yet) does not say. The dash is the only signal
+     that this is a deliberate, different KIND of cell -- see the caption
+     text below it for the rest of that claim. */
+  border-style: dashed;
 }
 .cell.qa-reserved .chip-label {
   position: static;
@@ -167,8 +187,12 @@ button:hover { color: var(--fg); border-color: var(--accent-bright); }
   font-size: 11px;
   letter-spacing: .08em;
   text-transform: uppercase;
-  color: var(--fg-muted);
-  font-weight: 600;
+  /* accent-text, not fg-muted: the same role and color as the native
+     booth's `.help-section` headers ("KEYS", "THE QUAD, AND THE PANELS ON
+     THE RIGHT") -- a section label reads as structure, not as de-emphasized
+     body text. */
+  color: var(--accent-text);
+  font-weight: 700;
 }
 
 .qa-question { font-size: 13px; margin-bottom: 6px; }
