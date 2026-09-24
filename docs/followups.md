@@ -995,6 +995,23 @@ pin hiding inside the "fixed" unit. All items below are now closed.
 - **`unpack_coords` catches broad `Exception` around `b64decode`**, which raises
   several types depending on input. The broad catch is correct.
 
+## Open — from the 2026-09-23 literature/scripts review
+
+- **`webview/` is not packaged.** `scripts/run-webview.sh` (attach the browser
+  viewer to an already-running daemon, or `--mock` for no-hardware use) exists
+  and is tested (`tests/unit/test_run_webview_sh.py`), but
+  `debian/tt-bio-demo.install` does not list `webview/`, so a `.deb` install has
+  no `webview` module on disk to run it against. Deliberately not added in
+  passing — it needs its own real-Docker-container packaging pass
+  (`scripts/deb-container.sh`), the same standard every other shipped
+  capability here has been held to, not a one-line addition to the install
+  list. Source checkouts are unaffected.
+- **The webview's own scope cuts are unchanged and still open** (no
+  ribbon/cartoon reveal on `job_done`, gallery is "targets seen so far" not the
+  real manifest, a question shows the score not the human-written text) — see
+  `webview/README.md`'s own "Where this deliberately stops short" section for
+  the reasoning and the two concrete paths forward for the ribbon reveal.
+
 ## Gotchas worth knowing before touching this code
 
 **Use the project's `venv-ui`, never bare `python3`.** A personal Tenstorrent
