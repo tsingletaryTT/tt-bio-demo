@@ -21,4 +21,13 @@ assert.ok(powerActivity(52.5) > 0.5, "the curve boosts the midpoint above linear
 const withinDiffusion = withinStageFrac("diffusion", 0.55);
 assert.ok(Math.abs(withinDiffusion - 0.5) < 1e-6);
 
+// Unknown stage with valid frac: should return clamped frac, not null
+// (symmetric with Python's within_stage_frac passthrough for unknown stages)
+const unknownStageValid = withinStageFrac("future-stage", 0.5);
+assert.strictEqual(unknownStageValid, 0.5);
+
+// Unknown stage with invalid frac: should return null
+const unknownStageInvalid = withinStageFrac("future-stage", null);
+assert.strictEqual(unknownStageInvalid, null);
+
 console.log("tensix_logic.test.js: OK");

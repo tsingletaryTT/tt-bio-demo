@@ -19,7 +19,8 @@ import subprocess
 import pytest
 
 from protocol.events import STAGE_BANDS
-from ui.chipviz import _MODE_BY_STAGE, _MODE_CAPTION, _POWER_CEILING_W, _POWER_CURVE, _POWER_FLOOR_W
+from ui.chipviz import (_MODE_BY_STAGE, _MODE_CAPTION, _POWER_CEILING_W, _POWER_CURVE,
+                        _POWER_FLOOR_W, _UNKNOWN_STAGE_MODE)
 
 JS_FILE = pathlib.Path(__file__).resolve().parents[2] / "webview" / "static" / "tensix_logic.js"
 
@@ -31,6 +32,7 @@ def _js_constants():
 const m = require({json.dumps(str(JS_FILE))});
 console.log(JSON.stringify({{
   MODE_BY_STAGE: m.MODE_BY_STAGE, MODE_CAPTION: m.MODE_CAPTION,
+  UNKNOWN_STAGE_MODE: m.UNKNOWN_STAGE_MODE,
   POWER_FLOOR_W: m.POWER_FLOOR_W, POWER_CEILING_W: m.POWER_CEILING_W,
   POWER_CURVE: m.POWER_CURVE, STAGE_BANDS: m.STAGE_BANDS,
 }}));
@@ -46,6 +48,10 @@ def test_mode_by_stage_matches():
 
 def test_mode_caption_matches():
     assert _js_constants()["MODE_CAPTION"] == _MODE_CAPTION
+
+
+def test_unknown_stage_mode_matches():
+    assert _js_constants()["UNKNOWN_STAGE_MODE"] == _UNKNOWN_STAGE_MODE
 
 
 def test_power_constants_match():

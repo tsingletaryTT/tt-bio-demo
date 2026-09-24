@@ -45,7 +45,14 @@ function powerActivity(watts) {
 
 function withinStageFrac(stage, frac) {
   const band = STAGE_BANDS[stage];
-  if (!band || typeof frac !== "number" || !isFinite(frac)) return null;
+  // Unknown stage: pass through the clamped frac (symmetric with Python's
+  // within_stage_frac -- see protocol/events.py line 217-218).
+  if (!band) {
+    if (typeof frac !== "number" || !isFinite(frac)) return null;
+    return Math.max(0.0, Math.min(1.0, frac));
+  }
+  // Known stage: convert wire frac to within-stage frac.
+  if (typeof frac !== "number" || !isFinite(frac)) return null;
   const [lo, hi] = band;
   const span = hi - lo;
   if (span <= 0) return 0.0;
@@ -54,8 +61,8 @@ function withinStageFrac(stage, frac) {
 
 if (typeof module !== "undefined") {
   module.exports = { vizMode, modeCaption, powerActivity, withinStageFrac,
-                      MODE_BY_STAGE, MODE_CAPTION, POWER_FLOOR_W, POWER_CEILING_W,
-                      POWER_CURVE, STAGE_BANDS };
+                      MODE_BY_STAGE, MODE_CAPTION, UNKNOWN_STAGE_MODE,
+                      POWER_FLOOR_W, POWER_CEILING_W, POWER_CURVE, STAGE_BANDS };
 }
 if (typeof window !== "undefined") {
   window.TensixLogic = { vizMode, modeCaption, powerActivity, withinStageFrac };
