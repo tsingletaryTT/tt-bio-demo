@@ -434,6 +434,10 @@ function handleEvent(event) {
       if (cell) cell.onCardState(event.state);
       break;
     }
+    case "telemetry": {
+      Telemetry.render(document.getElementById("telemetry-panel"), event.chips);
+      break;
+    }
     case "answer_start": {
       qaPanel.hidden = false;
       setQuestionText(qaQuestion, `Scoring affinity for ${event.target_id}…`, { animated: true });
