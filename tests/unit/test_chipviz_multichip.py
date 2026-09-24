@@ -81,6 +81,32 @@ def test_two_chips_folding_animate_and_two_do_not(monkeypatch):
     assert modes[1] == "idle" and modes[3] == "idle"
 
 
+def test_bare_stage_strings_still_work(monkeypatch):
+    """`set_chip_stages`'s original contract -- a bare stage string per
+    card, as every test in this file uses -- must keep working unmodified:
+    the tuple form (`(stage, frac)`) is additive, not a replacement."""
+    panel = _panel(monkeypatch, chips=2)
+    panel.set_chip_stages({0: "diffusion", 1: "trunk"})
+    assert panel._chip_stages[0][0] == "diffusion"
+    assert panel._chip_stages[1][0] == "trunk"
+
+
+def test_stage_frac_tuple_is_accepted_and_stored(monkeypatch):
+    panel = _panel(monkeypatch, chips=1)
+    panel.set_chip_stages({0: ("diffusion", 0.55)})
+    stage, frac, _ = panel._chip_stages[0]
+    assert stage == "diffusion"
+    assert frac == 0.55
+
+
+def test_a_non_numeric_frac_is_dropped_not_raised(monkeypatch):
+    panel = _panel(monkeypatch, chips=1)
+    panel.set_chip_stages({0: ("diffusion", "not-a-number")})
+    stage, frac, _ = panel._chip_stages[0]
+    assert stage == "diffusion"
+    assert frac == 0.0
+
+
 def test_each_chip_animates_its_own_stage(monkeypatch):
     """A shared mode across four chips is the same untruth as before, just
     four times over."""

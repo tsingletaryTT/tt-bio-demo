@@ -183,6 +183,19 @@ def test_activity_is_normalised_idle_relative_not_from_zero():
     assert clock_activity(midpoint) == pytest.approx(0.5)
 
 
+def test_progress_pushes_through_within_stage_frac():
+    from protocol.events import within_stage_frac
+    from ui.chipviz import _progress_from_stage_entry
+    # diffusion's band is 0.15-0.95 (protocol/events.py's STAGE_BANDS); a
+    # whole-fold frac of 0.55 is (0.55-0.15)/(0.95-0.15) = 0.5 within-stage.
+    assert _progress_from_stage_entry(("diffusion", 0.55)) == pytest.approx(0.5)
+
+
+def test_progress_is_none_for_a_chip_with_no_stage():
+    from ui.chipviz import _progress_from_stage_entry
+    assert _progress_from_stage_entry(None) is None
+
+
 @pytest.mark.parametrize("value", [None, "n/a", float("nan"), float("inf"), -5])
 def test_no_sensor_value_can_cost_the_booth_an_exception(value):
     """This feeds an animation. Every junk value must land somewhere in

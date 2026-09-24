@@ -165,6 +165,8 @@ import os
 import pathlib
 import time
 
+from protocol.events import within_stage_frac
+
 import gi
 
 gi.require_version("Gtk", "4.0")
@@ -449,6 +451,25 @@ def mode_caption(mode):
     is read by visitors who have just been told on the help card that the
     model works by denoising."""
     return _MODE_CAPTION.get(mode, mode)
+
+
+def _progress_from_stage_entry(entry):
+    """`entry` is `(stage, frac)` (or `None` for "this chip has no stage") ->
+    the within-stage progress fraction `setProgress` wants, or `None` when
+    there is nothing to push.
+
+    `within_stage_frac` never raises (an unrecognized stage passes `frac`
+    through unchanged, per its own docstring), so this needs no try/except
+    of its own -- the caller's broad guard covers a malformed `entry` itself
+    (e.g. not a 2-tuple), which is wire-shaped and never this function's job
+    to validate.
+    """
+    if entry is None:
+        return None
+    stage, frac = entry
+    if stage is None:
+        return None
+    return within_stage_frac(stage, frac)
 
 
 # ── how fast each animation is allowed to advance ───────────────────────────
@@ -815,7 +836,11 @@ def build_page_html(js, css, chip_count_shown, canvas_w, canvas_h, arch="blackho
         "if(v){window.__vizRun(m,function(){"
         "try{v.activate(m);}catch(e){}});}},"
         "setChipStats:function(i,s){var v=window.__vizChips[i];"
-        "if(v){try{v.setMemoryStats(s);}catch(e){}}}};"
+        "if(v){try{v.setMemoryStats(s);}catch(e){}}},"
+        "setActivity:function(i,a){var v=window.__vizChips[i];"
+        "if(v){try{v.setActivity(a);}catch(e){}}},"
+        "setProgress:function(i,p){var v=window.__vizChips[i];"
+        "if(v){try{v.setProgress(p);}catch(e){}}}};"
         "try{window.__viz.activate('idle');}catch(e){}"
         "})();"
     )
@@ -1046,7 +1071,20 @@ class ChipVizPanel(Gtk.Box):
             return
 
         cleaned = {}
-        for card, stage in items:
+        for card, value in items:
+            # Backward compatible: a plain caller may hand a bare stage
+            # (str/None), matching this method's original contract; a
+            # `(stage, frac)` tuple additionally carries real progress. Both
+            # shapes are accepted per-entry so existing callers (and
+            # tests/unit/test_chipviz_multichip.py, which uses the bare
+            # form throughout) never have to change.
+            if isinstance(value, tuple):
+                if len(value) != 2:
+                    log.debug("ignoring malformed chip stage tuple %r", value)
+                    continue
+                stage, frac = value
+            else:
+                stage, frac = value, 0.0
             if stage is None:
                 continue
             if isinstance(card, bool):
@@ -1055,7 +1093,11 @@ class ChipVizPanel(Gtk.Box):
                 # worth refusing rather than silently attributing.
                 continue
             try:
-                cleaned[int(card)] = stage
+                frac = float(frac)
+            except (TypeError, ValueError):
+                frac = 0.0
+            try:
+                cleaned[int(card)] = (stage, frac)
             except (TypeError, ValueError):
                 log.debug("ignoring unusable folding chip index %r", card)
 
@@ -1069,16 +1111,19 @@ class ChipVizPanel(Gtk.Box):
             now = None
 
         refreshed = {}
-        for index, stage in cleaned.items():
+        for index, (stage, frac) in cleaned.items():
             previous = self._chip_stages.get(index)
-            # The stamp moves only on a genuine change -- see
+            # The staleness stamp moves only on a genuine STAGE change -- see
             # STAGE_STALE_AFTER_S for why re-assertion must not refresh it.
+            # frac updates every call regardless, since real progress moves
+            # continuously within an unchanged stage.
             if previous is not None and previous[0] == stage:
-                refreshed[index] = previous
+                refreshed[index] = (stage, frac, previous[2])
             else:
-                refreshed[index] = (stage, now)
+                refreshed[index] = (stage, frac, now)
         self._chip_stages = refreshed
         self._push_modes()
+        self._push_progress()
 
     def tick_staleness(self):
         """Stand down any chip nothing has said anything new about for
@@ -1097,7 +1142,7 @@ class ChipVizPanel(Gtk.Box):
             log.exception("clock failed while checking chip stage staleness")
             return False
         fresh = {index: entry for index, entry in self._chip_stages.items()
-                 if entry[1] is None or (now - entry[1]) < STAGE_STALE_AFTER_S}
+                 if entry[2] is None or (now - entry[2]) < STAGE_STALE_AFTER_S}
         if len(fresh) == len(self._chip_stages):
             return False
         log.info("Tensix activity: %d chip(s) stood down after %.0fs with no "
@@ -1122,6 +1167,35 @@ class ChipVizPanel(Gtk.Box):
             self._eval("window.__viz&&window.__viz.activateChip(%d,%s)"
                        % (index, json.dumps(wanted)))
         self._title_label.set_label(self._title_text().upper())
+
+    def _push_progress(self):
+        """Send each canvas the real progress fraction for its own chip's
+        stage, if it has one.
+
+        Unlike `_push_modes`, this is NOT gated on anything having changed:
+        real progress moves continuously within an unchanged stage (a
+        diffusion chip's `frac` advances on nearly every `stage` event), so
+        skipping unchanged-mode ticks here would freeze the ring at whatever
+        fraction it happened to be at when the mode was last (re)selected.
+        A chip with no stage, or a stage/frac combination
+        `_progress_from_stage_entry` cannot resolve, is simply not pushed
+        for this tick -- the mode's own wall-clock fallback covers it.
+        """
+        for index in range(self._chip_shown):
+            entry = self._chip_stages.get(index)
+            try:
+                progress = _progress_from_stage_entry(
+                    None if entry is None else (entry[0], entry[1]))
+            except TypeError:
+                # An unhashable stage (see `_mode_for_chip`'s own guard for
+                # the same case) raises straight out of `within_stage_frac`'s
+                # dict lookup. Wire-shaped junk costs the progress push, not
+                # an exception on the event path.
+                continue
+            if progress is None:
+                continue
+            self._eval("window.__viz&&window.__viz.setProgress(%d,%s)"
+                       % (index, json.dumps(progress)))
 
     def _mode_for_chip(self, index):
         """What canvas `index` should animate: the mode for THAT chip's own
