@@ -48,3 +48,9 @@ demo/
 # Subagent worktrees (superpowers:subagent-driven-development).
 .claude/worktrees/
 dist/
+
+# tensix-viz assets symlinked into webview/static/ at bridge startup (see
+# webview.bridge._ensure_tensix_viz_assets_linked) -- generated, not source.
+# The vendored source of truth is ui/assets/tensix-viz/.
+/webview/static/tensix-viz.js
+/webview/static/tensix-viz.css

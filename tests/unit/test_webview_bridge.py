@@ -22,6 +22,7 @@ import pytest
 
 from protocol.events import PROTOCOL_VERSION, ProtocolError, encode, pick_message
 from runner.mock import MockRunner, load_stream
+from webview import bridge
 from webview.bridge import (
     MAX_POST_BODY_BYTES,
     POST_BODY_READ_TIMEOUT_S,
@@ -547,6 +548,79 @@ def test_static_files_are_served_and_path_traversal_is_refused():
 
         conn2 = server.connection()
         conn2.request("GET", "/../bridge.py")
+        resp2 = conn2.getresponse()
+        resp2.read()
+        assert resp2.status in (403, 404)
+
+
+def test_tensix_viz_assets_get_linked_into_static(tmp_path, monkeypatch):
+    fake_assets = tmp_path / "assets"
+    fake_assets.mkdir()
+    (fake_assets / "tensix-viz.js").write_text("/* fake js */")
+    (fake_assets / "tensix-viz.css").write_text("/* fake css */")
+    fake_static = tmp_path / "static"
+    fake_static.mkdir()
+    monkeypatch.setattr(bridge, "TENSIX_VIZ_ASSETS_DIR", fake_assets)
+    monkeypatch.setattr(bridge, "STATIC_DIR", fake_static)
+    bridge._ensure_tensix_viz_assets_linked()
+    assert (fake_static / "tensix-viz.js").read_text() == "/* fake js */"
+    assert (fake_static / "tensix-viz.css").read_text() == "/* fake css */"
+    # Idempotent -- a second call must not raise.
+    bridge._ensure_tensix_viz_assets_linked()
+
+
+def test_tensix_viz_assets_missing_source_is_logged_not_fatal(
+        tmp_path, monkeypatch, caplog):
+    """A missing vendored asset (e.g. an incomplete checkout) must degrade to
+    a hidden panel, never a crash at startup -- the same fail-soft contract
+    ui/chipviz.py's own read_assets() holds itself to."""
+    fake_assets = tmp_path / "assets"
+    fake_assets.mkdir()
+    # Deliberately empty -- neither tensix-viz.js nor tensix-viz.css exists.
+    fake_static = tmp_path / "static"
+    fake_static.mkdir()
+    monkeypatch.setattr(bridge, "TENSIX_VIZ_ASSETS_DIR", fake_assets)
+    monkeypatch.setattr(bridge, "STATIC_DIR", fake_static)
+    with caplog.at_level("WARNING"):
+        bridge._ensure_tensix_viz_assets_linked()
+    assert not (fake_static / "tensix-viz.js").exists()
+    assert not (fake_static / "tensix-viz.css").exists()
+    assert any("tensix-viz asset missing" in rec.message for rec in caplog.records)
+
+
+def test_a_symlinked_asset_inside_static_is_served_and_traversal_still_refused(
+        tmp_path, monkeypatch):
+    """`_ensure_tensix_viz_assets_linked()` puts a real symlink INSIDE
+    webview/static/ pointing at ui/assets/tensix-viz/ -- outside it, on
+    purpose. `_serve_static`'s path-traversal guard must serve that
+    symlink's target rather than refuse it, while still blocking a client
+    request that tries to escape STATIC_DIR itself via "..".
+
+    A first version of this guard called `.resolve()` on the whole
+    candidate path, which follows a trailing symlink's target too -- so it
+    refused this exact vendored file with a 403, caught only by live-
+    verifying this task's Step 9 against a real browser, not by any unit
+    test. This one exists so that regression cannot come back silently.
+    """
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "real.js").write_text("/* real vendored content */")
+    fake_static = tmp_path / "static"
+    fake_static.mkdir()
+    (fake_static / "linked.js").symlink_to(outside / "real.js")
+    monkeypatch.setattr(bridge, "STATIC_DIR", fake_static)
+    link = DaemonLink("/does/not/matter")
+    with _Server(link) as server:
+        conn = server.connection()
+        conn.request("GET", "/linked.js")
+        resp = conn.getresponse()
+        assert resp.status == 200
+        assert resp.read() == b"/* real vendored content */"
+
+        # Reaching the same file directly, bypassing the symlink, by
+        # escaping STATIC_DIR with ".." must still be refused.
+        conn2 = server.connection()
+        conn2.request("GET", "/../outside/real.js")
         resp2 = conn2.getresponse()
         resp2.read()
         assert resp2.status in (403, 404)

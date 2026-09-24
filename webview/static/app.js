@@ -387,12 +387,24 @@ function handleEvent(event) {
       qaPanel.hidden = !state.qaCapable;
       setNotice("");
       rebuildCellsIfNeeded(event.cards);
+      // After rebuildCellsIfNeeded so Tensix.init sees the real, final card
+      // list for this connection (state.cards is the full inventory, same
+      // as ui/chipviz.py's ChipVizPanel: one canvas per real chip, including
+      // a Q&A-reserved one -- see Tensix.onTelemetry below for why that chip
+      // still gets real telemetry-driven activity even though it never gets
+      // a fold Cell).
+      Tensix.init(state.cards);
       break;
     }
     case "not_ready": {
       liveDot.className = "dot dot-on";
       liveText.textContent = "live";
       setNotice(`booth preparing: ${event.missing.join("; ")}`);
+      // Mirrors ui/chipviz.py's viz_mode: "preparing" is one of the two
+      // cases the booth genuinely KNOWS nothing is folding, so every chip's
+      // animation stands down to idle rather than keep animating whatever
+      // stage it last saw.
+      Tensix.onNotReady(state.cards);
       break;
     }
     case "job_start": {
@@ -409,7 +421,10 @@ function handleEvent(event) {
       // job by the time a straggler for THIS job_id arrives -- see
       // Cell.activeJobId's own comment.
       const cell = cellForJob(event.job_id);
-      if (cell && cell.activeJobId === event.job_id) cell.onStage(event.stage);
+      if (cell && cell.activeJobId === event.job_id) {
+        cell.onStage(event.stage);
+        Tensix.onStage(cell.card, event.stage, event.frac);
+      }
       break;
     }
     case "frame": {
@@ -436,6 +451,7 @@ function handleEvent(event) {
     }
     case "telemetry": {
       Telemetry.render(document.getElementById("telemetry-panel"), event.chips);
+      Tensix.onTelemetry(event.chips);
       break;
     }
     case "answer_start": {

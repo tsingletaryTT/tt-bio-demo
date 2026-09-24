@@ -275,6 +275,17 @@ button:hover { color: var(--fg); border-color: var(--accent-bright); }
   color: var(--fg-muted);
 }
 
+.tensix-panel {
+  display: flex;
+  gap: 6px;
+  margin: 12px 0;
+}
+.tensix-panel canvas {
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  background: var(--bg-cell);
+}
+
 @media (max-width: 600px) {
   /* Too narrow to fit a 2x2 grid in the remaining flex height at all --
      stack instead and let the page scroll (see `overflow-y: auto` on

@@ -41,7 +41,7 @@ import hmac
 import http.server
 import json
 import logging
-import os
+import os.path
 import queue
 import socket
 import threading
@@ -62,6 +62,35 @@ from protocol.events import (
 log = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+# The same vendored tensix-viz build ui/chipviz.py already ships, reused
+# verbatim rather than fetched from anywhere at runtime -- see
+# ui/assets/tensix-viz/PROVENANCE.md for why this project vendors these two
+# files at all (offline at the venue) and "Do not hand-edit these files".
+TENSIX_VIZ_ASSETS_DIR = Path(__file__).parent.parent / "ui" / "assets" / "tensix-viz"
+
+
+def _ensure_tensix_viz_assets_linked():
+    """Symlink the vendored tensix-viz.{js,css} into webview/static/ so the
+    existing _serve_static path-traversal guard covers them with no second
+    static root. Idempotent -- safe to call on every startup. Falls back to
+    a real copy if symlinking is unavailable (e.g. some container/FS setups),
+    so a booth this runs on is never left with a missing asset over a
+    filesystem quirk this bridge cannot control."""
+    for name in ("tensix-viz.js", "tensix-viz.css"):
+        source = TENSIX_VIZ_ASSETS_DIR / name
+        dest = STATIC_DIR / name
+        if dest.exists() or dest.is_symlink():
+            continue
+        if not source.is_file():
+            log.warning("tensix-viz asset missing at %s; Tensix panel will "
+                       "have no library to draw with", source)
+            continue
+        try:
+            dest.symlink_to(source)
+        except OSError:
+            import shutil
+            shutil.copyfile(source, dest)
 
 # How long to wait before retrying a dropped or refused daemon connection.
 # Same order of magnitude as the daemon's own WORKER_RESTART_DELAY_S: "this
@@ -520,9 +549,26 @@ def make_handler(daemon_link, auth_token=None,
         def _serve_static(self, path):
             if path == "/":
                 path = "/index.html"
-            candidate = (STATIC_DIR / path.lstrip("/")).resolve()
+            static_root = STATIC_DIR.resolve()
+            # Collapse ".."/"." components LEXICALLY (os.path.normpath does
+            # no filesystem access and never follows a symlink), then check
+            # the result stays inside static_root. This is deliberately NOT
+            # `.resolve()` on the whole candidate: `.resolve()` also follows
+            # the FINAL path component's own symlink, and
+            # _ensure_tensix_viz_assets_linked() puts real symlinks to
+            # ui/assets/tensix-viz/ (outside this directory, on purpose)
+            # directly inside STATIC_DIR -- a first version of this guard
+            # resolved those straight into a 403, since their target is
+            # legitimately outside static_root. Blocking `..`-escapes still
+            # works exactly as before (the traversal test below pins that);
+            # only OUR OWN, deliberately-planted file symlinks are now
+            # servable. No client-supplied path can create a new symlink
+            # here, so this does not open any traversal this guard exists to
+            # stop.
+            normalized = os.path.normpath(str(static_root / path.lstrip("/")))
+            candidate = Path(normalized)
             try:
-                candidate.relative_to(STATIC_DIR.resolve())
+                candidate.relative_to(static_root)
             except ValueError:
                 # Outside webview/static entirely -- e.g. "/../bridge.py".
                 self.send_error(403, "forbidden")
@@ -608,6 +654,7 @@ def main(argv=None):
 
     auth_token = args.auth_token or os.environ.get("WEBVIEW_AUTH_TOKEN")
     check_non_loopback_requires_auth(args.host, auth_token)
+    _ensure_tensix_viz_assets_linked()
 
     link = DaemonLink(args.daemon_socket)
     link.start()
