@@ -1815,6 +1815,46 @@ Suite green at 1481 UI + 449 runner tests (hardware skipped), final whole-branch
 floor width, a dropped legend sentence below 1366px, both judged content-honest but worth an
 eyeball on real booth hardware once it's back in use).
 
+### The Tensix animation stopped just decorating and started tracking the chip (2026-09-24)
+
+Started from a plain observation elsewhere ("tensix-viz ... often looks over-simulated, not
+actually stimulated by the activity we're seeing on the hardware") that turned out to name
+exactly the gap `ChipVizPanel`'s own module docstring had already measured and accepted: the
+per-chip animation's only real-telemetry input (`setChipStats`) fed tensix-viz's memory
+OVERLAY (DRAM glow, L1 bars) and never touched the per-core heatmap itself, so feeding a chip
+0.0 vs. 1.0 activity was, by that measurement, indistinguishable from frame noise.
+
+**tensix-viz 1.3.0 added two setters** — `setActivity(0..1)` and `setProgress(0..1)` — both
+eased (not snapped) and both defaulting to reproduce the exact pre-1.3.0 output when never
+called. `setActivity` multiplies every mode's own brightness/pop-rate by a shared
+`activityGain(a) = 0.12 + 0.88a`: at `a=0` a chip reads as resting (never fully dark — that
+would read as broken, not idle), at `a=1` nothing changes. `setProgress` replaces `diffusion`/
+`video`/`prefill`'s wall-clock ring/sweep phase with a real 0..1 value when one is supplied,
+same formula, different phase source.
+
+**The real signal was already being computed and thrown away, twice over.** `_tick` already
+computed `clock_activity(mhz)` for `flow_params`; it now also feeds the identical value into
+`setActivity`, no new poll. Separately, `stage` events on the wire already carry a real
+whole-fold `frac` — tt-bio's own `(step, total)` counts for `trunk`'s 10 refinement cycles and
+`diffusion`'s 200 denoising steps (`protocol/events.py`'s `STAGE_BANDS`) — which `ui/app.py`
+parsed for the pipeline panel and discarded past that point. `_SlotView` gained a `stage_frac`
+field alongside `stage`, threaded through `_chip_stages()` and `ChipVizPanel.set_chip_stages`
+(extended to accept `(stage, frac)` per chip, in addition to its original bare-stage-string
+contract — every existing caller and test kept working unmodified) into `setProgress`, using
+the same `within_stage_frac` conversion the pipeline panel already trusted.
+
+**Re-measured rather than asserted fixed**, per this project's own "measure it, do not guess"
+standard the flicker fix above set: `activityGain(1)/activityGain(0) = 8.33x` is a peak-
+brightness swing derived directly from the shipped formula, not simulated separately. For
+`idle` specifically — the mode three-of-four canvases show throughout a fold and all four
+between folds, the same mode the flicker fix was about — pop PROBABILITY and pop MAGNITUDE
+both scale with the same gain and compound: steady-state expected cell brightness works out to
+`0.000756` at activity 0 vs. `0.0525` at activity 1, a **69.4x** swing (`increment/(1-decay)`
+against the mode's own decay/pop constants). Both numbers dwarf the ±0.3% whole-panel frame
+noise floor the flicker fix measured — the specific gap this bullet used to document is
+closed. `ui/chipviz.py`'s own module docstring is updated in place with these numbers rather
+than left describing the old, now-false claim.
+
 ## Conventions
 
 - **Keep the README's screenshots current.** The README claims every image on it is the

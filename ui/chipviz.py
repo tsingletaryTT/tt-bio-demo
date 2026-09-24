@@ -72,18 +72,31 @@ Say this accurately, because the whole booth's claim is "this is real":
   header COUNTS the canvases that are actually animating work rather than
   asserting the chip count, so three chips folding says three and one still
   says which one.
-- **The per-chip ANIMATION is not visibly clock-driven.** Each chip's own
-  activity IS fed to its own canvas (`setChipStats`, exactly as
-  tt-local-generator's `activity_viz.py` does), and tensix-viz really does
-  consume it -- its DRAM layer alpha is `dram_bw * env * 0.55`. But at the
-  86px canvas this rail can afford, the difference between feeding a chip
-  0.0 and feeding it 1.0 is not distinguishable on screen: rendered both
-  ways and compared, the means differed by less than the animation's own
-  frame-to-frame noise. The feed is kept because it is correct, costs four
-  short JS calls a second, and starts working the moment the canvas or the
-  library's memory layer grows -- but nothing in the UI claims it is doing
-  something visible, and the help card was edited to remove a sentence that
-  did. See this task's report.
+- **The per-chip ANIMATION is now visibly activity-driven** (tensix-viz
+  1.3.0, see its CHANGELOG). The prior claim here was the opposite, and it
+  was correctly measured at the time: `setChipStats`'s feed only ever
+  reached tensix-viz's memory OVERLAY (DRAM glow, L1 bars) -- its DRAM layer
+  alpha was `dram_bw * env * 0.55` -- and never touched the per-core
+  heatmap itself, so feeding a chip 0.0 vs. 1.0 activity produced pixel
+  statistics indistinguishable from frame noise. tensix-viz 1.3.0 added
+  `setActivity()`, which every mode's heatmap now reads directly via a
+  shared `activityGain(activity) = 0.12 + 0.88*activity` multiplier on its
+  own brightness/pop-rate -- an 8.33x swing in peak brightness between
+  activity 0 and 1 (`activityGain(1)/activityGain(0)`), and for `idle`
+  specifically (the mode three-of-four canvases show throughout a fold, and
+  all four between folds) a ~69x swing in STEADY-STATE expected cell
+  brightness, because idle's pop PROBABILITY and pop MAGNITUDE both scale
+  with the same gain and compound. Both numbers are derived directly from
+  the shipped formulas (`_MODE_BY_STAGE`'s `idle` function and
+  `activityGain`, tensix-viz's `src/chip.js`), not simulated separately, and
+  both dwarf the few-tenths-of-a-percent frame-to-frame noise floor the
+  flicker fix above measured -- the specific gap this bullet used to
+  document is closed. `_tick` feeds the same `clock_activity(mhz)` already
+  computed for `flow_params` into `setActivity`, so no new telemetry was
+  added; the existing signal simply reaches the part of the picture that
+  matters. See this project's own CLAUDE.md change log for the fuller
+  record, and tensix-viz's own `docs/superpowers/specs/
+  2026-09-24-signal-driven-modes-design.md` (upstream repo) for the design.
 
 Why there is a WebView in a project that chose "no browser"
 ------------------------------------------------------------

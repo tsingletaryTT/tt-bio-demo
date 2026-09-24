@@ -5,12 +5,12 @@ code**. They are copied verbatim from:
 
 - **Project:** tensix-viz — "Tenstorrent hardware topology visualizer, chip to cluster"
 - **Upstream:** https://github.com/tsingletaryTT/tensix-viz
-- **Version:** 1.2.0
-- **Commit:** `3986ed580388d040af3afcd73b2b34fb8279ea9d` (`chore(release): bump version to 1.2.0`)
+- **Version:** 1.3.0
+- **Commit:** `ddf626705641ab09815fd9cb6a1fd6267af740a5` (`chore(release): bump version to 1.3.0`)
 - **Licence:** Apache-2.0 — the same licence this repository ships under
   (see `../../../LICENSE`), so no additional licence text is required here;
   this file is the attribution.
-- **Copied on:** 2026-08-12
+- **Copied on:** 2026-09-24
 
 ## Why vendored rather than fetched
 
