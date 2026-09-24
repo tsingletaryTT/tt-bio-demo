@@ -799,6 +799,19 @@ def test_ask_next_question_sends_only_a_question_never_a_pick():
     assert app._client.picks == []
 
 
+def test_a_failed_send_does_not_mark_the_question_as_recently_asked():
+    """Copilot review finding on PR #6: _note_question_asked used to run
+    unconditionally, before checking whether _send_question actually
+    delivered anything -- a question that failed to reach the daemon (no
+    client, an exception, no chip reserved) would still be wrongly excluded
+    from "least recently asked" rotation, for no reason at all."""
+    app = _questions_app(questions=[_question(id="q1", target_id="a")],
+                        client=_RecordingClient(ok=False))
+    app._ask_next_question()
+    assert app._client.questions == [("q1", "a")]  # the send was attempted
+    assert app._recently_asked == []  # but never recorded as delivered
+
+
 def test_ask_next_question_does_nothing_with_no_questions_loaded():
     app = _questions_app(questions=[])
     app._ask_next_question()

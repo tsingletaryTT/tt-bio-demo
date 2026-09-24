@@ -4840,13 +4840,20 @@ class DemoApp(Gtk.Application):
         )
         if question is None:
             return
+        # Marked as recently-asked (and logged/diagnosed) only once
+        # _send_question actually delivers it -- it returns False on a
+        # missing client, no qa_capable daemon, or a send exception, and
+        # recording a question as asked when it never reached the daemon
+        # would wrongly exclude it from "least recently asked" next time
+        # for no reason at all.
+        if not self._send_question(question.id, question.target_id):
+            return
         self._note_question_asked(question.id)
         log.info("attract loop asking %s (target %s)",
                  question.id, question.target_id)
         self._note_diagnostics(
             self.diagnostics.note,
             f"attract loop asked: {question.question}", KIND_MARK)
-        self._send_question(question.id, question.target_id)
 
     def _on_screen_target_id(self):
         """The target_id on the hero screen right now, or None.
