@@ -131,6 +131,25 @@ start, and all four then fold Trp-cage concurrently to pLDDT 95.2–95.3.
 
 ---
 
+## The CLI, on its own
+
+Everything above is the GTK4 booth. Underneath it is `tt-bio` itself -- the upstream
+prediction CLI, no window manager involved -- and it is worth seeing on its own terms: a
+terminal folding six real targets (Trp-cage, a DNA duplex, a tRNA, each folded twice) with
+Protenix-v2 on Tenstorrent, one model load kept resident across the whole batch, spread
+across two chips. Recorded two ways: the plain terminal, and split alongside `tt-toplike`
+watching the same chips actually ramp in real time.
+
+<!-- tt-demo:gallery:begin -->
+**tt-bio predict — plain terminal** — tt-bio batch-folding six targets on Tenstorrent with Protenix-v2 -- Trp-cage, a DNA duplex, and a tRNA, each folded twice, one resident model, real per-target progress scrolling by.
+
+![tt-bio predict — plain terminal](media/predict-plain.gif)
+
+**tt-bio predict, split with tt-toplike arcade** — The same batch, watched from the other side -- both leased chips light up as the pool dispatches six folds across them, the arcade view showing all chips at full width.
+
+![tt-bio predict, split with tt-toplike arcade](media/predict-arcade.gif)
+<!-- tt-demo:gallery:end -->
+
 ## The handout
 
 Everything above, printed — two sides of one sheet.

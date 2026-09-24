@@ -21,9 +21,10 @@ from pathlib import Path
 import gi
 
 gi.require_version("Gtk", "4.0")
+gi.require_version("Gdk", "4.0")
 
 import pytest
-from gi.repository import Gtk
+from gi.repository import Gdk, Gtk
 
 import _legibility
 from _appfakes import _FakeQuad
@@ -44,7 +45,7 @@ from ui.telemetry import ChipReading
 # also what keeps "what a FakeViewer models" a single decision (see
 # test_app_wiring.py's module docstring on why FakeViewer models `blend`).
 from test_app_wiring import (FakeClock, FakeStack, FakeViewer,
-                             RecordingPanel, _cell)
+                             RecordingPanel, _cell, _NamingStack)
 
 
 class FakeSampler:
@@ -109,6 +110,16 @@ class FakeGesture:
 
     def set_state(self, state):
         self.states.append(state)
+
+
+# The (width, height) matrix every responsive-layout test in this file
+# checks (docs/superpowers/specs/2026-09-23-responsive-layout-design.md, S2).
+# 1280x800 is `--windowed`'s own default (`do_activate`'s `set_default_size`)
+# and the case that motivated the whole responsive-layout plan -- it was
+# missing from every matrix until the final whole-branch review found the
+# booth still could not fit its own 1280px window.
+_LAYOUT_MATRIX = [(1024, 768), (1280, 800), (1366, 768), (1920, 1080),
+                  (2560, 1440)]
 
 
 def _app(clock=None, *, stack=True):
@@ -801,6 +812,21 @@ def test_the_help_card_explains_what_a_visitor_is_actually_looking_at():
     assert "200" in intro              # ...over how many steps
 
 
+def test_help_card_shrinks_to_fit_a_narrow_windowed_booth():
+    app = _app()
+    app.windowed = True
+    ground = app_module.DemoApp._build_help_overlay(app)
+    # `_build_help_overlay` returns the overlay wrapper ("ground"), not the
+    # inner card box `set_size_request` is actually called on -- GTK's
+    # `get_size_request` reads only the exact widget it was set on, unlike
+    # `measure()` below (which recurses through children and so doesn't care
+    # which of the two is held). The card is `ground`'s only child.
+    card = ground.get_first_child()
+    expected = app_module.help_card_width_for(1280)
+    assert card.get_size_request()[0] == expected
+    assert expected < app_module._HELP_CARD_WIDTH_PX
+
+
 def test_the_help_card_still_fits_the_booth_s_own_screen():
     """Every line added to this card costs vertical space, and a card taller
     than the glass silently loses its last rows -- the operator keys are at
@@ -819,24 +845,249 @@ def test_the_help_card_still_fits_the_booth_s_own_screen():
     casualty. Fixed on both sides: the copy was trimmed and the card widened
     (`_HELP_CARD_WIDTH_PX`), and this test now measures the width that can
     actually fail it again.
+
+    Extended 2026-09-23 to a size matrix per
+    docs/superpowers/specs/2026-09-23-responsive-layout-design.md -- each
+    shipped resolution gets checked against ITS OWN screen height, not the
+    reference 1080 reused for every width, which would silently pass a card
+    that overflows a shorter floor-size screen.
     """
-    app = _app()
-    card = app_module.DemoApp._build_help_overlay(app)
+    too_tall = []
+    for total_width, total_height in _LAYOUT_MATRIX:
+        app = _app()
+        app._expected_window_width = lambda w=total_width: w
+        card_width = app_module.help_card_width_for(total_width)
+        card = app_module.DemoApp._build_help_overlay(app)
 
-    # A widget measures 0 while it is hidden, and the card is built hidden.
-    def show(widget):
-        widget.set_visible(True)
-        child = widget.get_first_child()
-        while child is not None:
-            show(child)
-            child = child.get_next_sibling()
+        # A widget measures 0 while it is hidden, and the card is built hidden.
+        def show(widget):
+            widget.set_visible(True)
+            child = widget.get_first_child()
+            while child is not None:
+                show(child)
+                child = child.get_next_sibling()
+        show(card)
 
-    show(card)
-    _minimum, natural, _, _ = card.measure(Gtk.Orientation.VERTICAL,
-                                           app_module._HELP_CARD_WIDTH_PX)
-    assert natural <= 1080, (
-        f"the help card wants {natural}px of a 1080px screen; its last rows "
-        f"(the operator's Ctrl+Q among them) are off the bottom")
+        _minimum, natural, _, _ = card.measure(Gtk.Orientation.VERTICAL,
+                                               card_width)
+        if natural > total_height:
+            too_tall.append(
+                f"{total_width}x{total_height}: card wants {natural}px tall")
+    assert not too_tall, "\n".join(too_tall)
+
+
+# ---------------------------------------------------------------------------
+# The narrow (`wide=False`) help-card copy, used at the 1024x768/1366x768
+# floor sizes -- added 2026-09-23 (responsive-layout Task 6, fix round 4)
+# because nothing exercised this text's actual WORDING before now, only its
+# HEIGHT. That gap is why the same content-honesty findings kept
+# almost-regressing round after round: a merge could drop a fact and the
+# height-only matrix test would still pass.
+# ---------------------------------------------------------------------------
+
+#
+# Strengthened in fix round 5, after a mutation pass showed the round-4
+# versions of these tests were real but too weak: an INVERTED Tensix
+# pairing, a disclaimer with its "never" deleted, a `_sync_help_copy` that
+# ignored `_help_card_wide`, and a narrow text with the header/clock fact
+# removed all left them green. Each test below names the mutation it is
+# there to catch, and each was watched going red against it.
+
+# The Tensix panel's three visual states, each with the phrase that states
+# WHEN it happens in the narrow text. The pairing is the claim, so it is
+# data here rather than three separate calls that could each be satisfied
+# by the wrong trigger.
+_TENSIX_STATE_TRIGGERS = {
+    "ring": "diffusion",
+    "glow": "trunk",
+    "quiet": "between folds",
+}
+
+
+def _narrow_tensix_clause():
+    """The narrow text's Tensix clause alone -- from "tensix" up to
+    "affinity" -- so a trigger word elsewhere in the merged paragraph
+    ("fold" in an affinity sentence, say) can never satisfy a pairing it
+    is not part of."""
+    from ui.app import _help_panels
+    text = _help_panels(1, wide=False)[1].lower()
+    start = text.index("tensix")
+    end = text.index("affinity", start)
+    return text[start:end]
+
+
+def _distance(text, a, b):
+    """Smallest gap, in characters, between any occurrence of `a` and any
+    occurrence of `b` in `text` (every pair, not just the first of each).
+    None if either is absent."""
+    import re
+    a_at = [m.start() for m in re.finditer(re.escape(a), text)]
+    b_at = [m.start() for m in re.finditer(re.escape(b), text)]
+    if not a_at or not b_at:
+        return None
+    return min(abs(x - y) for x in a_at for y in b_at)
+
+
+def test_the_narrow_tensix_sentence_ties_each_state_to_when_it_happens():
+    """Important 4 (whole-branch review, twice): naming the Tensix panel's
+    three visual states without saying WHEN each one happens leaves a
+    visitor with no way to tell what's normal from what's wrong.
+
+    Checks the PAIRING, not proximity to "some trigger": in a clause this
+    compact every state word lands within a few characters of every
+    trigger, so "is `ring` near a trigger" passed with the pairings
+    inverted ("ring (trunk), glow (diffusion)"). The claim a visitor reads
+    is that each state belongs to ITS OWN stage, so each state word must
+    be strictly nearer its own trigger than to either of the other two --
+    and near enough (<= 30 chars) to read as one stated fact at all.
+
+    Mutation this catches: swapping any two states' triggers.
+    """
+    clause = _narrow_tensix_clause()
+    for state, own in _TENSIX_STATE_TRIGGERS.items():
+        own_gap = _distance(clause, state, own)
+        assert own_gap is not None, f"{state!r}/{own!r} missing from {clause!r}"
+        assert own_gap <= 30, (
+            f"{state!r} is {own_gap} chars from {own!r} -- too far to read "
+            f"as one fact in {clause!r}")
+        for other_state, other in _TENSIX_STATE_TRIGGERS.items():
+            if other_state == state:
+                continue
+            other_gap = _distance(clause, state, other)
+            assert other_gap is None or own_gap < other_gap, (
+                f"{state!r} sits nearer {other!r} ({other_gap} chars) than "
+                f"its own trigger {own!r} ({own_gap} chars) -- reads as the "
+                f"wrong pairing in {clause!r}")
+
+
+def test_the_narrow_text_says_diffusion_is_the_longest_stage():
+    """The narrow text's only mention of the fold pipeline's timing: that
+    diffusion is its longest stage (rides inside the ring's parenthesis,
+    where the room was). Round 5's rewording dropped the round-4 assertion
+    that pinned it, and deleting the clause then left the whole suite
+    green -- so it is pinned here with the same distance check the state
+    pairings use, and stated without implying diffusion ENDS the pipeline
+    (`protocol.events.STAGE_ORDER` has two stages after it).
+
+    Mutation this catches: deleting ", the pipeline's longest stage".
+    """
+    clause = _narrow_tensix_clause()
+    gap = _distance(clause, "longest", "diffusion")
+    assert gap is not None and gap <= 30, (
+        f"nothing ties 'longest' to 'diffusion' in {clause!r}")
+    assert "last stage" not in clause and "final stage" not in clause
+    assert "ends in diffusion" not in clause
+
+
+def test_the_narrow_tensix_sentence_says_what_the_header_shows():
+    """The Tensix panel's header carries two live readouts: how many chips
+    are folding (`ChipVizPanel`'s title, "N CHIPS FOLDING") and the peak
+    AICLK across the chips (`chipviz.readout_text`). The wide text says so
+    in full; the narrow text dropped it -- or reduced it to a contentless
+    "header/clock live" -- in three separate fix rounds with nothing
+    noticing, because no test looked.
+
+    Requires the header to be named AND both of its meanings stated near
+    it: that the count is of chips FOLDING, and that the number is the
+    FASTEST (peak) clock, not just "a clock".
+
+    Mutations this catches: deleting the header clause, or reverting it to
+    "header/clock live".
+    """
+    clause = _narrow_tensix_clause()
+    assert "header" in clause, f"the header is not mentioned in {clause!r}"
+    after = clause[clause.index("header"):][:60]
+    assert "folding" in after or "working" in after, (
+        f"nothing says the header COUNTS chips at work: {after!r}")
+    assert "clock" in after and ("fastest" in after or "peak" in after), (
+        f"nothing says the number is the FASTEST clock: {after!r}")
+
+
+def test_the_narrow_affinity_disclaimer_keeps_its_actual_substance():
+    """Important 5 (whole-branch review, twice): a draft shipped "not a
+    claim" with the substance of what is not being claimed cut away -- a
+    token with no meaning, not a disclaimer. The distance cutoff is a
+    checkable geometric fact; what it must NOT be read as is a claim about
+    where the ligand truly binds.
+
+    The NEGATION is the disclaimer. Checking for the nouns ("claim",
+    "where it binds") alone passed with "never" deleted, which turns the
+    sentence into "a claim about where it binds" -- the exact overclaim it
+    exists to prevent. So the negation is required to govern the claim
+    directly.
+
+    Also pins that nesso1 is credited with a SCORE, not just "a highlight".
+
+    Mutations this catches: deleting "never"; cutting the substance back
+    to a bare "not a claim".
+    """
+    import re
+    from ui.app import _help_panels
+    text = _help_panels(1, wide=False)[1].lower()
+    assert "nesso1" in text
+    assert "score" in text
+    assert "residues nearest the ligand" in text
+    assert re.search(r"\b(never|not)\s+a\s+claim\s+about\s+where\s+"
+                     r"(it|the\s+ligand)\s+(truly\s+)?binds\b", text), (
+        "the disclaimer must NEGATE a claim about where the ligand binds "
+        f"-- not name the claim, and not drop what is disclaimed: {text!r}")
+    assert "the binding site" not in text
+
+
+def _rendered_help_text(app):
+    """Everything the built card's intro and panel labels currently SHOW,
+    in order -- read off the real Gtk.Labels, not recomputed from the
+    text functions, since which text function the labels were fed is the
+    thing under test."""
+    return ([label.get_label() for label in app._help_intro_labels],
+            [label.get_label() for label in app._help_panel_labels])
+
+
+def test_a_narrow_booth_gets_the_narrow_copy_and_a_wide_booth_gets_the_wide_copy():
+    """`_build_help_overlay` computes `wide` from the real window width and
+    stores it on `self._help_card_wide`; `_sync_help_copy` must re-fetch
+    text from the SAME variant when the fold-chip count later changes.
+
+    The round-4 version of this test only read `_help_card_wide` and the
+    build-time labels, never calling `_sync_help_copy` -- so hardcoding
+    `wide = True` inside `_sync_help_copy` left it green, while a real
+    narrow booth would have had the wide text spliced into labels sized
+    for the narrow one the first time a `hello` changed the chip count.
+    This drives the real sync after a real chip-count change and compares
+    what the labels SHOW against each variant.
+
+    Mutation this catches: `_sync_help_copy` ignoring `_help_card_wide`
+    (in either direction).
+    """
+    from ui.app import _help_intro, _help_panels
+    for width, wide in ((1024, False), (1920, True)):
+        app = _app()
+        app._expected_window_width = lambda w=width: w
+        app_module.DemoApp._build_help_overlay(app)
+        assert app._help_card_wide is wide
+
+        # Build time: the variant for this width, at the build-time count.
+        n_built = len(app.cards)
+        intro, panels = _rendered_help_text(app)
+        assert intro == list(_help_intro(n_built, wide=wide))
+        assert panels == list(_help_panels(n_built, wide=wide))
+
+        # A later chip-count change (a `hello`, or the Q&A reservation)
+        # goes through `_sync_help_copy` -- which must stay on the SAME
+        # variant, at the NEW count.
+        app.cards = [0, 1, 2]
+        app_module.DemoApp._sync_help_copy(app)
+        intro, panels = _rendered_help_text(app)
+        assert "three" in panels[0].lower(), (
+            "the sync did not run at the new chip count, so this test "
+            "proves nothing about which variant it chose")
+        assert intro == list(_help_intro(3, wide=wide)), (
+            f"{width}px booth's intro switched variant on sync")
+        assert panels == list(_help_panels(3, wide=wide)), (
+            f"{width}px booth's panels switched variant on sync")
+        # And the two variants genuinely differ at this count, so the
+        # equality above is a real discrimination and not a tautology.
+        assert list(_help_panels(3, wide=not wide)) != panels
 
 
 def test_the_help_card_explains_both_rail_panels():
@@ -912,12 +1163,17 @@ def test_help_panels_and_key_help_are_functions_of_the_real_chip_count():
     fold-chip count, never a hardcoded one.
 
     Checked against the QUAD line specifically (`_help_panels(n)[0]`), not
-    the whole joined column: the separate "Chips" (telemetry) paragraph
-    deliberately keeps saying "four" when the box genuinely has four
-    physical chips -- it samples every chip via tt-smi independently of the
-    daemon and of how many are reserved for folding vs. Q&A, so its claim is
-    about hardware inventory, not about how many chips are folding, and
-    stays true regardless of `n_chips`.
+    the whole joined column. The separate "Chips" (telemetry) paragraph
+    (this test calls `_help_panels` at its default `wide=True`, where Chips
+    is its own paragraph, unchanged since before responsive-layout Task 6)
+    names no chip count at all -- it says "every chip on this machine",
+    because it samples every physical chip via tt-smi independently of the
+    daemon and of how many are reserved for folding vs. Q&A. A count
+    belongs in the lines that describe how many chips are FOLDING, which
+    is why the quad line is the one checked here. (The narrower
+    `wide=False` text used at the 1024x768/1366x768 floor sizes drops the
+    Chips sentence for space -- see `_help_panels`'s own docstring -- and
+    nothing here calls it with `wide=False`.)
     """
     from ui.app import _help_panels, _key_help
     quad_line = _help_panels(3)[0].lower()
@@ -1197,6 +1453,28 @@ def test_the_gallery_module_docstring_no_longer_describes_a_one_way_socket():
     assert "cannot be reached from here yet" not in text
 
 
+def test_gallery_width_shrinks_the_rail_out_at_the_floor_size():
+    """Not a pixel-exact assertion (Gallery's own grid_shape rounds to whole
+    columns) -- the invariant is that the width handed to Gallery at the
+    floor size is meaningfully smaller than at the reference size, proving
+    the live window width is actually reaching this call and not the old
+    fixed constant."""
+    app = _app()
+    app.windowed = True  # _expected_window_width returns the literal 1280 default
+    app.screens = _NamingStack()  # Replace FakeStack with _NamingStack for _build_gallery
+    app.targets = [_target("dna", "DNA double helix", "tagline")]
+    app._load_questions()
+    app._build_gallery()
+    # The shared helper, not a local `1280 - rail_width_for(1280)`: that
+    # subtraction is exactly the second formula that once disagreed with
+    # the real layout (it forgot the rail's margins and trusted a rail floor
+    # GTK never honoured). 1280 - 552 - 2*18 = 692.
+    expected = app_module.hero_width_for(1280)
+    assert expected == 692
+    assert app.gallery.width_px == expected
+    assert expected < app_module._GALLERY_WIDTH_PX
+
+
 def test_the_readme_no_longer_says_a_tap_queues_nothing():
     """The third instruction sheet, and the one an operator reads before the
     conference. It carried a whole "What it deliberately does not do yet"
@@ -1279,17 +1557,62 @@ def test_the_plddt_legend_matches_the_ramp_the_ribbon_is_actually_coloured_by():
 # Layout: the rail must not swallow the screen.
 # ---------------------------------------------------------------------------
 
+def _allocate(root, width, height):
+    """Drive `root`'s layout manager with a real allocation of `width` x
+    `height`, without a window or a main loop.
+
+    The naive `Gdk.Rectangle(x=0, y=0, width=width, height=height)` --
+    passing coordinates as KEYWORD arguments -- is a deprecated PyGObject
+    pattern that silently ignores every argument and constructs a 0x0
+    rectangle instead of raising. That produced two allocations that both
+    LOOKED like `width=0` (which floor-clamps to `_RAIL_MIN_PX`, 420) and
+    were misread, the first time this test was written, as "the second
+    allocation stuck at the first call's width" -- a plausible-looking but
+    wrong diagnosis. Built the correct way (attribute assignment on a
+    default-constructed `Gdk.Rectangle`), a bare `size_allocate` call is in
+    fact fully deterministic across repeated, differently-sized calls on the
+    same tree.
+
+    This docstring used to add "alternating 1024/1920 gives 420/552,
+    including against the real, fully-built side rail". The first half was
+    true of a bare `Gtk.Box` rail; the second was false -- the real rail
+    allocated 552/552, because its telemetry panel's reserved footprint
+    outvoted a 420px size request (the final whole-branch review measured
+    it). `_RAIL_MIN_PX` is now that real footprint, so formula and rail
+    agree: alternating 1024/2560/1024/2560 through this helper against the
+    real `_build_side_rail()` gives 552/700/552/700, which is what
+    `test_the_real_rail_allocates_exactly_what_rail_width_for_says` pins."""
+    rect = Gdk.Rectangle()
+    rect.width = width
+    rect.height = height
+    root.size_allocate(rect, -1)
+
+
 def test_the_side_rail_stays_a_fixed_narrow_column_with_the_panel_in_it():
     """The load-bearing layout fact (see `_SIDE_RAIL_WIDTH_PX`): without
     hexpand(False) and an explicit width, the rail negotiates its way to two
     thirds of the window and the protein -- the reason anyone stopped to
     look -- ends up in a corner. Adding a wide monospace log to that rail is
-    exactly the change that could break it."""
+    exactly the change that could break it.
+
+    The width itself is no longer set by `_build_side_rail` in isolation --
+    `_ResponsiveSplitLayout` now applies it at real allocation time via
+    `rail_width_for` -- so this test wraps the rail the same way
+    `do_activate` does and checks the reference-size invariant through that
+    real mechanism (a real allocation, via `_allocate`) instead of reading a
+    size request `_build_side_rail` no longer sets."""
     app = _app()
     rail = app._build_side_rail()
     assert rail.get_hexpand() is False
-    width, _height = rail.get_size_request()
-    assert width == app_module._SIDE_RAIL_WIDTH_PX
+    hero = Gtk.Label(label="hero")
+    hero.set_hexpand(True)
+    root = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+    root.set_layout_manager(
+        app_module._ResponsiveSplitLayout(rail, orientation=Gtk.Orientation.HORIZONTAL))
+    root.append(hero)
+    root.append(rail)
+    _allocate(root, 1920, 1080)
+    assert rail.get_width() == app_module._SIDE_RAIL_WIDTH_PX
     assert app.diagnostics_panel is not None
     assert app.diagnostics_panel.get_hexpand() is False
 
@@ -1301,19 +1624,233 @@ def test_the_diagnostics_panel_is_built_hidden():
 
 
 # ---------------------------------------------------------------------------
+# rail_width_for: the pure sizing function that adapts the rail to different
+# window widths, preserving the exact reference layout at 1920px.
+# ---------------------------------------------------------------------------
+
+def test_rail_width_for_matches_the_reference_layout_exactly():
+    """The one number that must never move: at the booth's own reference
+    resolution, the new formula must reproduce today's fixed 552 exactly."""
+    assert app_module.rail_width_for(1920) == app_module._SIDE_RAIL_WIDTH_PX
+
+
+def test_rail_width_for_is_floor_clamped_at_small_widths():
+    assert app_module.rail_width_for(1024) == app_module._RAIL_MIN_PX
+    assert app_module.rail_width_for(1) == app_module._RAIL_MIN_PX
+
+
+def test_rail_width_for_is_ceiling_clamped_at_large_widths():
+    assert app_module.rail_width_for(10_000) == app_module._RAIL_MAX_PX
+
+
+def test_rail_width_for_is_monotonically_non_decreasing():
+    widths = [800, 1024, 1280, 1366, 1600, 1920, 2560, 3840]
+    computed = [app_module.rail_width_for(w) for w in widths]
+    assert computed == sorted(computed)
+
+
+# ---------------------------------------------------------------------------
+# _ResponsiveSplitLayout: the mechanism that actually applies rail_width_for
+# to the rail's real, live allocation.
+# ---------------------------------------------------------------------------
+
+def test_the_responsive_split_layout_gives_the_rail_the_live_width():
+    """Not a GTK-measurement test against an unrealized widget (those report
+    0, per this task's own investigation) -- built and asked directly for
+    its allocation via `size_allocate` (see `_allocate`), the same technique
+    `test_the_confidence_legend_costs_the_protein_no_height` already uses
+    elsewhere in this file for a real, non-zero layout answer. `_allocate`'s
+    own docstring has the story of why a naively-built `Gdk.Rectangle`
+    looked (wrongly) like it needed a real window instead."""
+    rail = Gtk.Box()
+    hero = Gtk.Label(label="hero")
+    hero.set_hexpand(True)
+
+    root = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+    root.set_layout_manager(
+        app_module._ResponsiveSplitLayout(rail, orientation=Gtk.Orientation.HORIZONTAL))
+    root.append(hero)
+    root.append(rail)
+
+    # 1024 and 2560, not 1024 and 1920: with the rail floor now its real
+    # 552px content minimum, `rail_width_for` answers 552 at both 1024 and
+    # 1920, and an A/B between two equal answers could not tell a live
+    # recompute from a constant.
+    _allocate(root, 1024, 768)
+    assert rail.get_width() == app_module.rail_width_for(1024)
+
+    _allocate(root, 2560, 1440)
+    assert rail.get_width() == app_module.rail_width_for(2560)
+    assert app_module.rail_width_for(2560) != app_module.rail_width_for(1024)
+
+    _allocate(root, 1920, 1080)
+    assert rail.get_width() == app_module._SIDE_RAIL_WIDTH_PX
+
+
+def test_rail_min_px_is_the_real_rails_content_minimum():
+    """`_RAIL_MIN_PX` was once 420 while the real rail could not go below
+    552, so the clamp never engaged and every caller that trusted the
+    formula reasoned about a rail the booth never drew. This measures the
+    real, fully-built rail's own horizontal minimum -- margins included,
+    since GTK counts them in `measure` -- and requires the formula's floor
+    to be exactly its content part.
+
+    Mutation this catches: setting `_RAIL_MIN_PX` back to any chosen number
+    below the telemetry reservation (420 fails it: 420 + 36 != 588)."""
+    app = _app()
+    rail = app._build_side_rail()
+    minimum = rail.measure(Gtk.Orientation.HORIZONTAL, -1).minimum
+    assert minimum == app_module._RAIL_MIN_PX + 2 * app_module._RAIL_MARGIN_PX
+
+
+def test_the_real_rail_allocates_exactly_what_rail_width_for_says():
+    """The reviewer's table, as a test: the REAL `_build_side_rail()` inside
+    the real `_ResponsiveSplitLayout`, allocated at every matrix width,
+    must come out at exactly `rail_width_for(width)` -- not at whatever its
+    content minimum happens to be when the formula asks for less.
+
+    Mutation this catches: `_RAIL_MIN_PX = 420` (1024/1280/1366 then
+    allocate 552 against a formula saying 420)."""
+    wrong = []
+    for width, height in _LAYOUT_MATRIX:
+        app = _app()
+        rail = app._build_side_rail()
+        hero = Gtk.Label(label="hero")
+        hero.set_hexpand(True)
+        root = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        root.set_layout_manager(app_module._ResponsiveSplitLayout(
+            rail, orientation=Gtk.Orientation.HORIZONTAL))
+        root.append(hero)
+        root.append(rail)
+        _allocate(root, width, height)
+        if rail.get_width() != app_module.rail_width_for(width):
+            wrong.append(f"{width}: rail_width_for says "
+                         f"{app_module.rail_width_for(width)}, the real rail "
+                         f"allocated {rail.get_width()}")
+        # ...and the hero gets exactly what `hero_width_for` says it does,
+        # which is what the gallery and the caption strip are built for.
+        if hero.get_width() != app_module.hero_width_for(width):
+            wrong.append(f"{width}: hero_width_for says "
+                         f"{app_module.hero_width_for(width)}, the real hero "
+                         f"allocated {hero.get_width()}")
+    assert not wrong, "\n".join(wrong)
+
+
+def test_the_booth_fits_its_own_window_at_every_supported_width():
+    """The bug the responsive-layout plan exists to fix, checked on the tree
+    the booth actually builds (`do_activate`, not a hand-built one).
+
+    A GTK window cannot be narrower than its content's minimum width. At
+    1280 -- `--windowed`'s default -- that minimum was 1336px after every
+    other task in the plan had landed: `_build_gallery` sized the gallery
+    for an 860px hero that was really 692px, `grid_shape` picked two
+    374px columns, and the window was forced 56px wider than it was asked
+    to be. Every narrower-width test was green because none of them built
+    the real tree at 1280.
+
+    Mutation this catches: `_RAIL_MIN_PX = 420` (the gallery is then sized
+    for an 824px hero at 1280, gets two columns, and the window needs
+    1336px again -- measured red). Reverting `_build_gallery` alone to
+    `expected - rail_width_for(expected)` does NOT turn this red with the
+    honest rail floor (728px still rounds down to one gallery column at
+    1280); `test_gallery_width_shrinks_the_rail_out_at_the_floor_size`
+    catches that one instead.
+    """
+    too_wide = []
+    for width, _height in _LAYOUT_MATRIX:
+        app = _app()
+        app.windowed = True  # do not fullscreen a real window under test
+        app._expected_window_width = lambda w=width: w
+        app.do_activate()
+        try:
+            content = app._window.get_child()
+            minimum = content.measure(Gtk.Orientation.HORIZONTAL, -1).minimum
+            if minimum > width:
+                too_wide.append(f"{width}: the window's content needs at "
+                                f"least {minimum}px")
+        finally:
+            app._window.destroy()
+    assert not too_wide, "\n".join(too_wide)
+
+
+def test_the_responsive_split_layout_does_not_raise_on_a_tiny_width():
+    rail = Gtk.Box()
+    hero = Gtk.Label(label="hero")
+    root = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+    root.set_layout_manager(
+        app_module._ResponsiveSplitLayout(rail, orientation=Gtk.Orientation.HORIZONTAL))
+    root.append(hero)
+    root.append(rail)
+    _allocate(root, 1, 1)  # must not raise
+
+
+def test_do_activate_wires_the_responsive_split_layout_onto_the_real_root():
+    """Every other test in this section works with a hand-built throwaway
+    `root`/`rail` pair -- none of them touch what `do_activate` itself
+    constructs. Deleting `root.set_layout_manager(_ResponsiveSplitLayout(
+    ...))` from `do_activate` would leave every one of those green, because
+    nothing else exercises the real `root` box. This is the one test that
+    does: build the app for real (`do_activate`, not a hand-built tree),
+    and check the actual layout manager on the actual root box the booth
+    presents."""
+    app = _app()
+    app.windowed = True  # do not fullscreen a real window under test
+    app.do_activate()
+    root_overlay = app._window.get_child()
+    root = root_overlay.get_child()
+    layout_manager = root.get_layout_manager()
+    assert isinstance(layout_manager, app_module._ResponsiveSplitLayout)
+    # `do_activate` appends hero then side_rail, so the rail is root's LAST
+    # child -- and it must be the exact widget the layout manager was told
+    # to resize, not merely some `_ResponsiveSplitLayout` instance.
+    assert layout_manager._rail is root.get_last_child()
+
+
+# help_card_width_for: the pure sizing function for the `?` card, preserving
+# the exact reference layout at 1920px, independently from rail_width_for.
+# ---------------------------------------------------------------------------
+
+def test_help_card_width_for_matches_the_reference_layout_exactly():
+    assert app_module.help_card_width_for(1920) == app_module._HELP_CARD_WIDTH_PX
+
+
+def test_help_card_width_for_is_floor_clamped():
+    assert app_module.help_card_width_for(1024) == app_module._HELP_CARD_MIN_PX
+
+
+def test_help_card_width_for_never_exceeds_the_reference_card_width():
+    """Wider than 1920 does not mean a wider card -- past the reference size extra
+    width is not more readable, so the ceiling is the reference value itself."""
+    assert app_module.help_card_width_for(3840) == app_module._HELP_CARD_WIDTH_PX
+
+
+# ---------------------------------------------------------------------------
 # The Tensix activity panel, as wired into the booth (the panel's own
 # behaviour is tested in test_chipviz.py).
 # ---------------------------------------------------------------------------
 
 def test_the_tensix_panel_is_in_the_rail_and_never_expands_it():
     """Adding a WebView to a fixed column is exactly the change that could
-    break the rail -- and with it, the protein's claim on the screen."""
+    break the rail -- and with it, the protein's claim on the screen.
+
+    See `test_the_side_rail_stays_a_fixed_narrow_column_with_the_panel_in_it`
+    for why this reads the allocated width through a real allocation
+    (`_allocate`) rather than `_build_side_rail`'s own size request, which
+    `_ResponsiveSplitLayout` moved out of that method entirely."""
     app = _app()
     rail = app._build_side_rail()
     assert app.chipviz_panel is not None
     assert app.chipviz_panel.get_hexpand() is False
     assert rail.get_hexpand() is False
-    assert rail.get_size_request()[0] == app_module._SIDE_RAIL_WIDTH_PX
+    hero = Gtk.Label(label="hero")
+    hero.set_hexpand(True)
+    root = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+    root.set_layout_manager(
+        app_module._ResponsiveSplitLayout(rail, orientation=Gtk.Orientation.HORIZONTAL))
+    root.append(hero)
+    root.append(rail)
+    _allocate(root, 1920, 1080)
+    assert rail.get_width() == app_module._SIDE_RAIL_WIDTH_PX
 
 
 def _rail_width_request(rail):
@@ -1772,7 +2309,11 @@ def test_a_target_with_no_tagline_is_captioned_with_its_name_alone():
     assert app._target_info_tagline_label.get_visible() is False
 
 
-def test_a_protein_the_playlist_cannot_name_gets_no_caption_at_all():
+@pytest.mark.parametrize("hero_width", [
+    app_module._GALLERY_WIDTH_PX,          # wide arrangement (the reference)
+    app_module.hero_width_for(1024),       # compact arrangement (the floor)
+], ids=["wide", "compact"])
+def test_a_protein_the_playlist_cannot_name_gets_no_caption_at_all(hero_width):
     """`_target_name` returns None rather than the raw wire id for an
     unknown target. The caption follows it: the words disappear rather than
     showing `trpcage_no_msa` to a visitor.
@@ -1783,13 +2324,21 @@ def test_a_protein_the_playlist_cannot_name_gets_no_caption_at_all():
     -- so hiding it here would remove a key from a picture that still needs
     one. (Before the legend existed this assertion was on the whole strip,
     which is why it is spelled out now.)
+
+    Run against both caption-strip arrangements: the compact one has no
+    words-only box to hide (its tagline shares a line with the legend), so
+    the labels are hidden individually there -- and the visible-labels
+    check at the end is what proves that actually happened.
     """
     app = _app()
     app.targets = []
     app._slots[0].shown_target_id = "some_id_the_playlist_never_heard_of"
-    info = app._build_target_info()
+    info = app._build_target_info(hero_width_px=hero_width)
+    compact = app._target_info_compact
+    assert compact is (hero_width < app_module._CAPTION_STRIP_WIDE_MIN_HERO_PX)
     assert app._target_info is None
-    assert app._target_info_caption_box.get_visible() is False
+    if not compact:
+        assert app._target_info_caption_box.get_visible() is False
     assert app._confidence_legend_box.get_visible() is True
     assert info.get_visible() is True
     # ...and nothing readable is left behind by the hidden half. `is_visible`
@@ -1798,9 +2347,11 @@ def test_a_protein_the_playlist_cannot_name_gets_no_caption_at_all():
     # that would have passed no matter what this strip actually shows.
     shown = [label.get_label() for label in _legibility.iter_labels(info)
              if label.is_visible()]
-    assert shown == [app_module._CONFIDENCE_LEGEND_CAPTION,
-                     app_module._CONFIDENCE_LEGEND_LOW,
+    legend_labels = [app_module._CONFIDENCE_LEGEND_LOW,
                      app_module._CONFIDENCE_LEGEND_HIGH]
+    if not compact:
+        legend_labels.insert(0, app_module._CONFIDENCE_LEGEND_CAPTION)
+    assert shown == legend_labels
 
 
 def test_target_info_subject_prefers_what_is_on_screen():
@@ -1966,7 +2517,7 @@ def test_the_confidence_legend_costs_the_protein_no_height():
         app = _app()
         app.targets = [target]
         app._slots[0].shown_target_id = target.id
-        strip = app._build_target_info()
+        strip = app._build_target_info(hero_width_px=hero_width)
         with_legend = _strip_height(strip, hero_width)
         # `unparent`, not `strip.remove(...)`: the legend has to come out of
         # WHEREVER it was put, and `remove` on a widget that is not a direct
@@ -1981,6 +2532,128 @@ def test_the_confidence_legend_costs_the_protein_no_height():
                 f"the legend and {without_legend}px without it -- the render "
                 f"loses {with_legend - without_legend}px")
     assert not too_tall, "\n".join(too_tall)
+
+
+def test_the_confidence_legend_still_costs_nothing_at_the_floor_width():
+    """The reference-size version of this test (above) already proved the
+    legend costs the render no height AT 1920. This proves the same
+    invariant at every supported width, down to the floor -- in whichever
+    arrangement production picks there (`_build_target_info` builds the
+    compact one below `_CAPTION_STRIP_WIDE_MIN_HERO_PX`).
+
+    At the REAL hero width, from `hero_width_for` -- the same helper
+    `_build_gallery` and `_build_target_info` use. This test was first
+    written with its own `1024 - rail_width_for(1024)`, which gave 604px:
+    a hero that did not exist (the rail could not shrink to the 420px that
+    formula assumed, and its margins were forgotten). The real floor hero
+    is 436px, where the arrangement this test had approved left every
+    shipped name one character and an ellipsis wide."""
+    targets = load_playlist(app_module._DEFAULT_PLAYLIST)
+    assert targets
+
+    too_tall = []
+    for total_width, _height in _LAYOUT_MATRIX:
+        hero_width = app_module.hero_width_for(total_width)
+        for target in targets:
+            app = _app()
+            app.targets = [target]
+            app._slots[0].shown_target_id = target.id
+            strip = app._build_target_info(hero_width_px=hero_width)
+            with_legend = _strip_height(strip, hero_width)
+            app._confidence_legend_box.unparent()
+            without_legend = _strip_height(strip, hero_width)
+            if with_legend != without_legend:
+                too_tall.append(
+                    f"{target.id} at {total_width} (hero {hero_width}px): "
+                    f"{with_legend}px with the legend, {without_legend}px "
+                    f"without -- the render loses "
+                    f"{with_legend - without_legend}px")
+    assert not too_tall, "\n".join(too_tall)
+
+
+def test_the_compact_caption_strip_is_as_tall_as_the_wide_one():
+    """The A/B above proves the legend adds nothing WITHIN an arrangement.
+    This is the other half: switching arrangements must not cost the render
+    height either -- the compact strip's second line (tagline beside a
+    one-line ramp) must be no taller than the wide strip's two lines.
+
+    Mutation this catches: keeping the two-line legend (with its "Colour:"
+    sentence) in the compact strip's second line -- 39px against the
+    tagline's 28px, so the strip grows by 11px."""
+    targets = load_playlist(app_module._DEFAULT_PLAYLIST)
+    taller = []
+    for target in targets:
+        heights = {}
+        for hero_width in (app_module._GALLERY_WIDTH_PX,
+                           app_module.hero_width_for(1024)):
+            app = _app()
+            app.targets = [target]
+            app._slots[0].shown_target_id = target.id
+            strip = app._build_target_info(hero_width_px=hero_width)
+            heights[app._target_info_compact] = _strip_height(strip, hero_width)
+        assert set(heights) == {True, False}, "both arrangements must be built"
+        if heights[True] > heights[False]:
+            taller.append(f"{target.id}: compact {heights[True]}px, wide "
+                          f"{heights[False]}px")
+    assert not taller, "\n".join(taller)
+
+
+def _allocated_strip(target, hero_width):
+    """The caption strip for `target`, built and ALLOCATED at `hero_width`
+    (so its labels have real widths and Pango layouts to ask about)."""
+    app = _app()
+    app.targets = [target]
+    app._slots[0].shown_target_id = target.id
+    strip = app._build_target_info(hero_width_px=hero_width)
+    _allocate(strip, hero_width, _strip_height(strip, hero_width))
+    return app
+
+
+def test_every_shipped_name_is_shown_whole_at_every_supported_width():
+    """The legibility half of the caption strip's contract, which the
+    height tests above cannot see: an ellipsized single line is EXACTLY as
+    tall as a whole one, so "costs no height" was green while the floor
+    width reduced "Dihydrofolate Reductase" to "D…".
+
+    The name is the one thing in this strip a visitor must be able to read
+    -- it is what the protein on screen IS. So at every supported width, in
+    the arrangement production picks there, every name the manifest ships
+    must come back un-ellipsized. Tied to the copy as much as the widget: a
+    longer name added to playlist/manifest.yaml fails here, not at a booth.
+
+    Mutations this catches: raising `_CAPTION_STRIP_WIDE_MIN_HERO_PX` out
+    of the way (the wide arrangement at 1024 and 1280 ellipsizes names), or
+    building the compact strip with the name sharing a row again.
+    """
+    targets = load_playlist(app_module._DEFAULT_PLAYLIST)
+    cut = []
+    for total_width, _height in _LAYOUT_MATRIX:
+        hero_width = app_module.hero_width_for(total_width)
+        for target in targets:
+            app = _allocated_strip(target, hero_width)
+            label = app._target_info_name_label
+            assert label.get_label() == target.name
+            if label.get_layout().is_ellipsized():
+                cut.append(f"{total_width} (hero {hero_width}px, "
+                           f"{'compact' if app._target_info_compact else 'wide'}): "
+                           f"{target.name!r} is ellipsized to {label.get_width()}px")
+    assert not cut, "\n".join(cut)
+
+
+def test_the_reference_and_laptop_widths_keep_the_full_legend():
+    """The compact strip trades away the legend's "Colour: ..." sentence,
+    so it must only ever be used where the wide one cannot show a name:
+    1920 (the booth's reference) must be byte-for-byte the shipped layout,
+    and 1366 still has the room. 1024 and 1280 are where it is needed."""
+    for total_width, compact in ((1024, True), (1280, True), (1366, False),
+                                 (1920, False), (2560, False)):
+        app = _app()
+        app._expected_window_width = lambda w=total_width: w
+        app._build_target_info()   # production's own width, no override
+        assert app._target_info_compact is compact, total_width
+        labels = [label.get_label() for label
+                  in _legibility.iter_labels(app._confidence_legend_box)]
+        assert (app_module._CONFIDENCE_LEGEND_CAPTION in labels) is (not compact)
 
 
 def test_the_confidence_legend_never_takes_the_screen_from_the_protein():
@@ -2001,10 +2674,16 @@ def test_the_confidence_legend_never_takes_the_screen_from_the_protein():
                            "The double helix, twelve rungs of it — and the "
                            "only thing this booth folds that is not a protein.")]
     app._slots[0].shown_target_id = "dna"
-    strip = app._build_target_info()
     hero_width = app_module._GALLERY_WIDTH_PX
+    strip = app._build_target_info(hero_width_px=hero_width)
 
     assert strip.measure(Gtk.Orientation.HORIZONTAL, -1).minimum < hero_width
+    # ...and at the real floor hero too, in the arrangement built for it:
+    # the strip sits in the hero slot, so its minimum is a floor under the
+    # whole window's (see test_the_booth_fits_its_own_window_...).
+    floor_hero = app_module.hero_width_for(1024)
+    floor_strip = _app()._build_target_info(hero_width_px=floor_hero)
+    assert floor_strip.measure(Gtk.Orientation.HORIZONTAL, -1).minimum <= floor_hero
     legend_width = app._confidence_legend_box.measure(
         Gtk.Orientation.HORIZONTAL, -1).natural
     assert legend_width < hero_width // 3
@@ -3094,3 +3773,28 @@ def test_a_cell_between_job_start_and_its_first_stage_still_says_why():
                         empty=True, awaiting=True)
     assert "atoms appear" in line.lower(), (
         f"a cell that had just started folding said nothing: {line!r}")
+
+
+# ---------------------------------------------------------------------------
+# Window sizing before the window is realized
+# ---------------------------------------------------------------------------
+
+def test_expected_window_width_uses_the_windowed_default_when_windowed():
+    app = _app()
+    app.windowed = True
+    assert app._expected_window_width() == 1280
+
+
+def test_expected_window_width_falls_back_when_no_monitor_is_reported():
+    """A headless/virtual display or a Gdk backend that reports zero monitors must not
+    crash construction or hand a 0-width request three modules downstream -- it falls back
+    to the reference resolution's width."""
+    app = _app()
+    app.windowed = False
+
+    class _EmptyMonitors:
+        def get_n_items(self):
+            return 0
+
+    app._get_monitors_for_test = lambda: _EmptyMonitors()
+    assert app._expected_window_width() == 1920

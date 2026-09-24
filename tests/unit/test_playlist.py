@@ -577,13 +577,41 @@ def test_a_non_numeric_slow_end_is_loud(tmp_path):
 # must fail loudly here, not silently at the moment a visitor asks it.
 # ---------------------------------------------------------------------------
 
-def test_loads_three_questions_from_the_shipped_manifest():
+def test_loads_the_shipped_questions():
     """Runs against the REAL shipped playlist/questions.yaml, same reasoning
     as test_loads_the_shipped_manifest above: a bad entry in the real file
-    fails CI, not the booth."""
+    fails CI, not the booth.
+
+    A 2026-09-22 pass tried to grow this catalog to six curated additions
+    naming a second ligand per protein, but a hardware run showed each one
+    either silently scored the wrong (already-questioned) ligand or always
+    errored -- see playlist/questions.yaml's header for the measured
+    evidence. Reverted to the three pairs that are actually correct: one
+    target, one ligand, one question."""
     questions = load_questions()
     assert {q.id for q in questions} == {"dhfr_mtx", "trypsin_bam", "fkbp12_sb3"}
     assert all(isinstance(q, Question) for q in questions)
+
+
+def test_a_question_source_is_loaded_when_present(tmp_path):
+    good = tmp_path / "questions.yaml"
+    good.write_text(
+        "- id: x\n  target_id: dhfr\n  question: 'q?'\n"
+        "  ligand_name: 'L'\n  source: 'A real, citable pair'\n"
+    )
+    (q,) = load_questions(good)
+    assert q.source == "A real, citable pair"
+
+
+def test_a_non_string_source_is_rejected(tmp_path):
+    """A present-but-non-string source is a config error, not a citation."""
+    bad = tmp_path / "questions.yaml"
+    bad.write_text(
+        "- id: x\n  target_id: dhfr\n  question: 'q?'\n"
+        "  ligand_name: 'L'\n  source: 42\n"
+    )
+    with pytest.raises(PlaylistError, match="source"):
+        load_questions(bad)
 
 
 def test_every_question_targets_a_real_playlist_entry():
@@ -596,13 +624,19 @@ def test_every_question_targets_a_real_playlist_entry():
         assert q.target_id in manifest_ids
 
 
-def test_unmeasured_expected_s_is_none():
-    """All three shipped questions carry `expected_s: null` -- the hardware
-    spike (docs/spike-nesso1-affinity.md) found a realistic ~8-12s per-answer
-    latency, but that was not this project's usual repeated-measurement
-    discipline (a mean of several warm runs), so it is not yet a citable
-    number. See the header comment in playlist/questions.yaml."""
-    assert all(q.expected_s is None for q in load_questions())
+def test_shipped_questions_carry_a_measured_expected_s():
+    """All three shipped questions were measured on real hardware on
+    2026-09-22 (mean of 3 back-to-back warm runs, model resident -- see the
+    header comment in playlist/questions.yaml): 8-11s per answer, in line
+    with the earlier hardware spike's rough ~8-12s estimate
+    (docs/spike-nesso1-affinity.md), now a citable measurement rather than a
+    spike number."""
+    by_id = {q.id: q.expected_s for q in load_questions()}
+    assert by_id == {
+        "dhfr_mtx": pytest.approx(10.1),
+        "trypsin_bam": pytest.approx(10.7),
+        "fkbp12_sb3": pytest.approx(8.3),
+    }
 
 
 def test_a_question_naming_a_nonexistent_target_is_rejected(tmp_path):

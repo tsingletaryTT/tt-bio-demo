@@ -1,0 +1,263 @@
+/* Same palette as the native GTK booth (ui/app.py's _DARK_BASE/_BG/_BG_ALT/
+   _ACCENT_TEXT/_TEAL) -- not a separately-invented "web" scheme. `--fg-muted`
+   in particular used to be a hand-picked #8fb6b2 that had no counterpart in
+   the native app at all; it is _BG_ALT now, the exact color the GTK booth
+   uses for every quiet body line (viewer-caption-sub, target-info-tagline,
+   help-body), at the same 11.36:1 contrast on this same #092221 ground. */
+:root {
+  color-scheme: dark;
+  --dark-base: #092221;      /* _DARK_BASE */
+  --bg-alt: #0d2b28;
+  --bg-cell: #0b2725;
+  --hairline: rgba(199, 217, 216, 0.18);
+  --hairline-strong: rgba(116, 197, 223, 0.4);
+  --fg: #F1F8F8;              /* _BG -- the booth's brightest line */
+  --fg-muted: #C7D9D8;        /* _BG_ALT -- quiet body text, 11.36:1 */
+  --accent: #1B8EB1;
+  --accent-text: #3299B9;     /* _ACCENT_TEXT -- section headers/hints, 4.5:1+ */
+  --accent-bright: #74C5DF;   /* _TEAL -- "what this is": titles, focus, facts */
+  --danger: #FA512E;
+  --warning: #F6BC42;
+}
+
+* { box-sizing: border-box; }
+
+/* The whole booth fits one viewport, no scrolling to see the rest of the
+   quad -- `.stage` is the one flexible row (flex: 1 1 auto below); every
+   other row (toolbar, notice, the two panels) keeps its own natural height,
+   so the stage gets exactly what's left over, never more. A viewport too
+   short for that (a small phone) still gets vertical scroll rather than
+   clipped content -- see `overflow-y: auto` below. */
+html, body { height: 100%; }
+
+body {
+  margin: 0;
+  padding: 1.25rem clamp(12px, 3vw, 32px) 2.5rem;
+  background: var(--dark-base);
+  color: var(--fg);
+  font-family: "Berkeley Mono", "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  overflow-y: auto;
+}
+
+.toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 20px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.status { display: flex; align-items: center; gap: 8px; color: var(--fg-muted); }
+.dot { width: 8px; height: 8px; border-radius: 50%; }
+.dot-off { background: var(--danger); }
+.dot-on { background: var(--accent-bright); box-shadow: 0 0 0 3px rgba(116,197,223,.18); }
+
+.title-block { flex: 1 1 200px; min-width: 0; }
+.title-block h1 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: .02em; }
+.sub { font-size: 12px; color: var(--fg-muted); }
+
+button {
+  font-family: inherit;
+  background: transparent;
+  color: var(--fg-muted);
+  border: 1px solid var(--hairline-strong);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+button:hover { color: var(--fg); border-color: var(--accent-bright); }
+
+.notice {
+  flex: 0 0 auto;
+  margin: 14px 0 0;
+  padding: 10px 14px;
+  background: var(--bg-alt);
+  border-radius: 8px;
+  color: var(--fg);
+  font-size: 12.5px;
+}
+
+/* `flex: 1 1 auto` + `min-height: 0` is what makes this the one row that
+   absorbs whatever vertical space the toolbar/notice/panels don't need --
+   without `min-height: 0` a flex item's default `min-height: auto` refuses
+   to shrink below its content's "natural" size, which for a grid full of
+   aspect-ratio'd cells is exactly the unbounded height this fixes. No fixed
+   `aspect-ratio` on `.cell` either, for the same reason: it would demand a
+   height derived purely from column width, ignoring how much vertical room
+   is actually left -- see this project's own "measure before declaring
+   contained" habit. The canvas still fills its cell exactly (`width/height:
+   100%` below), just not always at a strict 4:3 -- a minor stretch, not a
+   scrollbar. */
+.stage {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin-top: 16px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, 1fr);
+  grid-template-rows: repeat(2, 1fr);
+}
+.stage[data-mode="solo"] {
+  grid-template-columns: 1fr;
+  grid-template-rows: 1fr;
+}
+.stage[data-mode="solo"] .cell { display: none; }
+.stage[data-mode="solo"] .cell.focused { display: block; }
+
+.cell {
+  position: relative;
+  border: 2px solid var(--hairline);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg-cell);
+  min-height: 0;
+}
+.cell.focused { border-color: var(--hairline-strong); }
+.cell canvas { display: block; width: 100%; height: 100%; }
+.cell .chip-label {
+  position: absolute; top: 8px; left: 10px;
+  font-size: 11px; letter-spacing: .08em; font-weight: 600;
+  /* Was `var(--bg-alt)` -- a near-black BACKGROUND tone, not a text color,
+     reused here by mistake. `--bg-alt` (#0d2b28) sits almost on top of this
+     very cell's own background (--bg-cell, #0b2725), so every unfocused
+     chip's label rendered at ~1.05:1 contrast: there, but not legible from
+     more than a few inches away. `--fg-muted` is the booth's real quiet-text
+     color (11.36:1 on this ground) -- still visibly quieter than the
+     focused cell's bright teal, but actually readable. */
+  color: var(--fg-muted); text-shadow: 0 1px 4px rgba(0,0,0,.5);
+}
+.cell.focused .chip-label { color: var(--accent-bright); }
+.cell .caption {
+  position: absolute; bottom: 8px; left: 10px; right: 10px;
+  font-size: 11px; color: var(--fg);
+  text-shadow: 0 1px 4px rgba(0,0,0,.5);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* The Q&A-reserved chip's cell (app.js's renderQaPlaceholder): no canvas, so
+   the chip-label/caption positioning above (anchored to an image that isn't
+   there) is replaced with plain centered text instead of dark-on-dark
+   illegible labels sitting over the empty `--bg-cell` background. */
+.cell.qa-reserved {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  text-align: center;
+  padding: 0 14px;
+  /* Dashed, not the fold cells' solid hairline: this chip was never going to
+     show a protein, which a solid border (identical to a cell that simply
+     hasn't started folding yet) does not say. The dash is the only signal
+     that this is a deliberate, different KIND of cell -- see the caption
+     text below it for the rest of that claim. */
+  border-style: dashed;
+}
+.cell.qa-reserved .chip-label {
+  position: static;
+  color: var(--fg-muted);
+  text-shadow: none;
+}
+.cell.qa-reserved .caption {
+  position: static;
+  color: var(--fg-muted);
+  text-shadow: none;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: unset;
+}
+
+.panel {
+  flex: 0 0 auto;
+  margin-top: 16px;
+  padding: 12px 14px;
+  background: var(--bg-alt);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+}
+.panel h2 {
+  margin: 0 0 10px;
+  font-size: 11px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  /* accent-text, not fg-muted: the same role and color as the native
+     booth's `.help-section` headers ("KEYS", "THE QUAD, AND THE PANELS ON
+     THE RIGHT") -- a section label reads as structure, not as de-emphasized
+     body text. */
+  color: var(--accent-text);
+  font-weight: 700;
+}
+
+.qa-question { font-size: 13px; margin-bottom: 6px; }
+
+/* A little marching-band bounce for a question actively being asked --
+   see app.js's setQuestionText for why this only ever runs while nesso1 is
+   working, never over a settled result. Per-letter bob plus a warm color
+   cycle, staggered by each <span>'s --i so the letters march rather than
+   bounce in unison. Original animation and palette (this project's own
+   accent/warning/danger tokens) -- not any specific song or character
+   design. */
+.oompa-bounce span {
+  display: inline-block;
+  animation: oompa-bob 0.9s ease-in-out infinite,
+             oompa-hue 2.7s linear infinite;
+  animation-delay: calc(var(--i) * 0.045s);
+}
+@keyframes oompa-bob {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-4px); }
+}
+@keyframes oompa-hue {
+  0%   { color: var(--accent-bright); }
+  33%  { color: var(--warning); }
+  66%  { color: var(--danger); }
+  100% { color: var(--accent-bright); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .oompa-bounce span { animation: none; }
+}
+.qa-score { font-size: 22px; color: var(--accent-bright); }
+.qa-spinner {
+  width: 14px; height: 14px; border-radius: 50%;
+  border: 2px solid var(--hairline-strong);
+  border-top-color: var(--accent-bright);
+  animation: spin 0.9s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+#pick-form { display: flex; gap: 8px; }
+#pick-input {
+  flex: 1 1 auto;
+  font-family: inherit;
+  background: var(--bg-cell);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  color: var(--fg);
+  padding: 7px 10px;
+  font-size: 13px;
+}
+.pick-error { margin-top: 8px; color: var(--danger); font-size: 12px; }
+.seen-targets { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px; }
+.seen-targets button { font-size: 11px; padding: 4px 9px; }
+
+@media (max-width: 600px) {
+  /* Too narrow to fit a 2x2 grid in the remaining flex height at all --
+     stack instead and let the page scroll (see `overflow-y: auto` on
+     body), rather than squashing four cells into slivers. */
+  .stage {
+    grid-template-columns: 1fr;
+    grid-template-rows: none;
+    grid-auto-rows: minmax(180px, auto);
+    flex: 0 1 auto;
+    overflow-y: auto;
+  }
+  .stage[data-mode="solo"] { grid-template-rows: none; }
+  .cell { aspect-ratio: 4 / 3; }
+}

@@ -799,6 +799,19 @@ def test_ask_next_question_sends_only_a_question_never_a_pick():
     assert app._client.picks == []
 
 
+def test_a_failed_send_does_not_mark_the_question_as_recently_asked():
+    """Copilot review finding on PR #6: _note_question_asked used to run
+    unconditionally, before checking whether _send_question actually
+    delivered anything -- a question that failed to reach the daemon (no
+    client, an exception, no chip reserved) would still be wrongly excluded
+    from "least recently asked" rotation, for no reason at all."""
+    app = _questions_app(questions=[_question(id="q1", target_id="a")],
+                        client=_RecordingClient(ok=False))
+    app._ask_next_question()
+    assert app._client.questions == [("q1", "a")]  # the send was attempted
+    assert app._recently_asked == []  # but never recorded as delivered
+
+
 def test_ask_next_question_does_nothing_with_no_questions_loaded():
     app = _questions_app(questions=[])
     app._ask_next_question()
@@ -858,3 +871,58 @@ def test_an_ask_question_cue_cannot_freeze_the_attract_tick():
     app.attract = _StubChoreography()
     app._ask_next_question = boom
     app._tick_attract(now=1000.0, idle_s=1000.0)  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# Task 2: the attract-loop question is now chosen adaptively
+# (ui/questioning.py) instead of by blind round-robin.
+# ---------------------------------------------------------------------------
+
+def test_ask_next_prefers_the_on_screen_target():
+    """Relevance beats the id tie-break: with 'beta' on screen, the beta
+    question is asked even though the alpha question sorts first by id."""
+    app = _questions_app(questions=[
+        _question(id="qa", target_id="alpha"),
+        _question(id="qb", target_id="beta"),
+    ])
+    # Put 'beta' on the hero screen (focus slot 0).
+    app._handle_event(_start("j1", card=0, target_id="beta"))
+    app._ask_next_question()
+    assert app._client.questions == [("qb", "beta")]
+
+
+def test_ask_next_falls_back_to_pool_when_on_screen_target_has_no_question():
+    """The on-screen target has no question of its own, so the selector falls
+    back to the whole pool rather than asking nothing."""
+    app = _questions_app(questions=[_question(id="qa", target_id="alpha")])
+    app._handle_event(_start("j1", card=0, target_id="beta"))
+    app._ask_next_question()
+    assert app._client.questions == [("qa", "alpha")]
+
+
+def test_ask_next_does_not_immediately_repeat():
+    """Two questions about the same on-screen target: the second ask must be
+    the other one, not a repeat of the first."""
+    app = _questions_app(questions=[
+        _question(id="q1", target_id="alpha"),
+        _question(id="q2", target_id="alpha"),
+    ])
+    app._handle_event(_start("j1", card=0, target_id="alpha"))
+    app._ask_next_question()
+    app._ask_next_question()
+    asked = [qid for qid, _ in app._client.questions]
+    assert asked == ["q1", "q2"]
+
+
+def test_ask_next_never_immediately_repeats_over_many_asks():
+    app = _questions_app(questions=[
+        _question(id=f"q{i}", target_id="t") for i in range(3)
+    ])
+    app._handle_event(_start("j1", card=0, target_id="t"))
+    for _ in range(8):
+        app._ask_next_question()
+    asked = [qid for qid, _ in app._client.questions]
+    for a, b in zip(asked, asked[1:]):
+        assert a != b, f"immediate repeat in {asked}"
+    # The recency window stays bounded by the pool size.
+    assert len(app._recently_asked) <= 3

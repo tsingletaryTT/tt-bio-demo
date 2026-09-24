@@ -178,8 +178,9 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
+gi.require_version("Pango", "1.0")
 
-from gi.repository import Gdk, GLib, Gtk
+from gi.repository import Gdk, GLib, Gtk, Pango
 
 from protocol.events import STAGE_BANDS, STAGE_ORDER, unpack_coords
 from ui.chipviz import ChipVizPanel
@@ -189,8 +190,10 @@ from ui.gallery import Gallery
 from ui.geometry import PLDDT_STOPS, ribbon_from_cif
 from ui.pocket import POCKET_CUTOFF_ANGSTROM, pocket_residues
 from ui.structure_view import structure_mesh
-from ui.panels import PipelinePanel, TelemetryPanel
+from ui.panels import (TELEMETRY_PANEL_RESERVED_WIDTH_PX, PipelinePanel,
+                       TelemetryPanel)
 from ui.playlist import PlaylistError, load_playlist, load_questions, select_targets
+from ui.questioning import select_question
 from ui.qa_spotlight import QASpotlightCell
 from ui.questions import QuestionQueuePanel
 from ui.attract import (ASK_QUESTION, CLOSE_DIAGNOSTICS, CLOSE_TENSIX,
@@ -686,6 +689,71 @@ _TELEMETRY_REPAINT_MS = 500
 # arithmetic so a wider cell cannot silently reintroduce the lurch.
 _SIDE_RAIL_WIDTH_PX = 552
 
+# The reference value above (552 at the 1920-wide booth) is now the ANCHOR of a
+# fraction-with-clamp formula rather than a fixed number applied at every width. Preserves
+# today's exact layout at the reference resolution (rail_width_for(1920) == 552, pinned by
+# test_rail_width_for_matches_the_reference_layout_exactly) while adapting below and above
+# it -- see docs/superpowers/specs/2026-09-23-responsive-layout-design.md section 3.
+_RAIL_FRACTION = _SIDE_RAIL_WIDTH_PX / 1920
+# Floor: the rail's REAL content minimum, derived from the one thing that sets it -- the
+# telemetry panel's reserved four-cell footprint (`ui.panels.
+# TELEMETRY_PANEL_RESERVED_WIDTH_PX`, 552). Not a chosen number.
+#
+# It was a chosen number, 420, and it was a lie: `set_size_request` is only a floor (see
+# `_SIDE_RAIL_WIDTH_PX` above), so whenever this formula answered less than 552 the
+# telemetry panel's own minimum won and the rail allocated 552 anyway. Measured by the
+# branch's final review against the real, fully-built rail: `rail_width_for` said
+# 420/420/552/700 at 1024/1366/1920/2560 and the rail allocated 552/552/552/700. Every
+# caller that trusted the formula -- the gallery's width, the floor-width caption test --
+# was reasoning about a narrower rail than the booth ever drew, and the booth could not
+# fit its own 1280px `--windowed` window (content minimum 1336px).
+#
+# So at and below the reference width the rail is now honestly a fixed 552px, and the
+# fraction only ever WIDENS it (above 1920). Making it genuinely narrower would mean
+# redesigning the telemetry panel's reservation, which exists to stop the rail lurching
+# sideways (see ui/panels.py) -- a different change from this one.
+# `test_rail_min_px_is_the_real_rails_content_minimum` measures the real rail against
+# this number so it cannot drift from what GTK actually does again.
+_RAIL_MIN_PX = TELEMETRY_PANEL_RESERVED_WIDTH_PX
+# Ceiling: an ultra-wide display should not hand the rail more width than its own fixed-size
+# content (the Tensix panel, the pipeline bars) can use -- past this point extra width is
+# wasted whitespace, not legibility.
+_RAIL_MAX_PX = 700
+# The rail's own margin on each side (`_build_side_rail` applies it to all four). Margins
+# sit OUTSIDE a widget's allocated width in GTK4, so the rail really takes
+# `rail_width_for(w) + 2 * _RAIL_MARGIN_PX` of the window -- 588px at the reference size,
+# which is why the hero slot there is 1332px, not the 1368px the old `1920 - 552`
+# arithmetic assumed. `hero_width_for` below is the one place that sum is done.
+_RAIL_MARGIN_PX = 18
+
+
+def rail_width_for(total_width_px):
+    """How wide the side rail gets, given the window's actual total width.
+
+    Pure arithmetic, no GTK -- the real allocation-time caller is
+    `_ResponsiveSplitLayout.do_allocate` (see `_build_ui`'s `root` box), and this function's
+    only job is to be independently correct and independently testable from that wiring.
+    This is the rail's allocated (content) width; its margins are extra -- see
+    `hero_width_for` for what that leaves the protein.
+    """
+    return max(_RAIL_MIN_PX, min(_RAIL_MAX_PX, round(total_width_px * _RAIL_FRACTION)))
+
+
+def hero_width_for(total_width_px):
+    """How wide the hero slot (the protein, or the gallery) really is, given the window's
+    total width: the window minus the rail AND the rail's margins.
+
+    The ONE place this is computed. Production (`_build_gallery`, `_build_target_info`)
+    and the tests that measure the hero's contents all call it, so the width a test
+    checks is the width the booth draws -- the floor-width caption test was once green
+    at a 604px hero that did not exist (the real one was 436px) because it did its own
+    subtraction and ignored both the rail's real floor and its margins.
+
+    Never negative: a window narrower than the rail alone gets a 0px answer, not a
+    negative width handed to a constructor downstream.
+    """
+    return max(0, total_width_px - rail_width_for(total_width_px) - 2 * _RAIL_MARGIN_PX)
+
 
 class _PinnedNaturalBoxLayout(Gtk.BoxLayout):
     """A `Gtk.BoxLayout` that reports its natural WIDTH as its minimum.
@@ -770,10 +838,43 @@ class _FixedWidthBox(Gtk.Box):
             _PinnedNaturalBoxLayout(orientation=orientation, spacing=spacing))
 
 
-# What the gallery gets to lay its cards out in: the window minus the rail.
-# 1920 is this booth's screen; `ui.gallery.grid_shape` turns it into a
-# column count, so a different screen simply gets a different one.
-_GALLERY_WIDTH_PX = 1920 - _SIDE_RAIL_WIDTH_PX
+class _ResponsiveSplitLayout(Gtk.BoxLayout):
+    """The rail/hero split's own layout manager: on every real allocation
+    (window build, and any later live resize), recomputes the rail's width
+    from the container's actual current width via `rail_width_for` and
+    re-applies it as the rail's size request BEFORE delegating to the
+    ordinary box-layout allocation that actually places both children.
+
+    Proven against a real, running, off-screen GTK4 window before this
+    class was written (see this task's docstring in the plan this class
+    was implemented from) -- `do_allocate` receives the container's live
+    width on every real layout pass, a child's `set_size_request` called
+    from inside it takes effect in that same pass, and this is the same
+    "subclass the layout manager, not the widget" shape
+    `_PinnedNaturalBoxLayout` above already uses (`gtk_widget_measure`
+    delegates to the layout manager, not to a widget subclass's own
+    vfunc -- confirmed once already, for that class).
+    """
+
+    def __init__(self, rail_widget, **kwargs):
+        super().__init__(**kwargs)
+        self._rail = rail_widget
+
+    def do_allocate(self, widget, width, height, baseline):
+        self._rail.set_size_request(rail_width_for(width), -1)
+        Gtk.BoxLayout.do_allocate(self, widget, width, height, baseline)
+
+
+# The hero slot's width at the booth's reference 1920px screen: 1332px, the
+# number the rail's own `_FixedWidthBox` measurements record. It used to be
+# `1920 - _SIDE_RAIL_WIDTH_PX` (1368), which forgot the rail's 2x18px
+# margins. Production no longer reads this constant (it asks `hero_width_for`
+# about the window it actually has); it survives as the reference-size hero
+# for tests that pin the 1920 layout, and it is derived from the same helper
+# so it cannot disagree with it. (The gallery's column count at 1920 is the
+# same either way: `ui.gallery.grid_shape` gives 3 columns for both 1332 and
+# 1368.)
+_GALLERY_WIDTH_PX = hero_width_for(1920)
 
 # tt-bio's ASCII logo, verbatim from the upstream README. Rendered as TEXT
 # in a monospace face rather than shipped as a bitmap: crisp at any size,
@@ -1116,6 +1217,23 @@ _PLDDT_LEGEND = (
     ("plddt-very-low", "below 50", "very low — likely floppy or disordered"),
 )
 
+# A briefer rendering of the SAME four bands, for the 1024x768/1366x768
+# floor-size help card only (2026-09-23, responsive-layout Task 6, fix
+# round 3) -- `_build_help_panels` picks this one over `_PLDDT_LEGEND`
+# when NOT `wide`, purely for vertical space. Each meaning is still a real,
+# if terse, description of that band (never dropped to nothing, which
+# content review already flagged once as a content-honesty problem) --
+# see `_PLDDT_LEGEND`'s own comment for the ramp/threshold pairing this
+# still has to respect; `_build_help_panels` zips this against the SAME
+# `PLDDT_STOPS`-derived CSS classes, so the swatch colours can never drift
+# from `_PLDDT_LEGEND`'s even though the words next to them are shorter.
+_PLDDT_LEGEND_BRIEF = (
+    ("plddt-very-high", "90+", "very high, trust it"),
+    ("plddt-confident", "70-90", "confident"),
+    ("plddt-low", "50-70", "low, use care"),
+    ("plddt-very-low", "below 50", "very low, floppy"),
+)
+
 # The always-on version of that legend, under the render (see
 # `_build_confidence_legend`). It says what the colour MEANS and which way
 # the ramp runs, and stops there -- the thresholds, and what each band is
@@ -1131,6 +1249,43 @@ _PLDDT_LEGEND = (
 _CONFIDENCE_LEGEND_CAPTION = "Colour: how sure the model is, residue by residue"
 _CONFIDENCE_LEGEND_LOW = "less sure"
 _CONFIDENCE_LEGEND_HIGH = "more sure"
+
+# The narrowest hero slot at which the caption strip keeps its WIDE
+# arrangement (name and tagline stacked on the left, the full two-line legend
+# beside them); below it, `_build_target_info` builds the COMPACT one (name on
+# its own full-width line, tagline beside a one-line legend).
+#
+# Measured, at the real hero widths `hero_width_for` gives (the strip's own
+# 2x32px padding and 32px spacing included; legend 292px wide):
+#
+#   window  hero   wide: name gets   compact: name gets
+#   1024     436        48px              372px
+#   1280     692       304px              628px
+#   1366     778       390px              714px
+#   1920    1332       944px             1268px
+#
+# The longest shipped names are "Dihydrofolate Reductase" (318px at 26px
+# bold) and "Human serum albumin" (301px). So the wide arrangement ELLIPSIZES
+# every shipped name at 1024 -- "D…", "H…", "T…", effectively no name at
+# all -- and DHFR's at 1280, while the compact one shows all of them in full
+# at every size down to the floor. The ellipsis the floor-width test once
+# approved was measured at a 604px hero that did not exist.
+#
+# Why compact rather than letting the name wrap: at 48px a wrapped name is a
+# column of letters, and any second name line grows the strip -- the render
+# pays for it. Compact keeps the strip at exactly the wide arrangement's
+# height (its second line is the tagline's own 28px; the one-line ramp is
+# 17px) and costs the render nothing, at the price of the legend's one-line
+# "Colour: ..." sentence below this width. The ramp and its named ends stay.
+#
+# 760 sits between the 706px the wide arrangement needs for the longest
+# shipped name (64 + 318 + 32 + 292) and the 778px hero of a 1366 laptop, so
+# 1366 and up keep today's full legend. It is tied to the copy, not just the
+# widget -- `test_every_shipped_name_is_shown_whole_at_every_supported_width`
+# builds the arrangement production picks at each supported size and fails if
+# any shipped name comes back ellipsized, so a longer name in the manifest is
+# caught by the suite rather than by a visitor.
+_CAPTION_STRIP_WIDE_MIN_HERO_PX = 760
 
 
 def _plddt_swatch_css():
@@ -1389,10 +1544,61 @@ window, .booth-root, .booth-side {{
 # feature. `n_chips` is `len(DemoApp.cards)` -- the daemon's own
 # `hello.cards` -- threaded in by `_build_help_overlay` at build time and
 # kept in sync afterwards by `_sync_help_copy`, exactly as the other two.
-def _help_intro(n_chips):
+def _help_intro(n_chips, wide=True):
+    """The intro paragraphs. `wide` (2026-09-23, responsive-layout Task 6,
+    fix round 3) selects which of two COMPLETE (never gutted) texts this
+    returns, not how much either one is trimmed:
+
+    - `wide=True` (the default, and what every existing content test in
+      this file checks) is the copy this card has always shipped,
+      unabridged, used at the reference size and above -- the side-by-side
+      KEYS/panels layout always had headroom to spare there (measured:
+      992px of a 1080px budget at 1920x1080 -- this card's own pre-task
+      comment already recorded this exact number).
+    - `wide=False` is a genuinely DIFFERENT, shorter text used at the
+      1024x768/1366x768 floor sizes, where the SAME side-by-side layout's
+      half-width columns do not have that headroom. It says the same
+      things -- what is on screen, why folding matters, how it works, the
+      pick-wait disclosure -- in fewer words, never by dropping a fact.
+
+    A round 1 fix tried to make ONE shared text fit every width by
+    trimming it down to what the floor needed, which cost the reference
+    size real content for no reason (it never needed the cut) -- and, in
+    one case, introduced a real factual error while doing it (a false
+    "pipeline ends in diffusion" claim). A round 2 fix tried stacking the
+    KEYS column above panels at narrow widths instead, on the theory that
+    a full-width single column would need less text-trimming than a
+    half-width one -- measured, and wrong: stacking makes the layout's
+    total height a SUM of both columns, where side-by-side makes it a MAX
+    of the two, and this card's real content (a 9-row KEYS grid alone
+    needs ~300px) overshoots the floor's budget by hundreds of pixels when
+    summed, even with every paragraph as terse as honesty allows. This
+    parameter is round 3's fix: keep the ORIGINAL side-by-side layout
+    (verified this way is what actually fits), and give it two honest
+    texts instead of one compromised one.
+    """
     word = chip_count_word(n_chips)
     protein_word = "protein" if n_chips == 1 else "proteins"
+    if not wide:
+        return (
+            "A protein structure prediction, running right now on "
+            "Tenstorrent chips nearby — not a recording. A protein only "
+            "works once folded into one shape; the collapsing point "
+            "cloud is the model denoising toward it, over roughly 200 "
+            "steps, and the ribbon at the end is the result. Touch the "
+            "screen to see everything this booth folds.",
+
+            f"The booth folds {word} {protein_word} at once, all day. "
+            "Tap one to fold it next — it starts when a chip frees up; "
+            "folds already running finish undisturbed.",
+        )
     return (
+        # Full, unabridged copy. Shared by the reference two-column layout
+        # and above -- it always had headroom for it (measured: 992px of a
+        # 1080px budget at 1920x1080; this card's own pre-task comment
+        # already recorded this exact number). See this function's own
+        # docstring for the narrower `wide=False` text used below the
+        # reference width.
         "A protein structure prediction, running right now on Tenstorrent "
         "chips a few feet away — not a recording. The collapsing point cloud "
         "is the model's own work, streamed live; the ribbon at the end is "
@@ -1427,9 +1633,10 @@ def _help_intro(n_chips):
         #
         # Kept short deliberately: the `?` card's real constraint is not
         # lines-per-se but the card's measured height against the booth's
-        # own 1080px screen (see `test_the_help_card_still_fits_the_booth_
-        # s_own_screen` -- and that test's own history note on why it must
-        # be measured at the card's REAL allocated width, not the screen's,
+        # own screen, at whatever width the window actually is (see
+        # `test_the_help_card_still_fits_the_booth_s_own_screen`'s size
+        # matrix -- and that test's own history note on why it must be
+        # measured at the card's REAL allocated width, not the screen's,
         # or it silently stops being able to fail).
         f"The booth folds {word} {protein_word} at once, all day. Tap one "
         "to put it next — it starts when a chip frees up; the folds "
@@ -1457,6 +1664,27 @@ _HELP_INTRO = _help_intro(4)
 # quietly disagree about which width that is.
 _HELP_CARD_WIDTH_PX = 1400
 
+# Same fraction-with-clamp shape as rail_width_for, independently: the help card's ideal
+# width is not derived from the rail's, it happens to need its own anchor at the reference
+# size. The ceiling is the reference value itself (1400) rather than a larger number --
+# past 1920 wide, a wider card is not more readable, only surrounded by more whitespace, and
+# _HELP_CARD_WIDTH_PX's own comment already measured 1400 as the width that keeps this
+# card's content within the booth's own screen height.
+_HELP_CARD_FRACTION = _HELP_CARD_WIDTH_PX / 1920
+# Floor: below this the two-column KEYS/intro layout the card's own comment describes would
+# need to wrap narrow enough to blow past a short screen's own height again -- the exact
+# defect _HELP_CARD_WIDTH_PX was raised to fix once already, one axis over. Set at 750
+# to ensure floor clamping triggers at 1024px, where the base formula yields 747.
+_HELP_CARD_MIN_PX = 750
+_HELP_CARD_MAX_PX = _HELP_CARD_WIDTH_PX
+
+
+def help_card_width_for(total_width_px):
+    """How wide the `?` help card gets, given the window's actual total width."""
+    return max(_HELP_CARD_MIN_PX,
+               min(_HELP_CARD_MAX_PX, round(total_width_px * _HELP_CARD_FRACTION)))
+
+
 # Every key the booth answers to, and what it does. This table is the ONE
 # place the bindings are described to a visitor, and the test
 # `test_every_key_the_booth_answers_to_is_listed_in_the_help` walks
@@ -1479,7 +1707,29 @@ _HELP_CARD_WIDTH_PX = 1400
 # build time and kept in sync afterwards by `_sync_help_copy` (called from
 # `attach_cards`, since a `hello` naming a different chip count can arrive
 # well after the help card was first built).
-def _key_help(n_chips):
+def _key_help(n_chips, wide=True):
+    """The KEYS grid's rows. `wide` (2026-09-23, responsive-layout Task 6,
+    fix round 3), same shape as `_help_intro`'s own parameter: `wide=True`
+    (default) is the original, full descriptive text, used at the
+    reference size and above; `wide=False` is a shorter, but not
+    content-dishonest, phrasing used at the 1024x768/1366x768 floor sizes
+    (same side-by-side layout throughout -- only the text changes) --
+    nothing here is a disclaimer or a safety-relevant fact, so a terser
+    description of what a key DOES costs nothing a visitor needs.
+    """
+    if not wide:
+        return (
+            ("?  or  F1", "this card, any time"),
+            ("Q", "quad view: " + chip_count_word(n_chips) +
+                  (" chip" if n_chips == 1 else " chips") + " at once"),
+            ("T", "Tensix animation, per chip"),
+            ("D", "live protocol log"),
+            ("Esc", "close card or panel"),
+            ("any other key\nor a tap", "wake the booth"),
+            ("Ctrl + F", "fullscreen — operator"),
+            ("Ctrl + A", "restart with Q&A enabled — operator"),
+            ("Ctrl + Q", "quit — operator"),
+        )
     return (
         ("?  or  F1", "this card, any time"),
         ("Q", "quad view: all " + chip_count_word(n_chips) +
@@ -1496,10 +1746,79 @@ def _key_help(n_chips):
     )
 
 
-def _help_panels(n_chips):
+def _help_panels(n_chips, wide=True):
+    """The panels column's paragraphs. `wide` (2026-09-23,
+    responsive-layout Task 6, fix round 3), same shape as `_help_intro`'s
+    own parameter: `wide=True` (default) is the original, full-length copy
+    used at the reference size and above; `wide=False` is a shorter text
+    used at the 1024x768/1366x768 floor sizes (same side-by-side layout
+    throughout -- see `_build_help_overlay`'s own comment for why the
+    layout itself does not change with width, only the text). Shorter,
+    not gutted: every fact a code review flagged as content-honesty-
+    critical is present in BOTH versions --
+
+      - the diffusion-takes-longest fact, stated without implying it ends
+        the pipeline (`protocol.events.STAGE_ORDER` has two more stages
+        after it) -- in `wide=False` it rides inside the Tensix ring's
+        own parenthesis, which is where the room was;
+      - the Tensix panel's three real states, each tied to WHEN it
+        happens, not just named. The two texts word this differently
+        (read the return values below rather than a copy quoted here --
+        a quoted copy in this docstring has already drifted from the
+        real text once): `wide=True` describes each state in a full
+        clause, `wide=False` puts each state's trigger in a parenthesis
+        right after it. Naming the states without their timing is not
+        enough for a visitor to tell what's normal from what's wrong,
+        which is why a draft that did exactly that was rejected in
+        review. The ring is `ui/chipviz.py`'s own "headline" animation,
+        not a detail to drop for space;
+      - what the Tensix panel's header shows: how many chips are folding
+        (`ChipVizPanel`'s title) and the fastest clock among the chips
+        (`chipviz.readout_text`, a peak AICLK) -- a bare "header/clock
+        live" that names the readouts without saying what they mean does
+        not count;
+      - that nesso1 produces a SCORE (not just a highlight);
+      - the affinity disclaimer's actual substance -- a distance cutoff is
+        not a claim about where the ligand truly binds, stated as that,
+        not as a bare "not a claim" with the substance cut away.
+
+    What the `wide=False` text does NOT carry, for lack of room even after
+    every fact above was restored and measured against the real card at
+    the 1024x768 floor: the enumerated stage list (msa, prep, trunk, ...),
+    the standalone Chips/telemetry sentence (temperature, power, clock,
+    sample cadence), the per-chip-count clause naming how many chips fold
+    at once, the literal question phrasing ("does this ligand bind this
+    protein?"), and the "(right rail, and the quad's own spare cell)"
+    location clause. None of these is a disclaimer or a fact a visitor
+    could be misled by omitting -- they are all present in the `wide=True`
+    text, used at the reference size and above where there is no such
+    constraint (see finding 7 of the code review this fixes: a shared,
+    trimmed copy is what cost the reference size content it never needed
+    to lose).
+    """
     word = chip_count_word(n_chips)
     plural = "chip" if n_chips == 1 else "chips"
     verb = "folds" if n_chips == 1 else "fold"
+    if not wide:
+        # Merged into ONE paragraph -- see this function's own docstring
+        # for exactly what is and is not in it, and why (measured, not
+        # assumed: no non-merged, longer draft tried here fit the
+        # 1024x768 floor's height budget once every content-honesty fact
+        # from the code review was back in).
+        return (
+            quad_help_line(n_chips),
+
+            # Every clause is load-bearing and pinned by a test in
+            # tests/unit/test_app_interaction.py's "narrow help-card copy"
+            # section. Measured at 765px of the 1024x768 floor's 768px
+            # budget -- re-run that file's size-matrix test after ANY edit
+            # here; one extra wrapped line (~23px) is enough to overflow.
+            "Tensix — ring (diffusion, the pipeline's longest stage), "
+            "glow (trunk), quiet (between folds); header: chips folding, "
+            "fastest clock. Affinity — nesso1's score, residues nearest "
+            f"the ligand, {POCKET_CUTOFF_ANGSTROM:g} Å — never a claim "
+            "about where it binds.",
+        )
     return (
         # The quad view's own line, from `ui/quad.py` rather than re-typed
         # here: the key, the view and the words describing it are one
@@ -1509,6 +1828,8 @@ def _help_panels(n_chips):
         # rather than what sits in the rail beside it.
         quad_help_line(n_chips),
 
+        # Full, unabridged copy -- see this function's own docstring for
+        # the narrower `wide=False` text used below the reference width.
         "Pipeline — one row per fold stage (msa, prep, trunk, diffusion, "
         "confidence, saving). The bright row is running now; diffusion "
         "takes the longest.",
@@ -1714,10 +2035,14 @@ class DemoApp(Gtk.Application):
         # (always 0) result, since `Gio.Application.quit()` has no notion of
         # a custom process exit code of its own.
         self.exit_code = None
-        # Round-robin cursor into `self.questions` for the attract loop's
-        # ASK_QUESTION cue (`_ask_next_question`) -- a plain int, not read
-        # back off anything, so a headless test can drive it directly.
-        self._ask_question_index = 0
+        # Recency history for the attract loop's ASK_QUESTION cue
+        # (`_ask_next_question`): the ids of the questions asked most
+        # recently, most-recent first. Bounded to the size of the question
+        # pool (see `_note_question_asked`) so "least recently asked" stays
+        # meaningful across the whole pool. Replaces the old blind
+        # round-robin cursor -- the choice itself now lives in
+        # ui/questioning.py.
+        self._recently_asked = []
         # target_id -> the most recent, not-yet-VISUALLY-APPLIED `answer_done`
         # event for that target (Critical fix, whole-branch review). See
         # `_handle_answer_event`/`_spawn_ribbon_worker`/`_apply_ribbon`'s own
@@ -1876,6 +2201,15 @@ class DemoApp(Gtk.Application):
         self._help_q_meaning_label = None
         self._help_panel_labels = []
         self._help_intro_labels = []
+        # Which of the two texts (`wide=True`/`wide=False`, see
+        # `_help_intro`'s own docstring) the card was actually built with --
+        # `_sync_help_copy` has to re-fetch text from the SAME text
+        # function the labels it is updating were built from, or a chip-
+        # count change on a narrow booth would silently splice in the
+        # wide, unabridged copy the narrow card was never sized for.
+        # Defaults to True (the wide/reference text), matching a headless
+        # test that never calls `_build_help_overlay` at all.
+        self._help_card_wide = True
 
         # Visibility is tracked as plain booleans, NOT read back off the
         # widgets: `_handle_key`'s decisions have to be testable without a
@@ -2011,6 +2345,9 @@ class DemoApp(Gtk.Application):
         self._target_info_caption_box = None
         self._target_info_name_label = None
         self._target_info_tagline_label = None
+        # Which arrangement `_build_target_info` chose (see
+        # `_CAPTION_STRIP_WIDE_MIN_HERO_PX`); None until it has run.
+        self._target_info_compact = None
         # The colour key beside that caption (`_build_confidence_legend`).
         # Stateless once built -- it describes the ramp, not the fold -- so
         # nothing ever updates it; the handle exists so tests and any future
@@ -2299,10 +2636,14 @@ class DemoApp(Gtk.Application):
         hero.set_child(self.screens)
         hero.add_overlay(self._build_egg_overlay())
 
+        side_rail = self._build_side_rail()
         root = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
         root.add_css_class("booth-root")
+        root.set_layout_manager(
+            _ResponsiveSplitLayout(side_rail, orientation=Gtk.Orientation.HORIZONTAL,
+                                    spacing=0))
         root.append(hero)
-        root.append(self._build_side_rail())
+        root.append(side_rail)
 
         logo = Gtk.Label(label=TT_BIO_LOGO)
         logo.add_css_class("booth-logo")
@@ -2411,25 +2752,66 @@ class DemoApp(Gtk.Application):
 
     # ── layout ───────────────────────────────────────────────────────────
 
+    def _get_monitors_for_test(self):
+        """The real monitor list. A tiny seam so a test can hand this method
+        something that reports zero monitors without needing a real (or
+        fully faked) `Gdk.Display` -- see `_expected_window_width`'s own
+        docstring for why this can't just read `window.get_width()`."""
+        return Gdk.Display.get_default().get_monitors()
+
+    def _expected_window_width(self):
+        """The width this window will actually end up at, usable BEFORE the
+        window is realized (`window.get_width()` reads 0 until well after
+        `present()` -- verified empirically, not assumed, before this method
+        was written).
+
+        `--windowed` requests a literal size (`set_default_size`, see
+        `do_activate`) that this method must match exactly, not guess at
+        from a monitor. The normal, fullscreen path has no such literal
+        request -- fullscreen always becomes whatever the display's own
+        monitor reports -- so THAT path reads `Gdk.Display`'s monitor
+        geometry instead, which is available immediately, with no window
+        realized at all.
+
+        Falls back to the reference resolution if no monitor is reported at
+        all (an unusual Gdk backend, or a virtual display returning zero
+        items) -- a 0-width fallback would hand a `width_px=0` construction
+        argument three modules downstream for something that would have
+        no clear connection back to this method.
+        """
+        if self.windowed:
+            return 1280
+        monitors = self._get_monitors_for_test()
+        if monitors.get_n_items() == 0:
+            return 1920
+        return monitors.get_item(0).get_geometry().width
+
     def _build_side_rail(self):
-        """The fixed-width column: identity, then what the machine is doing,
+        """The narrow column: identity, then what the machine is doing,
         then what the silicon is doing.
 
-        `set_hexpand(False)` plus an explicit width is load-bearing, not a
-        preference -- see `_SIDE_RAIL_WIDTH_PX`. So is `_FixedWidthBox`:
-        `set_size_request` pins only the floor, and it was the rail's
-        NATURAL width (which the Tensix panel moved by 32px) that shifted
-        the hero slot every time a visitor pressed `T`.
+        `set_hexpand(False)` is load-bearing, not a preference -- without
+        it the rail negotiates its way to two thirds of the window. The
+        FLOOR width itself is no longer set here: `_ResponsiveSplitLayout`
+        (the `root` box's layout manager, installed in `do_activate`) sets
+        it on every real allocation via `rail_width_for`, using the
+        window's actual current width -- see that class and
+        `_SIDE_RAIL_WIDTH_PX`/`rail_width_for` for the reasoning. So is
+        `_FixedWidthBox`, still: `set_size_request` (wherever it is set)
+        pins only the floor, and it was the rail's NATURAL width (which the
+        Tensix panel moved by 32px) that shifted the hero slot every time a
+        visitor pressed `T`.
         """
         _ensure_app_css_installed()
         side = _FixedWidthBox(orientation=Gtk.Orientation.VERTICAL, spacing=14)
         side.add_css_class("booth-side")
-        side.set_size_request(_SIDE_RAIL_WIDTH_PX, -1)
         side.set_hexpand(False)
         side.set_valign(Gtk.Align.START)
         for margin in ("set_margin_top", "set_margin_bottom",
                        "set_margin_start", "set_margin_end"):
-            getattr(side, margin)(18)
+            # `_RAIL_MARGIN_PX`, named: `hero_width_for` subtracts exactly
+            # this from the window, so the two must be one number.
+            getattr(side, margin)(_RAIL_MARGIN_PX)
 
         title = Gtk.Label(label="Folding on Tenstorrent Blackhole")
         title.add_css_class("booth-title")
@@ -2601,8 +2983,15 @@ class DemoApp(Gtk.Application):
             for slot in self.router.slots:
                 slot.dwell_caps = dict(self.states.dwell_caps)
 
+        # `hero_width_for`, not a local subtraction: this used to be
+        # `expected - rail_width_for(expected)`, which trusted a rail floor
+        # the real rail never honoured and ignored its margins -- so at 1280
+        # it handed the gallery 860px for a 692px slot, `grid_shape` chose
+        # two 374px columns, and the window's content minimum became 1336px:
+        # the booth could not fit its own `--windowed` window.
+        gallery_width = hero_width_for(self._expected_window_width())
         self.gallery = Gallery(self.targets, on_pick=self._on_pick,
-                               width_px=_GALLERY_WIDTH_PX,
+                               width_px=gallery_width,
                                questions=self.questions, on_ask=self._on_ask)
         # Cards at their natural width, centred -- NOT stretched to fill.
         # `Gallery` sets hexpand(True) on itself, which is right for a grid
@@ -2771,8 +3160,25 @@ class DemoApp(Gtk.Application):
         return {t.id: t.first_frame_s for t in self.targets
                 if t.first_frame_s is not None}
 
-    def _build_target_info(self):
+    def _build_target_info(self, hero_width_px=None):
         """The caption under the render: what this protein actually is.
+
+        `hero_width_px` is the hero slot's real width; None (production)
+        means `hero_width_for(self._expected_window_width())`. It picks one
+        of two arrangements, once, at build time -- the same build-time
+        choice `_build_gallery` and `_build_help_overlay` make (a `--windowed`
+        window dragged to a new size keeps the arrangement it opened with):
+
+        - WIDE (hero >= `_CAPTION_STRIP_WIDE_MIN_HERO_PX`, which includes the
+          1920 reference): the caption's two lines on the left, the full
+          two-line legend beside them. Byte-for-byte the layout that shipped
+          before the responsive work.
+        - COMPACT (narrower): the name on a line of its OWN, full width, and
+          the tagline beside a one-line legend (the ramp and its named ends,
+          without the "Colour: ..." sentence above it) on the second line.
+          See `_CAPTION_STRIP_WIDE_MIN_HERO_PX` for the measurement that
+          made this necessary: at the 1024 floor the wide arrangement left
+          the name 48px and every shipped name read "D…", "H…", "T…".
 
         A strip in the layout, below the GL area -- NOT an overlay over it.
         An overlay would either cover the structure or have to dodge it;
@@ -2795,38 +3201,84 @@ class DemoApp(Gtk.Application):
         nothing at all. `tests/unit/test_app_interaction.py` measures that.
         """
         _ensure_app_css_installed()
-        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=32)
+        if hero_width_px is None:
+            hero_width_px = hero_width_for(self._expected_window_width())
+        compact = hero_width_px < _CAPTION_STRIP_WIDE_MIN_HERO_PX
+        self._target_info_compact = compact
+
+        name = Gtk.Label()
+        name.add_css_class("target-info-name")
+        name.set_xalign(0.0)
+        # Same reasoning as the tagline below: a long name ("Human serum
+        # albumin", "Dihydrofolate Reductase") that sits on one line beside
+        # the legend at the reference width can be squeezed onto two by the
+        # legend's fixed width at the floor width, and a second name line
+        # grows the strip exactly as a second tagline line would. Ellipsized
+        # rather than wrapped for the same reason: the strip's height must
+        # not depend on how much room the legend leaves it.
+        name.set_wrap(False)
+        name.set_ellipsize(Pango.EllipsizeMode.END)
+
+        tagline = Gtk.Label()
+        tagline.add_css_class("target-info-tagline")
+        tagline.set_xalign(0.0)
+        # Ellipsized, never wrapped -- the fallback the spec names for a
+        # narrower hero width (docs/superpowers/specs/2026-09-23-responsive-
+        # layout-design.md, S5): the legend beside this line takes a fixed
+        # width regardless of how much room the strip has, so a narrower
+        # window leaves less width for the tagline. Wrapping would answer
+        # that by growing to a second (or third) line, which is exactly the
+        # invariant this strip exists to hold -- the legend must cost the
+        # render NOTHING, at every supported width, not just 1920. A single
+        # ellipsized line costs the same height whether it fits in full or
+        # is cut short, so the strip's height stops depending on the
+        # legend's width at all. See
+        # test_the_confidence_legend_still_costs_nothing_at_the_floor_width.
+        tagline.set_wrap(False)
+        tagline.set_ellipsize(Pango.EllipsizeMode.END)
+
+        if compact:
+            # Name alone on the first line, full width -- the one piece of
+            # this strip a visitor must be able to read. Tagline and a
+            # one-line legend share the second line: the ramp row is shorter
+            # than the tagline's own line (measured 17px against 28px), so
+            # the strip stays exactly as tall as the wide arrangement's two
+            # lines and the legend still costs the render nothing.
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            second_line = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
+                                  spacing=32)
+            tagline.set_hexpand(True)
+            second_line.append(tagline)
+            second_line.append(self._build_confidence_legend(compact=True))
+            box.append(name)
+            box.append(second_line)
+            # No single widget holds only the words here (the tagline shares
+            # a row with the legend), so `_sync_target_info` hides the two
+            # labels themselves instead.
+            caption = None
+        else:
+            box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=32)
+            caption = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            # Takes whatever the legend does not: at the reference width that
+            # is comfortably enough for every shipped tagline to sit on one
+            # line.
+            caption.set_hexpand(True)
+            caption.append(name)
+            caption.append(tagline)
+            box.append(caption)
+            box.append(self._build_confidence_legend())
         box.add_css_class("target-info")
         box.set_halign(Gtk.Align.FILL)
         # Never steals height from the protein: this strip is exactly as
         # tall as its two lines, and the viewer above it takes the rest.
         box.set_vexpand(False)
 
-        caption = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        # Takes whatever the legend does not: the tagline wraps into it
-        # rather than pushing the legend off the end of the strip.
-        caption.set_hexpand(True)
-
-        name = Gtk.Label()
-        name.add_css_class("target-info-name")
-        name.set_xalign(0.0)
-        name.set_wrap(True)
-
-        tagline = Gtk.Label()
-        tagline.add_css_class("target-info-tagline")
-        tagline.set_xalign(0.0)
-        tagline.set_wrap(True)
-
-        caption.append(name)
-        caption.append(tagline)
-        box.append(caption)
-        box.append(self._build_confidence_legend())
-
         self._target_info_box = box
         # The half of the strip that disappears when the playlist cannot
         # name what is on screen -- the caption only. The legend describes
         # the RIBBON, which is still there and still coloured either way, so
         # it is deliberately not hidden with the words about the molecule.
+        # None in the compact arrangement (see above).
         self._target_info_caption_box = caption
         self._target_info_name_label = name
         self._target_info_tagline_label = tagline
@@ -2835,7 +3287,7 @@ class DemoApp(Gtk.Application):
         self._sync_target_info()
         return box
 
-    def _build_confidence_legend(self):
+    def _build_confidence_legend(self, compact=False):
         """The subtle, always-on key to the ribbon's colours.
 
         Four booth targets out of five come back in visibly different
@@ -2864,12 +3316,21 @@ class DemoApp(Gtk.Application):
         column.set_halign(Gtk.Align.END)
         # Bottom-aligned against the caption beside it: the legend sits on
         # the tagline's baseline rather than floating in the middle of a
-        # strip whose height is set by two much larger lines.
-        column.set_valign(Gtk.Align.END)
+        # strip whose height is set by two much larger lines. In the
+        # compact strip it shares the tagline's own line, so it is centred
+        # on that line instead.
+        column.set_valign(Gtk.Align.CENTER if compact else Gtk.Align.END)
 
-        caption = Gtk.Label(label=_CONFIDENCE_LEGEND_CAPTION, xalign=1.0)
-        caption.add_css_class("confidence-legend-caption")
-        column.append(caption)
+        # `compact` (the narrow caption strip, see `_build_target_info`)
+        # drops only this sentence: at 292px it is what makes the legend
+        # too wide to share a line with anything at the floor width. The
+        # ramp and its two named ends -- "less sure" ... "more sure" -- stay,
+        # and still say which way the colours run; the `?` card still
+        # spells out every band in full (`_PLDDT_LEGEND`).
+        if not compact:
+            caption = Gtk.Label(label=_CONFIDENCE_LEGEND_CAPTION, xalign=1.0)
+            caption.add_css_class("confidence-legend-caption")
+            column.append(caption)
 
         ramp = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         ramp.set_halign(Gtk.Align.END)
@@ -2934,7 +3395,7 @@ class DemoApp(Gtk.Application):
         self._target_info = (
             (name, self._target_tagline(subject)) if name else None)
 
-        if self._target_info_caption_box is None:
+        if self._target_info_name_label is None:
             return
         try:
             # No name means the playlist cannot identify what is on screen.
@@ -2942,10 +3403,15 @@ class DemoApp(Gtk.Application):
             # wire id -- the same choice `_target_name` makes. Only the
             # words: the legend beside them describes the ribbon's colours,
             # which are on screen and meaningful whether or not this booth
-            # can put a name to the molecule they belong to.
-            self._target_info_caption_box.set_visible(
-                self._target_info is not None)
-            if self._target_info is None:
+            # can put a name to the molecule they belong to. The compact
+            # strip has no words-only box (its tagline shares a line with
+            # the legend), so there the labels themselves are hidden.
+            shown = self._target_info is not None
+            if self._target_info_caption_box is not None:
+                self._target_info_caption_box.set_visible(shown)
+            self._target_info_name_label.set_visible(shown)
+            if not shown:
+                self._target_info_tagline_label.set_visible(False)
                 return
             shown_name, shown_tagline = self._target_info
             self._target_info_name_label.set_label(shown_name)
@@ -3044,19 +3510,60 @@ class DemoApp(Gtk.Application):
         # existed. Expanding first gives it the whole column to centre in.
         card.set_vexpand(True)
         card.set_valign(Gtk.Align.CENTER)
-        # `_HELP_CARD_WIDTH_PX`, not a bare 980: at 980 the two-column
-        # layout wraps narrowly enough that the card's real on-screen height
-        # blows past the booth's own 1080px screen even after the
-        # affinity-questions copy was trimmed (measured: 1180px at 980 wide,
-        # 992px at 1400) -- see that constant's own comment.
-        card.set_size_request(_HELP_CARD_WIDTH_PX, -1)
+        # `help_card_width_for(self._expected_window_width())`, not the bare
+        # `_HELP_CARD_WIDTH_PX` constant (2026-09-23, responsive-layout Task
+        # 6): the card's width now follows the real window width the same
+        # way the side rail does (`rail_width_for`), clamped between
+        # `_HELP_CARD_MIN_PX` and `_HELP_CARD_WIDTH_PX` -- see that
+        # function's own comment for the floor/ceiling reasoning, and
+        # `test_the_help_card_still_fits_the_booth_s_own_screen`'s size
+        # matrix for why a narrower card at a shorter floor screen is a
+        # different budget than the 1920x1080 reference, not the same
+        # number reused.
+        card_width = help_card_width_for(self._expected_window_width())
+        card.set_size_request(card_width, -1)
         for margin in ("set_margin_top", "set_margin_bottom",
                        "set_margin_start", "set_margin_end"):
             getattr(card, margin)(40)
 
+        # One layout (the original side-by-side KEYS/panels split, at
+        # every width), two TEXTS (2026-09-23, responsive-layout Task 6,
+        # fix round 3). Round 2 tried stacking KEYS above panels at
+        # narrower widths instead of splitting the copy by width, on the
+        # theory that a full-width single column would have more room than
+        # a half-width one -- measured, and wrong: stacking makes the
+        # column's total height a SUM (keys' own height plus panels' own
+        # height), where side-by-side makes it a MAX (whichever of the two
+        # is taller). With this card's real content -- a 9-row KEYS grid
+        # that alone needs ~300px, and five substantial panels paragraphs
+        # -- the SUM overshoots the 1024x768/1366x768 floor's budget by
+        # several hundred pixels even with every paragraph as terse as
+        # honesty allows; the MAX does not, verified directly against the
+        # real card (see `test_the_help_card_still_fits_the_booth_s_own_
+        # screen`'s size matrix). So the layout stays exactly what it
+        # always was, and only the COPY is now width-aware: `wide=True`
+        # (the original, unabridged text, still used at the reference size
+        # and above, which always had headroom to spare -- measured 992px
+        # of a 1080px budget; this card's own pre-task comment already
+        # recorded this exact number) or
+        # `wide=False` (a shorter but not gutted text for the floor sizes
+        # -- see `_help_intro`'s and `_help_panels`'s own docstrings for
+        # exactly what "not gutted" means here and what it cost to verify).
+        #
+        # `card_width < _HELP_CARD_WIDTH_PX` is the same test
+        # `help_card_width_for` itself uses for its own ceiling clamp: the
+        # card is at its full reference width only when the window is at
+        # least the 1920px reference itself, and anything narrower already
+        # got a smaller card from the formula above.
+        wide = card_width >= _HELP_CARD_WIDTH_PX
+        # `_sync_help_copy` needs this later, to re-fetch text from the
+        # SAME `wide=`/`wide=False` text function these labels were built
+        # from -- see that attribute's own comment in `__init__`.
+        self._help_card_wide = wide
+
         card.append(self._help_label("What you are looking at", "help-title"))
         self._help_intro_labels = []
-        for paragraph in _help_intro(len(self.cards)):
+        for paragraph in _help_intro(len(self.cards), wide=wide):
             label = self._help_label(paragraph, "help-body", wrap=True)
             card.append(label)
             # Same reason as `_help_panel_labels` below: `_sync_help_copy`
@@ -3066,8 +3573,8 @@ class DemoApp(Gtk.Application):
 
         columns = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=56)
         columns.set_homogeneous(True)
-        columns.append(self._build_help_keys())
-        columns.append(self._build_help_panels())
+        columns.append(self._build_help_keys(wide=wide))
+        columns.append(self._build_help_panels(wide=wide))
         card.append(columns)
 
         card.append(self._help_label(
@@ -3096,11 +3603,22 @@ class DemoApp(Gtk.Application):
             label.set_max_width_chars(88)
         return label
 
-    def _build_help_keys(self):
+    def _build_help_keys(self, wide=True):
         column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         column.append(self._help_label("KEYS", "help-section"))
         grid = Gtk.Grid(column_spacing=20, row_spacing=8)
-        for row_index, (keys, meaning) in enumerate(_key_help(len(self.cards))):
+        # The layout itself does not change with `wide` (2026-09-23,
+        # responsive-layout Task 6, fix round 3) -- only which of
+        # `_key_help`'s two texts this column shows. `max_width_chars=34`
+        # is unchanged from before this task and stays a single constant
+        # at every width: it was already tuned for this column's HALF-width
+        # share of the card at the 1920x1080 reference (~630px), and
+        # measured to still be a reasonable cap for the SHORTER `wide=False`
+        # text at the narrower 1024x768/1366x768 floor half-columns too
+        # (~307px/~430px) -- see `_key_help`'s own docstring for why the
+        # text itself, not the geometry here, is what changes with width.
+        for row_index, (keys, meaning) in enumerate(
+                _key_help(len(self.cards), wide=wide)):
             key_label = self._help_label(keys, "help-key")
             key_label.set_valign(Gtk.Align.START)
             meaning_label = self._help_label(meaning, "help-desc", wrap=True)
@@ -3116,12 +3634,16 @@ class DemoApp(Gtk.Application):
         column.append(grid)
         return column
 
-    def _build_help_panels(self):
+    def _build_help_panels(self, wide=True):
         column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         column.append(self._help_label("THE QUAD, AND THE PANELS ON THE RIGHT",
                                        "help-section"))
         self._help_panel_labels = []
-        for paragraph in _help_panels(len(self.cards)):
+        # Same reasoning as `_build_help_keys`: the geometry (this column's
+        # half-width share of the card, `max_width_chars=52`) does not
+        # change with `wide` -- only which of `_help_panels`'s two texts it
+        # shows.
+        for paragraph in _help_panels(len(self.cards), wide=wide):
             label = self._help_label(paragraph, "help-desc", wrap=True)
             label.set_max_width_chars(52)
             column.append(label)
@@ -3136,9 +3658,10 @@ class DemoApp(Gtk.Application):
         # this legend. ui/diagnostics.py's STAGE_TEACHING carried the same
         # error and is fixed with it.
         column.append(self._help_label(
-            "pLDDT — the model's own confidence, per residue:", "help-desc",
-            wrap=True))
-        for css_class, range_text, meaning in _PLDDT_LEGEND:
+            "pLDDT — the model's own confidence, per residue:" if wide
+            else "pLDDT — confidence, per residue:", "help-desc", wrap=True))
+        for css_class, range_text, meaning in (
+                _PLDDT_LEGEND if wide else _PLDDT_LEGEND_BRIEF):
             row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
             # A swatch is a painted BOX, never a coloured label: the top of
             # the ramp (#0053D6) measures 2.54:1 on this ground and would be
@@ -3176,16 +3699,17 @@ class DemoApp(Gtk.Application):
         once the real widgets are built.
         """
         n_chips = len(self.cards)
+        wide = self._help_card_wide
         for label, paragraph in zip(self._help_intro_labels,
-                                    _help_intro(n_chips)):
+                                    _help_intro(n_chips, wide=wide)):
             label.set_label(paragraph)
         if self._help_q_meaning_label is not None:
-            for keys, meaning in _key_help(n_chips):
+            for keys, meaning in _key_help(n_chips, wide=wide):
                 if keys.strip().lower() == "q":
                     self._help_q_meaning_label.set_label(meaning)
                     break
         for label, paragraph in zip(self._help_panel_labels,
-                                    _help_panels(n_chips)):
+                                    _help_panels(n_chips, wide=wide)):
             label.set_label(paragraph)
 
     def _connect_visitor_input(self, window):
@@ -4287,8 +4811,8 @@ class DemoApp(Gtk.Application):
             return False
 
     def _ask_next_question(self):
-        """The attract loop's `ASK_QUESTION` cue: round-robin through
-        `load_questions()` and ask the daemon the next one.
+        """The attract loop's `ASK_QUESTION` cue: ask the daemon the next
+        affinity question, chosen by `ui.questioning.select_question`.
 
         Fire-and-forget, matching `ui.attract.Choreography`'s own cue: no
         visitor input is recorded (`_note_input()` is deliberately NOT
@@ -4300,18 +4824,64 @@ class DemoApp(Gtk.Application):
         `qa_capable` guard of its own for correctness -- but it checks
         anyway, so the booth does not narrate a capability it has already
         told its own rail panel and gallery strip is not there.
+
+        The choice itself is delegated to `ui.questioning.select_question`:
+        it prefers a question about whatever is on screen, then the
+        least-recently-asked question, and never repeats the last question
+        while an alternative exists. The recency it ranks against is the
+        bounded deque kept in `_recently_asked` (see `_note_question_asked`).
         """
         if not self.qa_capable or not self.questions:
             return
-        index = self._ask_question_index % len(self.questions)
-        self._ask_question_index += 1
-        question = self.questions[index]
+        question = select_question(
+            self.questions,
+            on_screen_target_id=self._on_screen_target_id(),
+            recently_asked=self._recently_asked,
+        )
+        if question is None:
+            return
+        # Marked as recently-asked (and logged/diagnosed) only once
+        # _send_question actually delivers it -- it returns False on a
+        # missing client, no qa_capable daemon, or a send exception, and
+        # recording a question as asked when it never reached the daemon
+        # would wrongly exclude it from "least recently asked" next time
+        # for no reason at all.
+        if not self._send_question(question.id, question.target_id):
+            return
+        self._note_question_asked(question.id)
         log.info("attract loop asking %s (target %s)",
                  question.id, question.target_id)
         self._note_diagnostics(
             self.diagnostics.note,
             f"attract loop asked: {question.question}", KIND_MARK)
-        self._send_question(question.id, question.target_id)
+
+    def _on_screen_target_id(self):
+        """The target_id on the hero screen right now, or None.
+
+        The same "what is on screen" rule `_sync_target_info` uses: the
+        focus slot's shown target, else the one it is folding. This is what
+        the adaptive selector (ui/questioning.py) asks about, so the booth
+        narrates the protein a visitor is actually looking at rather than
+        cycling a fixed list.
+        """
+        if self.router is None:
+            return None
+        focus = self._slot_view(self.router.focus_slot)
+        if focus is None:
+            return None
+        return target_info_subject(
+            shown_target_id=focus.shown_target_id,
+            folding_target_id=focus.current_target_id,
+        )
+
+    def _note_question_asked(self, question_id):
+        """Record a question as just-asked, keeping the recency window
+        bounded to the size of the pool so "least recently asked" stays
+        meaningful across the whole pool (see ui/questioning.py)."""
+        self._recently_asked.insert(0, question_id)
+        limit = max(len(self.questions), 1)
+        if len(self._recently_asked) > limit:
+            del self._recently_asked[limit:]
 
     def _sync_quad_notice(self, now):
         """Say one thing across the quad about the visitor's pick, or stop

@@ -1685,6 +1685,136 @@ every prior wedge on this box has been: `gozer release` (which resets),
 `gozer status` to confirm all four chips FREE, before touching hardware
 again.
 
+### A thin web viewer, built on the branch that had been waiting for it (2026-09-21)
+
+Grew out of a chat that started as an infrastructure question in an unrelated session
+("would someone using the QB2s via slurm or exobox be able to run a GTK app like
+tt-bio-demo remotely?") — answer: no, tt-bio-demo's INSTALL.md targets a logged-in Wayland
+session and Exabox's Slurm fleet is plain headless SSH with no display forwarding wired up.
+That led to scoping three follow-ups (single-chip, Galaxy-scale, a web alternative), a
+`Foldwatch` visual mock of what a browser viewer could look like, a deep dive into how the
+quad's own affinity-Q&A spotlight cell actually works, and finally: "without access to
+hardware, go ahead and build what this lightweight approach suggests" — on
+`features/webui`, a branch already sitting there waiting for exactly this.
+
+**Built `webview/`, a bridge process, not a daemon change.** `webview/bridge.py` connects
+to the daemon's socket the same way `ui/client.py` does — same `protocol/events.py`, same
+`encode`/`decode` — and re-publishes every event to any number of browser tabs over
+Server-Sent Events, chosen over a WebSocket specifically because the traffic is almost
+entirely one direction and SSE needs nothing beyond the standard library (no new
+dependency, no hand-rolled handshake/framing — the same "reuse, don't reinvent" instinct
+`runner/workers.py` already states out loud). A tab's action (currently: `pick`) arrives as
+a small JSON POST and is re-encoded with the daemon's own `encode_client_message` before
+being written to the one real socket the bridge owns. `webview/static/` is a from-scratch
+browser client: real point-cloud rendering of real `frame` coordinates (base64-decoded
+little-endian float32, the literal inverse of `pack_coords`), a quad/solo toggle, and an
+affinity-Q&A panel wired to `answer_start`/`answer_done`/`answer_error`.
+
+**Verified with no hardware, honestly.** No `.venvs` exist on this machine and building the
+real `venv-runner` means a multi-GB `pip install tt-bio` for a component that needs none of
+it, so `webview.bridge` was written and tested to need nothing beyond stdlib + numpy — the
+same discipline `protocol/events.py` already holds itself to — and verified end to end
+against `runner.mock.MockRunner` replaying real fixtures (`short_fold.jsonl`,
+`with_question.jsonl`) over a real Unix socket: no daemon, no chip, no fabricated data. Ran
+the whole thing live as a human operator would (mock runner in one process, bridge in
+another, `curl`'d the static files, the SSE stream, and a real `POST /pick`) before calling
+it done, not only the unit tests.
+
+**Two real bugs, caught building it, not left for later:** `send_client_message` originally
+checked "is there a live socket" before validating the message, so an empty `target_id`
+came back as a 503 ("daemon unavailable") instead of a 400 — fixed by round-tripping the
+built message through the daemon's own `decode_client_message` as the validation step,
+rather than writing a second copy of "non-empty, under `MAX_TARGET_ID_LEN`" that could
+drift from the real one. And `_serve_events` sent its 200 response before calling
+`daemon_link.subscribe()`, leaving a window where a client could believe it was receiving
+live events and miss the first ones during a fast replay — reordered so subscription is
+guaranteed before the client ever sees success. The subscriber-fan-out test for "a slow tab
+must not block every other tab" was confirmed against a real regression, not just written
+and trusted: changed `put_nowait` to a blocking `put`, watched the test hang under a 5s
+timeout instead of failing cleanly, reverted, watched it pass in 0.05s.
+
+**Scope cuts, written down rather than silently shipped** (`webview/README.md` has the
+full list): no ribbon/cartoon reveal on `job_done` (points hold dimmed instead — the real
+fix is either server-side precompute of `ui/cartoon.py`'s geometry, cached per job rather
+than per viewer, or running that same module unmodified in-browser via Pyodide so there is
+never a second copy to drift); the gallery is "targets seen live" rather than
+`playlist/manifest.yaml`'s real playlist, to avoid taking on a YAML dependency; a question
+shows `target_id` and the model's own score rather than the human-written question text,
+which never travels on the wire by design; the easter egg is decoded and silently dropped,
+matching the native booth's own choice to keep it undocumented.
+
+### The booth stops assuming a 1920×1080 screen (2026-09-23)
+
+Prompted by `--windowed` testing at its 1280×800 dev default looking visibly unstable —
+traced to `_SIDE_RAIL_WIDTH_PX = 552`/`_GALLERY_WIDTH_PX = 1920 - 552` being hardcoded
+constants everywhere the layout needed a width, an assumption nobody had questioned since
+Phase 3b. Brainstormed into a real spec
+(`docs/superpowers/specs/2026-09-23-responsive-layout-design.md`), a 9-task plan
+(`docs/superpowers/plans/2026-09-23-responsive-layout.md`), and executed subagent-driven —
+17 commits, one fresh implementer and reviewer pair per task, ending in a final whole-branch
+review that found (and one more fix wave that closed) a gap none of the individual tasks
+could see on their own.
+
+**The mechanism**, proven empirically before a line of the plan was written: `rail_width_for`
+and `help_card_width_for`, pure fraction-with-clamp functions anchored so the reference
+resolution never moves a pixel (`rail_width_for(1920) == 552`, exactly, pinned); a custom
+`Gtk.BoxLayout` subclass (`_ResponsiveSplitLayout`) recomputing the rail's real width on every
+live GTK allocation, the same pattern `_PinnedNaturalBoxLayout` already used one call away;
+and `_expected_window_width`, which exists because `window.get_width()` measurably returns 0
+until well after `present()` — verified with three throwaway probe scripts against a headless
+`weston` compositor before the plan committed to any GTK API, rather than guessing at one.
+
+**The review loop earned its cost on this branch more than once.** Task 4's own test
+diagnosed a "GTK statefulness" bug in its own mechanism that turned out to be a
+`Gdk.Rectangle(x=.., width=W, ...)` kwargs call silently building a 0×0 rectangle — the real
+mechanism was fine the whole time. Task 6 (the `?` help card) took **five fix rounds and one
+escalation to a fresh implementer** to get right: the first draft trimmed copy to fit a
+narrower screen and, round after round, quietly turned true statements false ("pipeline
+stages end in diffusion" — diffusion is 4th of 6), dropped disclaimers this project treats as
+load-bearing ("never a claim about where it binds"), and shipped tests too weak to catch any
+of it — a reviewer's own mutation testing found 4 of 5 targeted regressions survived the
+"fixed" tests. It ended at a real fix: two honest texts (`wide=True`, byte-identical to the
+pre-task original; `wide=False`, shorter but not gutted) rather than one compromised shared
+one, verified with adversarial tests built from the reviewer's own mutation list.
+
+**The final whole-branch review found the thing every task-scoped review had missed**,
+because it only shows up looking at the branch as a whole: `_RAIL_MIN_PX = 420` (Task 1's own
+floor constant) never actually engaged in production — the rail's real content minimum (from
+the telemetry panel's own reservation) is 552px, so `set_size_request` below that number was
+always overruled by the widget's own minimum. Consequence: the booth's window still could not
+fit at 1280 wide — the exact case that started this whole investigation — needing 1336px of
+real content in a 1280px window. One more fix wave made `_RAIL_MIN_PX` derive from the same
+constants the telemetry panel's own footprint uses (so the two numbers can't drift apart
+again), added a single `hero_width_for` helper so production and tests can never compute two
+different answers for "how much room is actually left," and confirmed — by building the real
+window through the real `do_activate()` path, not a hand-built tree — that 1280 finally fits
+(content minimum 970px, down from 1336px).
+
+**A second, unplanned finding fell out of the same fix**: Task 7's own re-verification test
+and Task 7b's ellipsize fix had both been checked against a hero width (`1024 -
+rail_width_for(1024)` = 604px) that never existed once the rail floor was corrected — the
+real hero at that size is 436px, where every shipped molecule name ellipsized down to a
+single letter. Fixed with a real content decision, not just more geometry: below a measured
+threshold the caption strip switches to name-on-its-own-line so every shipped name shows in
+full, at the cost of a shorter tagline and a shorter confidence-legend sentence at the two
+narrowest sizes — judged, not assumed, against this project's own content-honesty standard,
+and left as a parked, documented trade-off rather than chased further.
+
+**Verification stayed hardware-free throughout**, at the user's own request mid-session
+("hold off on hardware for a while") — every test, every mutation check, and the new
+`scripts/verify-responsive-layout.sh` (headless `weston` + `runner.mock.MockRunner`, real
+screenshots actually looked at with the `Read` tool, not just measured) touches zero
+Tenstorrent devices. `weston --debug --backend=headless --renderer=pixman` plus
+`weston-screenshooter` turned out to be a genuinely reusable recipe for this — documented back
+into `tt-demo-maker`'s own `docs/screen-capture.md` as a recommended tool for exactly this
+"verify a GTK layout with no live session and no risk of capturing someone's actual desktop"
+need, distinct from that project's existing OBS/Spectacle path for recording a real demo.
+
+Suite green at 1481 UI + 449 runner tests (hardware skipped), final whole-branch review
+"ready to ship" with three residual items parked with rulings (a tagline stub at the extreme
+floor width, a dropped legend sentence below 1366px, both judged content-honest but worth an
+eyeball on real booth hardware once it's back in use).
+
 ## Conventions
 
 - **Keep the README's screenshots current.** The README claims every image on it is the

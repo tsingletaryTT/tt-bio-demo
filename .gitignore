@@ -33,6 +33,13 @@ generated/
 # Recording masters: large local binaries, kept for recutting.
 recordings/
 
+# tt-demo skill working directory (raw .cast/.min.cast recordings, sheet
+# PNGs, per-frame screenshots) for the "tt-bio predict, on its own" gallery
+# in the README -- same masters-stay-out-of-git rule as recordings/ above.
+# The two small, web-sized GIFs it produces are committed under media/,
+# which is what the README actually embeds.
+demo/
+
 # Ad-hoc screenshots dropped at the repo root by Spectacle during development.
 # The README's images are the ones under docs/screenshots/, refreshed by
 # scripts/refresh-screenshots.sh -- nothing here is referenced by anything.
