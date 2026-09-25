@@ -65,3 +65,17 @@ def test_stage_bands_match():
     js = _js_constants()["STAGE_BANDS"]
     python_bands = {stage: list(band) for stage, band in STAGE_BANDS.items()}
     assert js == python_bands
+
+
+def test_ribbon_shader_lighting_constants_match():
+    """The fragment shader's lighting formula (light direction, diffuse
+    floor/scale, rim exponent) is copied by hand, not derived -- this pins
+    the literal numbers against ui/shaders.py's own source text so a typo
+    in the port (e.g. 0.65 -> 0.56) is caught here instead of only being
+    visible as 'the ribbon looks a bit off' in a screenshot."""
+    from ui.shaders import RIBBON_FRAG
+    js_src = (pathlib.Path(__file__).resolve().parents[2] / "webview" / "static"
+              / "ribbon_shaders.js").read_text()
+    for literal in ("0.4, 0.8, 0.6", "0.35 + 0.65", "1.0 - abs(n.z), 2.0", "0.35", "0.6"):
+        assert literal in RIBBON_FRAG, f"test fixture assumption broken: {literal!r} not in Python source"
+        assert literal in js_src, f"ribbon_shaders.js is missing the literal {literal!r} from RIBBON_FRAG"
