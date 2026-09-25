@@ -59,6 +59,36 @@ def _drain(q, count, timeout=5.0):
     return events
 
 
+def _drain_relayed(q, count, timeout=5.0):
+    """Like `_drain`, but silently discards any bridge-originated
+    `ribbon_ready` event interleaved in the queue.
+
+    `FIXTURE` (short_fold.jsonl)'s own `job_done` carries a real cif_path
+    (tests/fixtures/structures/minimal.cif) that genuinely has a drawable
+    backbone, so webview.ribbon_cache.RibbonCache builds a real ribbon for
+    it asynchronously, off a background thread pool -- see
+    webview/ribbon_cache.py. That `ribbon_ready` can land in the queue at
+    an arbitrary point relative to MockRunner's synchronous replay (even
+    after the count-th "real" event has already been drained, in which
+    case it becomes the FIRST thing the next `_drain_relayed` call sees).
+    Tests that pin the raw relayed-event sequence (e.g. exact reconnect
+    replay) care about what the daemon itself sent, not when this bridge's
+    own async side effect happened to finish -- so it is filtered out here
+    rather than turning those tests flaky.
+    """
+    events = []
+    deadline = time.monotonic() + timeout
+    while len(events) < count:
+        remaining = deadline - time.monotonic()
+        assert remaining > 0, (
+            f"only got {len(events)}/{count} relayed events before the timeout")
+        event = q.get(timeout=remaining)
+        if event.get("type") == "ribbon_ready":
+            continue
+        events.append(event)
+    return events
+
+
 class _FakeSocket:
     """A `connect()` stand-in for DaemonLink that never touches a real
     socket -- for the two tests that need to control exactly what the
@@ -108,7 +138,12 @@ def test_events_are_relayed_in_order_and_unmodified():
         q = link.subscribe()
         expected = [{k: v for k, v in e.items() if k != "_delay_ms"}
                    for e in load_stream(FIXTURE)]
-        got = _drain(q, len(expected))
+        # _drain_relayed: FIXTURE's job_done carries a real, drawable
+        # cif_path, so an async ribbon_ready (webview.ribbon_cache) could
+        # in principle land in this queue too -- filtered out here so this
+        # test stays about what the daemon itself relayed. See that
+        # helper's docstring.
+        got = _drain_relayed(q, len(expected))
         assert got == expected
     finally:
         link.stop()
@@ -125,8 +160,8 @@ def test_two_subscribers_each_see_the_whole_stream():
         q1 = link.subscribe()
         q2 = link.subscribe()
         expected_count = len(load_stream(FIXTURE))
-        got1 = _drain(q1, expected_count)
-        got2 = _drain(q2, expected_count)
+        got1 = _drain_relayed(q1, expected_count)
+        got2 = _drain_relayed(q2, expected_count)
         assert got1 == got2
         assert got1[0]["type"] == "hello"
         assert got1[-1]["type"] == "job_done"
@@ -174,7 +209,12 @@ def test_answer_events_from_the_question_fixture_reach_a_subscriber():
         q = link.subscribe()
         # The fixture has 11 events; answer_start and answer_done each
         # generate an additional qa_queue event, so expect 13 total.
-        got = _drain(q, len(events) + 2)
+        # _drain_relayed: job_done here carries a real, drawable cif_path
+        # (dhfr_with_ligand.cif) and is NOT the last event in this
+        # fixture, so an async ribbon_ready genuinely can land amongst
+        # answer_start/qa_queue/answer_done -- filtered out so this test
+        # stays about the Q&A relay, not the ribbon cache's timing.
+        got = _drain_relayed(q, len(events) + 2)
         kinds = [e["type"] for e in got]
         assert "answer_start" in kinds
         assert "answer_done" in kinds
@@ -221,7 +261,12 @@ def test_reconnect_against_mock_runner_replays_the_whole_fixture():
     link.start()
     try:
         q = link.subscribe()
-        first_pass = _drain(q, len(events))
+        # _drain_relayed, not _drain: this fixture's job_done carries a
+        # real, drawable cif_path, so webview.ribbon_cache genuinely
+        # publishes an async ribbon_ready alongside the replay -- see that
+        # helper's own docstring for why it is filtered out here rather
+        # than pinned by this particular test.
+        first_pass = _drain_relayed(q, len(events))
         assert first_pass[0]["type"] == "hello"
         assert first_pass[-1]["type"] == "job_done"
         # MockRunner closes each connection after one full replay (its own
@@ -229,7 +274,7 @@ def test_reconnect_against_mock_runner_replays_the_whole_fixture():
         # DaemonLink notices the close and reconnects after
         # RECONNECT_DELAY_S, and MockRunner replays the SAME fixture again
         # from scratch for that new connection.
-        second_pass = _drain(q, len(events), timeout=RECONNECT_DELAY_S + 5.0)
+        second_pass = _drain_relayed(q, len(events), timeout=RECONNECT_DELAY_S + 5.0)
         assert second_pass == first_pass
     finally:
         link.stop()
@@ -923,3 +968,84 @@ def test_no_configured_token_means_every_request_is_allowed():
         resp = conn.getresponse()
         assert resp.status == 200
         resp.read()
+
+
+def test_job_done_triggers_a_ribbon_and_get_ribbon_serves_it():
+    import pathlib, time
+    fixtures = pathlib.Path(__file__).resolve().parents[1] / "fixtures" / "structures"
+    link = bridge.DaemonLink("/nonexistent")
+    link._dispatch(json.dumps({
+        "type": "job_done", "job_id": "j-int-1",
+        "cif_path": str(fixtures / "real_fold_trpcage.cif"),
+        "mean_plddt": 95.3,
+    }).encode() + b"\n")
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and link.ribbon_cache.get("j-int-1") is None:
+        time.sleep(0.02)
+    assert link.ribbon_cache.get("j-int-1") is not None
+    link.ribbon_cache.shutdown()
+
+
+def test_get_ribbon_404s_honestly_for_an_unknown_job_id():
+    """Review Focus: a late-joining tab's on-demand GET /ribbon/<job_id>
+    for an unknown or evicted job_id must 404, never hang or 500. Spins
+    up a REAL HTTP server (http.server.HTTPServer over make_handler) on
+    an ephemeral port, rather than calling the handler method directly,
+    so this actually exercises the route dispatch in do_GET."""
+    import http.server
+    import threading
+    import urllib.error
+    import urllib.request
+
+    link = bridge.DaemonLink("/nonexistent")
+    handler_cls = bridge.make_handler(link)
+    server = http.server.HTTPServer(("127.0.0.1", 0), handler_cls)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/ribbon/does-not-exist",
+                                   timeout=5)
+            assert False, "expected an HTTPError for an unknown job_id"
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 404
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        link.ribbon_cache.shutdown()
+
+
+def test_a_full_subscriber_queue_does_not_block_a_real_ribbon_ready_for_others():
+    """Review Focus: re-asserts Task 1's backpressure contract for a
+    REAL ribbon_ready event -- a slow/backgrounded tab must not block
+    the ribbon from reaching every other tab."""
+    import pathlib
+    import queue as queue_module
+    import time
+
+    fixtures = pathlib.Path(__file__).resolve().parents[1] / "fixtures" / "structures"
+    link = bridge.DaemonLink("/nonexistent")
+    full_q = link.subscribe()
+    for _ in range(bridge.SUBSCRIBER_QUEUE_MAX):
+        full_q.put_nowait({"type": "filler"})
+    healthy_q = link.subscribe()
+
+    link._dispatch(json.dumps({
+        "type": "job_done", "job_id": "j-backpressure-1",
+        "cif_path": str(fixtures / "real_fold_trpcage.cif"),
+    }).encode() + b"\n")
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and link.ribbon_cache.get("j-backpressure-1") is None:
+        time.sleep(0.02)
+    assert link.ribbon_cache.get("j-backpressure-1") is not None
+
+    assert full_q.qsize() == bridge.SUBSCRIBER_QUEUE_MAX
+    received = []
+    while True:
+        try:
+            received.append(healthy_q.get_nowait())
+        except queue_module.Empty:
+            break
+    assert any(e.get("type") == "ribbon_ready" for e in received)
+    link.ribbon_cache.shutdown()

@@ -270,6 +270,8 @@ class DaemonLink:
         self.incompatible = False
         from webview.qa_tracker import QaTracker
         self._qa_tracker = QaTracker(questions=[])
+        from webview.ribbon_cache import RibbonCache
+        self.ribbon_cache = RibbonCache(self)
         # Replaced by load_catalogs() with the two real catalog events (the
         # loaded playlist/manifest.yaml and playlist/questions.yaml) --
         # primed into every new subscribe(), the same way last_hello already
@@ -303,6 +305,7 @@ class DaemonLink:
                 pass
         if self._thread is not None:
             self._thread.join(timeout=2.0)
+        self.ribbon_cache.shutdown()
 
     def load_catalogs(self, manifest_path=None, questions_path=None):
         """Load the real playlist/manifest.yaml and playlist/questions.yaml
@@ -490,6 +493,8 @@ class DaemonLink:
         qa_event = self._qa_tracker.on_event(event)
         if qa_event is not None:
             self.publish(qa_event)
+        if event.get("type") == "job_done":
+            self.ribbon_cache.on_job_done(event)
 
     def publish(self, event):
         """Broadcast `event` to every subscriber, the same fan-out
@@ -574,6 +579,8 @@ def make_handler(daemon_link, auth_token=None,
                 self._serve_events()
             elif path == "/help.json":
                 self._serve_help()
+            elif path.startswith("/ribbon/"):
+                self._serve_ribbon(path[len("/ribbon/"):])
             else:
                 self._serve_static(path)
 
@@ -687,6 +694,25 @@ def make_handler(daemon_link, auth_token=None,
                        if daemon_link.last_hello else 0)
             payload = build_help_payload(n_chips)
             data = json.dumps(payload).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def _serve_ribbon(self, job_id):
+            # On-demand path for a tab that opens (or reconnects) after a
+            # fold has already finished and cross-faded on every other
+            # tab -- SSE only ever delivers ribbon_ready once, at
+            # completion, so a later joiner has no other way to get the
+            # same mesh. `job_id` is exactly the id GET /events already
+            # handed this tab in job_start/job_done, so no listing route
+            # is needed here, only a lookup.
+            cached = daemon_link.ribbon_cache.get(job_id)
+            if cached is None:
+                self.send_error(404, "no ribbon cached for this job_id")
+                return
+            data = json.dumps(cached).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(data)))
