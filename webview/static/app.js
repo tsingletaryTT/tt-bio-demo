@@ -25,6 +25,13 @@
 //     the real playlist/questions.yaml (also loaded by `load_catalogs`), so
 //     every label is the human-written question text, not the target_id
 //     fallback a placeholder empty list used to force.
+//   * The `?` help overlay shows the real `?` card content from ui.app's own
+//     help-content functions (_help_intro/_key_help/_help_panels/
+//     _PLDDT_LEGEND), served by GET /help.json (webview/bridge.py's
+//     build_help_payload) and rendered by help_panel.js -- see openHelp()
+//     below. Reachable by keyboard ("?") and by an always-visible on-screen
+//     button, since a browser tab has no reason to know the native app's
+//     keybindings.
 
 const state = {
   cards: [],           // card ids from the last `hello`
@@ -219,6 +226,10 @@ const pickForm = document.getElementById("pick-form");
 const pickInput = document.getElementById("pick-input");
 const pickError = document.getElementById("pick-error");
 const galleryEl = document.getElementById("gallery");
+const helpOverlay = document.getElementById("help-overlay");
+const helpContent = document.getElementById("help-content");
+const helpClose = document.getElementById("help-close");
+const helpOpenBtn = document.getElementById("help-open-btn");
 
 function setNotice(text) {
   if (!text) {
@@ -586,3 +597,42 @@ viewToggle.addEventListener("click", () => {
   const solo = stageEl.dataset.mode === "solo";
   setStageMode(solo ? "quad" : "solo");
 });
+
+// --- help overlay: real content from GET /help.json, rendered by
+// help_panel.js (ui.app's own help-content functions, ported verbatim --
+// see that file's own header comment). Reachable two ways: a `?` keydown,
+// mirroring the native GTK booth's own binding for anyone who already
+// knows it, AND the always-visible help-open-btn in index.html -- a remote
+// tunnel viewer has no reason to know the native app's keybindings at all,
+// so the binding alone would leave this undiscoverable from a browser tab.
+
+function openHelp() {
+  fetch(withToken("/help.json"))
+    .then(r => r.json())
+    .then(data => {
+      HelpPanel.render(helpContent, data);
+      helpOverlay.hidden = false;
+    })
+    .catch(err => console.warn("could not load /help.json", err));
+}
+
+function closeHelp() {
+  helpOverlay.hidden = true;
+}
+
+document.addEventListener("keydown", (ev) => {
+  // Ignore "?" typed into a real text field (e.g. the pick-input target-id
+  // box) -- a visitor typing a question mark as ordinary text must not have
+  // it stolen as a global shortcut.
+  const target = ev.target;
+  const isTyping = target && (target.tagName === "INPUT"
+    || target.tagName === "TEXTAREA" || target.isContentEditable);
+  if (ev.key === "?" && !isTyping) {
+    openHelp();
+  } else if (ev.key === "Escape" && !helpOverlay.hidden) {
+    closeHelp();
+  }
+});
+
+helpClose.addEventListener("click", closeHelp);
+helpOpenBtn.addEventListener("click", openHelp);

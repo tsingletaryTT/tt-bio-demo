@@ -673,6 +673,80 @@ def test_a_symlinked_asset_inside_static_is_served_and_traversal_still_refused(
         assert resp2.status in (403, 404)
 
 
+# ── /help.json: the `?` card's real content, ported for a browser tab ────
+#
+# ui.app's help-content functions/data (`_help_intro`, `_key_help`,
+# `_help_panels`, `_PLDDT_LEGEND`) are the same plain-data functions the
+# native GTK card is built from -- confirmed import-safe with no display
+# (gi.require_version + Gtk import at module scope, exactly like
+# ui.chipviz/ui.questions, which this bridge already imports successfully).
+# Verified directly before writing this: `_help_intro(n_chips, wide=True)`
+# returns a tuple of paragraph strings, `_key_help(n_chips, wide=True)` a
+# tuple of (key, meaning) 2-tuples, `_help_panels` a tuple of paragraph
+# strings, and `_PLDDT_LEGEND` a tuple of (css_class, range_text, meaning)
+# 3-tuples -- matching the plan's assumption on shape, but NOT on the exact
+# key label: the real string is "?  or  F1" (two spaces around "or"), not
+# the single-spaced "? or F1" the plan's draft test guessed at.
+
+
+def test_help_json_serves_real_help_content():
+    """Exercise the pure builder directly rather than a full HTTP round
+    trip -- the existing do_GET tests above already cover HTTP plumbing
+    (status codes, headers, static-file serving) generically."""
+    from ui.app import _PLDDT_LEGEND
+    payload = bridge.build_help_payload(n_chips=4)
+    assert isinstance(payload["intro"], list) and len(payload["intro"]) > 0
+    assert all(isinstance(p, str) and p for p in payload["intro"])
+    assert isinstance(payload["keys"], list) and len(payload["keys"]) > 0
+    assert all(len(pair) == 2 for pair in payload["keys"])
+    # Matched loosely ("?" appears in the real label) rather than against
+    # the plan's exact-string guess, which does not match the real,
+    # double-spaced "?  or  F1" -- see this section's header comment.
+    assert any("?" in k for k, _meaning in payload["keys"])
+    assert isinstance(payload["panels"], list) and len(payload["panels"]) > 0
+    assert all(isinstance(p, str) and p for p in payload["panels"])
+    assert len(payload["plddt_legend"]) == len(_PLDDT_LEGEND)
+    assert all(len(row) == 3 for row in payload["plddt_legend"])
+
+
+def test_help_json_reflects_a_different_chip_count():
+    """The intro/keys/panels text is a function of n_chips (ui.app's own
+    'four proteins would be false with Q&A reserving a chip' rule) -- so a
+    payload built for 1 chip must not be byte-identical to one built for 4."""
+    payload_1 = bridge.build_help_payload(n_chips=1)
+    payload_4 = bridge.build_help_payload(n_chips=4)
+    assert payload_1["intro"] != payload_4["intro"]
+    # The pLDDT legend is NOT chip-count-dependent -- it must agree exactly.
+    assert payload_1["plddt_legend"] == payload_4["plddt_legend"]
+
+
+def test_help_json_route_serves_the_builder_payload_over_http():
+    link = DaemonLink("/does/not/matter")  # never connects -> last_hello stays None -> n_chips=0
+    with _Server(link) as server:
+        conn = server.connection()
+        conn.request("GET", "/help.json")
+        resp = conn.getresponse()
+        assert resp.status == 200
+        assert resp.getheader("Content-Type") == "application/json"
+        payload = json.loads(resp.read())
+    assert payload == bridge.build_help_payload(n_chips=0)
+
+
+def test_help_json_uses_the_real_fold_chip_count_from_the_last_hello():
+    """`n_chips` for the route comes from the daemon's own real `hello.cards`
+    (len of it), the same source ui.app itself reads (`len(DemoApp.cards)`)
+    -- not a hardcoded 4, so this stays true on a booth with a Q&A-reserved
+    chip folding on 3."""
+    link = DaemonLink("/does/not/matter")
+    link.last_hello = {"type": "hello", "cards": [0, 1, 2]}
+    with _Server(link) as server:
+        conn = server.connection()
+        conn.request("GET", "/help.json")
+        resp = conn.getresponse()
+        payload = json.loads(resp.read())
+    assert payload == bridge.build_help_payload(n_chips=3)
+
+
 def test_events_endpoint_streams_real_events_from_the_mock_runner():
     """A real MockRunner replay, decoded once by DaemonLink and delivered
     over a real HTTP connection -- not a fake standing in for either half.

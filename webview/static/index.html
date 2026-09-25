@@ -11,6 +11,7 @@
 <script src="/tensix-viz.js"></script>
 <script src="/tensix.js"></script>
 <script src="/qa_panel.js"></script>
+<script src="/help_panel.js"></script>
 </head>
 <body>
   <header class="toolbar">
@@ -50,6 +51,18 @@
     <div class="sub gallery-label">Or pick from the playlist:</div>
     <div id="gallery" class="gallery"></div>
   </section>
+
+  <!-- The `?` help overlay: real content from GET /help.json (ui.app's own
+       help-content functions, rendered by help_panel.js), reachable two
+       ways -- a `?` keydown (mirroring the native GTK booth's own binding,
+       for anyone who already knows it) AND this always-visible on-screen
+       button (help-open-btn, below), because a remote tunnel viewer has no
+       reason to know the native app's keybindings at all. See app.js. -->
+  <div id="help-overlay" class="help-overlay" hidden>
+    <div id="help-content"></div>
+    <button id="help-close">Close</button>
+  </div>
+  <button id="help-open-btn" class="help-open-btn" title="Help" aria-label="Help">?</button>
 
   <script src="/app.js"></script>
 </body>

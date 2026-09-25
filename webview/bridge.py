@@ -180,6 +180,39 @@ def is_loopback_host(host):
     return host in LOOPBACK_HOSTS
 
 
+def build_help_payload(n_chips):
+    """The `?` help card's real content, as plain JSON-able data -- built
+    from ui.app's own plain-data functions/tuple, the exact same ones the
+    native GTK card renders from, so this bridge never carries a second,
+    hand-typed copy of the booth's help copy to drift from the real one.
+
+    Imported lazily (inside the function, not at module scope) for the
+    same reason webview/qa_tracker.py and load_catalogs() import their
+    `ui.*`/`runner.*` dependencies lazily: ui.app pulls in PyGObject
+    (`gi.require_version("Gtk", "4.0")` etc. at its own module scope), and
+    this module's own docstring already documents that as safe to import
+    with no display -- confirmed directly (ui.chipviz, ui.questions, both
+    imported elsewhere in this file, do the exact same gi.require_version
+    dance) -- but there is no reason to pay that import cost for every
+    bridge process that never serves a single /help.json request.
+
+    `_help_intro`/`_key_help`/`_help_panels` all take `n_chips` positional
+    and a `wide=True` keyword this bridge does not override -- `wide` picks
+    between the native card's two RESPONSIVE-LAYOUT texts (a booth window
+    at or above the 1366px reference size vs. the 1024/1366px floor sizes),
+    which has no web-viewer analogue here; the full, unabridged `wide=True`
+    copy is what a browser tab gets, same as the native booth's own default
+    and reference size.
+    """
+    from ui.app import _help_intro, _help_panels, _key_help, _PLDDT_LEGEND
+    return {
+        "intro": list(_help_intro(n_chips)),
+        "keys": [list(pair) for pair in _key_help(n_chips)],
+        "panels": list(_help_panels(n_chips)),
+        "plddt_legend": [list(row) for row in _PLDDT_LEGEND],
+    }
+
+
 def check_non_loopback_requires_auth(host, auth_token):
     """Refuse to proceed if `host` is not a loopback address and no
     auth_token is configured. Pulled out of main() as a pure function so it
@@ -539,6 +572,8 @@ def make_handler(daemon_link, auth_token=None,
             path = urllib.parse.urlsplit(self.path).path
             if path == "/events":
                 self._serve_events()
+            elif path == "/help.json":
+                self._serve_help()
             else:
                 self._serve_static(path)
 
@@ -635,6 +670,25 @@ def make_handler(daemon_link, auth_token=None,
             data = candidate.read_bytes()
             self.send_response(200)
             self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def _serve_help(self):
+            # `n_chips` is the real fold-chip count off the daemon's own
+            # last hello (`hello.cards`, the same source ui.app itself reads
+            # as `len(DemoApp.cards)`) -- not a hardcoded 4, so the "N
+            # proteins at once" copy stays true on a booth where
+            # runner.workers.split_for_qa has reserved one chip for Q&A.
+            # `0` before any hello has ever arrived (a tab that opens /help
+            # before /events has connected) rather than crashing on a
+            # daemon-shaped assumption this route has no business making.
+            n_chips = (len(daemon_link.last_hello.get("cards", []))
+                       if daemon_link.last_hello else 0)
+            payload = build_help_payload(n_chips)
+            data = json.dumps(payload).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
