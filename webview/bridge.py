@@ -235,6 +235,8 @@ class DaemonLink:
         # further reconnect attempt is made, and send_client_message refuses
         # rather than writing a pick a mismatched daemon may silently drop.
         self.incompatible = False
+        from webview.qa_tracker import QaTracker
+        self._qa_tracker = QaTracker(questions=[])
 
     def _default_connect(self):
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -403,6 +405,9 @@ class DaemonLink:
         if event["type"] in ("hello", "not_ready"):
             self.last_hello = event
         self.publish(event)
+        qa_event = self._qa_tracker.on_event(event)
+        if qa_event is not None:
+            self.publish(qa_event)
 
     def publish(self, event):
         """Broadcast `event` to every subscriber, the same fan-out

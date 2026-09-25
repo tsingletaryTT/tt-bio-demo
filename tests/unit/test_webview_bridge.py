@@ -161,7 +161,9 @@ def test_a_late_subscriber_is_caught_up_on_hello():
 def test_answer_events_from_the_question_fixture_reach_a_subscriber():
     """The affinity Q&A events (answer_start/answer_done) are ordinary
     events as far as this bridge is concerned -- no special-casing, and
-    this is what proves that rather than assuming it."""
+    this is what proves that rather than assuming it. With the QaTracker
+    active, each answer event also produces a qa_queue event, so the total
+    count is higher than the fixture's event count."""
     sock_path = _temp_socket_path()
     events = load_stream(QUESTION_FIXTURE)
     runner = MockRunner(sock_path, events, speed=100.0)
@@ -170,15 +172,29 @@ def test_answer_events_from_the_question_fixture_reach_a_subscriber():
     link.start()
     try:
         q = link.subscribe()
-        got = _drain(q, len(events))
+        # The fixture has 11 events; answer_start and answer_done each
+        # generate an additional qa_queue event, so expect 13 total.
+        got = _drain(q, len(events) + 2)
         kinds = [e["type"] for e in got]
         assert "answer_start" in kinds
         assert "answer_done" in kinds
+        assert "qa_queue" in kinds
         done = next(e for e in got if e["type"] == "answer_done")
         assert "score" in done and "affinity_pred_value" in done
     finally:
         link.stop()
         runner.stop()
+
+
+def test_a_relayed_answer_event_also_publishes_a_qa_queue_event():
+    link = bridge.DaemonLink("/nonexistent")
+    q = link.subscribe()
+    link._dispatch(json.dumps({"type": "answer_start", "question_id": "x",
+                               "target_id": "dhfr"}).encode() + b"\n")
+    first = q.get_nowait()
+    assert first["type"] == "answer_start"
+    second = q.get_nowait()
+    assert second["type"] == "qa_queue"
 
 
 def test_reconnect_against_mock_runner_replays_the_whole_fixture():
