@@ -11,17 +11,20 @@
 //     (ui/cartoon.py, ui/secstruct.py), which is pure numpy/gemmi and a
 //     genuine follow-up (server-side precompute, or Pyodide running that
 //     same code client-side -- see the conversation this was built from).
-//   * The gallery is "targets seen so far", not the real manifest.yaml
-//     playlist (thumbnails, descriptions, expected_s) -- reading that would
-//     need a YAML dependency this bridge deliberately does not take on.
+//   * The gallery shows the real playlist/manifest.yaml catalog (name,
+//     tagline, expected_s), loaded server-side by webview/bridge.py's
+//     `load_catalogs` and delivered as one `playlist_catalog` event primed
+//     into every subscriber -- see handleEvent's "playlist_catalog" case
+//     below. This file still takes on no YAML dependency of its own: the
+//     parsing happens in webview/bridge.py (venv-ui, via ui.playlist),
+//     never here.
 //   * The Q&A queue panel (qa-pending/qa-in-flight/qa-answered) shows exactly
 //     the three strings webview/qa_tracker.py computes server-side with
 //     ui.questions' real pure text functions -- this file does no text
-//     composition of its own (see qa_panel.js). Until Task 8 wires the real
-//     playlist/questions.yaml into QaTracker, it is constructed with an
-//     empty question list, so every label degrades to question_label's own
-//     target_id-based fallback rather than the human-written question text
-//     -- still real, never fabricated, just less specific for now.
+//     composition of its own (see qa_panel.js). QaTracker is now built from
+//     the real playlist/questions.yaml (also loaded by `load_catalogs`), so
+//     every label is the human-written question text, not the target_id
+//     fallback a placeholder empty list used to force.
 
 const state = {
   cards: [],           // card ids from the last `hello`
@@ -30,7 +33,15 @@ const state = {
   qaCapable: false,
   qaCard: null,        // the physical chip reserved for Q&A, or null (hello.qa_card)
   focusedCard: null,
-  seenTargets: [],      // target_ids observed in job_start, most recent first
+  targets: [],          // the real playlist/manifest.yaml catalog (from the
+                        // `playlist_catalog` event) -- id/name/tagline/
+                        // expected_s per target, manifest order.
+  questionCatalog: [],  // the real playlist/questions.yaml catalog (from the
+                        // `questions_catalog` event). Not rendered directly
+                        // by this file today -- the Q&A panel is entirely
+                        // server-rendered text from qa_tracker.py -- kept on
+                        // state for any future UI that wants it without a
+                        // second wire event.
   viewModeUserSet: false, // true once the visitor has pressed the toggle --
                           // an explicit choice always outranks the auto-pick
                           // below, same rule the native GTK booth's own
@@ -207,7 +218,7 @@ const qaScore = document.getElementById("qa-answered");
 const pickForm = document.getElementById("pick-form");
 const pickInput = document.getElementById("pick-input");
 const pickError = document.getElementById("pick-error");
-const seenTargetsEl = document.getElementById("seen-targets");
+const galleryEl = document.getElementById("gallery");
 
 function setNotice(text) {
   if (!text) {
@@ -321,17 +332,26 @@ function rebuildCellsIfNeeded(cards) {
   }
 }
 
-function addSeenTarget(targetId) {
-  if (!targetId || state.seenTargets.includes(targetId)) return;
-  state.seenTargets.unshift(targetId);
-  state.seenTargets = state.seenTargets.slice(0, 12);
-  seenTargetsEl.innerHTML = "";
-  for (const t of state.seenTargets) {
+// Rebuilds the gallery from the real playlist/manifest.yaml catalog
+// (state.targets, set by the "playlist_catalog" case in handleEvent) --
+// replaces the old pick-triggered "targets seen so far" history entirely.
+// Manifest order, same as ui/gallery.py's own cards and ui.playlist's own
+// "gallery reads top to bottom off the file an operator edits" rule.
+function renderGallery() {
+  galleryEl.innerHTML = "";
+  for (const target of state.targets) {
     const b = document.createElement("button");
     b.type = "button";
-    b.textContent = t;
-    b.addEventListener("click", () => sendPick(t));
-    seenTargetsEl.appendChild(b);
+    b.textContent = target.name;
+    // The tagline is real, measured copy (ui/playlist.py's Target.tagline)
+    // when present -- never fabricated -- so a title attribute costs
+    // nothing and gives a visitor hovering the gallery a bit more than a
+    // bare name, exactly like a native gallery card's caption line.
+    if (target.tagline) b.title = target.tagline;
+    // Still POSTs the real target id, never the display name -- the name
+    // is presentation only, /pick's contract is unchanged.
+    b.addEventListener("click", () => sendPick(target.id));
+    galleryEl.appendChild(b);
   }
 }
 
@@ -415,7 +435,6 @@ function handleEvent(event) {
       state.jobToCard.set(event.job_id, event.card);
       const cell = state.cells.get(event.card);
       if (cell) cell.onJobStart(event.job_id, event.target_id);
-      addSeenTarget(event.target_id);
       break;
     }
     case "stage": {
@@ -456,6 +475,23 @@ function handleEvent(event) {
     case "telemetry": {
       Telemetry.render(document.getElementById("telemetry-panel"), event.chips);
       Tensix.onTelemetry(event.chips);
+      break;
+    }
+    case "playlist_catalog": {
+      // Primed into every subscriber once, right after connecting (see
+      // DaemonLink.subscribe/load_catalogs) -- the real playlist/
+      // manifest.yaml, in manifest order, not the pick-triggered history
+      // this gallery used to be built from.
+      state.targets = event.targets;
+      renderGallery();
+      break;
+    }
+    case "questions_catalog": {
+      // Stored for completeness (see state.questionCatalog's own comment);
+      // nothing here renders it directly today -- the Q&A panel is entirely
+      // server-rendered text from webview/qa_tracker.py, which is built
+      // from this same catalog server-side (DaemonLink.load_catalogs).
+      state.questionCatalog = event.questions;
       break;
     }
     case "qa_queue": {

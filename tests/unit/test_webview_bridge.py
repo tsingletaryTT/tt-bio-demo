@@ -236,6 +236,37 @@ def test_reconnect_against_mock_runner_replays_the_whole_fixture():
         runner.stop()
 
 
+# ── catalogs: playlist/manifest.yaml + playlist/questions.yaml, primed
+#    into every subscriber the same way last_hello already is ───────────
+
+
+def test_a_new_subscriber_is_primed_with_both_catalogs(tmp_path, monkeypatch):
+    manifest = tmp_path / "manifest.yaml"
+    # NOTE: the manifest's own field is `input` (a fold spec path), not
+    # `input_path` -- `Target.input_path` is the LOADED, resolved attribute
+    # ui/playlist.py's load_playlist() produces from that field; the brief
+    # this test was drafted from named the wrong YAML key. See
+    # ui/playlist.py's `_REQUIRED_FIELDS` and `load_playlist`'s own entry
+    # construction (`input_path=(manifest_dir / entry["input"]).resolve()`).
+    manifest.write_text(
+        "- id: trpcage\n  input: examples/trp.yaml\n  model: protenix-v2\n"
+        "  name: Trp-cage\n  blurb: A tiny protein.\n  expected_s: 4.6\n")
+    questions = tmp_path / "questions.yaml"
+    questions.write_text(
+        "- id: q1\n  target_id: trpcage\n  question: Does X bind Y?\n"
+        "  ligand_name: X\n")
+    link = bridge.DaemonLink("/nonexistent")
+    link.load_catalogs(manifest_path=manifest, questions_path=questions)
+    q = link.subscribe()
+    events = [q.get_nowait() for _ in range(2)]
+    types = {e["type"] for e in events}
+    assert types == {"questions_catalog", "playlist_catalog"}
+    playlist_event = next(e for e in events if e["type"] == "playlist_catalog")
+    assert playlist_event["targets"][0]["name"] == "Trp-cage"
+    questions_event = next(e for e in events if e["type"] == "questions_catalog")
+    assert questions_event["questions"][0]["question"] == "Does X bind Y?"
+
+
 # ── protocol version mismatch ─────────────────────────────────────────────
 
 

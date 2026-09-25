@@ -246,8 +246,9 @@ button:hover { color: var(--fg); border-color: var(--accent-bright); }
   font-size: 13px;
 }
 .pick-error { margin-top: 8px; color: var(--danger); font-size: 12px; }
-.seen-targets { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px; }
-.seen-targets button { font-size: 11px; padding: 4px 9px; }
+.gallery-label { margin-top: 10px; }
+.gallery { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 6px; }
+.gallery button { font-size: 11px; padding: 4px 9px; }
 
 .telemetry-panel {
   display: flex;

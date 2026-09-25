@@ -25,10 +25,16 @@ shape a real daemon's socket has. Point the bridge at one of those instead
 of a real daemon and every event it forwards is real, previously-recorded
 protocol traffic -- nothing in this demo path is fabricated for the demo.
 
-Neither `webview.bridge` nor `runner.mock` imports torch or tt-bio, so
-either of the project's own venvs works -- `.venvs/venv-ui` is used below,
-but `.venvs/venv-runner` would do just as well. Per this project's own
-convention, run it through one of those, not a bare `python3`:
+Neither `webview.bridge` nor `runner.mock` imports torch or tt-bio, but
+`webview.bridge` does reach into several `ui.*` modules for their pure,
+GTK-free logic (`ui.playlist`'s loaders, `ui.questions`'/`ui.chipviz`'s
+text-formatting functions, `ui.telemetry`'s tt-smi sampler,
+`ui.cartoon`'s mesh builder -- see `webview/bridge.py`'s own module
+docstring), so it needs `.venvs/venv-ui` specifically (PyGObject + gemmi +
+numpy), not `.venvs/venv-runner`. `runner.mock` alone would run under
+either venv, but since the bridge itself is pinned, `.venvs/venv-ui` is
+what both commands below use. Per this project's own convention, run
+everything through the project's own venvs, never a bare `python3`:
 
 ```bash
 # terminal 1 -- serve a recorded fixture as if it were a live daemon
@@ -48,6 +54,16 @@ import time; time.sleep(3600)
 Then open `http://127.0.0.1:8080/` in a browser. `with_question.jsonl`
 exercises the affinity Q&A panel as well as an ordinary fold;
 `quad_fold.jsonl` exercises four interleaved chips at once.
+
+The gallery (the buttons under "Ask the booth to fold") and the Q&A panel's
+question text both come from the real `playlist/manifest.yaml` and
+`playlist/questions.yaml`, loaded once at startup by
+`DaemonLink.load_catalogs()` and delivered to every browser tab as
+`playlist_catalog`/`questions_catalog` events. `--playlist FILE` and
+`--questions FILE` point the bridge at different copies of either file --
+both default to the real shipped ones -- and a malformed file is a loud
+startup failure (`PlaylistError`, uncaught, on the command line), never a
+bridge that quietly starts with an empty gallery.
 
 Against a **real** daemon, the only difference is `--daemon-socket` pointing
 at the daemon's own `--socket` path -- same host, or (with an SSH tunnel, or
@@ -113,19 +129,6 @@ Built to be honest about scope, not to hide the gap:
   unmodified in the browser via Pyodide (CPython-on-WASM) so there is never
   a second copy of that ~1,250 lines of geometry logic to drift from the
   native app's.
-- **The gallery is "targets seen so far," not the real playlist.** It is
-  built from `job_start.target_id`s observed live, not
-  `playlist/manifest.yaml` (thumbnails, blurbs, `expected_s`) -- reading
-  that would mean taking on a YAML dependency this bridge otherwise avoids
-  entirely (it is stdlib + numpy only, same discipline as
-  `protocol/events.py` itself).
-- **A question shows `target_id` and the model's own score, not the
-  human-written question text.** `playlist/questions.yaml`'s question
-  strings never travel on the wire (by design -- see the affinity Q&A
-  spec's protocol section); only the booth's own rail panel has that file
-  loaded locally. `answer_done`'s `score` is shown verbatim as "predicted
-  probability of binding" per the same content-honesty rule
-  `ui/questions.py` follows -- no invented "binds strongly/weakly" tier.
 - **The easter egg is not surfaced.** `egg_frame`/`egg_refused` are decoded
   and silently ignored. The native booth keeps it undocumented on purpose
   (`ui/quad.py`: "an easter egg that is documented is a feature"), and a

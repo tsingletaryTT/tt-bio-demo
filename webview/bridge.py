@@ -237,6 +237,13 @@ class DaemonLink:
         self.incompatible = False
         from webview.qa_tracker import QaTracker
         self._qa_tracker = QaTracker(questions=[])
+        # Replaced by load_catalogs() with the two real catalog events (the
+        # loaded playlist/manifest.yaml and playlist/questions.yaml) --
+        # primed into every new subscribe(), the same way last_hello already
+        # is. Empty here only for a DaemonLink whose caller never calls
+        # load_catalogs() at all (most of this file's own tests, which have
+        # no reason to load real YAML off disk just to exercise relaying).
+        self._catalog_events = []
 
     def _default_connect(self):
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -264,9 +271,46 @@ class DaemonLink:
         if self._thread is not None:
             self._thread.join(timeout=2.0)
 
+    def load_catalogs(self, manifest_path=None, questions_path=None):
+        """Load the real playlist/manifest.yaml and playlist/questions.yaml
+        (via ui.playlist's own validating loaders) and build the two
+        catalog events every subscriber is primed with. Raises
+        PlaylistError outright on a malformed file -- a config error, not
+        a runtime one, the same standard ui.playlist's own loaders already
+        hold themselves to; main() lets this propagate rather than
+        starting a bridge that silently has no real gallery or questions.
+
+        `manifest_path`/`questions_path` are each optional independently:
+        `None` means "the real shipped file", resolved the same way
+        ui.playlist's own module-level defaults are (off this repo's own
+        layout, never the process's CWD -- see ui/playlist.py's module
+        docstring for why). `load_questions` validates every question's
+        `target_id` against the SHIPPED manifest regardless of what
+        `manifest_path` was passed here -- that is ui.playlist's own
+        documented contract (see `load_questions`'s docstring), not
+        something this method re-implements or overrides.
+        """
+        from ui.playlist import load_playlist, load_questions
+        targets = load_playlist(manifest_path) if manifest_path else load_playlist(
+            Path(__file__).parent.parent / "playlist" / "manifest.yaml")
+        questions = load_questions(questions_path)
+        self._catalog_events = [
+            {"type": "playlist_catalog", "targets": [
+                {"id": t.id, "name": t.name, "tagline": t.tagline,
+                 "expected_s": t.expected_s} for t in targets]},
+            {"type": "questions_catalog", "questions": [
+                {"id": q.id, "target_id": q.target_id, "question": q.question,
+                 "ligand_name": q.ligand_name, "expected_s": q.expected_s}
+                for q in questions]},
+        ]
+        from webview.qa_tracker import QaTracker
+        self._qa_tracker = QaTracker(questions=questions)
+        return targets, questions
+
     def subscribe(self):
         """A queue that receives every future event, primed with the last
-        hello/not_ready if one has already arrived.
+        hello/not_ready if one has already arrived, then the two catalog
+        events (playlist/questions) from the most recent load_catalogs().
 
         Primed BEFORE the queue is added to `_subscribers`, not after: the
         daemon sends exactly one hello/not_ready per connection (it is the
@@ -282,6 +326,11 @@ class DaemonLink:
         q = queue.Queue(maxsize=SUBSCRIBER_QUEUE_MAX)
         if self.last_hello is not None:
             q.put_nowait(self.last_hello)
+        for event in self._catalog_events:
+            try:
+                q.put_nowait(event)
+            except queue.Full:
+                pass
         with self._subscribers_lock:
             self._subscribers.add(q)
         return q
@@ -651,6 +700,17 @@ def main(argv=None):
                              "...) -- also settable via WEBVIEW_AUTH_TOKEN. "
                              "Required when --host is not a loopback "
                              "address (127.0.0.1/localhost/::1).")
+    # Mirrors scripts/run-demo.sh's own `--playlist` naming for the same
+    # file (see that script's MANIFEST/--playlist handling); `--questions`
+    # is the sibling file, not that script's boolean opt-in flag of the
+    # same name -- there is no ambiguity in practice since this process
+    # never reads run-demo.sh's flag, but see the help text below.
+    parser.add_argument("--playlist", default=None,
+                        help="playlist/manifest.yaml path (default: the "
+                             "shipped one)")
+    parser.add_argument("--questions", default=None,
+                        help="playlist/questions.yaml path (default: the "
+                             "shipped one)")
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -662,6 +722,11 @@ def main(argv=None):
     _ensure_tensix_viz_assets_linked()
 
     link = DaemonLink(args.daemon_socket)
+    # Loaded before start(): a malformed manifest/questions file is a config
+    # error an operator should see at startup, on the command line, not
+    # something that silently leaves every future subscriber primed with an
+    # empty gallery and no questions -- see load_catalogs's own docstring.
+    link.load_catalogs(manifest_path=args.playlist, questions_path=args.questions)
     link.start()
     from webview.telemetry_broadcaster import TelemetryBroadcaster
     telemetry = TelemetryBroadcaster(link)

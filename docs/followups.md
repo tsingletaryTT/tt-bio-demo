@@ -1006,11 +1006,19 @@ pin hiding inside the "fixed" unit. All items below are now closed.
   (`scripts/deb-container.sh`), the same standard every other shipped
   capability here has been held to, not a one-line addition to the install
   list. Source checkouts are unaffected.
-- **The webview's own scope cuts are unchanged and still open** (no
-  ribbon/cartoon reveal on `job_done`, gallery is "targets seen so far" not the
-  real manifest, a question shows the score not the human-written text) — see
-  `webview/README.md`'s own "Where this deliberately stops short" section for
-  the reasoning and the two concrete paths forward for the ribbon reveal.
+- **The webview's ribbon/cartoon scope cut is unchanged and still open** — no
+  ribbon/cartoon reveal on `job_done`; see `webview/README.md`'s own "Where
+  this deliberately stops short" section for the reasoning and the two
+  concrete paths forward. (**Closed 2026-09-24, webview-parity Task 8:** the
+  other two scope cuts this bullet used to name — the gallery being "targets
+  seen so far" rather than the real manifest, and a question showing only the
+  score rather than the human-written text — are both fixed. `webview/
+  bridge.py`'s `DaemonLink.load_catalogs()` now loads the real
+  `playlist/manifest.yaml` and `playlist/questions.yaml` server-side via
+  `ui.playlist`'s existing loaders and publishes them as `playlist_catalog`/
+  `questions_catalog` events, primed into every subscriber the same way
+  `last_hello` already is; the browser gallery and the server-rendered Q&A
+  panel both read from that real catalog now.)
 
 ## Gotchas worth knowing before touching this code
 
