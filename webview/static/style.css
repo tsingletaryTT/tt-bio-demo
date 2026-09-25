@@ -195,7 +195,18 @@ button:hover { color: var(--fg); border-color: var(--accent-bright); }
   font-weight: 700;
 }
 
-.qa-question { font-size: 13px; margin-bottom: 6px; }
+/* The three-row Q&A queue panel (pending / in-flight / answered) -- all
+   three strings arrive already rendered by webview/qa_tracker.py (real
+   ui.questions text functions), so this is layout only, no color-coding of
+   content this file doesn't understand. */
+.qa-pending { font-size: 12px; color: var(--fg-muted); margin-bottom: 6px; }
+.qa-in-flight { font-size: 13px; margin-bottom: 6px; }
+.qa-answered { font-size: 15px; color: var(--accent-bright); }
+/* Set/cleared via classList.toggle("qa-error", ...) in qa_panel.js, in step
+   with `answered_is_error` on the `qa_queue` event -- a failed score reads
+   in the same danger red as .pick-error, never silently the same color as
+   a real result. */
+.qa-answered.qa-error { color: var(--danger); }
 
 /* A little marching-band bounce for a question actively being asked --
    see app.js's setQuestionText for why this only ever runs while nesso1 is
@@ -223,15 +234,6 @@ button:hover { color: var(--fg); border-color: var(--accent-bright); }
 @media (prefers-reduced-motion: reduce) {
   .oompa-bounce span { animation: none; }
 }
-.qa-score { font-size: 22px; color: var(--accent-bright); }
-.qa-spinner {
-  width: 14px; height: 14px; border-radius: 50%;
-  border: 2px solid var(--hairline-strong);
-  border-top-color: var(--accent-bright);
-  animation: spin 0.9s linear infinite;
-}
-@keyframes spin { to { transform: rotate(360deg); } }
-
 #pick-form { display: flex; gap: 8px; }
 #pick-input {
   flex: 1 1 auto;

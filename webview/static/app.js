@@ -14,10 +14,14 @@
 //   * The gallery is "targets seen so far", not the real manifest.yaml
 //     playlist (thumbnails, descriptions, expected_s) -- reading that would
 //     need a YAML dependency this bridge deliberately does not take on.
-//   * Affinity questions show target_id and the model's own score, not the
-//     human-written question text from playlist/questions.yaml -- that text
-//     never travels on the wire (see the design spec, section 4); only the
-//     booth's own rail panel has it loaded locally.
+//   * The Q&A queue panel (qa-pending/qa-in-flight/qa-answered) shows exactly
+//     the three strings webview/qa_tracker.py computes server-side with
+//     ui.questions' real pure text functions -- this file does no text
+//     composition of its own (see qa_panel.js). Until Task 8 wires the real
+//     playlist/questions.yaml into QaTracker, it is constructed with an
+//     empty question list, so every label degrades to question_label's own
+//     target_id-based fallback rather than the human-written question text
+//     -- still real, never fabricated, just less specific for now.
 
 const state = {
   cards: [],           // card ids from the last `hello`
@@ -197,9 +201,9 @@ const noticeEl = document.getElementById("notice");
 const stageEl = document.getElementById("stage");
 const viewToggle = document.getElementById("view-toggle");
 const qaPanel = document.getElementById("qa-panel");
-const qaQuestion = document.getElementById("qa-question");
-const qaSpinner = document.getElementById("qa-spinner");
-const qaScore = document.getElementById("qa-score");
+const qaPendingEl = document.getElementById("qa-pending");
+const qaQuestion = document.getElementById("qa-in-flight");
+const qaScore = document.getElementById("qa-answered");
 const pickForm = document.getElementById("pick-form");
 const pickInput = document.getElementById("pick-input");
 const pickError = document.getElementById("pick-error");
@@ -454,27 +458,15 @@ function handleEvent(event) {
       Tensix.onTelemetry(event.chips);
       break;
     }
-    case "answer_start": {
+    case "qa_queue": {
+      // The three ready-rendered strings come from webview/qa_tracker.py,
+      // which computes them with ui.questions' real pure text functions --
+      // the same code the native GTK booth's own panel calls. This handler
+      // does no text composition of its own; see qa_panel.js.
       qaPanel.hidden = false;
-      setQuestionText(qaQuestion, `Scoring affinity for ${event.target_id}…`, { animated: true });
-      qaSpinner.hidden = false;
-      qaScore.hidden = true;
-      break;
-    }
-    case "answer_done": {
-      qaPanel.hidden = false;
-      setQuestionText(qaQuestion, `Affinity result for ${event.target_id}`, { animated: false });
-      qaSpinner.hidden = true;
-      qaScore.hidden = false;
-      const pct = Math.round(event.score * 100);
-      qaScore.textContent = `${pct}% predicted probability of binding`;
-      break;
-    }
-    case "answer_error": {
-      qaPanel.hidden = false;
-      setQuestionText(qaQuestion, `Scoring failed for ${event.target_id}.`, { animated: false });
-      qaSpinner.hidden = true;
-      qaScore.hidden = true;
+      QaPanel.render({
+        pending: qaPendingEl, inFlight: qaQuestion, answered: qaScore,
+      }, event);
       break;
     }
     case "egg_frame":
