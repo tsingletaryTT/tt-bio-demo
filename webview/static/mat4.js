@@ -42,13 +42,14 @@ function lookAt(eye, target, up) {
   const side = _norm(_cross(forward, up));
   const trueUp = _cross(side, forward);
   const m = identity();
-  // Column-major: m[col*4 + row]. side/trueUp/-forward are COLUMNS 0/1/2,
-  // matching ui/mathutil.py's m[:3, 0] = side / m[:3, 1] = true_up /
-  // m[:3, 2] = -forward exactly (numpy's [:3, col] on a column-major
-  // array is this same column).
-  m[0] = side[0]; m[1] = side[1]; m[2] = side[2];
-  m[4] = trueUp[0]; m[5] = trueUp[1]; m[6] = trueUp[2];
-  m[8] = -forward[0]; m[9] = -forward[1]; m[10] = -forward[2];
+  // PyOpenGL uploads the numpy array's raw C-order (row-major) buffer, and GL
+  // interprets it as column-major, so the actual GL matrix is the transpose of
+  // the numpy array as written. Therefore, Python's m[:3, 0] = side (rows 0-2
+  // of column 0) becomes GL's ROW 0. Each basis vector becomes a ROW, spread
+  // at indices k, k+4, k+8 (for row k in column-major indexing).
+  m[0] = side[0];     m[4] = side[1];     m[8]  = side[2];
+  m[1] = trueUp[0];   m[5] = trueUp[1];   m[9]  = trueUp[2];
+  m[2] = -forward[0]; m[6] = -forward[1]; m[10] = -forward[2];
   m[12] = -_dot(side, eye);
   m[13] = -_dot(trueUp, eye);
   m[14] = _dot(forward, eye);
@@ -58,8 +59,8 @@ function lookAt(eye, target, up) {
 function rotationY(angleRad) {
   const c = Math.cos(angleRad), s = Math.sin(angleRad);
   const m = identity();
-  m[0] = c; m[8] = -s;
-  m[2] = s; m[10] = c;
+  m[0] = c; m[2] = -s;
+  m[8] = s; m[10] = c;
   return m;
 }
 
