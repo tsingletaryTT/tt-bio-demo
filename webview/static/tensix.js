@@ -14,8 +14,70 @@ const { vizMode, withinStageFrac, powerActivity } =
 const instances = {};
 let lastMode = {};
 
+// The card set `instances` was last built for, as a Set -- `null` before the
+// first `init()` call. Compared SET-wise (size + membership), not by array
+// position: `hello`'s own `cards` list is not guaranteed to repeat in the
+// same order on every delivery, and a card set that is unchanged must never
+// be treated as "changed" just because of ordering.
+let currentCardSet = null;
+
+function _sameCardSet(cards) {
+  if (currentCardSet === null) return false;
+  if (currentCardSet.size !== cards.length) return false;
+  return cards.every((c) => currentCardSet.has(c));
+}
+
 function init(cards) {
-  for (const key of Object.keys(instances)) delete instances[key];
+  // `hello` is re-delivered on every EventSource reconnect (a normal,
+  // designed-for occurrence -- see DaemonLink.last_hello and the SSE
+  // keepalive/reconnect handling in webview/bridge.py), not a one-time
+  // event. Rebuilding unconditionally on every `hello` would silently pile
+  // up a second, third, ... generation of live canvases and orphaned
+  // TensixViz instances each still running their own indefinite
+  // requestAnimationFrame loop in the background -- the exact "short runs
+  // cannot see unbounded growth" class of bug this project's CLAUDE.md has
+  // already paid for once. So: the SAME card set (regardless of order) is a
+  // total no-op -- no DOM touched, nothing (re)constructed, the existing
+  // `instances` map returned unchanged.
+  if (_sameCardSet(cards)) return instances;
+
+  // The card set genuinely changed (or this is the first call ever): tear
+  // down the previous generation before building the new one.
+  //
+  // TensixViz has no destroy()/dispose() of its own (only the higher-level
+  // CardViz/SystemViz/ClusterViz wrappers this project does not use have
+  // one -- confirmed by reading ui/assets/tensix-viz/tensix-viz.js, which
+  // this project vendors verbatim and must not hand-edit). What it DOES
+  // have is `reset()`: it bumps `_animGen` (so the in-flight
+  // requestAnimationFrame closure's own `self._animGen !== gen` guard makes
+  // it bail out on its very next tick) and cancels the pending rAF id
+  // outright via `cancelAnimationFrame`. That is a real stop, not a
+  // workaround -- `activate()` itself calls `reset()` first for exactly
+  // this reason every time it switches mode.
+  for (const key of Object.keys(instances)) {
+    const inst = instances[key];
+    if (inst && typeof inst.reset === "function") {
+      try {
+        inst.reset();
+      } catch (e) {
+        // A failure to stop cleanly must not block tearing the rest of the
+        // panel down and rebuilding it -- the DOM clear below is the
+        // belt-and-braces fallback for exactly this case.
+      }
+    }
+    delete instances[key];
+    delete lastMode[key];
+  }
+  const container = (typeof document.getElementById === "function")
+    ? document.getElementById("tensix-panel") : null;
+  // Clear every existing canvas regardless of whether reset() above
+  // actually stopped that instance's loop -- so old canvases never pile up
+  // in the DOM even in a worst case where some future library version's
+  // reset() does not fully halt it.
+  if (container && typeof container.replaceChildren === "function") {
+    container.replaceChildren();
+  }
+
   for (const card of cards) {
     const canvas = document.createElement("canvas");
     canvas.width = 86;
@@ -25,12 +87,11 @@ function init(cards) {
     // `getContext` -- this line exercises no assertion either fake or real,
     // so it is skipped rather than made to fail a test it isn't the subject of.
     if (canvas.dataset) canvas.dataset.card = String(card);
-    const container = (typeof document.getElementById === "function")
-      ? document.getElementById("tensix-panel") : null;
     if (container) container.appendChild(canvas);
     instances[card] = new window.TensixViz(canvas, { arch: "blackhole", showMemory: true });
     lastMode[card] = "idle";
   }
+  currentCardSet = new Set(cards);
   return instances;
 }
 
