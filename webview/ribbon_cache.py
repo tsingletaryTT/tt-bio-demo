@@ -104,23 +104,55 @@ class RibbonCache:
                 if self._cache.get(job_id, "missing") is None:
                     del self._cache[job_id]
             return
-        result = {
-            "type": "ribbon_ready", "job_id": job_id,
-            "vertices_b64": pack_float32_b64(vertices),
-            "normals_b64": pack_float32_b64(normals),
-            "colors_b64": pack_float32_b64(colors),
-            "indices_b64": pack_uint32_b64(indices),
-            "vertex_count": len(vertices), "index_count": len(indices),
-        }
-        with self._lock:
-            if job_id in self._cache:
-                self._cache[job_id] = result
-            # else: evicted (by max_size) before this build finished --
-            # still a real, completed ribbon, so it is still delivered to
-            # every LIVE subscriber below; only the on-demand replay for a
-            # late joiner (GET /ribbon/<job_id>) is unavailable for it,
-            # exactly as if this build had simply not been cached.
-        self._daemon_link.publish(result)
+        try:
+            # Deliberately a SECOND, separate try/except from the one
+            # above: that one means "cartoon_from_cif could not build a
+            # ribbon for this structure" (an expected, routine outcome
+            # for a ligand-only/nucleic-only/malformed CIF). Everything
+            # from here on is different in kind -- packing, the
+            # lock-guarded cache write, and publish() -- and an exception
+            # here means a real bug (an unexpected array shape/dtype, a
+            # bug in pack_float32_b64/pack_uint32_b64, ...). on_job_done
+            # fire-and-forgets this to a ThreadPoolExecutor with no
+            # `.result()` call and no `add_done_callback`, so without
+            # this guard such a bug would be silently absorbed into an
+            # unretrieved Future -- no log line, no crash, indistinguishable
+            # from the intentional "no ribbon" case above but for an
+            # entirely unrelated reason. See tests/unit/test_ribbon_cache.py's
+            # test_a_bug_in_the_packing_tail_is_logged_not_silently_swallowed.
+            result = {
+                "type": "ribbon_ready", "job_id": job_id,
+                "vertices_b64": pack_float32_b64(vertices),
+                "normals_b64": pack_float32_b64(normals),
+                "colors_b64": pack_float32_b64(colors),
+                "indices_b64": pack_uint32_b64(indices),
+                "vertex_count": len(vertices), "index_count": len(indices),
+            }
+            with self._lock:
+                if job_id in self._cache:
+                    self._cache[job_id] = result
+                # else: evicted (by max_size) before this build finished --
+                # still a real, completed ribbon, so it is still delivered
+                # to every LIVE subscriber below; only the on-demand replay
+                # for a late joiner (GET /ribbon/<job_id>) is unavailable
+                # for it, exactly as if this build had simply not been
+                # cached.
+            self._daemon_link.publish(result)
+        except Exception:
+            log.exception(
+                "ribbon build for job %s (cif=%s) failed AFTER "
+                "cartoon_from_cif already succeeded -- this is a real bug "
+                "in the packing/caching/publish path, not an undrawable "
+                "structure", job_id, cif_path)
+            with self._lock:
+                # Same "only clear our own still-empty reservation" rule
+                # as the except block above: never delete a real result
+                # that was already written (e.g. if publish() itself is
+                # what raised, after the cache write succeeded), and
+                # never touch a slot some newer submission has since
+                # reused.
+                if self._cache.get(job_id, "missing") is None:
+                    del self._cache[job_id]
 
     def get(self, job_id):
         with self._lock:

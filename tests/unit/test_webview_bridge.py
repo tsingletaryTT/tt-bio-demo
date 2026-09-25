@@ -1016,6 +1016,56 @@ def test_get_ribbon_404s_honestly_for_an_unknown_job_id():
         link.ribbon_cache.shutdown()
 
 
+def test_get_ribbon_serves_the_cached_buffers_over_real_http():
+    """Review Focus (Finding 1): the 404/miss branch above was the only
+    branch exercised over a real HTTP server -- the 200 success path's
+    actual response shape (status, Content-Type, JSON body content) had
+    zero real-HTTP coverage. This drives a real job_done -> RibbonCache
+    build -> cache hit -> real HTTP GET, over the same real
+    http.server.HTTPServer + make_handler pattern as the 404 test."""
+    import http.server
+    import pathlib
+    import threading
+    import time
+    import urllib.request
+
+    fixtures = pathlib.Path(__file__).resolve().parents[1] / "fixtures" / "structures"
+    link = bridge.DaemonLink("/nonexistent")
+    link._dispatch(json.dumps({
+        "type": "job_done", "job_id": "j-http-1",
+        "cif_path": str(fixtures / "real_fold_trpcage.cif"),
+    }).encode() + b"\n")
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and link.ribbon_cache.get("j-http-1") is None:
+        time.sleep(0.02)
+    cached = link.ribbon_cache.get("j-http-1")
+    assert cached is not None, "the real ribbon build never landed in the cache"
+
+    handler_cls = bridge.make_handler(link)
+    server = http.server.HTTPServer(("127.0.0.1", 0), handler_cls)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        resp = urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/ribbon/j-http-1", timeout=5)
+        assert resp.status == 200
+        assert resp.headers["Content-Type"] == "application/json"
+        body = json.loads(resp.read().decode("utf-8"))
+        # The real HTTP response body must be exactly what the cache
+        # holds -- not just a plausible-looking subset of it.
+        assert body == cached
+        assert body["type"] == "ribbon_ready"
+        assert body["job_id"] == "j-http-1"
+        assert body["vertex_count"] > 0
+        assert body["index_count"] > 0
+        assert isinstance(body["vertices_b64"], str) and body["vertices_b64"]
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        link.ribbon_cache.shutdown()
+
+
 def test_a_full_subscriber_queue_does_not_block_a_real_ribbon_ready_for_others():
     """Review Focus: re-asserts Task 1's backpressure contract for a
     REAL ribbon_ready event -- a slow/backgrounded tab must not block
