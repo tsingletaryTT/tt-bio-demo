@@ -81,6 +81,81 @@ def test_two_chips_folding_animate_and_two_do_not(monkeypatch):
     assert modes[1] == "idle" and modes[3] == "idle"
 
 
+def test_bare_stage_strings_still_work(monkeypatch):
+    """`set_chip_stages`'s original contract -- a bare stage string per
+    card, as every test in this file uses -- must keep working unmodified:
+    the tuple form (`(stage, frac)`) is additive, not a replacement."""
+    panel = _panel(monkeypatch, chips=2)
+    panel.set_chip_stages({0: "diffusion", 1: "trunk"})
+    assert panel._chip_stages[0][0] == "diffusion"
+    assert panel._chip_stages[1][0] == "trunk"
+
+
+def test_stage_frac_tuple_is_accepted_and_stored(monkeypatch):
+    panel = _panel(monkeypatch, chips=1)
+    panel.set_chip_stages({0: ("diffusion", 0.55)})
+    stage, frac, _ = panel._chip_stages[0]
+    assert stage == "diffusion"
+    assert frac == 0.55
+
+
+def test_a_non_numeric_frac_is_dropped_not_raised(monkeypatch):
+    """A malformed `frac` must be treated as "no frac was given" (`None`),
+    not as a valid `0.0` -- `0.0` is a real progress value (the very start
+    of a stage) and must not be confused with "unknown"."""
+    panel = _panel(monkeypatch, chips=1)
+    panel.set_chip_stages({0: ("diffusion", "not-a-number")})
+    stage, frac, _ = panel._chip_stages[0]
+    assert stage == "diffusion"
+    assert frac is None
+
+
+def test_a_non_finite_frac_is_treated_as_none_too(monkeypatch):
+    """`float("nan")` parses without raising, so a plain try/except around
+    `float(frac)` is not enough -- `within_stage_frac`'s own clamping
+    resolves a NaN in an implementation-specific way (observed: 1.0), which
+    would silently pin the ring at the wrong end rather than fall back."""
+    panel = _panel(monkeypatch, chips=1)
+    panel.set_chip_stages({0: ("diffusion", float("nan"))})
+    stage, frac, _ = panel._chip_stages[0]
+    assert stage == "diffusion"
+    assert frac is None
+
+
+def test_a_bare_stage_never_pushes_setProgress(monkeypatch):
+    """A caller using the original bare-stage contract has no frac to give,
+    and must get the mode's own wall-clock fallback -- never a ring pinned
+    at whatever `within_stage_frac(stage, 0.0)` computes."""
+    panel = _panel(monkeypatch, chips=1)
+    calls = []
+    monkeypatch.setattr(panel, "_eval", calls.append)
+    panel.set_chip_stages({0: "diffusion"})
+    assert not any("setProgress" in c for c in calls), (
+        "a bare stage must not push a pinned progress value")
+
+
+def test_a_malformed_frac_never_pushes_setProgress(monkeypatch):
+    panel = _panel(monkeypatch, chips=1)
+    calls = []
+    monkeypatch.setattr(panel, "_eval", calls.append)
+    panel.set_chip_stages({0: ("diffusion", "not-a-number")})
+    assert not any("setProgress" in c for c in calls)
+
+
+def test_a_valid_stage_and_frac_does_push_setProgress(monkeypatch):
+    """The positive case: a real `(stage, frac)` pair must actually reach
+    the page. Mutation this catches: removing the `_push_progress()` call
+    from `set_chip_stages` entirely -- every other test in this file stayed
+    green against exactly that mutant."""
+    panel = _panel(monkeypatch, chips=1)
+    calls = []
+    monkeypatch.setattr(panel, "_eval", calls.append)
+    panel.set_chip_stages({0: ("diffusion", 0.55)})
+    progress_calls = [c for c in calls if "setProgress(0," in c]
+    assert progress_calls, "no setProgress call was pushed for a valid (stage, frac)"
+    assert "setProgress(0,0.5" in progress_calls[-1]
+
+
 def test_each_chip_animates_its_own_stage(monkeypatch):
     """A shared mode across four chips is the same untruth as before, just
     four times over."""
@@ -393,3 +468,25 @@ def test_the_flow_floor_follows_each_chips_own_stage(tmp_path, monkeypatch):
     assert working and f"dram_bw:{active_dram:.3f}" in working[-1]
     assert resting and f"dram_bw:{idle_dram:.3f}" in resting[-1]
     assert active_dram != idle_dram, "this test proves nothing if they match"
+
+
+def test_tick_also_pushes_activity(tmp_path, monkeypatch):
+    """`_tick` already computes `clock_activity(mhz)` for `flow_params` --
+    this pins that the SAME value also reaches `setActivity`, not only the
+    memory overlay, which is the whole reason the per-core animation used to
+    look identical regardless of load."""
+    root = tmp_path / "tenstorrent"
+    root.mkdir()
+    chip = root / "tenstorrent!0"
+    chip.mkdir()
+    (chip / "tt_aiclk").write_text("1350\n")
+    monkeypatch.setattr("ui.chipviz.SYSFS_ROOT", root)
+    panel = ChipVizPanel()
+    if not panel.available:
+        pytest.skip("WebKit unavailable in this environment")
+    calls = []
+    monkeypatch.setattr(panel, "_eval", calls.append)
+    panel._tick()
+    activity_calls = [c for c in calls if "setActivity(0," in c]
+    assert activity_calls, "no setActivity call was pushed for chip 0"
+    assert "setActivity(0,1.000)" in activity_calls[-1]

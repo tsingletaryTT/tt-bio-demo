@@ -5,6 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>tt-bio-demo — remote viewer</title>
 <link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="/tensix-viz.css">
+<script src="/telemetry.js"></script>
+<script src="/tensix_logic.js"></script>
+<script src="/tensix-viz.js"></script>
+<script src="/tensix.js"></script>
 </head>
 <body>
   <header class="toolbar">
@@ -22,6 +27,10 @@
   <div id="notice" class="notice" hidden></div>
 
   <main id="stage" class="stage" data-mode="solo"></main>
+
+  <section id="telemetry-panel" class="telemetry-panel"></section>
+
+  <div id="tensix-panel" class="tensix-panel"></div>
 
   <section id="qa-panel" class="panel qa-panel" hidden>
     <h2>Affinity question</h2>

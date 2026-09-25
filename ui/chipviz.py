@@ -72,18 +72,35 @@ Say this accurately, because the whole booth's claim is "this is real":
   header COUNTS the canvases that are actually animating work rather than
   asserting the chip count, so three chips folding says three and one still
   says which one.
-- **The per-chip ANIMATION is not visibly clock-driven.** Each chip's own
-  activity IS fed to its own canvas (`setChipStats`, exactly as
-  tt-local-generator's `activity_viz.py` does), and tensix-viz really does
-  consume it -- its DRAM layer alpha is `dram_bw * env * 0.55`. But at the
-  86px canvas this rail can afford, the difference between feeding a chip
-  0.0 and feeding it 1.0 is not distinguishable on screen: rendered both
-  ways and compared, the means differed by less than the animation's own
-  frame-to-frame noise. The feed is kept because it is correct, costs four
-  short JS calls a second, and starts working the moment the canvas or the
-  library's memory layer grows -- but nothing in the UI claims it is doing
-  something visible, and the help card was edited to remove a sentence that
-  did. See this task's report.
+- **The per-chip ANIMATION is now visibly activity-driven** (tensix-viz
+  1.3.0, see its CHANGELOG). The prior claim here was the opposite, and it
+  was correctly measured at the time: `setChipStats`'s feed only ever
+  reached tensix-viz's memory OVERLAY (DRAM glow, L1 bars) -- its DRAM layer
+  alpha was `dram_bw * env * 0.55` -- and never touched the per-core
+  heatmap itself, so feeding a chip 0.0 vs. 1.0 activity produced pixel
+  statistics indistinguishable from frame noise.
+  tensix-viz 1.3.0 added `setActivity()`. Its first cut baked
+  `activityGain(activity) = 0.12 + 0.88*activity` into each mode's own
+  simulated heatmap VALUE, which an independent review caught as not
+  actually reaching the screen: `_drawHeatmap` renormalises every frame to
+  its own floored, decaying maximum, which divides that gain straight back
+  out for any mode whose uncompressed peak stays above the floor (~0.35) --
+  i.e. every mode except `idle` at rest. `activity=0.5` and `activity=1.0`
+  rendered pixel-identical for `diffusion`/`thinking`/`inference`/etc.,
+  the same class of failure this bullet used to describe. The fix moves
+  `activityGain` to `ctx.globalAlpha` at the point `_drawHeatmap` actually
+  fills a cell -- the one quantity nothing upstream rescales -- so it is
+  now a real 8.33x swing (`0.6*activityGain(1) / 0.6*activityGain(0)`) in
+  rendered opacity, uniformly across every mode, verified by rendering
+  through the real `_drawHeatmap` code path (tensix-viz's
+  `tests/chip.test.js`, "activityGain applied at the render layer"), not
+  derived from the simulated value alone -- the specific gap this bullet
+  used to document, and the specific way an earlier fix attempt failed to
+  close it, are both recorded here so a future reader does not repeat
+  either. `_tick` feeds the same `clock_activity(mhz)` already computed for
+  `flow_params` into `setActivity`, so no new telemetry was added; the
+  existing signal simply reaches the part of the picture that matters. See
+  this project's own CLAUDE.md change log for the fuller record.
 
 Why there is a WebView in a project that chose "no browser"
 ------------------------------------------------------------
@@ -122,19 +139,24 @@ not counted in the header).
 
 Differences from the reference implementation, and why
 -------------------------------------------------------
-1. **No background thread.** `activity_viz.py` polls per-chip POWER, which
-   needs a `tt-smi` subprocess (~0.3s) and therefore a thread. This module
-   polls `tt_aiclk` from sysfs, which is four small file reads and is
-   effectively instantaneous, so the poll runs on the GTK main loop as a
-   plain `GLib.timeout`. That removes a thread, removes an
-   `idle_add` hand-back, and removes any possibility of this module touching
-   a widget off the main loop.
-
-   The cost is a coarser signal: on Blackhole, AICLK is close to binary
-   (~800 MHz idle / 1350 MHz boosted), so `clock_activity` normalises
-   idle-relative to make what movement there is visible. The MODE carries
-   most of the meaning here anyway, and the honest per-chip number is on the
-   telemetry panel a few pixels above.
+1. **A background thread, now (2026-09-24), for the same reason
+   `activity_viz.py` has one.** This module used to poll only `tt_aiclk`
+   from sysfs (four small file reads, effectively instantaneous, so the
+   poll ran on the GTK main loop as a plain `GLib.timeout` with no thread
+   anywhere) -- a simplicity trade against a coarser signal, not a hard
+   constraint: on Blackhole, AICLK is close to binary (~800 MHz idle /
+   1350 MHz boosted), so the animation read as decorative even after
+   `clock_activity` started reaching `setActivity`. Per-chip POWER is
+   graded and tracks real load directly, but reading it needs a real
+   `tt-smi` subprocess (~0.2-0.3s measured on this box) -- too slow to run
+   on the GTK main thread every second -- so this module now runs the same
+   shape `activity_viz.py` already proved: a daemon `threading.Thread`
+   samples `tt-smi` on its own `POWER_POLL_INTERVAL_S` cadence and hands
+   the result back via `GLib.idle_add`, never touching a widget off the
+   main loop. AICLK is kept as the automatic fallback `_tick` already had
+   -- a box with no `tt-smi`, or a chip a sample came back `None` for,
+   behaves exactly as this panel did before this section changed. See
+   `_activity_for` and the "power, the preferred signal" section above.
 
 2. **The mode is driven by the fold's STAGE, not by the booth's screen.**
    See `viz_mode`.
@@ -144,6 +166,11 @@ Bounds (the booth runs unattended all day)
 - One poll source, `POLL_INTERVAL_MS` (1000 ms), added by `set_running(True)`
   and *removed* by `set_running(False)` and on `unrealize`. While stopped,
   this module reads nothing and evaluates no JS at all.
+- One background thread, sampling on `POWER_POLL_INTERVAL_S` (1.5s), started
+  and stopped in lockstep with the poll source above -- `set_running(False)`
+  sets the thread's own stop `Event` (never leaves it running to find out
+  later), and a sample that lands after stop is discarded rather than
+  reviving `_latest_powers` right after it was cleared.
 - Widgets are created once, in `__init__`, and only ever re-labelled. Nothing
   is appended to the widget tree after construction.
 - The unrealized-JS backlog is capped at `_MAX_PENDING_JS` entries, dropping
@@ -163,7 +190,11 @@ import logging
 import math
 import os
 import pathlib
+import subprocess
+import threading
 import time
+
+from protocol.events import within_stage_frac
 
 import gi
 
@@ -359,6 +390,108 @@ def clock_activity(mhz):
     return max(0.0, min(1.0, (value - AICLK_IDLE_MHZ) / span))
 
 
+# ── power, the preferred signal ──────────────────────────────────────────────
+#
+# AICLK above is close to a two-state signal on this hardware -- it says
+# "resting" or "boosted" and very little in between, which is why the panel
+# has read as decorative rather than vibrant even after `clock_activity`
+# started reaching `setActivity` (see this module's own top docstring on that
+# fix). Per-chip POWER is graded and tracks real load directly, the same
+# reason tt-local-generator/app/activity_viz.py prefers it: this panel adopts
+# that exact shape (a background thread runs `tt-smi`, the pure functions
+# below turn a snapshot into an activity scalar) rather than inventing a
+# second one, with AICLK kept as the automatic fallback `_tick` already had.
+#
+# Floor/ceiling are this project's OWN measured numbers, not
+# tt-local-generator's generic ones: this module's own top docstring records
+# 12-17 W idle and 72-91 W folding across all four chips on this exact
+# hardware. The curve is unchanged from the reference (<1 boosts low/mid
+# loads so the flow reads clearly busy rather than only lighting up at the
+# very top of the range).
+_POWER_FLOOR_W = 15.0
+_POWER_CEILING_W = 90.0
+_POWER_CURVE = 0.6
+
+# How often the background thread runs a `tt-smi` snapshot, in seconds.
+# tt-smi -s takes ~0.2-0.3s wall-clock on this hardware (measured, 5 samples)
+# -- negligible at this cadence, and the same interval class
+# tt-local-generator's own sampler uses for the same call.
+POWER_POLL_INTERVAL_S = 1.5
+
+
+def parse_powers(snapshot):
+    """Per-chip power (W) from a `tt-smi -s` snapshot dict, device order
+    preserved -- `None` for a chip with no numeric power reading, never a
+    dropped index (the same "index i always means chip i" rule
+    `read_chip_clocks` already holds itself to, applied to a different
+    telemetry source). Pure -- unit-testable with no subprocess.
+    """
+    powers = []
+    for device in snapshot.get("device_info", []) or []:
+        telemetry = device.get("telemetry", {}) if isinstance(device, dict) else {}
+        try:
+            powers.append(float(telemetry.get("power")))
+        except (TypeError, ValueError):
+            powers.append(None)
+    return powers
+
+
+def read_chip_power_watts():
+    """Every chip's power draw (W) from a real `tt-smi` snapshot,
+    POSITION-ALIGNED with `chip_dirs()`.
+
+    Runs a subprocess (~0.2-0.3s) -- MUST be called off the GTK main thread,
+    which is the entire reason this panel now has a background thread where
+    it previously had none (see the module docstring's "Differences from the
+    reference implementation"). Returns `[]` on ANY failure -- no `tt-smi` on
+    this box, a timeout, malformed JSON -- so the caller falls back to AICLK
+    exactly as if this function had never been called. No possible sensor
+    value, or its absence, may cost the booth an exception or a hung thread.
+    """
+    try:
+        proc = subprocess.run(
+            ["tt-smi", "-s", "--snapshot_no_tty"],
+            capture_output=True, text=True, timeout=8,
+        )
+        return parse_powers(json.loads(proc.stdout))
+    except Exception:
+        return []
+
+
+def power_activity(watts):
+    """One chip's power draw -> an activity scalar in 0..1, floor/ceiling
+    clamped and perceptually curved so mid loads already read as clearly
+    busy (see `_POWER_CURVE`). A non-finite or non-numeric input reads as
+    0.0 rather than raising, the same rule `clock_activity` holds itself to.
+    """
+    try:
+        value = float(watts)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(value):
+        return 0.0
+    span = _POWER_CEILING_W - _POWER_FLOOR_W
+    if span <= 0:
+        return 0.0
+    fraction = max(0.0, min(1.0, (value - _POWER_FLOOR_W) / span))
+    return fraction ** _POWER_CURVE
+
+
+def power_readout_text(powers, shown, actual):
+    """The header readout's power-preferred form: the peak wattage across the
+    shown chips, plus the same "shown/total" note `readout_text` gives for
+    AICLK. Mirrors that function's shape exactly (an em dash when nothing
+    could be read) so `_tick` can swap between the two with no other change.
+    """
+    present = [w for w in powers if w is not None]
+    if not present:
+        return "—"
+    head = f"{round(max(present))} W"
+    if shown < actual:
+        return f"{head} · {shown}/{actual}"
+    return head
+
+
 # ── which animation matches what the silicon is doing ───────────────────────
 #
 # tensix-viz ships nine modes (idle / inference / prefill / thinking / agents /
@@ -449,6 +582,34 @@ def mode_caption(mode):
     is read by visitors who have just been told on the help card that the
     model works by denoising."""
     return _MODE_CAPTION.get(mode, mode)
+
+
+def _progress_from_stage_entry(entry):
+    """`entry` is `(stage, frac)` (or `None` for "this chip has no stage") ->
+    the within-stage progress fraction `setProgress` wants, or `None` when
+    there is nothing to push.
+
+    `frac=None` is a real, distinct case -- "no frac was ever given" (a bare
+    stage, from a caller using this module's original contract, or wire junk
+    that failed to parse) -- and it is NOT the same thing as `frac=0.0` (a
+    real progress value: the very start of a stage). Confusing the two would
+    pin a mode's ring at whatever `within_stage_frac(stage, 0.0)` computes
+    instead of leaving it on the mode's own wall-clock fallback, which is
+    exactly backwards: the entire point of `frac=None` is "nothing real to
+    show here."
+
+    `within_stage_frac` never raises (an unrecognized stage passes `frac`
+    through unchanged, per its own docstring), so this needs no try/except
+    of its own -- the caller's broad guard covers a malformed `entry` itself
+    (e.g. not a 2-tuple), which is wire-shaped and never this function's job
+    to validate.
+    """
+    if entry is None:
+        return None
+    stage, frac = entry
+    if stage is None or frac is None:
+        return None
+    return within_stage_frac(stage, frac)
 
 
 # ── how fast each animation is allowed to advance ───────────────────────────
@@ -815,7 +976,11 @@ def build_page_html(js, css, chip_count_shown, canvas_w, canvas_h, arch="blackho
         "if(v){window.__vizRun(m,function(){"
         "try{v.activate(m);}catch(e){}});}},"
         "setChipStats:function(i,s){var v=window.__vizChips[i];"
-        "if(v){try{v.setMemoryStats(s);}catch(e){}}}};"
+        "if(v){try{v.setMemoryStats(s);}catch(e){}}},"
+        "setActivity:function(i,a){var v=window.__vizChips[i];"
+        "if(v){try{v.setActivity(a);}catch(e){}}},"
+        "setProgress:function(i,p){var v=window.__vizChips[i];"
+        "if(v){try{v.setProgress(p);}catch(e){}}}};"
         "try{window.__viz.activate('idle');}catch(e){}"
         "})();"
     )
@@ -904,6 +1069,16 @@ class ChipVizPanel(Gtk.Box):
         self._poll_source_id = None
         self._running = False
         self._state = None
+        # Power telemetry: a background thread (subprocess `tt-smi`, ~0.2-
+        # 0.3s) samples independently of `_tick`'s own 1Hz main-loop poll
+        # (see `power_activity`'s section comment). `_latest_powers` is
+        # `None` until the first sample lands -- distinct from `[]` (a
+        # sample that ran and found nothing) -- so `_tick` can tell "no
+        # sample yet, use AICLK" from "tt-smi ran and truly has nothing to
+        # say", though both currently fall back the same way.
+        self._latest_powers = None
+        self._power_thread = None
+        self._power_stop = None
         # `{chip index: (stage, stamped_at)}` for every chip the booth
         # currently believes is mid-fold -- one entry per WORKING chip, so an
         # empty dict is "nothing is folding" and is drawn that way. The stamp
@@ -1046,7 +1221,26 @@ class ChipVizPanel(Gtk.Box):
             return
 
         cleaned = {}
-        for card, stage in items:
+        for card, value in items:
+            # Backward compatible: a plain caller may hand a bare stage
+            # (str/None), matching this method's original contract; a
+            # `(stage, frac)` tuple additionally carries real progress. Both
+            # shapes are accepted per-entry so existing callers (and
+            # tests/unit/test_chipviz_multichip.py, which uses the bare
+            # form throughout) never have to change.
+            if isinstance(value, tuple):
+                if len(value) != 2:
+                    log.debug("ignoring malformed chip stage tuple %r", value)
+                    continue
+                stage, frac = value
+            else:
+                # Bare stage: no frac was ever given. `None`, not `0.0` --
+                # `0.0` is a real progress value (the very start of a stage)
+                # and pushing it as though it were real would pin a mode's
+                # ring at the wrong position instead of leaving it on the
+                # mode's own wall-clock fallback. See `_progress_from_stage_
+                # entry`.
+                stage, frac = value, None
             if stage is None:
                 continue
             if isinstance(card, bool):
@@ -1054,8 +1248,17 @@ class ChipVizPanel(Gtk.Box):
                 # wire should ever produce it, which is exactly why it is
                 # worth refusing rather than silently attributing.
                 continue
+            if frac is not None:
+                try:
+                    frac = float(frac)
+                    if not math.isfinite(frac):
+                        frac = None
+                except (TypeError, ValueError):
+                    # A frac that fails to parse is exactly as absent as one
+                    # that was never given -- `None`, never `0.0` (see above).
+                    frac = None
             try:
-                cleaned[int(card)] = stage
+                cleaned[int(card)] = (stage, frac)
             except (TypeError, ValueError):
                 log.debug("ignoring unusable folding chip index %r", card)
 
@@ -1069,16 +1272,19 @@ class ChipVizPanel(Gtk.Box):
             now = None
 
         refreshed = {}
-        for index, stage in cleaned.items():
+        for index, (stage, frac) in cleaned.items():
             previous = self._chip_stages.get(index)
-            # The stamp moves only on a genuine change -- see
+            # The staleness stamp moves only on a genuine STAGE change -- see
             # STAGE_STALE_AFTER_S for why re-assertion must not refresh it.
+            # frac updates every call regardless, since real progress moves
+            # continuously within an unchanged stage.
             if previous is not None and previous[0] == stage:
-                refreshed[index] = previous
+                refreshed[index] = (stage, frac, previous[2])
             else:
-                refreshed[index] = (stage, now)
+                refreshed[index] = (stage, frac, now)
         self._chip_stages = refreshed
         self._push_modes()
+        self._push_progress()
 
     def tick_staleness(self):
         """Stand down any chip nothing has said anything new about for
@@ -1097,7 +1303,7 @@ class ChipVizPanel(Gtk.Box):
             log.exception("clock failed while checking chip stage staleness")
             return False
         fresh = {index: entry for index, entry in self._chip_stages.items()
-                 if entry[1] is None or (now - entry[1]) < STAGE_STALE_AFTER_S}
+                 if entry[2] is None or (now - entry[2]) < STAGE_STALE_AFTER_S}
         if len(fresh) == len(self._chip_stages):
             return False
         log.info("Tensix activity: %d chip(s) stood down after %.0fs with no "
@@ -1122,6 +1328,35 @@ class ChipVizPanel(Gtk.Box):
             self._eval("window.__viz&&window.__viz.activateChip(%d,%s)"
                        % (index, json.dumps(wanted)))
         self._title_label.set_label(self._title_text().upper())
+
+    def _push_progress(self):
+        """Send each canvas the real progress fraction for its own chip's
+        stage, if it has one.
+
+        Unlike `_push_modes`, this is NOT gated on anything having changed:
+        real progress moves continuously within an unchanged stage (a
+        diffusion chip's `frac` advances on nearly every `stage` event), so
+        skipping unchanged-mode ticks here would freeze the ring at whatever
+        fraction it happened to be at when the mode was last (re)selected.
+        A chip with no stage, or a stage/frac combination
+        `_progress_from_stage_entry` cannot resolve, is simply not pushed
+        for this tick -- the mode's own wall-clock fallback covers it.
+        """
+        for index in range(self._chip_shown):
+            entry = self._chip_stages.get(index)
+            try:
+                progress = _progress_from_stage_entry(
+                    None if entry is None else (entry[0], entry[1]))
+            except TypeError:
+                # An unhashable stage (see `_mode_for_chip`'s own guard for
+                # the same case) raises straight out of `within_stage_frac`'s
+                # dict lookup. Wire-shaped junk costs the progress push, not
+                # an exception on the event path.
+                continue
+            if progress is None:
+                continue
+            self._eval("window.__viz&&window.__viz.setProgress(%d,%s)"
+                       % (index, json.dumps(progress)))
 
     def _mode_for_chip(self, index):
         """What canvas `index` should animate: the mode for THAT chip's own
@@ -1177,31 +1412,87 @@ class ChipVizPanel(Gtk.Box):
             return f"TENSIX ACTIVITY · CHIP {index} · {caption}"
         return f"TENSIX ACTIVITY · {len(working)} CHIPS FOLDING"
 
-    # ── the poll (main loop only; no threads anywhere in this module) ───────
+    # ── the poll: AICLK on the main loop, power on a background thread ─────
 
     def set_running(self, running):
-        """Start or stop the AICLK poll. Idempotent both ways.
+        """Start or stop both polls. Idempotent both ways.
 
-        Stopping REMOVES the GLib source rather than leaving it registered
-        and returning early: a timer that fires every second all day to do
-        nothing is exactly the sort of thing this project has already been
-        bitten by once.
+        Stopping REMOVES the GLib source and STOPS the power thread rather
+        than leaving either registered and returning early: a timer or a
+        thread that fires all day to do nothing is exactly the sort of thing
+        this project has already been bitten by once.
         """
         if running and not self.available:
             return
         if running:
-            if self._poll_source_id is not None:
-                return
-            self._running = True
-            self._poll_source_id = GLib.timeout_add(POLL_INTERVAL_MS, self._tick)
-            # Paint one sample immediately rather than showing an em dash for
-            # the first whole second after the booth opens.
-            self._tick()
+            if self._poll_source_id is None:
+                self._running = True
+                self._poll_source_id = GLib.timeout_add(POLL_INTERVAL_MS, self._tick)
+                # Paint one sample immediately rather than showing an em dash
+                # for the first whole second after the booth opens.
+                self._tick()
+            self._start_power_thread()
             return
         self._running = False
         if self._poll_source_id is not None:
             GLib.source_remove(self._poll_source_id)
             self._poll_source_id = None
+        self._stop_power_thread()
+
+    def _start_power_thread(self):
+        if self._power_thread is not None:
+            return
+        self._power_stop = threading.Event()
+        self._power_thread = threading.Thread(
+            target=self._power_loop, args=(self._power_stop,), daemon=True)
+        self._power_thread.start()
+
+    def _stop_power_thread(self):
+        if self._power_stop is not None:
+            self._power_stop.set()
+        self._power_thread = None
+        self._power_stop = None
+        # A stale sample must not keep steering the animation after power
+        # telemetry has been told to stop -- the same reason `_tick` itself
+        # goes back to em-dash rather than a frozen number once its own poll
+        # stops.
+        self._latest_powers = None
+
+    def _power_loop(self, stop):
+        """Background thread: run `tt-smi` (~0.2-0.3s) and hand the result to
+        the main thread. Does NO GTK work here -- the subprocess would
+        otherwise block the UI, the GTK threading rule this module had no
+        thread to violate before. Exits promptly when `stop` is set (via
+        `stop.wait`, never `time.sleep`, so stopping does not wait out a
+        whole interval first).
+        """
+        while not stop.is_set():
+            powers = read_chip_power_watts()
+            GLib.idle_add(self._apply_power_sample, stop, powers)
+            stop.wait(POWER_POLL_INTERVAL_S)
+
+    def _apply_power_sample(self, stop, powers):
+        """Main thread: store the latest sample for `_tick` to use next time
+        it runs. A sample that finishes after this thread was told to stop
+        (`stop.is_set()`) is discarded rather than resurrecting
+        `_latest_powers` right after `_stop_power_thread` cleared it.
+        """
+        if stop.is_set():
+            return False
+        self._latest_powers = powers
+        return False
+
+    def _activity_for(self, index, mhz):
+        """One chip's activity scalar, preferring a real power sample over
+        AICLK -- see this module's "power, the preferred signal" section for
+        why. Falls back to AICLK whenever no power sample has arrived yet,
+        `tt-smi` is unavailable, or this specific chip's reading was `None`
+        in an otherwise-real sample.
+        """
+        powers = self._latest_powers
+        if powers is not None and index < len(powers) and powers[index] is not None:
+            return power_activity(powers[index])
+        return clock_activity(mhz)
 
     def _tick(self):
         """One poll: read every chip's clock, update the readout, feed each
@@ -1217,24 +1508,37 @@ class ChipVizPanel(Gtk.Box):
         """
         try:
             clocks = read_chip_clocks()
-            self._readout_label.set_label(
-                readout_text(clocks[:self._chip_shown], self._chip_shown,
-                             self._chip_actual))
+            powers = self._latest_powers
+            shown_powers = (powers[:self._chip_shown] if powers is not None
+                             else None)
+            if shown_powers is not None and any(w is not None for w in shown_powers):
+                readout = power_readout_text(shown_powers, self._chip_shown,
+                                              self._chip_actual)
+            else:
+                readout = readout_text(clocks[:self._chip_shown], self._chip_shown,
+                                        self._chip_actual)
+            self._readout_label.set_label(readout)
             for index in range(self._chip_shown):
                 mhz = clocks[index] if index < len(clocks) else None
-                if mhz is None:
+                has_power = (powers is not None and index < len(powers)
+                             and powers[index] is not None)
+                if mhz is None and not has_power:
                     continue
+                activity = self._activity_for(index, mhz)
                 # Per chip, not per panel: the flow floor in `flow_params`
                 # exists so a chip that is genuinely working never looks
                 # switched off, and applying it to the three chips that are
                 # NOT folding would be the same claim this panel just
                 # stopped making with the animation mode.
                 active = self._mode_for_chip(index) != "idle"
-                dram, l1, writeback = flow_params(clock_activity(mhz), active)
+                dram, l1, writeback = flow_params(activity, active)
                 self._eval(
                     "window.__viz&&window.__viz.setChipStats(%d,"
                     "{dram_bw:%.3f,l1_fill:%.3f,writeback:%.3f})"
                     % (index, dram, l1, writeback))
+                self._eval(
+                    "window.__viz&&window.__viz.setActivity(%d,%.3f)"
+                    % (index, activity))
         except Exception:
             log.exception("Tensix activity poll failed")
         return True

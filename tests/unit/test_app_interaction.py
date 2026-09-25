@@ -1978,6 +1978,25 @@ def test_the_tensix_panel_sits_directly_below_the_telemetry_panel():
     assert app.telemetry_panel.get_next_sibling() is app.chipviz_panel
 
 
+def test_opening_the_tensix_panel_does_not_move_the_affinity_panel():
+    """A visitor watching a live Q&A answer land must not have it hop ~160px
+    down the rail the instant someone else presses `T` -- reported live on a
+    running booth (2026-09-24). `question_panel` sits BEFORE the telemetry/
+    chipviz pair (which must stay adjacent to each other, see the test
+    above) specifically so toggling the Tensix panel only ever displaces the
+    hint row and diagnostics panel below it, never the panel a visitor is
+    actively watching.
+
+    Mutation this catches: appending `question_panel` after `chipviz_panel`
+    again.
+    """
+    app = _app()
+    rail = app._build_side_rail()
+    assert rail is not None
+    assert app.pipeline_panel.get_next_sibling() is app.question_panel
+    assert app.question_panel.get_next_sibling() is app.telemetry_panel
+
+
 def test_a_stage_event_re_aims_the_animation():
     app = _app()
     app.chipviz_panel = _RecordingChipViz()
@@ -1986,7 +2005,7 @@ def test_a_stage_event_re_aims_the_animation():
     app._handle_event({"type": "stage", "job_id": "j1", "stage": "diffusion",
                        "frac": 0.5})
     assert app.chipviz_panel.states[-1] == "attract"
-    assert app.chipviz_panel.chip_stages[-1] == {0: "diffusion"}
+    assert app.chipviz_panel.chip_stages[-1] == {0: ("diffusion", 0.5)}
 
 
 def test_a_non_stage_event_refreshes_the_state_without_inventing_a_stage():
@@ -2016,7 +2035,7 @@ def test_not_ready_stands_every_chip_down_not_just_one():
                            "target_id": "t", "n_residues": 20, "card": card})
         app._handle_event({"type": "stage", "job_id": f"j{card}",
                            "stage": "diffusion", "frac": 0.5})
-    assert app.chipviz_panel.chip_stages[-1] == {c: "diffusion"
+    assert app.chipviz_panel.chip_stages[-1] == {c: ("diffusion", 0.5)
                                                  for c in range(4)}
     app._handle_event({"type": "not_ready", "missing": ["weights"]})
     assert app.chipviz_panel.chip_stages[-1] == {c: None for c in range(4)}
@@ -2041,7 +2060,7 @@ def test_each_cell_carries_its_own_stage_to_the_panel():
         app._handle_event({"type": "stage", "job_id": f"j{card}",
                            "stage": stage, "frac": 0.5})
     assert app.chipviz_panel.chip_stages[-1] == {
-        0: "diffusion", 1: "trunk", 2: "confidence", 3: None}
+        0: ("diffusion", 0.5), 1: ("trunk", 0.5), 2: ("confidence", 0.5), 3: None}
 
 
 def test_a_finished_fold_stops_claiming_its_chip_is_working():
@@ -2797,7 +2816,7 @@ def test_the_chip_that_is_folding_is_named_to_the_tensix_panel():
                        "n_residues": 20, "card": 2})
     app._handle_event({"type": "stage", "job_id": "j1", "stage": "diffusion",
                        "frac": 0.5})
-    assert app.chipviz_panel.chip_stages[-1] == {2: "diffusion", 3: None}
+    assert app.chipviz_panel.chip_stages[-1] == {2: ("diffusion", 0.5), 3: None}
 
 
 def test_a_stage_event_does_not_reattribute_the_fold_to_another_chip():
@@ -2814,7 +2833,52 @@ def test_a_stage_event_does_not_reattribute_the_fold_to_another_chip():
     app._handle_event({"type": "stage", "job_id": "j1", "stage": "diffusion",
                        "frac": 0.5})
     assert app.chipviz_panel.chip_stages[-1] == {
-        0: None, 1: None, 2: "diffusion", 3: None}
+        0: None, 1: None, 2: ("diffusion", 0.5), 3: None}
+
+
+def test_chip_stages_carries_the_wire_fraction_alongside_stage():
+    """`stage`'s wire `frac` is real, per-chip progress (tt-bio's own
+    (step, total) counts for trunk/diffusion) that used to reach
+    `_handle_event` and go no further than the pipeline panel. A chip WITH a
+    stage now reports `(stage, frac)` so `ChipVizPanel` can drive real
+    progress instead of a free-running clock; a chip with none still reports
+    a bare `None` (see `test_a_stage_event_does_not_reattribute_the_fold_to_
+    another_chip`, unchanged, for that shape)."""
+    app = _app()
+    app.chipviz_panel = _RecordingChipViz()
+    app._handle_event(_a_fold_starting())
+    app._handle_event({"type": "stage", "job_id": "j1", "stage": "diffusion",
+                       "frac": 0.55})
+    assert app.chipviz_panel.chip_stages[-1] == {0: ("diffusion", 0.55)}
+
+
+def test_stage_frac_clears_when_stage_clears():
+    """A chip between folds must not keep reporting the stale progress of
+    the fold that just ended -- `stage_frac` clears in lockstep with
+    `stage`, the same way it clears to None on job_done/job_error."""
+    app = _app()
+    app.chipviz_panel = _RecordingChipViz()
+    app._handle_event(_a_fold_starting())
+    app._handle_event({"type": "stage", "job_id": "j1", "stage": "diffusion",
+                       "frac": 0.55})
+    app._handle_event({"type": "job_done", "job_id": "j1", "wall_s": 1.0,
+                       "cif_path": ""})
+    assert app.chipviz_panel.chip_stages[-1] == {0: None}
+
+
+def test_a_malformed_stage_frac_is_none_not_a_fake_zero():
+    """`0.0` is a real progress value (the very start of a stage);
+    `_chip_stages()` must not manufacture one out of wire junk it could not
+    parse. `ui.chipviz._progress_from_stage_entry` treats a bare `None` frac
+    as "fall back to the wall clock" and a real `0.0` as "pin the ring at
+    the start" -- conflating them here would pin every malformed-frac event
+    at the wrong end instead of falling back."""
+    app = _app()
+    app.chipviz_panel = _RecordingChipViz()
+    app._handle_event(_a_fold_starting())
+    app._handle_event({"type": "stage", "job_id": "j1", "stage": "diffusion",
+                       "frac": "not-a-number"})
+    assert app.chipviz_panel.chip_stages[-1] == {0: ("diffusion", None)}
 
 
 # ---------------------------------------------------------------------------

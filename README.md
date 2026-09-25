@@ -283,6 +283,43 @@ the UI the same manifest and the same selection. That is deliberate and it is lo
 before this, the daemon got one target and the UI defaulted to the full four-target
 manifest, so the gallery advertised proteins the daemon had no input file for.
 
+### Watching from a browser too — `scripts/run-webview.sh`
+
+The GTK4 window above is the booth. There is also a thin, optional **browser** companion
+(`webview/`) — real point-cloud folds and the affinity Q&A panel, served over
+[SSE](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events) to any tab
+that opens the URL, for watching (and nudging — picking a target) the booth from a machine
+with no GTK4/Wayland session at all: over `ssh`, from a laptop, from a phone on the same
+network. It is a **second client of the same daemon**, never a second daemon — it opens no
+Tenstorrent device itself, so running it alongside the GTK app is the intended use, not a
+race (`runner/daemon.py`'s socket server already supports several simultaneous clients).
+Stopping the browser viewer never stops the booth, and stopping the booth (`run-demo.sh`'s
+own Ctrl-C) just leaves the browser tab showing "reconnecting…" until another daemon starts.
+
+```bash
+./scripts/run-demo.sh          # terminal 1 — the booth, as usual
+./scripts/run-webview.sh       # terminal 2 — attaches to the SAME daemon
+```
+
+Then open the printed URL (`http://127.0.0.1:8080/` by default — pick another `--port` if
+something else on the box already holds 8080). No hardware handy? `./scripts/run-webview.sh
+--mock` replays a recorded fixture instead (still opens no device) so there is something to
+look at with zero chips in reach.
+
+It is a deliberate v1 scope cut from the GTK app, not a second implementation to keep in
+sync: no ribbon/cartoon reveal (folds render as a point cloud throughout, holding the last
+one dimmed once a fold finishes), the gallery is "targets seen so far" rather than the real
+manifest, and a question shows the model's own score rather than the human-written question
+text (which never travels on the wire). Full list of cuts and why in `webview/README.md`.
+
+**Not yet packaged.** `webview/` and `scripts/run-webview.sh` ship in a source checkout only
+— `debian/tt-bio-demo.install` does not list them, so a booth installed from the `.deb`s does
+not have this yet. Excluded deliberately rather than silently, the same "capability shipped
+before its provisioning story" shape this project has flagged before (nesso1's weights
+postinst, `tt-bio weights`/`$TT_BIO_CACHE` in the postinst) — worth a real Docker-container
+packaging pass before it ships to a booth machine, not a one-line addition to the install
+list done in passing.
+
 ### Is this machine ready? — `scripts/doctor.sh`
 
 ```bash

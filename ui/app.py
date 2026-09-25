@@ -167,6 +167,7 @@ three on. Both are the same four viewers.
 import argparse
 import collections
 import logging
+import math
 import os
 import pathlib
 import sys
@@ -534,7 +535,8 @@ class _SlotView:
 
     __slots__ = ("awaiting_first_frame", "current_job_id", "current_target_id",
                  "shown_target_id", "has_structure", "ribbon_generation",
-                 "pending_ribbon", "stage", "shown_cif_path", "pending_highlight")
+                 "pending_ribbon", "stage", "stage_frac", "shown_cif_path",
+                 "pending_highlight")
 
     def __init__(self):
         self.awaiting_first_frame = False
@@ -545,6 +547,7 @@ class _SlotView:
         self.ribbon_generation = 0
         self.pending_ribbon = None
         self.stage = None
+        self.stage_frac = None
         self.shown_cif_path = None
         # (target_id, outcome) from a finished `_highlight_worker_main`, not
         # yet applied -- guarded by the same `_ribbon_lock` `pending_ribbon`
@@ -2845,6 +2848,17 @@ class DemoApp(Gtk.Application):
         # really there" discipline `ChipVizPanel`'s own availability check
         # follows, applied to a daemon-level capability instead of a
         # host-level one.
+        #
+        # Built BEFORE the telemetry/chipviz pair below, and appended before
+        # them too (2026-09-24): a visitor watching a live Q&A answer land
+        # must not have it hop ~160px down the rail the instant someone else
+        # presses `T` to open the Tensix panel. `telemetry_panel` and
+        # `chipviz_panel` still have to stay adjacent to each other (the
+        # comment above, and test_app_interaction.py's own
+        # `test_the_animation_sits_directly_under_its_own_chips_readout`
+        # pin that), so this panel moves instead -- toggling `T` now only
+        # ever displaces the hint row and the diagnostics panel below it,
+        # neither of which anyone is watching for a live answer.
         self.question_panel = QuestionQueuePanel(self.questions)
         # The same Q&A facts, large, in the quad's own empty fourth cell
         # (see ui/qa_spotlight.py). Built here rather than inside
@@ -2853,8 +2867,8 @@ class DemoApp(Gtk.Application):
         # into whichever `QuadView` is current); it is not appended to
         # `side` below, since it lives in the quad, not the rail.
         self.qa_spotlight = QASpotlightCell(self.questions)
-        for panel in (self.pipeline_panel, self.telemetry_panel,
-                      self.chipviz_panel, self.question_panel):
+        for panel in (self.pipeline_panel, self.question_panel,
+                      self.telemetry_panel, self.chipviz_panel):
             panel.set_hexpand(False)
             panel.set_vexpand(False)
             side.append(panel)
@@ -5203,11 +5217,30 @@ class DemoApp(Gtk.Application):
                     # reached it.
                     view.stage = (event.get("stage") if kind == "stage"
                                   else None)
+                    # `frac` is wire data, coerced defensively -- but a
+                    # value that fails to parse becomes `None`, never `0.0`.
+                    # `0.0` is a REAL progress value (the very start of a
+                    # stage); `None` means "no frac to show at all," which
+                    # is what `ui.chipviz._progress_from_stage_entry` needs
+                    # to fall back to the mode's own wall-clock phase instead
+                    # of pinning the ring at a fabricated start. Cleared to
+                    # `None` in lockstep with `stage` clearing to `None`, so
+                    # a chip between folds never reports a stale progress
+                    # value for a stage it is no longer in.
+                    if kind == "stage":
+                        try:
+                            frac = float(event.get("frac", 0.0))
+                            view.stage_frac = frac if math.isfinite(frac) else None
+                        except (TypeError, ValueError):
+                            view.stage_frac = None
+                    else:
+                        view.stage_frac = None
             elif kind == "not_ready":
                 # The daemon has stopped folding entirely -- every cell, not
                 # just one.
                 for view in self._slots:
                     view.stage = None
+                    view.stage_frac = None
             self._sync_chipviz()
 
             if kind == "job_start":
@@ -5812,13 +5845,18 @@ class DemoApp(Gtk.Application):
             log.exception("quad caption for slot %r dropped", slot)
 
     def _chip_stages(self):
-        """`{chip index: that chip's own current stage}` for every cell.
+        """`{chip index: that chip's own current (stage, stage_frac), or
+        None}` for every cell.
 
         The mapping the Tensix panel wants (ui/chipviz.py's
         `set_chip_stages`), built from the only place that knows it: each
-        cell's own `_SlotView.stage`, set by that cell's `stage` events and
-        cleared when its fold starts, ends or fails. A cell between folds
-        contributes `None`, which the panel draws as a resting chip.
+        cell's own `_SlotView.stage`/`stage_frac`, set by that cell's `stage`
+        events and cleared when its fold starts, ends or fails. A cell
+        between folds contributes a bare `None` (not a tuple -- there is no
+        stage to pair a fraction with), which the panel draws as a resting
+        chip with no progress to show. A cell WITH a stage contributes
+        `(stage, stage_frac)` so the panel can drive real progress instead of
+        a free-running clock.
 
         Keyed by CHIP, not by slot. `self.cards` is the daemon's own card
         list in the order the cells were built, and the panel's canvases are
@@ -5830,7 +5868,9 @@ class DemoApp(Gtk.Application):
         stages = {}
         for slot, view in enumerate(self._slots):
             if slot < len(self.cards):
-                stages[self.cards[slot]] = view.stage
+                stages[self.cards[slot]] = (
+                    (view.stage, view.stage_frac) if view.stage is not None
+                    else None)
         return stages
 
     def _sync_chipviz(self):
