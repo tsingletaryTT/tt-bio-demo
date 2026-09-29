@@ -710,8 +710,8 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
       </div>
 
       <p style="margin-top:2rem">
-        As of v0.7.3 the repository holds <span class="num">4,765</span> commits.
-        <span class="num">4,328</span> of them are his.
+        As of v0.8.0 the repository holds <span class="num">5,306</span> commits.
+        <span class="num">4,869</span> of them are his.
       </p>
     </div>
   </div>
@@ -775,7 +775,7 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
       <span class="eyebrow">What it runs today</span>
       <h2>Fourteen model families, one command line</h2>
       <p>
-        tt-bio started as a Boltz-2 port. As of v0.7.3 it runs considerably
+        tt-bio started as a Boltz-2 port. As of v0.8.0 it runs considerably
         more than that, all through one CLI and all on Tenstorrent hardware.
       </p>
     </div>
@@ -920,6 +920,14 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
         The booth is a GTK4 application with no browser in it. The compute runs
         in a separate process holding the chips; the two talk over a socket, so
         a wedged card cannot take the screen down with it.
+      </p>
+      <p>
+        A thin browser viewer exists too &mdash; <code>webview/</code>, a second
+        client of the same daemon over the same socket, for watching (and
+        nudging) the booth from a machine with no GTK4 session at all. It is a
+        deliberate v1 scope cut, not a second booth: no ribbon reveal, a
+        simplified gallery, and it opens no Tenstorrent device of its own. See
+        the project's README for how to run it alongside the booth.
       </p>
     </div>
 

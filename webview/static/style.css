@@ -247,6 +247,45 @@ button:hover { color: var(--fg); border-color: var(--accent-bright); }
 .seen-targets { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px; }
 .seen-targets button { font-size: 11px; padding: 4px 9px; }
 
+.telemetry-panel {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 12px 0;
+}
+.telemetry-cell {
+  background: var(--bg-alt);
+  border-radius: 8px;
+  padding: 8px 14px;
+  min-width: 120px;
+}
+.telemetry-label {
+  font-size: 11px;
+  letter-spacing: .08em;
+  color: var(--accent-bright);
+  font-weight: 700;
+}
+.telemetry-temp {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--fg);
+}
+.telemetry-rest {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.tensix-panel {
+  display: flex;
+  gap: 6px;
+  margin: 12px 0;
+}
+.tensix-panel canvas {
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  background: var(--bg-cell);
+}
+
 @media (max-width: 600px) {
   /* Too narrow to fit a 2x2 grid in the remaining flex height at all --
      stack instead and let the page scroll (see `overflow-y: auto` on

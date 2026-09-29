@@ -21,12 +21,14 @@ serving one of tests/fixtures/streams/*.jsonl (see webview/README.md) and
 every event this module forwards is real, recorded protocol traffic -- not
 fabricated for the demo.
 
-Import discipline: this module reaches into `runner.*` for nothing.
-Everything it knows about the wire comes from `protocol/events.py`, so it
-runs under EITHER of the project's own venvs -- `.venvs/venv-ui` or
-`.venvs/venv-runner` -- with no preference between them; use whichever you
-already have set up. Per this project's convention, run it through one of
-those, never a bare interpreter.
+Import discipline: this module still reaches into no `runner.*` code -- everything it
+knows about the daemon's own wire comes from `protocol/events.py`. It DOES reach into
+several `ui.*` modules for their pure, GTK-free logic (ui.telemetry's tt-smi sampler,
+ui.questions'/ui.chipviz's text-formatting functions, ui.playlist's loaders,
+ui.cartoon's mesh builder) rather than reimplementing any of it -- which means, since
+2026-09-24, this module requires `.venvs/venv-ui` specifically (PyGObject + gemmi +
+numpy), not `.venvs/venv-runner`. Run it through `.venvs/venv-ui/bin/python3`, per this
+project's convention.
 
 Auth: binding beyond loopback (--host anything other than 127.0.0.1/
 localhost/::1) exposes unauthenticated fold/Q&A control endpoints to every
@@ -39,7 +41,7 @@ import hmac
 import http.server
 import json
 import logging
-import os
+import os.path
 import queue
 import socket
 import threading
@@ -60,6 +62,35 @@ from protocol.events import (
 log = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+# The same vendored tensix-viz build ui/chipviz.py already ships, reused
+# verbatim rather than fetched from anywhere at runtime -- see
+# ui/assets/tensix-viz/PROVENANCE.md for why this project vendors these two
+# files at all (offline at the venue) and "Do not hand-edit these files".
+TENSIX_VIZ_ASSETS_DIR = Path(__file__).parent.parent / "ui" / "assets" / "tensix-viz"
+
+
+def _ensure_tensix_viz_assets_linked():
+    """Symlink the vendored tensix-viz.{js,css} into webview/static/ so the
+    existing _serve_static path-traversal guard covers them with no second
+    static root. Idempotent -- safe to call on every startup. Falls back to
+    a real copy if symlinking is unavailable (e.g. some container/FS setups),
+    so a booth this runs on is never left with a missing asset over a
+    filesystem quirk this bridge cannot control."""
+    for name in ("tensix-viz.js", "tensix-viz.css"):
+        source = TENSIX_VIZ_ASSETS_DIR / name
+        dest = STATIC_DIR / name
+        if dest.exists() or dest.is_symlink():
+            continue
+        if not source.is_file():
+            log.warning("tensix-viz asset missing at %s; Tensix panel will "
+                       "have no library to draw with", source)
+            continue
+        try:
+            dest.symlink_to(source)
+        except OSError:
+            import shutil
+            shutil.copyfile(source, dest)
 
 # How long to wait before retrying a dropped or refused daemon connection.
 # Same order of magnitude as the daemon's own WORKER_RESTART_DELAY_S: "this
@@ -89,7 +120,7 @@ MAX_POST_BODY_BYTES = 4096
 # Bound on one subscriber's backlog. A tab that stops reading (backgrounded,
 # a dead network path) must not be allowed to grow without limit, and it must
 # not be allowed to make the daemon-reading thread block on ITS queue while
-# every other tab waits behind it -- see _broadcast.
+# every other tab waits behind it -- see publish.
 SUBSCRIBER_QUEUE_MAX = 200
 
 # How long GET /events waits for a real event before writing a comment line,
@@ -239,7 +270,7 @@ class DaemonLink:
         daemon sends exactly one hello/not_ready per connection (it is the
         greeting, not a periodic status), so there is nothing for a live
         broadcast to race against here -- but adding to `_subscribers` first
-        would let a concurrent `_broadcast` of some other event deliver into
+        would let a concurrent `publish` of some other event deliver into
         this queue before the priming put, handing the caller
         [live_event, hello] instead of [hello, live_event]. Priming first
         means the very worst case is a subscriber occasionally missing a
@@ -371,9 +402,17 @@ class DaemonLink:
             event = {**event, "bridge_incompatible": True}
         if event["type"] in ("hello", "not_ready"):
             self.last_hello = event
-        self._broadcast(event)
+        self.publish(event)
 
-    def _broadcast(self, event):
+    def publish(self, event):
+        """Broadcast `event` to every subscriber, the same fan-out
+        `_dispatch` uses for a relayed daemon event. The one entry point
+        every OTHER publisher in this module (TelemetryBroadcaster,
+        RibbonCache, the Q&A tracker) uses too -- so a slow/backgrounded
+        tab's queue filling up drops an event for THAT tab only, for a
+        bridge-originated event exactly as it already does for a relayed
+        one. See SUBSCRIBER_QUEUE_MAX.
+        """
         with self._subscribers_lock:
             subscribers = list(self._subscribers)
         for q in subscribers:
@@ -510,9 +549,26 @@ def make_handler(daemon_link, auth_token=None,
         def _serve_static(self, path):
             if path == "/":
                 path = "/index.html"
-            candidate = (STATIC_DIR / path.lstrip("/")).resolve()
+            static_root = STATIC_DIR.resolve()
+            # Collapse ".."/"." components LEXICALLY (os.path.normpath does
+            # no filesystem access and never follows a symlink), then check
+            # the result stays inside static_root. This is deliberately NOT
+            # `.resolve()` on the whole candidate: `.resolve()` also follows
+            # the FINAL path component's own symlink, and
+            # _ensure_tensix_viz_assets_linked() puts real symlinks to
+            # ui/assets/tensix-viz/ (outside this directory, on purpose)
+            # directly inside STATIC_DIR -- a first version of this guard
+            # resolved those straight into a 403, since their target is
+            # legitimately outside static_root. Blocking `..`-escapes still
+            # works exactly as before (the traversal test below pins that);
+            # only OUR OWN, deliberately-planted file symlinks are now
+            # servable. No client-supplied path can create a new symlink
+            # here, so this does not open any traversal this guard exists to
+            # stop.
+            normalized = os.path.normpath(str(static_root / path.lstrip("/")))
+            candidate = Path(normalized)
             try:
-                candidate.relative_to(STATIC_DIR.resolve())
+                candidate.relative_to(static_root)
             except ValueError:
                 # Outside webview/static entirely -- e.g. "/../bridge.py".
                 self.send_error(403, "forbidden")
@@ -598,9 +654,13 @@ def main(argv=None):
 
     auth_token = args.auth_token or os.environ.get("WEBVIEW_AUTH_TOKEN")
     check_non_loopback_requires_auth(args.host, auth_token)
+    _ensure_tensix_viz_assets_linked()
 
     link = DaemonLink(args.daemon_socket)
     link.start()
+    from webview.telemetry_broadcaster import TelemetryBroadcaster
+    telemetry = TelemetryBroadcaster(link)
+    telemetry.start()
     server = build_server(link, args.host, args.port, auth_token=auth_token)
     log.info("serving http://%s:%d (daemon socket: %s)%s",
              args.host, args.port, args.daemon_socket,
@@ -610,6 +670,7 @@ def main(argv=None):
     except KeyboardInterrupt:
         pass
     finally:
+        telemetry.stop()
         server.shutdown()
         link.stop()
 

@@ -51,7 +51,7 @@ gi.require_version("Gdk", "4.0")
 
 from gi.repository import Gdk, Gtk
 
-from ui.questions import (SCORE_GLOSS, error_text, format_score,
+from ui.questions import (SCORE_GLOSS, BouncingLabel, error_text, format_score,
                            in_flight_text, no_question_answered_text,
                            question_label)
 
@@ -182,10 +182,15 @@ class QASpotlightCell(Gtk.Box):
         center.set_vexpand(True)
         center.set_halign(Gtk.Align.FILL)
 
-        self._question_label = Gtk.Label(xalign=0.5)
-        self._question_label.set_wrap(True)
-        self._question_label.set_justify(Gtk.Justification.CENTER)
-        self._question_label.add_css_class("qa-spotlight-question")
+        # BouncingLabel (ui/questions.py), not a plain Gtk.Label: this is the
+        # one place in the quad that shows a question actually being scored,
+        # so it gets the same in-flight bounce the rail's own
+        # QuestionQueuePanel does -- one shared implementation, not a second
+        # hand-typed animation. `set_halign(CENTER)` overrides that class's
+        # own FILL default, matching this cell's centered layout; animated
+        # only in the in-flight branch of `_render` below, same as there.
+        self._question_label = BouncingLabel("qa-spotlight-question")
+        self._question_label.set_halign(Gtk.Align.CENTER)
         center.append(self._question_label)
 
         self._spinner = Gtk.Spinner()
@@ -301,9 +306,10 @@ class QASpotlightCell(Gtk.Box):
         self._question_label.remove_css_class("qa-spotlight-error")
 
         if self._in_flight is not None:
-            self._question_label.set_label(
+            self._question_label.set_text(
                 in_flight_text(self._in_flight["target_id"],
-                               self._in_flight["question_text"]))
+                               self._in_flight["question_text"]),
+                animated=True)
             self._spinner.set_visible(True)
             self._spinner.start()
             self._score_label.set_visible(False)
@@ -315,7 +321,7 @@ class QASpotlightCell(Gtk.Box):
         self._spinner.stop()
 
         if self._answered is None:
-            self._question_label.set_label(no_question_answered_text())
+            self._question_label.set_text(no_question_answered_text(), animated=False)
             self._score_label.set_visible(False)
             self._score_label.set_label("")
             self._gloss_label.set_label("")
@@ -325,13 +331,13 @@ class QASpotlightCell(Gtk.Box):
         question_text = self._answered["question_text"]
         if self._answered["error"]:
             self._question_label.add_css_class("qa-spotlight-error")
-            self._question_label.set_label(error_text(target_id, question_text))
+            self._question_label.set_text(error_text(target_id, question_text), animated=False)
             self._score_label.set_visible(False)
             self._score_label.set_label("")
             self._gloss_label.set_label("")
             return
 
-        self._question_label.set_label(question_label(question_text, target_id))
+        self._question_label.set_text(question_label(question_text, target_id), animated=False)
         formatted = format_score(self._answered["score"])
         if formatted is None:
             self._score_label.set_visible(False)

@@ -1,3 +1,31 @@
+tt-bio-demo (0.7.0) noble; urgency=medium
+
+  * The Tensix panel's per-chip animation now tracks the chip instead of
+    only decorating it: tensix-viz 1.3.0 adds setActivity/setProgress, and
+    the panel feeds both a real measured clock activity and the wire's own
+    stage fraction (trunk's refinement cycles, diffusion's denoising
+    steps) into them every tick. Re-measured, not asserted fixed: a
+    steady-state brightness swing of 69.4x between idle and fully active,
+    against the ~0.3% frame-noise floor the earlier flicker fix measured.
+  * scripts/update-tensix-viz.sh re-vendors tensix-viz and rewrites its own
+    PROVENANCE.md attribution in one step, replacing a two-manual-edits-
+    and-a-cp process with one that refuses an upstream checkout that is
+    not git or has uncommitted changes.
+  * The affinity Q&A panel bounces while a question is being scored -- a
+    per-word bob plus colour cycle on both the rail's queue panel and the
+    quad's spotlight cell, matching the animation the browser companion
+    already had. Settles to plain static text the instant a real answer
+    arrives; respects GTK's own reduced-motion setting.
+  * The browser companion (`webview/`, `scripts/run-webview.sh`) gets its
+    first changelog entry: it shipped and was tested earlier but was never
+    actually committed to a branch. It is documented in the README and
+    docs/followups.md now, alongside its known scope cuts.
+  * The docs site's commit-count claim is refreshed for the current tt-bio
+    pin (0.8.0): 5,306 commits, 4,869 of them Moritz's, both re-verified
+    rather than pasted forward from the last pin.
+
+ -- Taylor Singletary <tsingletary@tenstorrent.com>  Thu, 24 Sep 2026 11:02:51 -0700
+
 tt-bio-demo (0.6.1) noble; urgency=medium
 
   * v0.6.0 was tagged and released with an empty CI gate failure: the

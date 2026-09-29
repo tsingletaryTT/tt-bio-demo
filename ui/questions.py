@@ -51,7 +51,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
 
-from gi.repository import Gdk, Gtk
+from gi.repository import Gdk, GLib, Gtk
 
 log = logging.getLogger(__name__)
 
@@ -287,6 +287,16 @@ _QUESTIONS_CSS = f"""
 .question-queue-answered-text.question-queue-answered-error {{
     color: {_RED};
 }}
+/* `BouncingLabel`'s per-word colour cycle, while a question is in flight --
+   the GTK counterpart to webview/static/style.css's `.oompa-bounce`
+   (`oompa-hue`). Not new colours: the same three this file already uses as
+   TEXT on `_DARK_BASE` (`.question-queue-inflight-text`'s own accent,
+   `.question-queue-answered-text`'s bright, `...-error`'s red) so the
+   legibility walker this module already passes covers these three
+   combinations without a fourth colour to separately vet. */
+.question-queue-bounce-a {{ color: {_ACCENT_TEXT}; }}
+.question-queue-bounce-b {{ color: {_BG}; }}
+.question-queue-bounce-c {{ color: {_RED}; }}
 """
 
 
@@ -303,6 +313,177 @@ def _ensure_css_installed():
     Gtk.StyleContext.add_provider_for_display(
         display, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
     _CSS_INSTALLED = True
+
+
+# ---------------------------------------------------------------------------
+# The in-flight bounce -- this project's own "yes" to matching the webview's
+# existing marching-band bounce (webview/static/app.js's setQuestionText,
+# style.css's `.oompa-bounce`) on the native GTK side, which had none. Per
+# WORD here, not per letter: the rail is 552-700px wide (rail_width_for, ui/
+# app.py), nowhere near the browser panel's full content width, and a
+# non-wrapping row of individually bobbing letters would either overflow the
+# rail or need line-wrap logic Gtk.Box does not have. Gtk.FlowBox wraps at
+# word boundaries for free, so the bounce/colour-cycle idea survives the
+# move to a narrower surface -- the exact per-letter texture does not, and
+# that is a deliberate adaptation for this surface, not a shortfall.
+# ---------------------------------------------------------------------------
+_BOUNCE_TICK_MS = 60
+_BOUNCE_BOB_PERIOD_S = 0.9       # matches webview's oompa-bob
+_BOUNCE_HUE_PERIOD_S = 2.7       # matches webview's oompa-hue
+_BOUNCE_STAGGER_S = 0.09         # per WORD, not per letter (see module note
+                                  # above) -- a bigger stagger than the web's
+                                  # 0.045s/letter keeps the same "marching"
+                                  # cadence across far fewer tokens.
+_BOUNCE_COLOR_CLASSES = (
+    "question-queue-bounce-a", "question-queue-bounce-b", "question-queue-bounce-c")
+_BOUNCE_MARGIN_PX = 2            # the "up" hop, in the only direction
+                                  # Gtk.Widget.set_margin_top actually
+                                  # supports: a SMALLER top margin reads as
+                                  # higher, never a negative one (verified
+                                  # empirically -- GTK4 clamps/ignores a
+                                  # negative margin-top set via CSS, which
+                                  # this class deliberately does not rely on).
+
+
+class BouncingLabel(Gtk.FlowBox):
+    """A label that bounces its words, one at a time, while animated --
+    shared by `QuestionQueuePanel` (below) and
+    `ui.qa_spotlight.QASpotlightCell`'s in-flight row, which is why this
+    class is public rather than a private helper of the panel below (the
+    same "one shared implementation, not a second hand-typed copy" reason
+    this module already gives for making `question_label`/`in_flight_text`/
+    etc. public).
+
+    `set_text(text, animated=False)` -- or GTK's own `gtk-enable-animations`
+    setting being off, the system-level "reduced motion" switch this class
+    defers to exactly the way the web version's own `@media
+    (prefers-reduced-motion: reduce)` rule does -- renders one plain,
+    motionless, wrapping label instead: the settled state a real answer
+    moves to, matching the web version's own rule verbatim ("motion means
+    pending, stillness means here's the answer -- nothing keeps performing
+    once there is a real number to read").
+
+    Public API is deliberately `Gtk.Label`-shaped (`get_label()` returns the
+    text last passed to `set_text`) so `get_display_text()` in both callers
+    keeps reading this like any other label, with no widget-type special
+    case at either call site.
+    """
+
+    def __init__(self, base_css_class):
+        super().__init__()
+        self._base_css_class = base_css_class
+        self.set_selection_mode(Gtk.SelectionMode.NONE)
+        self.set_min_children_per_line(1)
+        self.set_max_children_per_line(999)
+        self.set_row_spacing(2)
+        self.set_column_spacing(4)
+        self.set_homogeneous(False)
+        self.set_valign(Gtk.Align.START)
+        self.set_halign(Gtk.Align.FILL)
+        self._words = []          # the per-word Gtk.Labels, while animated
+        self._tick_id = None
+        self._start_time = None
+        self._text = ""
+        # Extra CSS classes a caller has asked for (e.g. `ui.qa_spotlight`'s
+        # error state, `.qa-spotlight-question.qa-spotlight-error`) -- kept
+        # here and reapplied to whichever internal label(s) `set_text`
+        # rebuilds, since a combined-selector CSS rule like that one only
+        # matches when both classes land on the SAME element, and `set_text`
+        # freely swaps that element out (one plain label, or several word
+        # labels) underneath a caller that has no reason to know that.
+        self._extra_css_classes = set()
+
+    def get_label(self):
+        """The text last passed to `set_text` -- see the class docstring on
+        why this mirrors `Gtk.Label.get_label()` rather than reading back
+        from the (possibly several) child widgets."""
+        return self._text
+
+    def add_css_class(self, css_class):
+        super().add_css_class(css_class)
+        self._extra_css_classes.add(css_class)
+        for label in self._current_labels():
+            label.add_css_class(css_class)
+
+    def remove_css_class(self, css_class):
+        super().remove_css_class(css_class)
+        self._extra_css_classes.discard(css_class)
+        for label in self._current_labels():
+            label.remove_css_class(css_class)
+
+    def _current_labels(self):
+        return list(self._words) if self._words else [
+            child for child in [self.get_first_child()] if child is not None]
+
+    def set_text(self, text, animated=True):
+        self._text = text
+        self._stop_tick()
+        child = self.get_first_child()
+        while child is not None:
+            following = child.get_next_sibling()
+            self.remove(child)
+            child = following
+        self._words = []
+
+        if not (animated and self._animations_enabled()):
+            label = Gtk.Label(label=text, xalign=0.0)
+            label.set_wrap(True)
+            label.add_css_class(self._base_css_class)
+            for extra in self._extra_css_classes:
+                label.add_css_class(extra)
+            self.append(label)
+            return
+
+        for word in text.split(" "):
+            if not word:
+                continue
+            label = Gtk.Label(label=word)
+            label.add_css_class(self._base_css_class)
+            label.add_css_class(_BOUNCE_COLOR_CLASSES[0])
+            for extra in self._extra_css_classes:
+                label.add_css_class(extra)
+            self.append(label)
+            self._words.append(label)
+        if not self._words:
+            return
+        self._start_time = GLib.get_monotonic_time() / 1_000_000
+        self._tick_id = GLib.timeout_add(_BOUNCE_TICK_MS, self._tick)
+
+    def _animations_enabled(self):
+        settings = Gtk.Settings.get_default()
+        if settings is None:
+            return True
+        return bool(settings.get_property("gtk-enable-animations"))
+
+    def _stop_tick(self):
+        if self._tick_id is not None:
+            GLib.source_remove(self._tick_id)
+            self._tick_id = None
+
+    def _tick(self):
+        if self.get_root() is None:
+            # Torn down since the last tick (app shutdown mid-animation) --
+            # stop rather than tick a widget nothing can see any more.
+            self._tick_id = None
+            return False
+        now = GLib.get_monotonic_time() / 1_000_000
+        elapsed = now - self._start_time
+        for index, label in enumerate(self._words):
+            phase = elapsed - index * _BOUNCE_STAGGER_S
+            # One up-hop per period (0 -> up -> 0), the same shape as the
+            # web version's `oompa-bob` keyframes -- never a wobble in both
+            # directions, so it reads as a hop.
+            bob = (1 - math.cos(2 * math.pi * phase / _BOUNCE_BOB_PERIOD_S)) / 2
+            label.set_margin_top(0 if bob > 0.5 else _BOUNCE_MARGIN_PX)
+
+            hue_phase = (phase % _BOUNCE_HUE_PERIOD_S) / _BOUNCE_HUE_PERIOD_S
+            color_index = min(int(hue_phase * len(_BOUNCE_COLOR_CLASSES)),
+                               len(_BOUNCE_COLOR_CLASSES) - 1)
+            for css_class in _BOUNCE_COLOR_CLASSES:
+                if css_class != _BOUNCE_COLOR_CLASSES[color_index]:
+                    label.remove_css_class(css_class)
+            label.add_css_class(_BOUNCE_COLOR_CLASSES[color_index])
+        return True
 
 
 class QuestionQueuePanel(Gtk.Box):
@@ -377,10 +558,8 @@ class QuestionQueuePanel(Gtk.Box):
         in_flight_row.add_css_class("question-queue-row-divider")
         self._spinner = Gtk.Spinner()
         in_flight_row.append(self._spinner)
-        self._in_flight_label = Gtk.Label(xalign=0.0)
-        self._in_flight_label.set_wrap(True)
+        self._in_flight_label = BouncingLabel("question-queue-inflight-text")
         self._in_flight_label.set_hexpand(True)
-        self._in_flight_label.add_css_class("question-queue-inflight-text")
         in_flight_row.append(self._in_flight_label)
         self.append(in_flight_row)
 
@@ -518,12 +697,14 @@ class QuestionQueuePanel(Gtk.Box):
         self._pending_label.set_label(pending_text(self._pending_questions()))
 
         if self._in_flight is not None:
-            self._in_flight_label.set_label(
+            self._in_flight_label.set_text(
                 in_flight_text(self._in_flight["target_id"],
-                               self._in_flight["question_text"]))
+                               self._in_flight["question_text"]),
+                animated=True)
             self._spinner.start()
         else:
-            self._in_flight_label.set_label(no_question_in_flight_text())
+            self._in_flight_label.set_text(no_question_in_flight_text(),
+                                            animated=False)
             self._spinner.stop()
 
         if self._answered is not None:
