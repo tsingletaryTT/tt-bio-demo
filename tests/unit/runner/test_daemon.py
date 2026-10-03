@@ -519,6 +519,53 @@ def test_main_does_not_leak_its_weights_cache_env_var_to_later_tests(
         f"undo main()'s mutation")
 
 
+# The test above drives `environ_snapshot` directly, which proves the HELPER
+# is correct but -- caught in review (PR #8) -- would keep passing even if
+# the real autouse fixture in conftest.py lost its `autouse=True`, were
+# deleted, or stopped wrapping tests in this directory: nothing about calling
+# `environ_snapshot()` by name depends on the fixture being wired up at all.
+# This pair closes that gap by relying on REAL pytest test-to-test sequencing
+# instead -- the first test calls `main()` and does nothing to clean up after
+# itself; the second does nothing but check the environment is clean. If the
+# autouse fixture is ever removed or broken, the second test inherits the
+# leak from the first and fails, the same way the real hardware integration
+# tests did. This only proves anything if the two run in this order, in this
+# process, which is why they stay adjacent in this one file rather than being
+# split apart, parametrized, or otherwise given a reason to reorder.
+def test_a_call_to_main_mutates_the_real_environment(tmp_path, monkeypatch):
+    import os
+    from runner import cards as cards_mod
+    from runner import preflight as preflight_mod
+    from runner.env import WEIGHTS_CACHE_VARS
+    monkeypatch.setattr(preflight_mod, "check_tap_supported", lambda: None)
+    monkeypatch.setattr(cards_mod, "sample_tt_smi", lambda timeout=5.0: [])
+    for var in WEIGHTS_CACHE_VARS:
+        monkeypatch.delenv(var, raising=False)
+
+    main([
+        "--socket", str(tmp_path / "r.sock"),
+        "--weights", str(tmp_path / "weights"),
+        "--playlist", str(tmp_path / "playlist"),
+        "--log-root", str(tmp_path / "logs"),
+        "--preflight-only",
+    ])
+
+    assert any(v in os.environ for v in WEIGHTS_CACHE_VARS), (
+        "sanity check failed: main() did not set any weights-cache env var "
+        "at all, so the next test can no longer prove anything about "
+        "whether a leak would have been caught")
+
+
+def test_the_previous_tests_main_call_did_not_leak_into_this_one(monkeypatch):
+    import os
+    from runner.env import WEIGHTS_CACHE_VARS
+    leaked = {v: os.environ[v] for v in WEIGHTS_CACHE_VARS if v in os.environ}
+    assert not leaked, (
+        f"{leaked!r} leaked from the previous test in this session -- "
+        f"conftest.py's directory-level `_restore_os_environ` fixture did "
+        f"not run, lost its `autouse=True`, or was removed")
+
+
 def test_the_devices_flag_reaches_the_daemon_config(tmp_path, monkeypatch):
     """`--devices` is the CLI half of the field that replaced `device_id`. A
     flag that parses but never reaches DaemonConfig is the exact shape of the

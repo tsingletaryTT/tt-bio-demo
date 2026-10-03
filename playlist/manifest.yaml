@@ -55,29 +55,36 @@
 #   fkbp12       9.3 s        50.04-51.91    9.7 s    (-4%)      flat, same wide spread as ever
 #   dhfr        13.8 s        53.13-53.62   14.5 s    (-5%)      flat
 #   trypsin     17.4 s        38.43-39.41   17.4 s    (0%)       flat
-#   hsa         84.4 s        75.92-75.97   95.5 s   (-12%)      SDPA wide-K, see below -- real shift
+#   hsa         84.4 s        75.92-75.97   95.5 s   (-12%)      real shift, cause NOT isolated -- see below
 #
-# HSA IS BOTH FASTER AND LESS CONFIDENT, AND BOTH ARE THE SAME UPSTREAM CHANGE.
-# 0.9.0 added `TT_BIO_SDPA_WIDE_K` (on by default): triangle attention's fused
-# SDPA kernel now picks the widest key chunk that divides the padded sequence
-# length, instead of declining and falling back to the unfused op, at twenty
-# specific padded lengths -- 288, 352, 416, 544, 608, 704, 736, 832, 864, 928,
-# 992, 1056, 1088, 1184, 1216, 1248, 1312, 1376, 1472, 1504. HSA (585
-# residues) buckets to 608 tokens, squarely on that list; none of this
-# playlist's other six targets bucket to an affected length (trpcage 32, dna
-# 32, trna 96, fkbp12 128, dhfr 192, trypsin 224 -- all either under 288 or a
-# length the fix's own divisor condition does not touch), which is exactly
-# why only HSA moved. Upstream's own disclosure calls this change NOT
-# bit-exact (a different softmax reduction order) and measured a 0.060-0.146 A
-# structural shift and a 0.0001 pLDDT shift on a 686-residue example target --
-# this booth's own HSA shift (75.92-75.97 against 0.8.0's 79.48-79.51, about
-# -3.5) is larger than that disclosed example, which is plausible (a different
-# target, a different padded length) but was not independently re-derived
-# here; it is reported as measured, not rationalized down to match upstream's
-# own number. `TT_BIO_SDPA_WIDE_K=0` would restore the pre-0.9.0 numerics and
-# the pre-fix (slower) time, and is NOT set here -- this booth takes upstream's
-# shipped default, the same policy every prior bump has used for every other
-# upstream-default change.
+# HSA IS BOTH FASTER AND LESS CONFIDENT, AND THE CAUSE IS NOT CONFIRMED.
+# CORRECTION (caught by Copilot's review of PR #8, verified before writing
+# this replacement): this entry originally attributed both the speedup and
+# the pLDDT drop to `TT_BIO_SDPA_WIDE_K` (0.9.0's triangle-attention wide-key
+# -chunk kernel), reasoning that HSA's 585 residues bucket to 608 tokens, one
+# of the twenty padded lengths that feature's own divisor condition can
+# touch. That reasoning used the GENERAL 20-length list without checking the
+# per-model breakdown next to it: upstream's own docs/sdpa-wide-k-parity.md
+# explicitly tables padded 608 for Protenix-v2 (h=8, this booth's model) as
+# "unchanged ... bit-exact fall-through" -- i.e. this exact length should NOT
+# engage the wide-key-chunk path for this model at all. The claim was wrong
+# as stated and has been removed.
+#
+# WHAT IS ACTUALLY KNOWN, measured rather than inferred: HSA's fold genuinely
+# triggered tt-bio's L1-budget-aware SDPA retry ladder (`tenstorrent.py`'s
+# `_tri_att_sdpa_at`, logged as `[tt-bio] tri_att_sdpa/wide_k: device refused
+# this L1 plan, retrying a narrower one`) during this pass's cold fold --
+# real log evidence, not a guess -- which contradicts the parity doc's own
+# "unchanged at 608" table for reasons not yet understood (possibly HSA's
+# unusually large size next to the rest of this playlist interacts with the
+# "large S" fused path ahead of the ladder in a way the doc's own test matrix
+# did not cover; this is a hypothesis, not a finding). Six of this playlist's
+# seven targets are flat; only HSA moved, in both time and pLDDT, together.
+# That correlation is real. What causes it, across four releases and roughly
+# 8,200 commits between 0.8.0 and 0.12.0, is NOT isolated here. Settling it
+# needs an A/B hardware run holding everything but one upstream change fixed
+# at a time -- out of scope for a routine version-bump pass, flagged as a
+# genuine follow-up rather than resolved with a plausible-sounding guess.
 #
 # A NEW, LOUD, HARMLESS LOG LINE NOW APPEARS ON SOME FOLDS. DHFR, trypsin and
 # HSA each logged a tt-metal `critical`-level `TT_THROW` line during this
@@ -407,12 +414,15 @@
   #
   # tt-bio 0.12.0, chip 0 (see this file's header): first fold 92.0s
   # (discarded), then two warm folds at 84.3 / 84.4s -- 12% FASTER than 0.8.0
-  # -- pLDDT 75.97 / 75.92, DOWN about 3.5 from 0.8.0's 79.48-79.51. Both
-  # moves are the same upstream change (0.9.0's SDPA wide-K triangle-attention
-  # kernel, which HSA's 608-token bucket is squarely affected by -- see this
-  # file's own header for the full account). Not a regression: upstream
-  # discloses this path is not bit-exact, and every other playlist target's
-  # bucket length is unaffected, which is exactly why only this entry moved.
+  # -- pLDDT 75.97 / 75.92, DOWN about 3.5 from 0.8.0's 79.48-79.51. CAUSE
+  # NOT ISOLATED -- see this file's own header for the corrected account
+  # (an earlier draft of this comment wrongly attributed both moves to
+  # `TT_BIO_SDPA_WIDE_K`; upstream's own parity doc says that kernel should
+  # be an unchanged fall-through at this exact bucket length for this
+  # model, which contradicts real log evidence from this fold -- an open
+  # contradiction, not a settled cause). Not re-examined as a regression
+  # either way: every other playlist target is flat, so whatever changed
+  # is specific to this entry's own unusually large size.
   # first_frame_s not re-measured this pass; left as-is.
   expected_s: 84.4
   first_frame_s: 82.7
