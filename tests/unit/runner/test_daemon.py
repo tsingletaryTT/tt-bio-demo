@@ -463,6 +463,62 @@ def test_main_reports_preflight_failure_and_exits_non_zero(tmp_path, capsys, mon
     assert "missing:" in out, "an operator needs the list, not just an exit code"
 
 
+def test_main_does_not_leak_its_weights_cache_env_var_to_later_tests(
+        tmp_path, capsys, monkeypatch):
+    """`main()` pins `--weights` into `BOLTZ_CACHE`/`TT_BIO_CACHE` via a real
+    `os.environ.update(...)` (runner/daemon.py, right after `parse_args`,
+    before preflight even runs) -- correct for a real daemon process, and a
+    real leak when a TEST calls `main()` in-process, since `runner_environ`'s
+    `setdefault` means the first such call in a pytest session pins the cache
+    path to THIS test's own `tmp_path` for every later test too. Found for
+    real: running the full `--hw` suite in one process after the tt-bio
+    0.12.0 upgrade, the hardware integration tests failed with a bogus
+    "weights missing, could not download" error that vanished the instant
+    those same test files ran alone.
+
+    This test drives `conftest.py`'s `environ_snapshot` directly rather than
+    relying on the real autouse fixture's own teardown timing: checking
+    `os.environ` from inside a test body always runs BEFORE that test's own
+    fixture teardown, so a version of this test that just called `main()`
+    and then asserted "not leaked" would pass whether or not the restore
+    fixture existed at all -- exactly the "test that cannot fail" shape this
+    project's history warns about. Observing both sides of the restore (the
+    leak genuinely present while the snapshot context is open, genuinely
+    gone once it closes) is what makes this test actually exercise the fix.
+    """
+    import os
+
+    from conftest import environ_snapshot
+    from runner import cards as cards_mod
+    from runner import preflight as preflight_mod
+    from runner.env import WEIGHTS_CACHE_VARS
+    monkeypatch.setattr(preflight_mod, "check_tap_supported", lambda: None)
+    monkeypatch.setattr(cards_mod, "sample_tt_smi", lambda timeout=5.0: [])
+    for var in WEIGHTS_CACHE_VARS:
+        monkeypatch.delenv(var, raising=False)
+
+    with environ_snapshot():
+        main([
+            "--socket", str(tmp_path / "r.sock"),
+            "--weights", str(tmp_path / "weights"),
+            "--playlist", str(tmp_path / "playlist"),
+            "--log-root", str(tmp_path / "logs"),
+            "--preflight-only",
+        ])
+        leaked_inside = {v: os.environ[v] for v in WEIGHTS_CACHE_VARS if v in os.environ}
+        assert leaked_inside, (
+            "sanity check failed: main() did not set any weights-cache env "
+            "var at all, so this test can no longer prove the restore "
+            "actually undoes anything -- runner_environ's own behavior may "
+            "have changed")
+
+    leaked_after = {v: os.environ[v] for v in WEIGHTS_CACHE_VARS if v in os.environ}
+    assert not leaked_after, (
+        f"{leaked_after!r} is still set in the real process environment "
+        f"after environ_snapshot's context closed -- the restore did not "
+        f"undo main()'s mutation")
+
+
 def test_the_devices_flag_reaches_the_daemon_config(tmp_path, monkeypatch):
     """`--devices` is the CLI half of the field that replaced `device_id`. A
     flag that parses but never reaches DaemonConfig is the exact shape of the
