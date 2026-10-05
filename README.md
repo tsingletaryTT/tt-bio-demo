@@ -105,10 +105,15 @@ silicon keeps visibly breathing even if the daemon wedges.
 
 **Four chips on two boards.** A p300c carries two chips, so `tt-smi`'s four entries are four
 chips — not four boards. The panel says so, because a visitor reading "4 cards" would
-picture the wrong machine. Folds are timed on this hardware, warm, on tt-bio 0.8.0: Trp-cage **4.6 s**,
-FKBP12 **9.7 s**, DHFR **14.5 s**, trypsin **17.4 s**, albumin **95.5 s** — mean of two folds
+picture the wrong machine. Folds are timed on this hardware, warm, on tt-bio 0.12.0: Trp-cage **4.5 s**,
+FKBP12 **9.3 s**, DHFR **13.8 s**, trypsin **17.4 s**, albumin **84.4 s** — mean of two folds
 each on chip 0, after discarding one cold-JIT-cache fold per target (a version bump recompiles
-kernels for the new shapes; see `playlist/manifest.yaml`'s header). Chip 1 was not re-measured
+kernels for the new shapes; see `playlist/manifest.yaml`'s header). Albumin is the one real mover
+— 12% faster, a real pLDDT shift — and the cause is **not** isolated: an earlier draft of this
+page attributed it to `TT_BIO_SDPA_WIDE_K`, but upstream's own parity documentation says that
+kernel should leave albumin's exact padded length unchanged for this model, which contradicts
+real log evidence from this pass's own fold. See the manifest header for the corrected account
+and the open contradiction, rather than a guessed cause. Chip 1 was not re-measured
 this pass; the 0.5–1.4 s-slower drift measured on tt-bio 0.7.0 is a hardware/thermal property,
 not a software one, so it is carried forward rather than restated as fresh: chips 1 and 3 settle
 to a lower clock about fifteen minutes into a session (they idle 3–4 °C hotter than 0 and 2, so it is

@@ -40,6 +40,87 @@
 # until upstream fixes it -- at which point this entry comes back, since the
 # blurb and thumbnail machinery for it are unchanged in git history.
 #
+# MEASURED ON tt-bio 0.12.0, 2026-10-02. Same method as the 0.8.0 pass below
+# it: ONE chip (device 0 of a leased pair), one resident Folder, each target
+# folded 3 times back to back, first fold of each shape discarded as
+# JIT-cold, the two folds after it averaged into `expected_s`. Four releases
+# landed since 0.8.0 (0.9.0, 0.10.0, 0.11.0, 0.12.0) -- see the research pass
+# this same session did against the upstream tag range for the full picture;
+# the two upstream changes with any bearing on THIS playlist are below.
+#
+#   target     chip 0 warm   mean pLDDT     vs 0.8.0 (chip 0)    why
+#   trpcage      4.5 s        95.35-95.35    4.6 s    (-2%)      flat
+#   dna          4.8 s        95.94-95.94    4.8 s    (0%)       flat
+#   trna         6.7 s        88.79-88.81    6.9 s    (-3%)      flat
+#   fkbp12       9.3 s        50.04-51.91    9.7 s    (-4%)      flat, same wide spread as ever
+#   dhfr        13.8 s        53.13-53.62   14.5 s    (-5%)      flat
+#   trypsin     17.4 s        38.43-39.41   17.4 s    (0%)       flat
+#   hsa         84.4 s        75.92-75.97   95.5 s   (-12%)      real shift, cause NOT isolated -- see below
+#
+# HSA IS BOTH FASTER AND LESS CONFIDENT, AND THE CAUSE IS NOT CONFIRMED.
+# CORRECTION (caught by Copilot's review of PR #8, verified before writing
+# this replacement): this entry originally attributed both the speedup and
+# the pLDDT drop to `TT_BIO_SDPA_WIDE_K` (0.9.0's triangle-attention wide-key
+# -chunk kernel), reasoning that HSA's 585 residues bucket to 608 tokens, one
+# of the twenty padded lengths that feature's own divisor condition can
+# touch. That reasoning used the GENERAL 20-length list without checking the
+# per-model breakdown next to it: upstream's own docs/sdpa-wide-k-parity.md
+# explicitly tables padded 608 for Protenix-v2 (h=8, this booth's model) as
+# "unchanged ... bit-exact fall-through" -- i.e. this exact length should NOT
+# engage the wide-key-chunk path for this model at all. The claim was wrong
+# as stated and has been removed.
+#
+# WHAT IS ACTUALLY KNOWN, measured rather than inferred: HSA's fold genuinely
+# triggered tt-bio's L1-budget-aware SDPA retry ladder (`tenstorrent.py`'s
+# `_tri_att_sdpa_at`, logged as `[tt-bio] tri_att_sdpa/wide_k: device refused
+# this L1 plan, retrying a narrower one`) during this pass's cold fold --
+# real log evidence, not a guess -- which contradicts the parity doc's own
+# "unchanged at 608" table for reasons not yet understood (possibly HSA's
+# unusually large size next to the rest of this playlist interacts with the
+# "large S" fused path ahead of the ladder in a way the doc's own test matrix
+# did not cover; this is a hypothesis, not a finding). Six of this playlist's
+# seven targets are flat; only HSA moved, in both time and pLDDT, together.
+# That correlation is real. What causes it, across four releases and roughly
+# 8,200 commits between 0.8.0 and 0.12.0, is NOT isolated here. Settling it
+# needs an A/B hardware run holding everything but one upstream change fixed
+# at a time -- out of scope for a routine version-bump pass, flagged as a
+# genuine follow-up rather than resolved with a plausible-sounding guess.
+#
+# A NEW, LOUD, HARMLESS LOG LINE NOW APPEARS ON SOME FOLDS. DHFR, trypsin and
+# HSA each logged a tt-metal `critical`-level `TT_THROW` line during this
+# pass (a circular-buffer/L1 sizing refusal), immediately followed by tt-bio's
+# own `[tt-bio] ... retrying narrower: expected and handled; the result is
+# unchanged` line. This is new upstream behavior (0.12.0's own changelog:
+# "transition block sizes its row block from the card's own L1 budget" and a
+# matching planner fix for BindCraft2, which shares the same kernel) --
+# every fold that logged it still completed and produced a reasonable pLDDT,
+# so it is cosmetic console noise, not a regression. Worth knowing if an
+# operator sees a `critical`/`TT_THROW` line in the daemon's own log at a
+# venue and wonders whether the booth is broken: it is not, as long as
+# tt-bio's own very next log line says so.
+#
+# Commits re-measured with this file's own `-i` method against the v0.12.0
+# tag: 12,998 total, 12,361 his (was 4,765 / 4,328 at 0.7.3, the last time
+# this project's own history has the exact prior figure on record) -- the
+# jump reflects a large BindCraft 2 (binder design) performance-engineering
+# effort landing upstream in the three weeks since 0.8.0, not imported
+# history; every identity in the new range was confirmed to be a variant of
+# Moritz's own name/email before the number went on the site.
+#
+# Zero pin churn (`requires-python`, `ttnn==0.68.0` both unchanged), so the
+# vendored SFPI toolchain needed no changes -- same as every prior bump.
+# `dump_fn` re-verified unchanged by direct import: still a parameter of
+# `edm_sample` and of `OpenDDE.fold`, still absent from `Protenix.fold` (the
+# unmerged upstream patch in docs/upstream/protenix-dump-fn/ remains stale by
+# the same "unverified rebase is worth less than honest stale" reasoning as
+# every prior bump). `tt_bio.main._read_bio_chains`'s tuple shape -- the thing
+# that broke every fold at 0.8.0 -- is unchanged at 5 fields this time, and
+# `tt_bio.weights`'s four functions this project calls (fetch/resolve/
+# artifacts_for/status) kept identical signatures despite upstream rewriting
+# the download machinery underneath them.
+#
+# ---------------------------------------------------------------------------
+#
 # MEASURED ON tt-bio 0.8.0, 2026-09-15. Same method as the 0.7.3 pass below
 # it: ONE chip (device 0 of a leased pair), one resident Folder, each target
 # folded 3 times back to back, first fold of each shape discarded as
@@ -306,7 +387,12 @@
   # didn't change token-bucketing and the kernel cache carried over), then
   # two warm folds at 4.68 / 4.60s, pLDDT 95.34 / 95.33. Flat vs 0.7.3.
   # first_frame_s not re-measured this pass; left as-is.
-  expected_s: 4.6
+  #
+  # tt-bio 0.12.0, chip 0 (see this file's header): first fold 14.5s
+  # (discarded), then two warm folds at 4.5s each, pLDDT 95.3477 / 95.3479.
+  # Flat vs 0.8.0 (not one of the SDPA-wide-K-affected padded lengths).
+  # first_frame_s not re-measured this pass; left as-is.
+  expected_s: 4.5
   first_frame_s: 1.9
 
 - id: hsa
@@ -325,7 +411,20 @@
   # this bump introduced no new token-bucket shapes (kept anyway, as a
   # matter of method) -- then two warm folds at 95.40 / 95.55s, pLDDT
   # 79.51 / 79.48. Flat vs 0.7.3. first_frame_s not re-measured this pass.
-  expected_s: 95.5
+  #
+  # tt-bio 0.12.0, chip 0 (see this file's header): first fold 92.0s
+  # (discarded), then two warm folds at 84.3 / 84.4s -- 12% FASTER than 0.8.0
+  # -- pLDDT 75.97 / 75.92, DOWN about 3.5 from 0.8.0's 79.48-79.51. CAUSE
+  # NOT ISOLATED -- see this file's own header for the corrected account
+  # (an earlier draft of this comment wrongly attributed both moves to
+  # `TT_BIO_SDPA_WIDE_K`; upstream's own parity doc says that kernel should
+  # be an unchanged fall-through at this exact bucket length for this
+  # model, which contradicts real log evidence from this fold -- an open
+  # contradiction, not a settled cause). Not re-examined as a regression
+  # either way: every other playlist target is flat, so whatever changed
+  # is specific to this entry's own unusually large size.
+  # first_frame_s not re-measured this pass; left as-is.
+  expected_s: 84.4
   first_frame_s: 82.7
   tagline: >-
     The blood's delivery van — the most abundant protein in plasma, and how most drugs travel.
@@ -381,7 +480,7 @@
     patients take a daily drug called tacrolimus because it clicks onto
     FKBP12, and together they jam shut the signal that would otherwise
     tell the immune system to attack the new organ.
-  expected_s: 9.7
+  expected_s: 9.3
   first_frame_s: 5.3
   # IT LEFT AND CAME BACK, and the number is lower than it ever was.
   #
@@ -432,6 +531,11 @@
   # 49.79 (discarded), then two warm folds at 9.70 / 9.74s, pLDDT 51.68 /
   # 50.19 -- inside the same wide band this target has shown on every past
   # version. Flat vs 0.7.3.
+  #
+  # tt-bio 0.12.0, chip 0 (see this file's header): first fold 15.5s pLDDT
+  # 53.02 (discarded), then two warm folds at 9.3 / 9.2s, pLDDT 51.91 /
+  # 50.04 -- same wide band as ever, still flat (not an SDPA-wide-K-affected
+  # bucket length).
 
 - id: dhfr
   name: Dihydrofolate Reductase
@@ -473,7 +577,13 @@
   # tt-bio 0.8.0, chip 0 (see this file's header): first fold 15.04s pLDDT
   # 53.77 (discarded), then two warm folds at 14.56 / 14.53s, pLDDT
   # 53.23 / 54.19. Flat vs 0.7.3. first_frame_s not re-measured this pass.
-  expected_s: 14.5
+  #
+  # tt-bio 0.12.0, chip 0 (see this file's header): first fold 18.7s pLDDT
+  # 53.16 (discarded), then two warm folds at 13.8s each, pLDDT 53.13 /
+  # 53.62. Flat (not an SDPA-wide-K-affected bucket length), modestly
+  # faster like most of the playlist this pass. first_frame_s not
+  # re-measured this pass; left as-is.
+  expected_s: 13.8
   first_frame_s: 10.4
 
 - id: trypsin
@@ -526,6 +636,11 @@
   # tt-bio 0.8.0, chip 0 (see this file's header): first fold 17.88s pLDDT
   # 38.87 (discarded), then two warm folds at 17.39 / 17.34s, pLDDT
   # 39.32 / 39.03. Flat vs 0.7.3. first_frame_s not re-measured this pass.
+  #
+  # tt-bio 0.12.0, chip 0 (see this file's header): first fold 26.1s pLDDT
+  # 37.98 (discarded), then two warm folds at 17.4s each, pLDDT 39.41 /
+  # 38.43. Flat vs 0.8.0 (not an SDPA-wide-K-affected bucket length).
+  # first_frame_s not re-measured this pass; left as-is.
   expected_s: 17.4
   first_frame_s: 11.7
 
@@ -582,6 +697,10 @@
   # 95.95 (discarded), then two warm folds at 4.84 / 4.76s, pLDDT
   # 95.93 / 95.94. Flat to slightly faster vs 0.7.3 (4.9s -> 4.8s).
   # first_frame_s not re-measured this pass.
+  #
+  # tt-bio 0.12.0, chip 0 (see this file's header): first fold 4.9s pLDDT
+  # 95.93 (discarded), then two warm folds at 4.7 / 4.8s, pLDDT 95.94 /
+  # 95.94. Flat vs 0.8.0. first_frame_s not re-measured this pass.
   expected_s: 4.8
   first_frame_s: 1.1
 
@@ -638,5 +757,10 @@
   # 88.81 (discarded), then two warm folds at 6.92 / 6.83s, pLDDT
   # 88.80 / 88.82 -- still the tightest spread of any target here. Flat vs
   # 0.7.3. first_frame_s not re-measured this pass.
-  expected_s: 6.9
+  #
+  # tt-bio 0.12.0, chip 0 (see this file's header): first fold 11.1s pLDDT
+  # 88.81 (discarded), then two warm folds at 6.7s each, pLDDT 88.81 /
+  # 88.79 -- still the tightest spread of any target here, still flat.
+  # first_frame_s not re-measured this pass.
+  expected_s: 6.7
   first_frame_s: 2.8

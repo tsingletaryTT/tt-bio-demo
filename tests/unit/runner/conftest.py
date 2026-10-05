@@ -23,9 +23,62 @@ will drive the same loop, and a guard they have to remember to import is a
 guard that will be missed.
 """
 
+import contextlib
+import os
 import sys
 
 import pytest
+
+
+@contextlib.contextmanager
+def environ_snapshot():
+    """Context manager half of `_restore_os_environ` below, pulled out as its
+    own name so `test_daemon.py` can drive it directly and observe both
+    sides of the restore (leak present while the context is open, gone once
+    it closes) -- a test that only ran code wrapped in the real `autouse`
+    fixture could never see the "before restore" half at all, since the
+    fixture's own teardown would already have run by the time the test body
+    could look. See `_restore_os_environ`'s docstring for why this exists.
+    """
+    saved = dict(os.environ)
+    try:
+        yield
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+
+
+@pytest.fixture(autouse=True)
+def _restore_os_environ():
+    """`runner.daemon.main()` intentionally mutates the REAL process
+    `os.environ` -- `os.environ.update(runner_environ(args.log_root,
+    weights_dir=args.weights))`, unconditionally, before the preflight check
+    even runs (see that line's own comment: "weights_dir pins --weights for
+    the WORKERS too, not just preflight"). That is correct for an actual
+    daemon process, which owns its own environment for its own lifetime.
+
+    It is wrong for a test that calls the real `main()` in-process (several
+    tests in `test_daemon.py` do, to exercise its CLI/exit-code contract) --
+    `runner_environ`'s own `setdefault` discipline means the FIRST such test
+    to run in a pytest session pins `TT_BIO_CACHE`/`BOLTZ_CACHE`/
+    `TT_METAL_LOGS_PATH`/`TT_METAL_INSPECTOR` to ITS OWN now-deleted
+    `tmp_path`, and every later test in the same process -- including, on a
+    full `--hw` run, the real hardware integration tests -- inherits that
+    stale cache path and fails with a confusing "weights missing, could not
+    download" error instead of whatever it was actually testing. Found for
+    real running the full `--hw` suite after the tt-bio 0.12.0 upgrade:
+    `test_new_targets_timing.py`/`test_real_fold.py` failed entirely in that
+    combined run and passed cleanly (60/60) run in isolation, which is what
+    pointed at a leak rather than a real regression.
+
+    Snapshotting and restoring the WHOLE environment, not just these four
+    names, on purpose: a named-variable list is the same "a check that knows
+    less than the thing it's protecting" shape this project's own history
+    keeps finding -- a future `runner_environ` change adding a fifth variable
+    would silently reopen this exact leak if the guard only knew about four.
+    """
+    with environ_snapshot():
+        yield
 
 
 @pytest.fixture(autouse=True)
