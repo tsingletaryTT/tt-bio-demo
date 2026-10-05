@@ -1,30 +1,70 @@
 tt-bio-demo (0.7.0) noble; urgency=medium
 
+  * The browser companion (`webview/`, `scripts/run-webview.sh`) is real and
+    documented, not just tested and shelved: a bridge process
+    (webview/bridge.py) streams the daemon's own event protocol to any
+    number of browser tabs over Server-Sent Events, with a from-scratch
+    client -- real point-cloud rendering of real fold coordinates, a
+    quad/solo toggle that defaults to quad once more than one chip is
+    available (matching the native booth), an affinity Q&A panel, real
+    per-chip Tensix core-grid activity (the same vendored library and
+    palette the native app uses), and real tt-smi-backed power/clock
+    telemetry. Hardened against a security review: request handling is
+    serialized against the one real daemon socket, Content-Length is
+    bounds-checked and read is timeout-bounded, a non-loopback host now
+    requires --auth-token/WEBVIEW_AUTH_TOKEN on every request, and a
+    path-traversal fix in the static file server. Known, documented scope
+    cuts remain (no ribbon/cartoon reveal, gallery shows targets seen live
+    rather than the curated playlist, the easter egg stays unsurfaced) --
+    see webview/README.md.
+  * The booth no longer assumes a 1920x1080 screen. The side rail, the
+    gallery, and the `?` help card all size themselves from the window's
+    real width (`rail_width_for`, `help_card_width_for`), verified across
+    1024x768 through 2560x1440 with a hardware-free headless-weston
+    script. A 1280-wide window -- which used to need 1336px of content to
+    fit -- fits with room to spare. Below a measured width the help card
+    switches to a shorter but equally honest text rather than overflowing
+    the screen.
   * The Tensix panel's per-chip animation now tracks the chip instead of
-    only decorating it: tensix-viz 1.3.0 adds setActivity/setProgress, and
-    the panel feeds both a real measured clock activity and the wire's own
-    stage fraction (trunk's refinement cycles, diffusion's denoising
-    steps) into them every tick. Re-measured, not asserted fixed: a
-    steady-state brightness swing of 69.4x between idle and fully active,
-    against the ~0.3% frame-noise floor the earlier flicker fix measured.
-  * scripts/update-tensix-viz.sh re-vendors tensix-viz and rewrites its own
-    PROVENANCE.md attribution in one step, replacing a two-manual-edits-
-    and-a-cp process with one that refuses an upstream checkout that is
-    not git or has uncommitted changes.
-  * The affinity Q&A panel bounces while a question is being scored -- a
-    per-word bob plus colour cycle on both the rail's queue panel and the
-    quad's spotlight cell, matching the animation the browser companion
-    already had. Settles to plain static text the instant a real answer
-    arrives; respects GTK's own reduced-motion setting.
-  * The browser companion (`webview/`, `scripts/run-webview.sh`) gets its
-    first changelog entry: it shipped and was tested earlier but was never
-    actually committed to a branch. It is documented in the README and
-    docs/followups.md now, alongside its known scope cuts.
-  * The docs site's commit-count claim is refreshed for the current tt-bio
-    pin (0.8.0): 5,306 commits, 4,869 of them Moritz's, both re-verified
-    rather than pasted forward from the last pin.
+    only decorating it: tensix-viz 1.3.0 adds setActivity/setProgress, fed
+    from real measured clock activity, the wire's own per-stage progress
+    fraction (trunk's refinement cycles, diffusion's denoising steps), and
+    -- preferred when available, with automatic fallback -- real per-chip
+    power sampled from `tt-smi` every 1.5s. Floor/ceiling (15W idle, 90W
+    folding) are this project's own measured numbers. Re-measured, not
+    asserted fixed: a steady-state brightness swing of 69.4x between idle
+    and fully active, against the ~0.3% frame-noise floor the earlier
+    flicker fix measured. scripts/update-tensix-viz.sh now re-vendors the
+    library and rewrites its own PROVENANCE.md attribution in one step.
+  * Affinity Q&A: the three shipped question pairs carry real measured
+    timings (10.1s/10.7s/8.3s); a planned six-question catalog expansion
+    was reverted after a hardware test showed two of its new pairs scored
+    the identical structure and two more always errored (scoring keys on
+    the fold target, not on a per-question ligand, so a second ligand per
+    protein was never actually distinguishable). The question text bobs
+    per word with a colour cycle while nesso1 is actively scoring, on both
+    the native UI and the browser companion, settling to plain text the
+    instant a real answer lands and respecting GTK's reduced-motion
+    setting. A question is now marked "recently asked" only once it
+    actually reaches the daemon, not merely once the UI attempts to send
+    it.
+  * tt-bio bumped 0.8.0 -> 0.12.0 (four upstream releases absorbed in one
+    pass). All seven playlist targets re-measured on real hardware: six
+    are flat to modestly faster; albumin (HSA) is 12% faster with a real
+    ~3.5-point pLDDT drop. The initial cause given for that shift did not
+    hold up under review and has been corrected -- the real cause is not
+    fully isolated; see `playlist/manifest.yaml`'s header for the complete,
+    honest account. Commit counts and the model-family count (14 -> 15,
+    adding af2ig) are refreshed on the docs site.
+  * A real test-isolation bug is fixed: a unit test calling the daemon's
+    real `main()` in-process could pin a stale weights-cache path into the
+    test process's actual environment, breaking any hardware-integration
+    test that happened to run afterward in the same session.
+  * Doc fixes: INSTALL.md/README's stale tt-bio pin, playlist target count,
+    and release curl example re-verified end to end against the real
+    v0.6.1 release.
 
- -- Taylor Singletary <tsingletary@tenstorrent.com>  Thu, 24 Sep 2026 11:02:51 -0700
+ -- Taylor Singletary <tsingletary@tenstorrent.com>  Mon, 05 Oct 2026 10:00:00 -0700
 
 tt-bio-demo (0.6.1) noble; urgency=medium
 
