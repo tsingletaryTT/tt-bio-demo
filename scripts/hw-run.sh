@@ -13,9 +13,17 @@
 #
 #   With gozer on this machine: takes a lease (`gozer run --chips N`).
 #   --one-chip narrows TT_VISIBLE_DEVICES to the first chip of whatever was granted.
-#   Without gozer: checks that none of the first N device nodes is held by a running
-#   process, then pins TT_VISIBLE_DEVICES to the first N chips. Nothing fences other
-#   users, and the script says so. It never resets a chip.
+#   Without gozer: refuses if ANY card on this box has a device node held by a
+#   process, then pins TT_VISIBLE_DEVICES to the first N chips. Two limits, stated
+#   plainly:
+#     - Nothing is leased and nothing fences other users. `fuser` run as a normal
+#       user only sees processes that user owns, so "idle" means "no process of
+#       yours holds it", not "nobody holds it".
+#     - UMD expands TT_VISIBLE_DEVICES to a whole board when a board has 2 chips or
+#       fewer, so the sibling chip of a pinned chip may be opened too. That is why
+#       every card is checked, not just the N pinned ones. Without gozer,
+#       --one-chip does not isolate a chip; it only pins the first card.
+#   The script never resets a chip.
 #
 # Exit codes: 2 usage, 10 queued (from gozer), 11 chips busy or not checkable,
 # 12 refused, otherwise the command's own status.
@@ -27,8 +35,10 @@ TT_VENDOR_ID="0x1e52"
 
 die() { echo "hw-run: $1" >&2; exit "${2:-2}"; }
 
+# Print the header comment (from line 3 up to the first code line), without the
+# leading "# " on each line. Stops at `set -euo`, so the code is never printed.
 usage() {
-  sed -n '3,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '3,/^set -euo/{/^set -euo/d;p}' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 # Every Tenstorrent PCI address, in stable sorted order. The Nth address is
@@ -76,9 +86,10 @@ if command -v gozer >/dev/null 2>&1; then
     --reason "$REASON" -- bash -c "$inner" hw-run "$@"
 fi
 
-# No gozer. Check, pin, and be plain about what is not protected.
+# No gozer. Check every card (not just the N pinned ones: see the header on
+# board expansion), pin, and be plain about what is not protected.
 busy=0
-for (( i = 0; i < CHIPS; i++ )); do
+for (( i = 0; i < CARDS; i++ )); do
   node="$DEV_ROOT/$i"
   [[ -e "$node" ]] || continue
   if command -v fuser >/dev/null 2>&1; then
@@ -90,10 +101,10 @@ for (( i = 0; i < CHIPS; i++ )); do
     die "cannot check whether the chips are idle (no fuser). Set HW_RUN_ASSUME_IDLE=1 only if you know nobody else is using this box." 11
   fi
 done
-(( busy == 0 )) || die "chips are busy, not starting" 11
+(( busy == 0 )) || die "a chip on this box is held; without gozer the sibling chip of a pinned chip may be opened too. Not starting." 11
 
 visible="$(IFS=,; echo "${ALL[*]:0:CHIPS}")"
 (( ONE )) && visible="${ALL[0]}"
-echo "hw-run: gozer is not installed here: these chips are NOT leased and nothing fences other users. Using $visible." >&2
+echo "hw-run: gozer is not installed here: these chips are NOT leased and nothing fences other users; idleness was checked for processes you own only. Using $visible." >&2
 echo "hw-run: if this run wedges a chip, do not reset it from this script; stop and ask the box's owner." >&2
 TT_VISIBLE_DEVICES="$visible" exec "$@"
