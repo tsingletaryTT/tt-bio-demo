@@ -193,7 +193,7 @@ they are there.
 the command to run if anything is missing:
 
 ```bash
-.venvs/venv-runner/bin/tt-bio weights --download protenix-v2
+.venvs/venv-runner/bin/tt-bio weights --download protenix-v1
 ```
 
 Ctrl-C tears the daemon down cleanly. Without hardware, the renderer still runs against a
@@ -229,7 +229,7 @@ device handles and cannot be taken down by a wedged chip.
 
 It then fetches the **model weights** — `protenix-v2.pt` (1.86 GB) and the CCD molecule
 library `mols` (1.85 GB unpacked) — by running venv-runner's own
-`tt-bio weights --download protenix-v2`. From this source checkout they land in
+`tt-bio weights --download protenix-v1`. From this source checkout they land in
 `$TT_BIO_CACHE`, else `$BOLTZ_CACHE`, else `~/.boltz`, which is tt-bio's own order and the one
 thing in this repo that decides where weights live
 ([`scripts/weights-cache.sh`](scripts/weights-cache.sh) and [`runner/env.py`](runner/env.py),

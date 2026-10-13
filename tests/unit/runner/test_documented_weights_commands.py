@@ -87,7 +87,7 @@ def test_every_documented_flag_is_a_real_flag():
 def test_every_documented_model_is_a_real_model():
     """The ARTIFACT KEY, which is the half a type checker cannot help with.
 
-    `tt-bio weights --download protenix-v2` is a string in a markdown file. If
+    `tt-bio weights --download protenix-v1` is a string in a markdown file. If
     that row is renamed upstream, nothing but this test stands between the
     rename and an operator typing a command that errors."""
     from tt_bio import weights as tt_weights
@@ -114,14 +114,14 @@ def test_both_install_paths_tell_you_how_to_get_the_weights(rel):
     source install ended at `run-demo.sh` with no weights and no instructions.
     """
     text = (REPO / rel).read_text()
-    assert "tt-bio weights --download protenix-v2" in text, (
+    assert "tt-bio weights --download protenix-v1" in text, (
         f"{rel} does not tell a reader how to fetch the model weights")
 
 
 def test_the_model_the_docs_name_is_the_model_the_booth_folds():
     """The docs, preflight and the playlist must agree on the fold model. A
     README telling someone to download boltz2 for a booth that folds
-    protenix-v2 is a 4.2 GB detour that ends with the same empty cache.
+    protenix-v1 is a 4.2 GB detour that ends with the same empty cache.
 
     `nesso1` is the one deliberate exception: it is the affinity-questions
     Q&A worker's model (`runner/affinity.py`), a real second model this

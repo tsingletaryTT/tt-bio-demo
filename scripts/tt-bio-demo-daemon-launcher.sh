@@ -68,7 +68,7 @@ PREFIX="/opt/tt-bio-demo"
 # nesso1/nesso1-ccd/the ESM-2 encoder ("hf-repo" artifacts that silently
 # ignore --weights entirely -- see scripts/weights-cache.sh's own comment on
 # TT_BIO_DEMO_PACKAGED_WEIGHTS_CACHE) resolve to the same fixed cache the
-# postinst populated, not only the flat protenix-v2.pt/mols/ pair which
+# postinst populated, not only the checkpoint and mols/ pair which
 # --weights below covers on its own.
 tt_bio_demo_weights_cache_packaged >/dev/null
 WEIGHTS="$(tt_bio_demo_weights_cache_packaged)"

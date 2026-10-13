@@ -40,7 +40,7 @@
 #                    look valid. Without this flag, re-running is a cheap
 #                    no-op once both venvs are verified.
 #   --skip-weights  Do not fetch the model weights. The booth cannot fold
-#                    without them (~6.9 GB total: protenix-v2's checkpoint and
+#                    without them (~6.9 GB total: protenix-v1's checkpoint and
 #                    CCD molecule library for folding, ~3.7 GB, plus nesso1's
 #                    affinity head and its own CCD dict, ~578 MB, plus the
 #                    ESM-2 encoder nesso1's featurizer needs, ~2.6 GB, for the
@@ -109,7 +109,7 @@ set -euo pipefail
 # tt-bio's `main` (see CLAUDE.md conventions — same rule as the runner venv
 # tt-bio-demo will eventually shell out to).
 # ---------------------------------------------------------------------------
-TT_BIO_VERSION="0.12.0"
+TT_BIO_VERSION="0.15.2"
 
 # Bounds on the two network/hardware-adjacent operations that could otherwise
 # hang this script indefinitely in an unattended postinst with nobody present
@@ -142,7 +142,7 @@ Usage: $(basename "$0") [--prefix PATH] [--force] [--skip-runner]
 Creates <prefix>/venv-ui and <prefix>/venv-runner. Default prefix:
 ${REPO_ROOT}/.venvs
 
-The model weights are DOWNLOADED BY DEFAULT (~6.9 GB: protenix-v2 + CCD for
+The model weights are DOWNLOADED BY DEFAULT (~6.9 GB: protenix-v1 + CCD for
 folding, nesso1 + its own CCD dict and the ESM-2 encoder for affinity Q&A),
 because a booth without them cannot fold or answer questions; pass
 --skip-weights to opt out of all of it. The download is resumable and
@@ -926,7 +926,7 @@ weights_cache_dir() {
 }
 
 # The ~6.9 GB the booth cannot fold or answer questions without:
-#   protenix-v2.pt + the CCD molecule library (~3.7 GB)     -- folding
+#   the protenix-v1 checkpoint + the CCD molecule library   -- folding
 #   nesso1's affinity head + its own CCD dict (~578 MB)      -- affinity Q&A
 #   the ESM-2 encoder nesso1's featurizer runs on (~2.6 GB)  -- affinity Q&A
 #
@@ -994,7 +994,7 @@ fetch_weights() {
   # download would report success.
   local cache
   cache="$(weights_cache_dir)"
-  local cmd="${tt_bio} weights --download protenix-v2 --cache ${cache}"
+  local cmd="${tt_bio} weights --download protenix-v1 --cache ${cache}"
   local nesso1_cmd="${tt_bio} weights --download nesso1 --cache ${cache}"
 
   if [[ "$SKIP_RUNNER" -eq 1 ]]; then
@@ -1029,10 +1029,10 @@ fetch_weights() {
     return 0
   fi
 
-  log "weights: fetching the protenix-v2 checkpoint and CCD molecule library"
+  log "weights: fetching the protenix-v1 checkpoint and CCD molecule library"
   log "weights: into ${cache}"
   log "weights: ~3.7 GB, resumable, verified — a no-op if already present"
-  if "$tt_bio" weights --download protenix-v2 --cache "$cache"; then
+  if "$tt_bio" weights --download protenix-v1 --cache "$cache"; then
     WEIGHTS_STATUS="present and verified"
     log "weights: present and verified — the booth can fold offline"
   else
@@ -1167,8 +1167,8 @@ echo "  pinned:      tt-bio==${TT_BIO_VERSION}"
 echo "  test deps:   $TEST_DEPS_STATUS"
 echo
 echo "weights:       $(weights_cache_dir)"
-echo "  protenix-v2: $WEIGHTS_STATUS"
-echo "    fetch/check: ${VENV_RUNNER}/bin/tt-bio weights --download protenix-v2"
+echo "  protenix-v1: $WEIGHTS_STATUS"
+echo "    fetch/check: ${VENV_RUNNER}/bin/tt-bio weights --download protenix-v1"
 echo "  nesso1:      $NESSO1_STATUS  (affinity Q&A; fetches nesso1 + nesso1-ccd)"
 echo "    fetch/check: ${VENV_RUNNER}/bin/tt-bio weights --download nesso1"
 echo "  ESM-2:       $ESM2_STATUS  (affinity Q&A featurizer, ${ESM2_MODEL})"

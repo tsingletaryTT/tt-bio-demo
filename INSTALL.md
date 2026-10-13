@@ -202,7 +202,7 @@ which is what to reach for when debconf is wedged, when you are installing **fro
 rather than from the .deb, or when you just want to watch the transfer:
 
 ```bash
-/opt/tt-bio-demo/.venvs/venv-runner/bin/tt-bio weights --download protenix-v2
+/opt/tt-bio-demo/.venvs/venv-runner/bin/tt-bio weights --download protenix-v1
 ```
 
 From a source checkout the path is `.venvs/venv-runner/bin/tt-bio` instead — and
@@ -211,7 +211,7 @@ normally needs no separate weights step at all. See the README's
 [Quick start](README.md#quick-start).
 
 To see what is on the machine without downloading anything, drop the flag:
-`tt-bio weights protenix-v2` prints one line per artifact with `present` / `missing` /
+`tt-bio weights protenix-v1` prints one line per artifact with `present` / `missing` /
 `corrupt` and the path it checked.
 
 **Where they land**: for a **packaged** install (this document), a fixed, non-home-relative

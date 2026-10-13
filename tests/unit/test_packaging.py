@@ -633,7 +633,7 @@ def test_the_weights_postinst_uses_the_tt_bio_api_that_actually_exists():
     existed. What it checks now is the replacement contract:
     `weights.fetch(key, root=...)` plus the surviving `download_mols`.
 
-    The KEY is checked too, not just the function. `fetch("protenix-v2")`
+    The KEY is checked too, not just the function. `fetch("protenix-v1")`
     fails at install time and only there if that row is ever renamed, and a
     key is a string the type system cannot help with -- which makes it
     exactly the sort of thing this test exists to catch.
@@ -689,6 +689,16 @@ def test_the_weights_postinst_uses_the_tt_bio_api_that_actually_exists():
                 for n in [call.args[0]] if isinstance(n, ast.Constant)}
     assert declared, "could not find any Artifact(...) rows in tt_bio/weights.py"
     import re
+    assert 'weights.fetch("protenix-v1"' in postinst, \
+        "the postinst must fetch the booth model under its real registry key"
+    # The v1 checkpoint lives at ${CACHE}/protenix/model_v0.5.0.pt, so the flat
+    # `${CACHE}/<name>` table cannot verify it. It is verified in Python.
+    flat = postinst.split('ARTIFACTS="', 1)[1].split('"', 1)[0]
+    assert "protenix" not in flat and "9ea20b0a" not in flat, (
+        "the checkpoint is back in the flat ARTIFACTS table, which would look "
+        f"for it at ${{CACHE}}/<name>:\n{flat}")
+    assert "9ea20b0aba42f2256711da1d0cd081510a4b291e64375bff6b70ced70b87a5f1" in postinst, \
+        "the checkpoint's sha256 is no longer checked anywhere in the postinst"
     for key in re.findall(r'weights\.fetch\(\s*"([^"]+)"', postinst):
         assert key in declared, (
             f'postinst fetches artifact "{key}", which is not a row in '

@@ -13,10 +13,12 @@ from ui import playlist
 
 ROOT = Path(__file__).resolve().parents[3]
 
-# Only the directories this task owns. Provisioning (scripts/, debian/) joins
-# the scan when its own model id moves.
-_SCANNED = ("runner", "ui", "protocol", "playlist", "webview")
+# debian/changelog is history. debian/tt-bio-demo*/ and debian/.debhelper/ are
+# gitignored build output, so only the files that ship from source are scanned.
+_SCANNED = ("runner", "ui", "protocol", "playlist", "webview", "scripts", "debian")
 _SUFFIXES = {".py", ".sh", ".yaml", ".postinst", ".templates"}
+_SKIPPED_PARTS = {".debhelper", "tt-bio-demo", "tt-bio-demo-all", "tt-bio-demo-runtime",
+                  "tt-bio-demo-weights", "__pycache__"}
 _RETIRED = "protenix-v2"
 
 
@@ -41,7 +43,7 @@ def _line_is_allowed(line):
     model (`model=` or `model:` followed by the name) never passes.
     """
     low = line.lower()
-    if re.search(r"model\s*[=:]\s*[\"']?" + _RETIRED, low):
+    if re.search(r"model[\"']?\s*[=:]\s*[\"']?" + _RETIRED, low):
         return False
     return "not shipped" in low or "retired" in low
 
@@ -57,6 +59,7 @@ def test_no_shipped_code_still_names_the_retired_model():
     for sub in _SCANNED:
         for p in (ROOT / sub).rglob("*"):
             if (p.is_file() and p.suffix in _SUFFIXES
+                    and not _SKIPPED_PARTS & set(p.relative_to(ROOT).parts[:-1])
                     and _RETIRED in p.read_text(errors="ignore").lower()
                     and not _explains_retirement(p)):
                 offenders.append(str(p.relative_to(ROOT)))

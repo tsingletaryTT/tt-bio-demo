@@ -304,14 +304,14 @@ doctor_ask_tt_bio_about_weights() {
     # cannot ask. A failure to ask is swallowed on purpose: an unaskable
     # tt-bio is not itself a weights fault, and the caller falls back.
     #
-    # `$3`, the MODEL name, defaults to protenix-v2 -- the original, only
+    # `$3`, the MODEL name, defaults to protenix-v1 -- the original, only
     # caller. doctor_check_affinity_weights below passes "nesso1", which
     # (per tt_bio.weights.MODEL_ARTIFACTS) resolves to BOTH of nesso1's
     # registry rows -- nesso1 itself and nesso1-ccd -- in one ask, the same
     # way `tt-bio weights --download nesso1` fetches both in one call.
     _rn="$1"
     _cache="$2"
-    _model="${3:-protenix-v2}"
+    _model="${3:-protenix-v1}"
     [ -x "$_rn" ] || return 1
     "$_rn" - "$_cache" "$_model" <<'TT_BIO_STATUS_EOF' 2>/dev/null
 import sys
@@ -337,19 +337,19 @@ doctor_check_weights_from_the_filesystem() {
     _c="$1"
     _rc=0
 
-    # The real checkpoint is 1.86 GB; 1 GB is a floor no truncation this
-    # matters for would pass.
-    _ckpt="$_c/protenix-v2.pt"
+    # The real checkpoint is 1.47 GB (1,474,265,486 bytes) and tt-bio puts it
+    # in a subdirectory. 1 GB is a floor no truncation that matters would pass.
+    _ckpt="$_c/protenix/model_v0.5.0.pt"
     if [ ! -f "$_ckpt" ]; then
-        fail "protenix-v2.pt is missing from $_c"
+        fail "protenix/model_v0.5.0.pt is missing from $_c"
         _rc=1
     else
         _sz=$(stat -c %s "$_ckpt" 2>/dev/null || echo 0)
         if [ "$_sz" -lt 1000000000 ]; then
-            fail "protenix-v2.pt is only $_sz bytes -- truncated download"
+            fail "protenix/model_v0.5.0.pt is only $_sz bytes -- truncated download"
             _rc=1
         else
-            ok "protenix-v2.pt ($((_sz / 1000000)) MB)"
+            ok "protenix/model_v0.5.0.pt ($((_sz / 1000000)) MB)"
         fi
     fi
 
@@ -412,7 +412,7 @@ VERDICT_EOF
         else
             hint "fetch them with:"
         fi
-        hint "$_p/.venvs/venv-runner/bin/tt-bio weights --download protenix-v2"
+        hint "$_p/.venvs/venv-runner/bin/tt-bio weights --download protenix-v1"
         hint "about 3.7 GB, resumable, and THE VENUE IS OFFLINE -- do it first"
     fi
     return $_rc
@@ -435,12 +435,12 @@ DOCTOR_ESM2_MODEL="facebook/esm2_t33_650M_UR50D"
 # "present" to an existence check, which is exactly the false-alarm-in-the-
 # other-direction this project's README warns about ("checked by size, not
 # existence -- a truncated download is the realistic failure and looks
-# healthy to an existence check"), and the neighbouring protenix-v2/mols
+# healthy to an existence check"), and the neighbouring checkpoint/mols
 # check already has a size floor for the same reason. `try_to_load_from_
 # cache` is huggingface_hub's own cache lookup (the same one
 # `tt_bio.weights.resolve` uses for hf-repo artifacts), so this asks the
 # real resolution rather than re-guessing the snapshot directory name, and
-# then applies a floor the way protenix-v2.pt's own check does.
+# then applies a floor the way the checkpoint's own check does.
 doctor_check_esm2_cache() {
     _rn="$1"
     [ -x "$_rn" ] || return 1
@@ -465,7 +465,7 @@ else:
         size = 0
     # The real file is ~2.6 GB; 1 GB is a floor no truncation this matters
     # for would pass -- same reasoning, and the same margin, as
-    # protenix-v2.pt's own floor against its 1.86 GB real size.
+    # the checkpoint's own floor against its 1.47 GB real size.
     if size < 1000000000:
         print("truncated", f"{path} ({size} bytes)")
     else:
