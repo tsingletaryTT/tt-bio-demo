@@ -2039,9 +2039,18 @@ the wedge was a chance event.
   changed at once, supports only that the run completed.
 
 Suite state at this entry: the non-hardware suites are green apart from the
-environment-dependent failures this file already names. The full hardware suite
-and the live booth check (plan Task 7 Steps 2 and 3) were not run in this
-commit and are left for the owner.
+environment-dependent failures this file already names.
+
+Added later the same day (15:19-15:30 PDT). After removing `iommu=pt` from the kernel
+command line (IOMMU translation on, so tt-kmd's firmware log forwarding turns on) and a
+reboot, the full four-chip suite ran through `scripts/hw-run.sh --chips 4`: 537 runner
+tests (unit and integration) and the four-worker pool test passed, the JS tests passed,
+and the UI half had 1,614 passed and 2 failed (the two `test_packaging` pin tests that
+read the old `/opt/tt-bio-demo` install). No stall and no kernel-log faults during the
+run. Three SMC regulator warnings (chips 0, 1 and 3) appeared at boot, before the run;
+there is no earlier boot to compare against, since forwarding was off then. This is one
+clean run on a stack where the IOMMU mode, kmd, firmware and tools all changed together.
+The live booth check (plan Task 7 Step 3) was not run.
 
 ## Conventions
 
