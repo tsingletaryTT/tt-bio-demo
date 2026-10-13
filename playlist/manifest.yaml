@@ -65,7 +65,7 @@
 # target (it runs 4 trunk cycles, v2 ran 10) and less confident on every target.
 # FKBP12 (+SB3) and DHFR (+MTX) fold on this stack: the L1 clash that
 # stopped FKBP12 on tt-bio 0.6.3 did not recur on v1 or on the v2 reference.
-# Confidence fell on every target, by mean pLDDT against v2: about 2 points on
+# Confidence fell on every target, by mean pLDDT against v2: about 1.5-2 points on
 # Trp-cage and DNA, 7 on tRNA, 7-20 on the three `msa: empty` proteins (trypsin
 # 7, FKBP12 11, DHFR 20) and 24 on albumin. The three proteins now sit at 31-40
 # mean pLDDT (v2: 39-53) and albumin at 50 (v2: 74). The pLDDT colour ramp

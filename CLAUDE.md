@@ -1963,7 +1963,7 @@ so the booth folds with that. The pin moved 0.12.0 -> 0.15.2.
 
 **Measured on v1** (all seven targets, same chip and host stack as the v2 runs,
 `docs/measurements-2026-10-13-protenix-v1.md`): warm 2.99-16.1 s, which is
-1.25-3.2x faster than v2. Mean pLDDT is lower than v2 on every target: about 2
+1.25-3.2x faster than v2. Mean pLDDT is lower than v2 on every target: about 1.5-2
 points on Trp-cage and the DNA duplex, 7 on tRNA, 7-20 on the msa-empty
 proteins, 24 on albumin. FKBP12 with SB3 folds on v1. Recorded streams were re-captured on v1. The site,
 README and handout carry the new numbers, and commit counts were re-measured
@@ -1999,13 +1999,21 @@ Tenstorrent hardware runs.
 Both match the chip ARC/NOC wedge followed by workqueue starvation that
 `~/qb2-debug/` already documents (reports 2026-07-12 to 07-15).
 
-The host stack was then upgraded: kmd 2.10.0 -> 2.11.0, tt-smi 6.1.0 -> 6.7.0,
-tt-flash 3.10.0 -> 4.1.0, tt-umd 0.9.8 -> 0.9.12, pyluwen 0.8.5 -> 0.10.0
-(firmware 19.16.0.0 was already on the cards). The identical measurement run
-that had wedged then completed: 28 folds, then 28 and 21 more, with no stall.
-That is one observation on a stack where everything changed together. It does
-not show which part fixed anything, and it does not show that anything was
-fixed.
+Host stack history, from the kernel log and `/var/log/dpkg.log`. The first
+freeze ran on tt-kmd 2.11.0 (the boot that ended 10:10:57). At 10:45 dpkg moved
+tenstorrent-dkms 2.11.0 -> 2.10.0, together with sfpi 7.83.0 -> 7.67.0; who ran
+that is not recorded. The second freeze (11:26) ran on kmd 2.10.0. At 12:11 dpkg
+moved dkms 2.10.0 -> 2.11.0 again and the box was rebooted. The userspace tools
+were upgraded around 12:10 in the same step: tt-smi 6.1.0 -> 6.7.0, tt-flash
+3.10.0 -> 4.1.0, tt-umd 0.9.8 -> 0.9.12, pyluwen 0.8.5 -> 0.10.0. Firmware
+19.16.0.0 was on the cards at both times as far as known. The identical
+measurement run that had wedged then completed: 28 folds, then 28 and 21 more,
+with no stall.
+
+So the clean run used the same kmd that had frozen the box once. It is one
+observation on a stack where several parts changed together. Which of the
+changes, if any, mattered is unknown, and one clean run does not rule out that
+the wedge was a chance event.
 
 **Notable moments in prompting and review**
 
@@ -2027,8 +2035,8 @@ fixed.
   weights before reading its speed numbers.
 - A suite named `--hw` that opens every card is not covered by a lease for fewer
   cards. The refusal belongs in the launcher.
-- A measurement taken before and after a stack upgrade, with several parts
-  changed at once, supports "it completed" and nothing narrower.
+- A measurement taken before and after a stack change, with several parts
+  changed at once, supports only that the run completed.
 
 Suite state at this entry: the non-hardware suites are green apart from the
 environment-dependent failures this file already names. The full hardware suite

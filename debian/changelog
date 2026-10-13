@@ -9,7 +9,7 @@ tt-bio-demo (0.8.0) noble; urgency=medium
     entry that names any other model is rejected with a PlaylistError.
   * Measured on the same chip and host stack, all seven targets fold
     1.25-3.2x faster (warm 2.99-16.1 s) and every mean pLDDT is lower than
-    it was on v2: about 2 points on Trp-cage and the DNA duplex, 7 on tRNA,
+    it was on v2: about 1.5-2 points on Trp-cage and the DNA duplex, 7 on tRNA,
     7-20 on the msa-empty proteins, 24 on albumin. The gallery blurbs, the
     site, the README and the handout carry the new numbers
     (docs/measurements-2026-10-13-protenix-v1.md). FKBP12 with its SB3
@@ -36,7 +36,7 @@ tt-bio-demo (0.8.0) noble; urgency=medium
   * Commit counts on the docs site are re-measured at v0.15.2: 14,033
     total, 13,396 carry Moritz's name as author.
 
- -- Taylor Singletary <tsingletary@tenstorrent.com>  Tue, 13 Oct 2026 14:00:00 -0700
+ -- Taylor Singletary <tsingletary@tenstorrent.com>  Tue, 13 Oct 2026 13:21:52 -0700
 
 tt-bio-demo (0.7.0) noble; urgency=medium
 

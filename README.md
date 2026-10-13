@@ -824,7 +824,7 @@ people's work running on Tenstorrent hardware:
 **Which Protenix, and why.** The booth folds with Protenix v1, upstream's Apache-2.0 v0.5.0
 checkpoint. tt-bio does not download Protenix v2, because its weights may not be redistributed
 without the rights holder's consent. On this card v1 is 1.25x to 3.2x faster than v2 on every
-playlist target and reports lower pLDDT on every one: about 2 points lower on Trp-cage and the
+playlist target and reports lower pLDDT on every one: about 1.5-2 points lower on Trp-cage and the
 DNA duplex, 7 on the tRNA and on trypsin, 11 on FKBP12, 20 on DHFR and 24 on albumin (means from
 `docs/measurements-2026-10-13-protenix-v1.md`; both models run on tt-bio 0.15.2 on the same chip).
 
