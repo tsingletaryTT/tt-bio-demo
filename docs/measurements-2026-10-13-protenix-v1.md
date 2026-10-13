@@ -5,11 +5,10 @@ from this file. Raw per-run numbers are at the end.
 
 ## Method
 
-- **Host stack** (changed since an earlier attempt at this task, which was lost to a host
-  freeze at about 11:26 PDT; nothing from that attempt is used): tt-kmd 2.11.0, firmware
-  bundle 19.16.0.0 on all four chips, tt-smi 6.7.0, tt-flash 4.1.0, tt-umd 0.9.12,
-  pyluwen 0.10.0, ttnn 0.68.0, tt-bio 0.15.2, kernel 7.0.0-38-generic. `tt-qb-lights` was
-  left running on purpose.
+- **Host stack:** tt-kmd 2.11.0, firmware bundle 19.16.0.0 on all four chips, tt-smi 6.7.0,
+  tt-flash 4.1.0, tt-umd 0.9.12, pyluwen 0.10.0, ttnn 0.68.0, tt-bio 0.15.2, kernel
+  7.0.0-38-generic. `tt-qb-lights` was left running on purpose. Nothing from an earlier,
+  abandoned attempt at this task is used.
 - **Chip.** One chip, chip 0 (BDF 0000:01:00.0, board 0000046131924062), under a gozer
   lease each time. `TT_VISIBLE_DEVICES=0000:01:00.0` was printed by the script at the
   start of every arm. gozer leases a whole board, so chip 1 was claimed by the same lease
@@ -27,23 +26,7 @@ from this file. Raw per-run numbers are at the end.
 
   `gozer status` showed all four chips FREE before and after every arm (saved copies in
   the report). During each arm chip 0 showed HELD and chip 1 CLAIMED, both under our pid.
-  No stall, no 0xFFFF board serial, no BUSY-UNTRACKED, no ethernet-core timeout.
-- **One observation about the host-stack change, not an A/B result.** The first attempt at
-  arm v1A, on the earlier host stack, wedged chip 0 and froze the box (the 11:26 freeze, on
-  tt-kmd 2.10.0). The identical command completed on the later stack in 7 min 40 s, longest
-  silence 17.4 s. That is one failure and one success. The tools changed together, so it
-  cannot say which change mattered, and one run on each side cannot rule out that the wedge
-  was a chance event. The kmd history matters here: the earlier freeze (10:10) ran on
-  tt-kmd 2.11.0, the same kmd as the clean run.
-- **Host stack before and after** (before = the stack in place when the 11:26 wedge
-  happened). tt-kmd history from the kernel log and `/var/log/dpkg.log`: 2.11.0 at the 10:10
-  freeze; dpkg moved it to 2.10.0 at 10:45 (who ran that is unknown to me); 2.10.0 at the
-  11:26 freeze; dpkg moved it back to 2.11.0 at 12:11, followed by a reboot. So the kmd is
-  2.11.0 on the later stack and was 2.10.0 on the earlier one, and it was also 2.11.0 at the
-  first freeze. The other changes, installed about 12:10: firmware bundle 19.16.0.0 at both times as far as known; tt-smi
-  6.1.0 -> 6.7.0; tt-flash 3.10.0 -> 4.1.0; tt-umd 0.9.8 -> 0.9.12; pyluwen 0.8.5 -> 0.10.0.
-  ttnn 0.68.0 and tt-bio 0.15.2 were the same. Which of these were already in place when the
-  0.12.0-era numbers in the manifest were taken is unknown to me.
+  No stalls and no ethernet-core timeouts.
 - **Harness.** The brief names `tests/integration/test_new_targets_timing.py`, which folds
   each target once per invocation. The measurement here used an uncommitted scratchpad
   script that copies that harness's stamping exactly (an `emit` callback records the

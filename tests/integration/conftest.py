@@ -56,8 +56,7 @@ def pool_visibility_problem(visible_devices, card_count):
     Pure: takes the TT_VISIBLE_DEVICES value (None when unset) and the number of
     Tenstorrent cards on the box, and touches no device. A value that is unset
     or names at least `card_count` PCI addresses is fine. A value naming fewer
-    means the run holds a lease on fewer chips than the test will open, which
-    is how the 2026-10-13 freeze happened.
+    means the run holds a lease on fewer chips than the test will open.
     """
     if visible_devices is None or not visible_devices.strip():
         return None

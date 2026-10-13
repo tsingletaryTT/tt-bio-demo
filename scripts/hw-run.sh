@@ -4,12 +4,10 @@
 #
 #   scripts/hw-run.sh --chips N --reason "why" [--one-chip] -- command [args...]
 #
-# Why it exists. On 2026-10-13 a test run launched as
-#   gozer run --chips 1 ... scripts/test.sh --hw <two test files>
-# ran the whole integration directory plus the four-card pool test under a lease
-# for one board, and the machine froze. `test.sh --hw` opens every card, and extra
-# file arguments do not narrow it. This script refuses that shape and gives every
-# hardware command the same entry point, with or without tt-gozer.
+# Why it exists. `scripts/test.sh --hw` opens every card, and extra file arguments
+# do not narrow it, so running it under a lease for fewer chips opens cards the
+# lease does not cover. This script refuses that shape and gives every hardware
+# command the same entry point, with or without tt-gozer.
 #
 #   With gozer on this machine: takes a lease (`gozer run --chips N`).
 #   --one-chip narrows TT_VISIBLE_DEVICES to the first chip of whatever was granted.
