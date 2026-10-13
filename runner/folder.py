@@ -36,6 +36,7 @@ from pathlib import Path
 from protocol.events import STAGE_BANDS, STAGE_ORDER
 from runner.dump_tap import install_trajectory_tap, remove_trajectory_tap
 from runner.env import weights_cache
+from runner.model import BOOTH_MODEL
 from runner.shaping import frame_event, plddt_to_percent, select_frame_steps
 
 log = logging.getLogger(__name__)
@@ -124,7 +125,7 @@ def _progress_frac(stage, step, total):
 class Folder:
     """Holds a device and a resident model, and folds one protein at a time."""
 
-    def __init__(self, device_id=0, model="protenix-v1"):
+    def __init__(self, device_id=0, model=BOOTH_MODEL):
         self.device_id = device_id
         self.model = model
         self._loaded = False
@@ -163,9 +164,9 @@ class Folder:
         """
         if self._loaded:
             return
-        if self.model != "protenix-v1":
+        if self.model != BOOTH_MODEL:
             raise ValueError(f"unsupported model {self.model!r}; only "
-                             "protenix-v1 is wired up (protenix-v2 is retired: "
+                             f"{BOOTH_MODEL} is wired up (protenix-v2 is retired: "
                              "its weights are not redistributable and tt-bio "
                              "no longer downloads them)")
         t0 = time.monotonic()
@@ -226,7 +227,7 @@ class Folder:
             # reached preflight and nothing else, so a booth started with an
             # explicit --weights preflighted one directory and folded from
             # another.
-            ckpt_path = weights.fetch("protenix-v1", root=cache)
+            ckpt_path = weights.fetch(BOOTH_MODEL, root=cache)
             self._model_obj = Protenix.load_from_checkpoint(
                 str(ckpt_path), device=self._device)
             self._mol_dir = download_mols(cache)

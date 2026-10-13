@@ -389,6 +389,15 @@ def load_playlist(path):
                     f"below 'expected_s' ({expected_s}); the slow end of a "
                     f"range cannot be faster than the fast end")
 
+        # The booth folds with exactly one model and nothing downstream reads
+        # `model`, so an entry naming another one would silently fold on
+        # DEFAULT_MODEL while its own data claimed otherwise. Refuse it here.
+        entry_model = entry.get("model")
+        if entry_model and entry_model != DEFAULT_MODEL:
+            raise PlaylistError(
+                f"{entry_id}: model {entry_model!r} is not available -- this "
+                f"booth folds with {DEFAULT_MODEL}")
+
         thumbnail = entry.get("thumbnail")
         thumbnail_path = (manifest_dir / thumbnail).resolve() if thumbnail else None
 

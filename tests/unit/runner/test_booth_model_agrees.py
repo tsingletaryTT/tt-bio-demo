@@ -4,6 +4,7 @@ This pins them to one answer, and to an answer tt-bio's registry can actually
 download. It lives under tests/unit/runner/ because it imports runner.*; the
 UI's `ui.playlist` is plain Python and imports fine in that venv.
 """
+import re
 from pathlib import Path
 
 from runner import preflight
@@ -33,11 +34,22 @@ def test_the_booth_model_is_one_tt_bio_can_download():
         "a fresh install cannot fetch it")
 
 
+def _line_is_allowed(line):
+    """A line naming the retired model passes only as an explanation of it.
+
+    The explanation has to say "not shipped" or "retired". A line that sets a
+    model (`model=` or `model:` followed by the name) never passes.
+    """
+    low = line.lower()
+    if re.search(r"model\s*[=:]\s*[\"']?" + _RETIRED, low):
+        return False
+    return "not shipped" in low or "retired" in low
+
+
 def _explains_retirement(path):
-    """True when every line naming the retired model says it is not shipped."""
-    return all("not shipped" in line or "retired" in line
+    return all(_line_is_allowed(line)
                for line in path.read_text(errors="ignore").splitlines()
-               if _RETIRED in line)
+               if _RETIRED in line.lower())
 
 
 def test_no_shipped_code_still_names_the_retired_model():
@@ -45,7 +57,40 @@ def test_no_shipped_code_still_names_the_retired_model():
     for sub in _SCANNED:
         for p in (ROOT / sub).rglob("*"):
             if (p.is_file() and p.suffix in _SUFFIXES
-                    and _RETIRED in p.read_text(errors="ignore")
+                    and _RETIRED in p.read_text(errors="ignore").lower()
                     and not _explains_retirement(p)):
                 offenders.append(str(p.relative_to(ROOT)))
     assert not offenders, offenders
+
+
+# --- the other places the booth model appears --------------------------------
+
+def test_the_folder_default_is_the_booth_model():
+    from runner.folder import Folder
+    assert Folder().model == preflight.MODEL      # constructed, never loaded
+
+
+def test_the_folder_guard_and_fetch_key_use_the_shared_constant():
+    # load() needs a device, so check the source: no model literal may sit in
+    # the guard or the fetch call, and both must name the shared constant.
+    src = (ROOT / "runner" / "folder.py").read_text()
+    assert "self.model != BOOTH_MODEL" in src
+    assert "weights.fetch(BOOTH_MODEL," in src
+    assert "protenix-v1" not in src, "a literal model id is back in runner/folder.py"
+
+
+def test_the_load_guard_rejects_any_other_model():
+    import pytest
+    from runner.folder import Folder
+    with pytest.raises(ValueError, match=preflight.MODEL):
+        Folder(model="protenix-v2").load()
+
+
+def test_the_daemon_greeting_advertises_the_booth_model():
+    src = (ROOT / "runner" / "daemon.py").read_text()
+    assert '"models": [BOOTH_MODEL]' in src
+
+
+def test_the_job_default_is_the_shared_constant():
+    from runner.model import BOOTH_MODEL
+    assert Job.__dataclass_fields__["model"].default == BOOTH_MODEL == preflight.MODEL

@@ -65,7 +65,8 @@
 # of the twenty padded lengths that feature's own divisor condition can
 # touch. That reasoning used the GENERAL 20-length list without checking the
 # per-model breakdown next to it: upstream's own docs/sdpa-wide-k-parity.md
-# explicitly tables padded 608 for Protenix-v2 (h=8, this booth's model) as
+# explicitly tables padded 608 for Protenix-v2 (h=8; the retired model this booth
+# measured on before it moved to protenix-v1) as
 # "unchanged ... bit-exact fall-through" -- i.e. this exact length should NOT
 # engage the wide-key-chunk path for this model at all. The claim was wrong
 # as stated and has been removed.
@@ -136,7 +137,7 @@
 #   hsa         95.5 s        79.48-79.51   95.8 s   (-0.3%)     flat
 #
 # THIS IS THE FINDING: nothing moved, and that is consistent with what the
-# upgrade actually changed. tt-bio 0.8.0's real fixes for Protenix-v2/OpenDDE
+# upgrade actually changed. tt-bio 0.8.0's real fixes for Protenix-v2 (retired)/OpenDDE
 # are `modifications:`/`templates:`/`--max_msa_seqs` being honoured instead of
 # silently dropped, a hang bug above ~640 residues on Wormhole (980->1024
 # residue ceiling, derived from L1 budget instead of token count), and
@@ -203,7 +204,7 @@
 #   hsa         95.8 s        79.24-79.37   97.5 s    (-2%)      585->608 tokens, small pad + fix
 #
 # THE SHAPE OF THIS TABLE IS THE STORY, not any one row: tt-bio 0.7.1/0.7.2
-# fixed a real attention-masking bug (Protenix-v2/OpenDDE were padding the
+# fixed a real attention-masking bug (Protenix-v2 (retired)/OpenDDE were padding the
 # atom axis, not the token axis, so a ragged tail reached triangle attention
 # as real unmasked key columns -- upstream's own probe measured relative
 # error 0.914 ragged against 0.038 masked) by bucketing every model's token
@@ -280,11 +281,11 @@
 # the reason the maximum is 7.0s.
 #
 # WHAT DID NOT HAPPEN, and it was the reason for measuring at all. tt-bio 0.6.7
-# fixed two real accuracy bugs in the Protenix-v2 pair trunk both this booth and
+# fixed two real accuracy bugs in the Protenix-v2 (retired) pair trunk both this booth and
 # OpenDDE ride on: the mask marking which residue pairs are real reached only
 # one of the two triangle multiplications, and `OuterProductMean` added its
 # output bias without the scale the reference applies. Upstream reports every
-# Protenix-v2 structure leg moving inside the reference's own seed-to-seed
+# Protenix-v2 (retired) structure leg moving inside the reference's own seed-to-seed
 # spread. On THESE seven targets it is not visible: every pLDDT above sits in
 # the band 0.6.4 recorded. The likely reason is that all seven are `msa: empty`
 # (or nucleic acids, which have no `msa:` key at all), so the pair trunk here

@@ -35,6 +35,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+from runner.model import BOOTH_MODEL
 from runner.dump_tap import TapUnavailable, check_tap_supported
 
 log = logging.getLogger(__name__)
@@ -42,7 +43,7 @@ log = logging.getLogger(__name__)
 # The model the booth folds with. Everything protenix-v1 needs is derived
 # from tt-bio's own registry (see required_weights below), so this is the only
 # hand-written name in the chain.
-MODEL = "protenix-v1"
+MODEL = BOOTH_MODEL
 
 # Used only when tt-bio's registry cannot be read at all -- a broken or
 # partial install, which preflight must still be able to REPORT rather than

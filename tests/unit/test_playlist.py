@@ -724,3 +724,35 @@ def test_a_question_with_non_numeric_expected_s_is_rejected(tmp_path):
     )
     with pytest.raises(PlaylistError, match="x"):
         load_questions(bad)
+
+
+# --- the booth folds with one model; a manifest cannot choose another -------
+#
+# Nothing downstream reads Target.model, so an entry naming the retired model
+# used to load, fold on protenix-v1 anyway, and carry a wrong claim in its own
+# data. The loader is the one place that sees the entry, so it refuses there.
+
+def _one_entry_manifest(tmp_path, model_line):
+    (tmp_path / "t.yaml").write_text("version: 1\n")
+    manifest = tmp_path / "manifest.yaml"
+    manifest.write_text(
+        "- id: t\n  input: t.yaml\n  name: T\n  blurb: b\n" + model_line)
+    return manifest
+
+
+def test_a_target_naming_the_retired_model_is_rejected(tmp_path):
+    from ui.playlist import DEFAULT_MODEL, PlaylistError, load_playlist
+    manifest = _one_entry_manifest(tmp_path, "  model: protenix-v2\n")
+    with pytest.raises(PlaylistError) as err:
+        load_playlist(manifest)
+    message = str(err.value)
+    assert "protenix-v2" in message and DEFAULT_MODEL in message, message
+    assert "Traceback" not in message
+
+
+def test_a_target_naming_the_booth_model_or_none_still_loads(tmp_path):
+    from ui.playlist import DEFAULT_MODEL, load_playlist
+    named = load_playlist(_one_entry_manifest(tmp_path, f"  model: {DEFAULT_MODEL}\n"))
+    assert named[0].model == DEFAULT_MODEL
+    absent = load_playlist(_one_entry_manifest(tmp_path, ""))
+    assert absent[0].model == DEFAULT_MODEL
