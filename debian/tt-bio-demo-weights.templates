@@ -1,22 +1,22 @@
 Template: tt-bio-demo-weights/download
 Type: boolean
 Default: false
-Description: Download the model weights now (6.9 GB)?
+Description: Download the model weights now (6.5 GB)?
  The booth needs two artifacts before it can fold anything:
- the protenix-v1 checkpoint (1.47 GB) and the CCD molecule library mols.tar (1.85 GB).
- Together that is about 3.7 GB.
+ the protenix-v1 checkpoint (1.47 GB) and the CCD molecule library mols.tar (1.86 GB).
+ Together that is about 3.3 GB.
  .
  It also needs three more before it can answer an affinity question
  ("does this ligand bind this protein?"): nesso1's affinity head
  (165 MB), its own CCD molecule dict (413 MB), and the ESM-2 protein
- encoder its featurizer runs (2.6 GB) -- about 3.2 GB more, for 6.9 GB
+ encoder its featurizer runs (2.6 GB) -- about 3.2 GB more, for 6.5 GB
  total. Affinity Q&A is off by default (opt in with --questions), and a
  booth with only one Tenstorrent chip (which never reserves a Q&A worker)
  does not need these three regardless, but a failure fetching them will
  not fail this install either way -- see the log for what landed.
  .
  THE VENUE IS OFFLINE. This has to happen before the machine leaves for the
- conference, which is why it is offered at install time -- but 6.9 GB is not
+ conference, which is why it is offered at install time -- but 6.5 GB is not
  something an unattended install should start on its own, so the default is
  to decline and the exact commands are printed instead.
  .

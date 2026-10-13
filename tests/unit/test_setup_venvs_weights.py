@@ -3,7 +3,7 @@
 The gap this covers was reported by a user who got the booth working and then
 said: "The docs were not quite right - I had to discover a model downloading
 command". The source install path built both venvs and stopped. Nothing in it
-fetched the 3.7 GB the booth cannot fold without, and nothing in it said so --
+fetched the 3.3 GB the booth cannot fold without, and nothing in it said so --
 so the first fold either pulled them silently or, at a venue, failed.
 
 The .deb had covered this since Phase 3b (debian/tt-bio-demo-weights.postinst,
@@ -127,7 +127,7 @@ def test_skip_weights_is_a_recognised_flag(tmp_path):
 
 
 def test_skip_weights_fetches_nothing(tmp_path):
-    """The opt-out. 3.7 GB is not something to make unavoidable."""
+    """The opt-out. 3.3 GB is not something to make unavoidable."""
     prefix = _stub_prefix(tmp_path)
     r = _run(tmp_path, "fetch_weights", "--prefix", str(prefix), "--skip-weights")
     out = r.stdout + r.stderr
@@ -192,7 +192,7 @@ def test_the_fetch_is_told_which_cache_to_use(tmp_path):
 
     They differ whenever HOME differs between the two evaluations, and the
     documented way to run this is `sudo scripts/setup-venvs.sh` (doctor.sh
-    prints that; so does INSTALL.md). Under sudo the 3.7 GB can land in root's
+    prints that; so does INSTALL.md). Under sudo the 3.3 GB can land in root's
     home while the user-service booth loads from the operator's -- a download
     that reports success and leaves the booth unable to fold.
     """

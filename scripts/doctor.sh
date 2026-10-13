@@ -278,7 +278,7 @@ doctor_check_tt_bio_version() {
 #      the only layer that can be right about two things the filesystem cannot
 #      see: a file of the correct size that is nevertheless a corrupt archive,
 #      and a single artifact deliberately RELOCATED with tt-bio's per-artifact
-#      overrides ($PROTENIX_CKPT / $TT_BIO_PROTENIX_V2, $TT_BIO_MOLS). It
+#      overrides ($PROTENIX_V1_CKPT / $TT_BIO_PROTENIX_V1, $TT_BIO_MOLS). It
 #      reports where it actually found each one, so the doctor names the real
 #      path rather than the one it assumed.
 #      NO DEVICE IS OPENED and torch is never imported -- tt_bio.weights pulls
@@ -413,7 +413,7 @@ VERDICT_EOF
             hint "fetch them with:"
         fi
         hint "$_p/.venvs/venv-runner/bin/tt-bio weights --download protenix-v1"
-        hint "about 3.7 GB, resumable, and THE VENUE IS OFFLINE -- do it first"
+        hint "about 3.3 GB, resumable, and THE VENUE IS OFFLINE -- do it first"
     fi
     return $_rc
 }
@@ -648,11 +648,11 @@ doctor_check_space() {
         return 0
     fi
     _gb=$((_avail / 1000000))
-    # ~6.9 GB of weights (3.7 GB required to fold + 3.2 GB more for
+    # ~6.5 GB of weights (3.3 GB required to fold + 3.2 GB more for
     # affinity Q&A), plus tt-metal's own log churn (bounded by the daemon's
     # budgets, but it still needs somewhere to churn).
     if [ "$_gb" -lt 12 ]; then
-        warn "only ${_gb} GB free at $_dir (weights alone are ~6.9 GB)"
+        warn "only ${_gb} GB free at $_dir (weights alone are ~6.5 GB)"
     else
         ok "${_gb} GB free at $_dir"
     fi

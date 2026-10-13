@@ -40,8 +40,8 @@
 #                    look valid. Without this flag, re-running is a cheap
 #                    no-op once both venvs are verified.
 #   --skip-weights  Do not fetch the model weights. The booth cannot fold
-#                    without them (~6.9 GB total: protenix-v1's checkpoint and
-#                    CCD molecule library for folding, ~3.7 GB, plus nesso1's
+#                    without them (~6.5 GB total: protenix-v1's checkpoint and
+#                    CCD molecule library for folding, ~3.3 GB, plus nesso1's
 #                    affinity head and its own CCD dict, ~578 MB, plus the
 #                    ESM-2 encoder nesso1's featurizer needs, ~2.6 GB, for the
 #                    affinity-Q&A feature), so this is an opt-OUT, not an
@@ -142,7 +142,7 @@ Usage: $(basename "$0") [--prefix PATH] [--force] [--skip-runner]
 Creates <prefix>/venv-ui and <prefix>/venv-runner. Default prefix:
 ${REPO_ROOT}/.venvs
 
-The model weights are DOWNLOADED BY DEFAULT (~6.9 GB: protenix-v1 + CCD for
+The model weights are DOWNLOADED BY DEFAULT (~6.5 GB: protenix-v1 + CCD for
 folding, nesso1 + its own CCD dict and the ESM-2 encoder for affinity Q&A),
 because a booth without them cannot fold or answer questions; pass
 --skip-weights to opt out of all of it. The download is resumable and
@@ -925,7 +925,7 @@ weights_cache_dir() {
   tt_bio_demo_weights_cache
 }
 
-# The ~6.9 GB the booth cannot fold or answer questions without:
+# The ~6.5 GB the booth cannot fold or answer questions without:
 #   the protenix-v1 checkpoint + the CCD molecule library   -- folding
 #   nesso1's affinity head + its own CCD dict (~578 MB)      -- affinity Q&A
 #   the ESM-2 encoder nesso1's featurizer runs on (~2.6 GB)  -- affinity Q&A
@@ -1031,7 +1031,7 @@ fetch_weights() {
 
   log "weights: fetching the protenix-v1 checkpoint and CCD molecule library"
   log "weights: into ${cache}"
-  log "weights: ~3.7 GB, resumable, verified — a no-op if already present"
+  log "weights: ~3.3 GB, resumable, verified — a no-op if already present"
   if "$tt_bio" weights --download protenix-v1 --cache "$cache"; then
     WEIGHTS_STATUS="present and verified"
     log "weights: present and verified — the booth can fold offline"
@@ -1071,7 +1071,7 @@ fetch_weights() {
 # safetensors and never touches the other two once it is present, and
 # AutoTokenizer.from_pretrained() only reads the small json/txt files this
 # does not exclude -- so this is the actual set the featurizer needs, not a
-# guess. Without the restriction every "~2.6 GB"/"~3.2 GB"/"~6.9 GB" figure
+# guess. Without the restriction every "~2.6 GB"/"~3.2 GB"/"~6.5 GB" figure
 # in this script's comments, --help text and the docs it is quoted into was
 # off by the ~4.7 GB the two unwanted formats cost.
 fetch_esm2_cache() {

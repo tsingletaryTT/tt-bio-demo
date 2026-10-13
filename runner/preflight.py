@@ -74,7 +74,7 @@ def required_weights(cache):
     runs ONCE and the daemon never retries it:
 
     * `weights.resolve()`, not `Artifact.dest()`. tt-bio lets an operator
-      point a single artifact elsewhere ($PROTENIX_CKPT / $TT_BIO_PROTENIX_V2,
+      point a single artifact elsewhere ($PROTENIX_V1_CKPT / $TT_BIO_PROTENIX_V1,
       $TT_BIO_MOLS) and only resolve() honours that. dest() would report a
       relocated checkpoint missing from a cache it was deliberately moved out
       of.

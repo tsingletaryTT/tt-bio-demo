@@ -995,6 +995,24 @@ pin hiding inside the "fixed" unit. All items below are now closed.
 - **`unpack_coords` catches broad `Exception` around `b64decode`**, which raises
   several types depending on input. The broad catch is correct.
 
+## Open — README screenshots predate the move to Protenix v1 (2026-10-13)
+
+The booth now folds with Protenix v1 (tt-bio 0.15.2). These README images were captured
+while it folded with Protenix-v2, so the confidence colors in them are v2's. v1 reports lower
+pLDDT on every playlist target (`docs/measurements-2026-10-13-protenix-v1.md`), so the same
+fold now draws with more yellow and orange:
+
+- `docs/screenshots/booth-loop.gif` and `booth-loop-30s.mp4`
+- `01-folded-structure.png`, `02-live-diffusion.png`, `05-holds-previous-structure.png`
+- `06-quad-four-chips.png`, `07-quad-qa-spotlight.png`, `08-quad-qa-answered.png`
+- `03-diagnostics-detail.png` and `04-panels-detail.png` show panels, and may show pLDDT figures
+- the two `tt-bio predict` terminal recordings in the "CLI, on its own" section (run with Protenix-v2)
+
+To refresh them, an operator runs `scripts/refresh-screenshots.sh` on the booth hardware, looks
+at every output image, and commits the images with that change. The README carries a dating
+note under its screenshots claim until that happens. This task did not regenerate them because
+they need the live booth on a chip.
+
 ## Open — from the 2026-09-23 literature/scripts review
 
 - **`webview/` is not packaged.** `scripts/run-webview.sh` (attach the browser

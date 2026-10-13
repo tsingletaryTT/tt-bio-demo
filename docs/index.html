@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>tt-bio — protein structure prediction on Tenstorrent hardware</title>
-<meta name="description" content="tt-bio runs Boltz-2, BoltzGen, ESMFold2, Protenix-v2 and OpenFold3 on Tenstorrent accelerators. What it is, the research it stands on, and how it came to exist.">
+<meta name="description" content="tt-bio runs Boltz-2, BoltzGen, ESMFold2, Protenix and OpenFold3 on Tenstorrent accelerators. What it is, the research it stands on, and how it came to exist.">
 
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="tt-bio">
@@ -512,17 +512,17 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
         <div class="card-body">
           <h3>Trp-cage</h3>
           <p>Twenty amino acids &mdash; one of the smallest proteins that folds itself, and it does it in microseconds.</p>
-          <p class="meta">20 residues &middot; 4.5 s</p>
+          <p class="meta">20 residues &middot; 3 s</p>
         </div>
       </article>
 
       <article class="card">
-        <div class="card-stripe" style="background:var(--c-high)"></div>
-        <img src="thumbnails/hsa.png" alt="Human serum albumin, folded, colored by confidence.">
+        <div class="card-stripe" style="background:var(--c-mid)"></div>
+        <img src="thumbnails/hsa.png" alt="Human serum albumin, folded, colored by confidence &mdash; mostly yellow and orange.">
         <div class="card-body">
           <h3>Human serum albumin</h3>
           <p>The blood's delivery van — the most abundant protein in plasma, and how most drugs travel.</p>
-          <p class="meta">585 residues &middot; 84.4 s</p>
+          <p class="meta">585 residues &middot; 16.1 s</p>
         </div>
       </article>
 
@@ -532,7 +532,7 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
         <div class="card-body">
           <h3>FKBP12</h3>
           <p>The molecular lock that anti-rejection drugs are shaped to pick, so a transplanted organ survives.</p>
-          <p class="meta">107 residues &middot; 9.3 s</p>
+          <p class="meta">107 residues &middot; 4.4 s</p>
         </div>
       </article>
 
@@ -542,7 +542,7 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
         <div class="card-body">
           <h3>Dihydrofolate Reductase</h3>
           <p>Every dividing cell needs it to build new DNA &mdash; which is why a classic cancer drug jams it shut.</p>
-          <p class="meta">187 residues &middot; 13.8 s</p>
+          <p class="meta">187 residues &middot; 5.3 s</p>
         </div>
       </article>
 
@@ -552,7 +552,7 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
         <div class="card-body">
           <h3>Trypsin</h3>
           <p>Built switched off by the pancreas, armed in the gut, where it cuts up the protein in your meal.</p>
-          <p class="meta">223 residues &middot; 17.4 s</p>
+          <p class="meta">223 residues &middot; 5.9 s</p>
         </div>
       </article>
 
@@ -562,41 +562,41 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
         <div class="card-body">
           <h3>DNA double helix</h3>
           <p>The double helix, twelve rungs of it &mdash; one of the two things this booth folds that are not proteins.</p>
-          <p class="meta">12 base pairs &middot; 4.8 s</p>
+          <p class="meta">12 base pairs &middot; 3.1 s</p>
         </div>
       </article>
 
       <article class="card">
-        <div class="card-stripe" style="background:var(--c-certain)"></div>
-        <img src="thumbnails/trna.png" alt="Yeast tRNA-Phe, folded, colored by confidence — blue throughout, the chain doubling back on itself.">
+        <div class="card-stripe" style="background:var(--c-high)"></div>
+        <img src="thumbnails/trna.png" alt="Yeast tRNA-Phe, folded, colored by confidence — pale blue with a yellow stretch, a compact tangle.">
         <div class="card-body">
           <h3>Transfer RNA</h3>
           <p>The go-between: it reads three letters of the genetic message and carries the matching amino acid.</p>
-          <p class="meta">76 nucleotides &middot; 6.7 s</p>
+          <p class="meta">76 nucleotides &middot; 3.5 s</p>
         </div>
       </article>
     </div>
 
     <div class="col" style="margin-top:2.2rem">
       <p>
-        Times are measured on a Blackhole chip with the model already
-        loaded. A cold start costs more; the booth keeps the model resident so
+        Times are measured on one Blackhole chip with the model already
+        loaded, on tt-bio 0.15.2 with Protenix v1, as the mean of five warm
+        folds. A cold start costs more; the booth keeps the model resident so
         that a visitor's pick almost always lands warm.
       </p>
       <p>
-        The three longest targets show a <em>range</em>, and the reason is
-        specific to this machine: two of its four chips settle to a lower
-        clock about fifteen minutes into a session &mdash; they run a few
-        degrees hotter at idle too, so it is where they sit in the chassis
-        rather than anything about the work. A fold takes whichever chip is
-        free, so the card promises the band. The short targets finish before a
-        chip has time to warm up and are unaffected.
+        Earlier releases showed two of this machine's four chips settling to a
+        lower clock about fifteen minutes into a session, which made the longer
+        folds slower there. This pass measured one chip only, so no card shows
+        a range. A fold takes whichever chip is free, so a long session can
+        run slower than these fresh-chip numbers.
       </p>
       <p>
         The stripe on each card is that molecule's measured confidence, taken
-        from the picture below it rather than asserted: Trp-cage, the DNA duplex
-        and the tRNA resolve deep blue, and the three enzymes are substantially
-        orange.
+        from the picture below it rather than asserted: Trp-cage and the DNA duplex
+        resolve deep blue, the tRNA pale blue, the three enzymes orange, and
+        albumin mostly yellow and orange. Protenix v1 reports lower
+        confidence than v2 on every one of these molecules.
       </p>
 
       <p>
@@ -710,8 +710,8 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
       </div>
 
       <p style="margin-top:2rem">
-        As of v0.12.0 the repository holds <span class="num">12,998</span> commits.
-        <span class="num">12,361</span> of them are his.
+        As of v0.15.2 the repository holds <span class="num">14,033</span> commits.
+        <span class="num">13,396</span> of them carry his name as author.
       </p>
     </div>
   </div>
@@ -775,7 +775,7 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
       <span class="eyebrow">What it runs today</span>
       <h2>Fifteen model families, one command line</h2>
       <p>
-        tt-bio started as a Boltz-2 port. As of v0.12.0 it runs considerably
+        tt-bio started as a Boltz-2 port. As of v0.15.2 it runs considerably
         more than that, all through one CLI and all on Tenstorrent hardware.
       </p>
     </div>
@@ -787,8 +787,8 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
         </thead>
         <tbody>
           <tr><td>boltz2</td><td>Structures and binding affinity &mdash; proteins, nucleic acids, ligands, modified residues</td></tr>
-          <tr><td>protenix-v2</td><td>AlphaFold3-family folder for protein / RNA / DNA / ligand complexes. <strong>This is what the booth folds with.</strong></td></tr>
-          <tr><td>protenix-v1</td><td>The cheaper sibling &mdash; ByteDance's own Protenix v0.5.0 checkpoint, half the pair width and fewer trunk recycles than protenix-v2</td></tr>
+          <tr><td>protenix-v1</td><td>AlphaFold3-family folder for protein / RNA / DNA / ligand complexes &mdash; ByteDance's Protenix v0.5.0 checkpoint, Apache-2.0, half the pair width and fewer trunk recycles than protenix-v2. <strong>This is what the booth folds with.</strong></td></tr>
+          <tr><td>protenix-v2</td><td>The later Protenix release, with a wider pair track and a template stack. tt-bio does not download its weights, because they may not be redistributed without the rights holder's consent. On this booth's targets it reports higher pLDDT than v1 and runs 1.25&times; to 3.2&times; slower</td></tr>
           <tr><td>openfold3</td><td>AlphaFold3-family folder for protein / RNA / DNA polymers, with optional templates</td></tr>
           <tr><td>rf3</td><td>RoseTTAFold3 &mdash; folds proteins, RNA, DNA and ligands, including non-canonical residues and cyclic chains</td></tr>
           <tr><td>openbind</td><td>OpenBind-0 &mdash; protein&ndash;ligand co-folding, ligands by SMILES or CCD code</td></tr>
@@ -886,7 +886,9 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
 
     <p>
       These are our numbers, from this demo, on two Blackhole p300c boards
-      &mdash; four chips in total, since each board carries two.
+      &mdash; four chips in total, since each board carries two. They were
+      taken on earlier tt-bio releases with Protenix-v2, before the booth
+      moved to Protenix v1, and have not been re-measured.
     </p>
 
     <div class="table-scroll">

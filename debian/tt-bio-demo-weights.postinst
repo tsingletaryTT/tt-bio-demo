@@ -8,7 +8,7 @@
 # `weights.fetch("mols")`). Reimplementing that would mean
 # hardcoding a URL this project does not control, and would throw away the
 # hub client's resume-and-verify behaviour -- which matters when the thing
-# being fetched is 3.7 GB over a conference-hotel connection. So this asks
+# being fetched is 3.3 GB over a conference-hotel connection. So this asks
 # tt-bio to do the fetch, and then checks what landed.
 set -e
 
@@ -66,7 +66,7 @@ tt_bio_demo_weights_cache_packaged >/dev/null
 # $BOLTZ_CACHE, then ~/.boltz -- tt-bio's own order). This used to read only
 # $BOLTZ_CACHE, and the python block below re-derived it a SECOND time from
 # the same incomplete rule, so on a host using $TT_BIO_CACHE this downloaded
-# 3.7 GB into a directory neither a fold nor the doctor would ever look in.
+# 3.3 GB into a directory neither a fold nor the doctor would ever look in.
 # The python half is now handed the answer rather than working it out again.
 CACHE="$(tt_bio_demo_weights_cache_packaged)" || exit 1
 
@@ -148,7 +148,7 @@ case "$1" in
             tt_bio_demo_log ""
             tt_bio_demo_log "    sudo dpkg-reconfigure tt-bio-demo-weights"
             tt_bio_demo_log ""
-            tt_bio_demo_log "That is ~6.9 GB (3.7 GB required to fold, 3.2 GB more for"
+            tt_bio_demo_log "That is ~6.5 GB (3.3 GB required to fold, 3.2 GB more for"
             tt_bio_demo_log "affinity Q&A) and must happen BEFORE the venue (it is offline)."
             exit 0
         fi
@@ -226,7 +226,7 @@ case "$1" in
         # worker at all regardless -- see runner/daemon.py's qa_capable
         # gate), so a dropped connection on
         # ~578 MB + 2.6 GB of optional weights must not fail a package
-        # configure step over the required 3.7 GB that already downloaded
+        # configure step over the required 3.3 GB that already downloaded
         # fine. A marker file (not piped output -- protenix-v1/mols's own
         # download progress needs to keep streaming live to the console, and
         # piping this script's output risks the exact SIGPIPE/pipefail trap

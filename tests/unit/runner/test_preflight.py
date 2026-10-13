@@ -241,7 +241,7 @@ def test_a_missing_weight_reads_as_english_not_as_a_traceback(tmp_path):
 
 def test_a_relocated_artifact_is_found_where_it_actually_lives(tmp_path, monkeypatch):
     """tt-bio lets an operator point ONE artifact somewhere else --
-    $PROTENIX_CKPT / $TT_BIO_PROTENIX_V2 for the checkpoint, $TT_BIO_MOLS for
+    $PROTENIX_V1_CKPT / $TT_BIO_PROTENIX_V1 for the checkpoint, $TT_BIO_MOLS for
     the molecule library -- and `weights.resolve()` honours that while
     `Artifact.dest()` does not.
 

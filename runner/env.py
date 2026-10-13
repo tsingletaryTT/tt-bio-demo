@@ -215,7 +215,7 @@ def runner_environ(log_root, base=None, weights_dir=None):
     nothing else: `run-demo.sh --weights /mnt/weights` on a box whose
     ~/.boltz is empty passed preflight against /mnt/weights, started, and then
     had the first fold resolve ~/.boltz, find nothing, and try to download
-    3.7 GB. At an offline venue that is simply a booth that does not work.
+    3.3 GB. At an offline venue that is simply a booth that does not work.
 
     BOLTZ_CACHE and not TT_BIO_CACHE, deliberately: `--weights` means the flat
     artifact cache, which is exactly what BOLTZ_CACHE has always meant.
