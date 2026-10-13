@@ -5,7 +5,7 @@ This is deliberately NOT production code -- it is the instrument used by
 docs/spike-real-fold.md to answer "what does dump_fn actually give you?"
 empirically, instead of from reading the signature. It:
 
-  1. Loads Protenix-v2 (downloads weights on first use), opens a real device.
+  1. Loads Protenix-v1 (downloads weights on first use), opens a real device.
   2. Builds features for examples/trpcage_no_msa.yaml (20 residues, no MSA).
   3. Monkeypatches tt_bio.protenix.edm_sample so a dump_fn is threaded through
      even though tt_bio.protenix.Protenix.fold's public signature does not
@@ -123,7 +123,11 @@ def main():
         })
 
     def _edm_sample_patched(*args, **kwargs):
-        kwargs.setdefault("dump_fn", _dump_fn)
+        # OVERRIDE, never setdefault: tt-bio 0.15 Protenix.fold passes its own
+        # dump_fn=None explicitly (set only under TT_PROTENIX_DUMP), so
+        # setdefault silently recorded zero frames. Same rule as
+        # runner/dump_tap.py.
+        kwargs["dump_fn"] = _dump_fn
         return _orig_edm_sample(*args, **kwargs)
 
     ptx.edm_sample = _edm_sample_patched
