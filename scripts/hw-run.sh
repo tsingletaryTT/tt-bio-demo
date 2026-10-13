@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+#
+# hw-run.sh -- the one way to run anything that opens a Tenstorrent chip.
+#
+#   scripts/hw-run.sh --chips N --reason "why" [--one-chip] -- command [args...]
+#
+# Why it exists. On 2026-10-13 a test run launched as
+#   gozer run --chips 1 ... scripts/test.sh --hw <two test files>
+# ran the whole integration directory plus the four-card pool test under a lease
+# for one board, and the machine froze. `test.sh --hw` opens every card, and extra
+# file arguments do not narrow it. This script refuses that shape and gives every
+# hardware command the same entry point, with or without tt-gozer.
+#
+#   With gozer on this machine: takes a lease (`gozer run --chips N`).
+#   --one-chip narrows TT_VISIBLE_DEVICES to the first chip of whatever was granted.
+#   Without gozer: checks that none of the first N device nodes is held by a running
+#   process, then pins TT_VISIBLE_DEVICES to the first N chips. Nothing fences other
+#   users, and the script says so. It never resets a chip.
+#
+# Exit codes: 2 usage, 10 queued (from gozer), 11 chips busy or not checkable,
+# 12 refused, otherwise the command's own status.
+set -euo pipefail
+
+PCI_ROOT="${TT_HW_PCI_ROOT:-/sys/bus/pci/devices}"
+DEV_ROOT="${TT_HW_DEV_ROOT:-/dev/tenstorrent}"
+TT_VENDOR_ID="0x1e52"
+
+die() { echo "hw-run: $1" >&2; exit "${2:-2}"; }
+
+usage() {
+  sed -n '3,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+}
+
+# Every Tenstorrent PCI address, in stable sorted order. The Nth address is
+# /dev/tenstorrent/N, the same mapping tt-smi uses.
+list_cards() {
+  local entry vendor
+  for entry in "$PCI_ROOT"/*; do
+    [[ -r "$entry/vendor" ]] || continue
+    vendor="$(tr 'A-Z' 'a-z' < "$entry/vendor")"
+    [[ "$vendor" == "$TT_VENDOR_ID" ]] && basename "$entry"
+  done | sort
+}
+
+CHIPS=""; REASON=""; ONE=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --chips)    CHIPS="${2:-}"; shift 2 ;;
+    --reason)   REASON="${2:-}"; shift 2 ;;
+    --one-chip) ONE=1; shift ;;
+    -h|--help)  usage; exit 0 ;;
+    --)         shift; break ;;
+    *)          die "unknown argument: $1 (the command goes after --)" 2 ;;
+  esac
+done
+
+[[ "$CHIPS" =~ ^[0-9]+$ ]] && (( CHIPS >= 1 )) || die "--chips N is required" 2
+[[ -n "$REASON" ]] || die "--reason is required" 2
+(( $# >= 1 )) || die "no command given after --" 2
+
+mapfile -t ALL < <(list_cards)
+CARDS=${#ALL[@]}
+(( CARDS > 0 )) || die "no Tenstorrent cards found under $PCI_ROOT" 2
+(( CHIPS <= CARDS )) || die "asked for $CHIPS chips, this box has $CARDS" 2
+
+# The guard. Matches any command line that runs a test.sh with --hw, and the env
+# switch that turns the same thing on.
+joined=" $* "
+if [[ "$joined" == *"test.sh"* ]] && { [[ "$joined" == *" --hw "* ]] || [[ "${TT_BIO_DEMO_HW_TESTS:-0}" == "1" ]]; }    && (( CHIPS < CARDS )); then
+  die "refusing: test.sh --hw opens EVERY card ($CARDS on this box), including test_four_workers.py, and extra file arguments do not narrow it. Ask for --chips $CARDS, or run pytest on the named test files." 12
+fi
+
+if command -v gozer >/dev/null 2>&1; then
+  inner='if [[ "${HW_RUN_ONE:-0}" == 1 ]]; then export TT_VISIBLE_DEVICES="${TT_VISIBLE_DEVICES%%,*}"; fi; exec "$@"'
+  HW_RUN_ONE="$ONE" exec gozer run --chips "$CHIPS" --who "${HW_RUN_WHO:-claude:tt-bio-demo}" \
+    --reason "$REASON" -- bash -c "$inner" hw-run "$@"
+fi
+
+# No gozer. Check, pin, and be plain about what is not protected.
+busy=0
+for (( i = 0; i < CHIPS; i++ )); do
+  node="$DEV_ROOT/$i"
+  [[ -e "$node" ]] || continue
+  if command -v fuser >/dev/null 2>&1; then
+    if fuser -s "$node" 2>/dev/null; then
+      echo "hw-run: $node is held by a running process" >&2
+      busy=1
+    fi
+  elif [[ "${HW_RUN_ASSUME_IDLE:-0}" != "1" ]]; then
+    die "cannot check whether the chips are idle (no fuser). Set HW_RUN_ASSUME_IDLE=1 only if you know nobody else is using this box." 11
+  fi
+done
+(( busy == 0 )) || die "chips are busy, not starting" 11
+
+visible="$(IFS=,; echo "${ALL[*]:0:CHIPS}")"
+(( ONE )) && visible="${ALL[0]}"
+echo "hw-run: gozer is not installed here: these chips are NOT leased and nothing fences other users. Using $visible." >&2
+echo "hw-run: if this run wedges a chip, do not reset it from this script; stop and ask the box's owner." >&2
+TT_VISIBLE_DEVICES="$visible" exec "$@"
