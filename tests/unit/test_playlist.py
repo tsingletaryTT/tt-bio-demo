@@ -756,3 +756,21 @@ def test_a_target_naming_the_booth_model_or_none_still_loads(tmp_path):
     assert named[0].model == DEFAULT_MODEL
     absent = load_playlist(_one_entry_manifest(tmp_path, ""))
     assert absent[0].model == DEFAULT_MODEL
+
+
+@pytest.mark.parametrize("model_line", [
+    "  model: false\n", "  model: 0\n", "  model: []\n", "  model: {}\n",
+    "  model: 2\n", "  model: true\n",
+])
+def test_a_malformed_model_value_is_rejected_not_defaulted(tmp_path, model_line):
+    # Falsy values used to slip past the check and be replaced by the default,
+    # so a manifest that said something other than a model name still loaded.
+    from ui.playlist import PlaylistError, load_playlist
+    with pytest.raises(PlaylistError):
+        load_playlist(_one_entry_manifest(tmp_path, model_line))
+
+
+@pytest.mark.parametrize("model_line", ["  model:\n", "  model: ''\n", "  model: ~\n"])
+def test_an_empty_or_null_model_means_unspecified(tmp_path, model_line):
+    from ui.playlist import DEFAULT_MODEL, load_playlist
+    assert load_playlist(_one_entry_manifest(tmp_path, model_line))[0].model == DEFAULT_MODEL

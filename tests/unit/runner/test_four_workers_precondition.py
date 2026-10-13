@@ -32,3 +32,19 @@ def test_fewer_cards_named_than_the_box_has_is_a_problem(decide):
 
 def test_a_single_card_is_a_problem(decide):
     assert decide("0000:01:00.0", 4)
+
+
+def test_the_same_card_named_four_times_is_one_card(decide):
+    # Four entries, one device: counting entries would let a one-chip lease
+    # through on a four-card host.
+    msg = decide("0000:01:00.0,0000:01:00.0,0000:01:00.0,0000:01:00.0", 4)
+    assert msg and "1 of this box's 4" in msg
+
+
+def test_repeats_differing_only_in_case_or_spacing_count_once(decide):
+    msg = decide("0000:0A:00.0, 0000:0a:00.0 ,0000:0A:00.0,", 4)
+    assert msg and "1 of this box's 4" in msg
+
+
+def test_four_distinct_cards_with_a_repeat_still_proceed(decide):
+    assert decide("a,b,c,d,a", 4) is None

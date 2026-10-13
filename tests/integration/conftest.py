@@ -55,12 +55,15 @@ def pool_visibility_problem(visible_devices, card_count):
 
     Pure: takes the TT_VISIBLE_DEVICES value (None when unset) and the number of
     Tenstorrent cards on the box, and touches no device. A value that is unset
-    or names at least `card_count` PCI addresses is fine. A value naming fewer
-    means the run holds a lease on fewer chips than the test will open.
+    or names at least `card_count` DISTINCT PCI addresses is fine. A value naming
+    fewer means the run holds a lease on fewer chips than the test will open.
+    Entries are compared case-insensitively and repeats count once, so
+    `a,a,a,a` is one device, not four.
     """
     if visible_devices is None or not visible_devices.strip():
         return None
-    named = [part for part in visible_devices.split(",") if part.strip()]
+    named = {part.strip().lower() for part in visible_devices.split(",")
+             if part.strip()}
     if len(named) >= card_count:
         return None
     return (f"TT_VISIBLE_DEVICES names {len(named)} of this box's {card_count} "

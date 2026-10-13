@@ -392,8 +392,10 @@ def load_playlist(path):
         # The booth folds with exactly one model and nothing downstream reads
         # `model`, so an entry naming another one would silently fold on
         # DEFAULT_MODEL while its own data claimed otherwise. Refuse it here.
+        # Absent, null and "" mean "unspecified". Anything else, including
+        # falsy values such as false, 0 or [], must be exactly DEFAULT_MODEL.
         entry_model = entry.get("model")
-        if entry_model and entry_model != DEFAULT_MODEL:
+        if entry_model not in (None, "") and entry_model != DEFAULT_MODEL:
             raise PlaylistError(
                 f"{entry_id}: model {entry_model!r} is not available -- this "
                 f"booth folds with {DEFAULT_MODEL}")
@@ -412,7 +414,7 @@ def load_playlist(path):
         targets.append(Target(
             id=entry_id,
             input_path=(manifest_dir / entry["input"]).resolve(),
-            model=entry.get("model") or DEFAULT_MODEL,
+            model=DEFAULT_MODEL,
             name=entry["name"],
             blurb=entry["blurb"],
             expected_s=expected_s,
