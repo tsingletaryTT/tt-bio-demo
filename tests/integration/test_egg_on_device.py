@@ -1,8 +1,9 @@
 """The easter egg's descent, on real silicon, against the host as the oracle.
 
 Hardware-gated like everything in this directory. Run with:
-    ./scripts/test.sh --hw     (or)
-    .venvs/venv-runner/bin/python3 -m pytest tests/integration -v -k egg
+    scripts/hw-run.sh --chips 1 --one-chip --reason "..." -- \\
+        .venvs/venv-runner/bin/python3 -m pytest tests/integration/test_egg_on_device.py -v
+(`scripts/test.sh --hw` also runs it, but opens every card; give hw-run.sh every chip for that.)
 
 What makes these tests worth having rather than decorative: `runner/egg.py`
 reimplements `mark.py` in ttnn, in float32, with a tolerance-based nearest-edge

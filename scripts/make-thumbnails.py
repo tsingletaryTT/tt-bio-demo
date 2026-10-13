@@ -61,8 +61,9 @@ HARDWARE
 --------
 The fold stage opens card 0 and loads protenix-v1 once, then folds every
 target warm. Budget roughly a minute for the model load plus the manifest's
-own `expected_s` per target (4.4 / 11.7 / 19.7 / 22.3 / 4.6 / 8.6s today,
-so about 71s of folding for the whole playlist). It always closes the
+own `expected_s` per target (Trp-cage 3.0, FKBP12 4.4, DHFR 5.3, trypsin 5.9,
+DNA 3.1, tRNA 3.5 s warm on protenix-v1, so about 25s for those six; albumin
+adds 16.1s; numbers from docs/measurements-2026-10-13-protenix-v1.md). It always closes the
 device, including on failure, so it never leaves a card held.
 """
 

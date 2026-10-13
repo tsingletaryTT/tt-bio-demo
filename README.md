@@ -201,7 +201,7 @@ recorded trajectory — see [Running without hardware](#running-without-hardware
 
 ```bash
 ./scripts/test.sh                  # full suite, software only
-./scripts/test.sh --hw             # also run the tests that open the chips
+./scripts/test.sh --hw             # also run the tests that open the chips; see "Running the hardware tests"
 ```
 
 ---
@@ -396,7 +396,7 @@ render is what lets a visitor read that off the screen for themselves.
 
 ```bash
 ./scripts/test.sh            # both venvs, software only
-./scripts/test.sh --hw       # additionally run tests/integration, which opens the chips
+./scripts/test.sh --hw       # additionally run tests/integration, which opens the chips (use scripts/hw-run.sh, below)
 ```
 
 The suite spans both environments and `test.sh` runs each half under its own interpreter —
@@ -423,6 +423,26 @@ other hardware tests open a device in-process; this one spawns four workers. Det
 the measurement are in [`docs/followups.md`](docs/followups.md).
 
 Anything after the flag is passed through to pytest: `./scripts/test.sh -k telemetry -v`.
+
+**Running the hardware tests.** Use `scripts/hw-run.sh`. It is the entry point for any command
+that opens a chip, and it refuses `test.sh --hw`, `pytest tests/integration` and
+`test_four_workers.py` unless you ask for every chip on the box, because those open every card.
+
+```bash
+# The whole hardware suite. It opens every card and is the most expensive run.
+scripts/hw-run.sh --chips <all chips on the box> --reason "why" -- scripts/test.sh --hw
+
+# One hardware test file, on one chip.
+scripts/hw-run.sh --chips 1 --one-chip --reason "why" -- \
+    .venvs/venv-runner/bin/python3 -m pytest tests/integration/<file> -p no:cacheprovider
+```
+
+With tt-gozer installed, `hw-run.sh` takes a lease for the chips you ask for (`--one-chip` then
+narrows `TT_VISIBLE_DEVICES` to the first chip granted). Without gozer it checks every card and
+stops if any device node is held by a process, then pins `TT_VISIBLE_DEVICES` to the first N chips.
+That check sees only processes you own, nothing is leased, and nothing fences other users. The
+script never resets a chip. Do not run hardware commands in the foreground of an agent tool: a
+tool timeout that kills a fold mid-run can wedge a board.
 
 ### Running without hardware
 

@@ -73,15 +73,35 @@ CARDS=${#ALL[@]}
 (( CARDS > 0 )) || die "no Tenstorrent cards found under $PCI_ROOT" 2
 (( CHIPS <= CARDS )) || die "asked for $CHIPS chips, this box has $CARDS" 2
 
-# The guard. Matches any command line that runs a test.sh with --hw, and the env
-# switch that turns the same thing on.
+# The guard. Refuses, when the lease or pin covers fewer chips than the box has,
+# every command shape that opens EVERY card:
+#   - a test.sh run with --hw (or the env switch that turns the same thing on);
+#   - pytest over the whole tests/integration directory (any path ending in
+#     tests/integration, with or without a trailing slash);
+#   - anything naming four_workers, the pool test that opens every card
+#     (tests/integration/conftest.py's tt_cards_present does not narrow visibility).
+# A pytest command naming one other test file passes.
 joined=" $* "
-if [[ "$joined" == *"test.sh"* ]] && { [[ "$joined" == *" --hw "* ]] || [[ "${TT_BIO_DEMO_HW_TESTS:-0}" == "1" ]]; }    && (( CHIPS < CARDS )); then
-  die "refusing: test.sh --hw opens EVERY card ($CARDS on this box), including test_four_workers.py, and extra file arguments do not narrow it. Ask for --chips $CARDS, or run pytest on the named test files." 12
+opens_every_card=""
+if [[ "$joined" == *"test.sh"* ]] && { [[ "$joined" == *" --hw "* ]] || [[ "${TT_BIO_DEMO_HW_TESTS:-0}" == "1" ]]; }; then
+  opens_every_card="test.sh --hw"
+fi
+for arg in "$@"; do
+  case "$arg" in
+    tests/integration|tests/integration/|*/tests/integration|*/tests/integration/)
+      opens_every_card="pytest over the whole tests/integration directory (it includes test_four_workers.py)" ;;
+    *four_workers*)
+      opens_every_card="test_four_workers.py" ;;
+  esac
+done
+if [[ -n "$opens_every_card" ]] && (( CHIPS < CARDS )); then
+  die "refusing: $opens_every_card opens EVERY card ($CARDS on this box), and extra file arguments do not narrow it. Ask for --chips $CARDS, or run pytest on single named test files." 12
 fi
 
 if command -v gozer >/dev/null 2>&1; then
-  inner='if [[ "${HW_RUN_ONE:-0}" == 1 ]]; then export TT_VISIBLE_DEVICES="${TT_VISIBLE_DEVICES%%,*}"; fi; exec "$@"'
+  # --one-chip narrows only when gozer actually set TT_VISIBLE_DEVICES. Exporting
+  # an empty value would tell the command it can see no chips at all.
+  inner='if [[ "${HW_RUN_ONE:-0}" == 1 && -n "${TT_VISIBLE_DEVICES:-}" ]]; then export TT_VISIBLE_DEVICES="${TT_VISIBLE_DEVICES%%,*}"; fi; exec "$@"'
   HW_RUN_ONE="$ONE" exec gozer run --chips "$CHIPS" --who "${HW_RUN_WHO:-claude:tt-bio-demo}" \
     --reason "$REASON" -- bash -c "$inner" hw-run "$@"
 fi

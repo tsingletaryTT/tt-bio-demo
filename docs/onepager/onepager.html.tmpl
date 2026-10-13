@@ -230,9 +230,10 @@
     <img src="__IMG_QUAD__" alt="Four chips folding four different molecules at once">
     <p class="cap">
       <b>The real application, on real silicon.</b> Four Blackhole chips (two p300c boards),
-      each folding a different molecule at its own point in the pipeline. Structures are drawn
-      as a cartoon — helices as ribbons, sheets as arrows. The loose dots are the model's
-      actual denoising trajectory, streamed one step at a time as it condenses into structure.
+      each folding a different molecule at its own point in the pipeline. Helices are ribbons
+      and sheets are arrows. The loose dots are the model's actual denoising trajectory, one
+      step at a time. Recorded before the booth moved to Protenix v1, so the confidence
+      colors are that model's.
     </p>
   </div>
 
@@ -417,7 +418,7 @@ systemctl --user <b>restart</b> tt-bio-demo</pre>
         tearing a fold down mid-device-operation is a known instability source.
       </p>
       <p>
-        Measured: <b>0.25–5.5 s</b> with all four chips busy (median ≈ 2 s). And most taps
+        Measured before the move to Protenix v1 and not repeated since: <b>0.25–5.5 s</b> with all four chips busy (median ≈ 2 s). And most taps
         queue nothing at all — with seven targets on four chips the protein is usually already
         folding, so that cell simply takes focus. The booth acknowledges every tap immediately
         on a one-line notice.

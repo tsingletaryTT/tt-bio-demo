@@ -9,7 +9,8 @@ exists for any of them, and ui/playlist.py now treats that honestly as
 This module is the single command that closes that gap once the cards are
 free again:
 
-    ./scripts/test.sh --hw -k new_targets_timing -s
+    scripts/hw-run.sh --chips 1 --one-chip --reason "..." -- \\
+        .venvs/venv-runner/bin/python3 -m pytest tests/integration/test_new_targets_timing.py -s
 
 (`-s` matters -- see FINAL SUMMARY below; pytest swallows stdout by
 default and the whole point of this module is the printed numbers, not

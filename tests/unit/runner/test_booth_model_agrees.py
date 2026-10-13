@@ -20,6 +20,12 @@ _SUFFIXES = {".py", ".sh", ".yaml", ".postinst", ".templates"}
 _SKIPPED_PARTS = {".debhelper", "tt-bio-demo", "tt-bio-demo-all", "tt-bio-demo-runtime",
                   "tt-bio-demo-weights", "__pycache__"}
 _RETIRED = "protenix-v2"
+# Extensionless files that name the model in prose and are scanned by exact name.
+# README.md and INSTALL.md are not here: their lines about the move say "Protenix
+# v2" without the hyphen, and the dated captions say "Protenix-v2" with no
+# "retired" or "not shipped" on the line, so they cannot pass the allowance
+# without loosening it.
+_SCANNED_FILES = ("NOTICE",)
 
 
 def test_every_shipped_default_names_the_same_model():
@@ -63,6 +69,13 @@ def test_no_shipped_code_still_names_the_retired_model():
                     and _RETIRED in p.read_text(errors="ignore").lower()
                     and not _explains_retirement(p)):
                 offenders.append(str(p.relative_to(ROOT)))
+    assert not offenders, offenders
+
+
+def test_the_notice_file_does_not_still_name_the_retired_model():
+    offenders = [name for name in _SCANNED_FILES
+                 if _RETIRED in (ROOT / name).read_text(errors="ignore").lower()
+                 and not _explains_retirement(ROOT / name)]
     assert not offenders, offenders
 
 

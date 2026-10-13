@@ -6,8 +6,9 @@ plus one fold each (measured on this QB2: ~35 s wall for four p300c chips).
 Nothing else on the machine can use any card while it runs. That is why it is
 opt-in and why it must stay opt-in:
 
-    ./scripts/test.sh --hw
-    .venvs/venv-runner/bin/python3 -m pytest tests/integration -v -k four_workers
+    scripts/hw-run.sh --chips <every chip on the box> --reason "..." -- scripts/test.sh --hw
+    scripts/hw-run.sh --chips <every chip on the box> --reason "..." -- \\
+        .venvs/venv-runner/bin/python3 -m pytest tests/integration/test_four_workers.py -v
 
 `./scripts/test.sh` with no flag does NOT run it (see that script's
 "hardware opt-in" section), and `pytest.ini`'s `testpaths` deliberately
@@ -192,6 +193,28 @@ def _forbid_a_poisoned_process():
             "file in its own pytest process -- `scripts/test.sh --hw` already "
             "does, and `pytest tests/integration/test_four_workers.py` does "
             "too.")
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _require_a_lease_on_every_chip(tt_cards_present):
+    """Fail (never skip) when TT_VISIBLE_DEVICES covers fewer cards than the box has.
+
+    This test opens every card, and `tt_cards_present` deliberately does not
+    narrow visibility. A command that leased one chip and still reached this
+    file would open cards it holds no lease on. The decision lives in
+    `conftest.pool_visibility_problem`, which has a unit test.
+    """
+    import importlib.util
+    # Load the sibling conftest by path: a plain `import conftest` is ambiguous
+    # when more than one conftest.py is on the import path.
+    spec = importlib.util.spec_from_file_location(
+        "_integration_conftest", pathlib.Path(__file__).with_name("conftest.py"))
+    shared = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(shared)
+    problem = shared.pool_visibility_problem(os.environ.get("TT_VISIBLE_DEVICES"),
+                                             shared._physical_card_count())
+    if problem:
+        pytest.fail(problem)
 
 
 @pytest.fixture(scope="module")

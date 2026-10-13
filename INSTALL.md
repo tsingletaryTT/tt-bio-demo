@@ -278,6 +278,28 @@ that counts. `Ctrl-C` in the terminal tears the daemon down cleanly.
 > verification. Until that is implemented, warming the cache means running step 4's fold
 > once per target you intend to show.
 
+### Running the hardware tests
+
+On a checkout, the hardware tests open Tenstorrent chips. Run them through `scripts/hw-run.sh`,
+which refuses `test.sh --hw`, `pytest tests/integration` and `test_four_workers.py` unless you ask
+for every chip on the box, because those open every card.
+
+```bash
+# The whole hardware suite. It opens every card and is the most expensive run.
+scripts/hw-run.sh --chips <all chips on the box> --reason "why" -- scripts/test.sh --hw
+
+# One hardware test file, on one chip.
+scripts/hw-run.sh --chips 1 --one-chip --reason "why" -- \
+    .venvs/venv-runner/bin/python3 -m pytest tests/integration/<file> -p no:cacheprovider
+```
+
+With tt-gozer installed, `hw-run.sh` takes a lease for the chips you ask for (`--one-chip` then
+narrows `TT_VISIBLE_DEVICES` to the first chip granted). Without gozer it checks every card and
+stops if any device node is held by a process, then pins `TT_VISIBLE_DEVICES` to the first N chips.
+That check sees only processes you own, nothing is leased, and nothing fences other users. The
+script never resets a chip. Do not run hardware commands in the foreground of an agent tool: a
+tool timeout that kills a fold mid-run can wedge a board.
+
 ---
 
 ## 5. Launch at the booth

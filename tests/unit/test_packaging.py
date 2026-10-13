@@ -699,6 +699,17 @@ def test_the_weights_postinst_uses_the_tt_bio_api_that_actually_exists():
         f"for it at ${{CACHE}}/<name>:\n{flat}")
     assert "9ea20b0aba42f2256711da1d0cd081510a4b291e64375bff6b70ced70b87a5f1" in postinst, \
         "the checkpoint's sha256 is no longer checked anywhere in the postinst"
+    # The comparison has to be wired to the right file and has to fail the install.
+    # Asserting only that the sha string appears would pass with the check removed.
+    assert re.search(r'^protenix_path = weights\.fetch\("protenix-v1"', postinst, re.M), \
+        "the postinst no longer binds the fetched checkpoint path to protenix_path"
+    assert re.search(r"_protenix_actual = _sha256\(protenix_path\)", postinst), \
+        "the postinst no longer hashes the path weights.fetch returned"
+    mismatch = re.search(
+        r"if _protenix_actual != PROTENIX_V1_SHA256:\n(?P<body>(?:[ ]+.*\n)+)", postinst)
+    assert mismatch, "the postinst no longer compares the checkpoint hash to its recorded value"
+    assert "raise SystemExit(1)" in mismatch.group("body"), \
+        "a checkpoint hash mismatch no longer exits nonzero in the postinst"
     for key in re.findall(r'weights\.fetch\(\s*"([^"]+)"', postinst):
         assert key in declared, (
             f'postinst fetches artifact "{key}", which is not a row in '

@@ -704,7 +704,8 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
             Since joining Tenstorrent, Moritz has expanded tt-bio well past its
             starting point: BoltzGen, ESMFold2, Protenix-v2, OpenFold3, OpenDDE,
             SaProt, RFD3, RoseTTAFold3, Nesso-1, OpenBind-0, PXDesign, AF2-IG and
-            Protenix-v1 all land during 2026.
+            Protenix-v1 all land during 2026. Fifteen counts the rows of the
+            table in the next section, which also holds Boltz-2 and ESMC.
           </p>
         </div>
       </div>
@@ -777,6 +778,13 @@ footer { border-top: 1px solid var(--rule); padding-block: 2.5rem; color: var(--
       <p>
         tt-bio started as a Boltz-2 port. As of v0.15.2 it runs considerably
         more than that, all through one CLI and all on Tenstorrent hardware.
+      </p>
+      <p>
+        The count is the number of rows below: one row per model name the CLI
+        accepts, with variants of one model grouped into its row (esmfold2 and
+        esmfold2-fast, opendde and opendde-abag, the three esmc sizes, the three
+        saprot sizes). Read from tt-bio 0.15.2's source: 11 predict models, 3
+        design models, 1 affinity model and the esmc and saprot groups.
       </p>
     </div>
 

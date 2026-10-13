@@ -185,3 +185,56 @@ def test_without_gozer_or_fuser_it_will_not_guess(box):
 ])
 def test_usage_errors_exit_2(box, args):
     assert _run(box, *args).returncode == 2
+
+
+# --- guard shapes beyond test.sh --hw ------------------------------------------
+
+@pytest.mark.parametrize("target", [
+    ["tests/integration"],
+    ["tests/integration/"],
+    ["./tests/integration"],
+    ["/home/someone/code/tt-bio-demo/tests/integration/"],
+    ["tests/integration", "-k", "four_workers"],
+    ["-k", "four_workers", "-p", "no:cacheprovider"],
+    ["tests/integration/test_four_workers.py"],
+])
+def test_a_pytest_run_that_opens_every_card_is_refused_without_every_chip(box, target):
+    _fake_gozer(box)
+    r = _run(box, "--chips", "1", "--reason", "x", "--", str(box["cmd"]), *target)
+    assert r.returncode == 12, r.stderr
+    assert "opens EVERY card" in r.stderr
+    assert not box["marker"].exists()
+
+
+def test_the_same_pytest_shapes_are_allowed_with_every_chip(box):
+    _fake_gozer(box)
+    r = _run(box, "--chips", "4", "--reason", "x", "--", str(box["cmd"]), "tests/integration")
+    assert r.returncode == 0, r.stderr
+
+
+def test_a_single_integration_test_file_is_allowed_on_one_chip(box):
+    _fake_gozer(box)
+    r = _run(box, "--chips", "1", "--reason", "x", "--", str(box["cmd"]),
+             "tests/integration/test_real_fold.py", "-p", "no:cacheprovider")
+    assert r.returncode == 0, r.stderr
+    assert box["marker"].exists()
+
+
+# --- --one-chip with a gozer that grants no TT_VISIBLE_DEVICES -------------------
+
+def test_one_chip_does_not_export_an_empty_visibility_when_gozer_sets_none(box):
+    # A gozer that sets nothing. The command must see the variable unset; an empty string would be wrong.
+    _exe(box["bin"] / "gozer", 'shift; while [ "$1" != "--" ]; do shift; done; shift\nexec "$@"\n')
+    marker = box["marker"]
+    _exe(box["cmd"], f'echo "TV=[${{TT_VISIBLE_DEVICES-UNSET}}]" >> {marker}\n')
+    r = _run(box, "--chips", "1", "--one-chip", "--reason", "x", "--", str(box["cmd"]))
+    assert r.returncode == 0, r.stderr
+    assert marker.read_text() == "TV=[UNSET]\n"
+
+
+# --- what the no-gozer path says about its own limits ---------------------------
+
+def test_without_gozer_it_says_idleness_was_checked_for_your_own_processes_only(box):
+    r = _run(box, "--chips", "1", "--reason", "x", "--", str(box["cmd"]))
+    assert r.returncode == 0, r.stderr
+    assert "idleness was checked for processes you own only" in r.stderr
