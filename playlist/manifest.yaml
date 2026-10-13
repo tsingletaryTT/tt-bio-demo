@@ -65,9 +65,10 @@
 # target (it runs 4 trunk cycles, v2 ran 10) and less confident on every target.
 # FKBP12 (+SB3) and DHFR (+MTX) fold on this stack: the L1 clash that
 # stopped FKBP12 on tt-bio 0.6.3 did not recur on v1 or on the v2 reference.
-# Confidence fell most on the targets with no evolutionary data: the three
-# `msa: empty` proteins now sit at 31-40 mean pLDDT (v2: 39-53) and albumin at
-# 50 (v2: 74). The nucleic acids and Trp-cage moved less. The pLDDT colour ramp
+# Confidence fell on every target, by mean pLDDT against v2: about 2 points on
+# Trp-cage and DNA, 7 on tRNA, 7-20 on the three `msa: empty` proteins (trypsin
+# 7, FKBP12 11, DHFR 20) and 24 on albumin. The three proteins now sit at 31-40
+# mean pLDDT (v2: 39-53) and albumin at 50 (v2: 74). The pLDDT colour ramp
 # therefore puts almost every residue of FKBP12, DHFR and trypsin in the lowest
 # band (orange): measured on the last v1 fold of each, 85-100% of C-alphas are
 # under 50. The blurbs say "mostly yellow and orange" and that still holds.
@@ -86,11 +87,14 @@
 #
 # tRNA's 124-degree "corner" figure below was not reproducible: its measuring
 # script was not kept. On v1 and on v2 the same new method gives an angle
-# between the two arms of about 90 degrees; see the tRNA entry.
+# between the two arms of about 90 degrees (92 on v2); by a second definition,
+# the angle between the two helix axes, it is 112-115 degrees on both models.
+# See the tRNA entry.
 #
 # ---------------------------------------------------------------------------
 #
-# MEASURED ON tt-bio 0.12.0, 2026-10-02. Same method as the 0.8.0 pass below
+# MEASURED ON tt-bio 0.12.0, 2026-10-02, WITH Protenix-v2 (retired): the block
+# and the table below are v2 numbers, kept as history. Same method as the 0.8.0 pass below
 # it: ONE chip (device 0 of a leased pair), one resident Folder, each target
 # folded 3 times back to back, first fold of each shape discarded as
 # JIT-cold, the two folds after it averaged into `expected_s`. Four releases
@@ -480,8 +484,8 @@
   # is specific to this entry's own unusually large size.
   # first_frame_s not re-measured this pass; left as-is.
   # protenix-v1, tt-bio 0.15.2, chip 0 (see this file's header): first fold
-  # 74.7 s (JIT-cold, excluded), then five warm folds at 16.1-16.4 s, pLDDT
-  # 49.5-50.6. First coordinates at 10.1 s, longest silence 3.0 s. The v2
+  # 74.7 s (JIT-cold, excluded), then five warm folds at 16.08-16.15 s, pLDDT
+  # 49.52-50.59. First coordinates at 10.1 s, longest silence 3.0 s. The v2
   # reference on the same stack: 51.6 s warm, pLDDT 74.5. Albumin is 3x faster
   # and 25 points less confident on v1.
   expected_s: 16.1
@@ -541,8 +545,8 @@
     FKBP12, and together they jam shut the signal that would otherwise
     tell the immune system to attack the new organ.
   # protenix-v1, tt-bio 0.15.2, chip 0 (see this file's header): first fold
-  # 32.8 s (JIT-cold, excluded), then five warm folds at 4.4-4.9 s, pLDDT
-  # 39.2-40.6. The ligand chain (33 heavy atoms) is present and finite in the
+  # 32.8 s (JIT-cold, excluded), then five warm folds at 4.40-4.45 s, pLDDT
+  # 39.15-40.43. The ligand chain (33 heavy atoms) is present and finite in the
   # CIF, and the 0.6.3 L1 clash did not recur. v2 reference: 7.7 s, 48.9-52.2.
   expected_s: 4.4
   first_frame_s: 1.0
@@ -648,8 +652,8 @@
   # faster like most of the playlist this pass. first_frame_s not
   # re-measured this pass; left as-is.
   # protenix-v1, tt-bio 0.15.2, chip 0 (see this file's header): first fold
-  # 53.3 s (JIT-cold, excluded), then five warm folds at 5.2-5.7 s, pLDDT
-  # 32.8-33.5. The ligand chain (33 heavy atoms) is present, nothing overlaps
+  # 53.3 s (JIT-cold, excluded), then five warm folds at 5.22-5.34 s, pLDDT
+  # 32.85-33.52. The ligand chain (33 heavy atoms) is present, nothing overlaps
   # the protein. v2 reference: 11.3 s, pLDDT 53.3-53.5.
   expected_s: 5.3
   first_frame_s: 1.7
@@ -710,8 +714,8 @@
   # 38.43. Flat vs 0.8.0 (not an SDPA-wide-K-affected bucket length).
   # first_frame_s not re-measured this pass; left as-is.
   # protenix-v1, tt-bio 0.15.2, chip 0 (see this file's header): first fold
-  # 54.8 s (JIT-cold, excluded), then five warm folds at 5.8-6.3 s, pLDDT
-  # 30.9-32.0, with every C-alpha under 50. v2 reference: 14.0 s, 38.6.
+  # 54.8 s (JIT-cold, excluded), then five warm folds at 5.84-5.93 s, pLDDT
+  # 30.89-32.00, with every C-alpha under 50. v2 reference: 14.0 s, 38.6.
   expected_s: 5.9
   first_frame_s: 2.3
 
@@ -773,7 +777,7 @@
   # 95.93 (discarded), then two warm folds at 4.7 / 4.8s, pLDDT 95.94 /
   # 95.94. Flat vs 0.8.0. first_frame_s not re-measured this pass.
   # protenix-v1, tt-bio 0.15.2, chip 0 (see this file's header): first fold
-  # 22.8 s (JIT-cold, excluded), then five warm folds at 3.0-3.2 s, pLDDT
+  # 22.8 s (JIT-cold, excluded), then five warm folds at 3.04-3.09 s, pLDDT
   # 94.46-94.48, per-atom B-factors 82.7-96.7 (blue and pale blue). All twelve
   # C1'-C1' pair distances across the duplex are 10.3-10.8 A, mean 10.5, and
   # the helix is 38 A long (B-DNA, 12 base pairs: 37-40 A). v2 reference: 3.8 s,
@@ -795,7 +799,7 @@
     whole length away, is where the matching amino acid rides. Yeast
     tRNA-Phe was the first RNA whose shape was ever solved, in 1974 -- and
     the flat cloverleaf biochemists had drawn on paper turns out to fold
-    back on itself into a compact hinged shape.
+    back on itself into a compact shape.
   # WHAT THE MODEL ACTUALLY PRODUCED, measured on the fold this entry ships
   # a thumbnail of, because the blurb above makes a claim about the SHAPE
   # and this playlist's rule is that a blurb is accurate to the molecule on
@@ -817,7 +821,7 @@
   # on v1 and 115 on v2. So the claim "a wide, open elbow rather than the L" is
   # removed: by the first measure this fold is an L, by the second it is not
   # quite, and the models agree with each other either way. The blurb says
-  # "compact hinged shape" and keeps saying it, because that rests on the
+  # "compact shape" and keeps saying it, because that rests on the
   # measured radius of gyration (23.0 A), not on any angle, and it promises no L.
   #
   # Measured on this booth's own hardware, in the WARM state a visitor
@@ -845,8 +849,8 @@
   # 88.79 -- still the tightest spread of any target here, still flat.
   # first_frame_s not re-measured this pass.
   # protenix-v1, tt-bio 0.15.2, chip 0 (see this file's header): first fold
-  # 46.7 s (JIT-cold, excluded), then five warm folds at 3.4-3.8 s, pLDDT
-  # 81.0-81.8, per-residue B-factors 57.7-89.7 (v2: 88.8 flat). v2 reference:
+  # 46.7 s (JIT-cold, excluded), then five warm folds at 3.44-3.51 s, pLDDT
+  # 81.02-81.76, per-residue B-factors 57.7-89.7 (v2: 88.8 flat). v2 reference:
   # 5.0 s, 88.8. Structure on v1 (same method on v1 and v2): all four stems
   # Watson-Crick paired (C1'-C1' means 10.5-10.7 A), radius of gyration 23.0 A
   # (real tRNA 23-24), anticodon to 3' end 69-76 A.

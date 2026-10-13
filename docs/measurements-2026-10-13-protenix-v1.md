@@ -28,10 +28,17 @@ from this file. Raw per-run numbers are at the end.
   `gozer status` showed all four chips FREE before and after every arm (saved copies in
   the report). During each arm chip 0 showed HELD and chip 1 CLAIMED, both under our pid.
   No stall, no 0xFFFF board serial, no BUSY-UNTRACKED, no ethernet-core timeout.
-- **The first attempt at arm v1A on the old host stack wedged chip 0 and froze the box.**
-  The identical command on this stack completed cleanly. That is a clean A/B of the
-  host-stack upgrade for this workload: it completed in 7 min 40 s with the longest
-  silence at 17.4 s.
+- **One observation about the host-stack change, not an A/B result.** The first attempt at
+  arm v1A, on the old host stack, wedged chip 0 and froze the box. The identical command
+  completed on the new stack in 7 min 40 s, longest silence 17.4 s. That is one failure and
+  one success. The driver, firmware tooling, tt-smi, tt-flash and UMD all changed together, so
+  it cannot say which change mattered, and one run on each side cannot rule out that the
+  wedge was a chance event.
+- **Host stack before and after** (before = the stack in place when the wedge happened):
+  tt-kmd 2.10.0 -> 2.11.0; firmware bundle 19.16.0.0 at both times as far as known; tt-smi
+  6.1.0 -> 6.7.0; tt-flash 3.10.0 -> 4.1.0; tt-umd 0.9.8 -> 0.9.12; pyluwen 0.8.5 -> 0.10.0.
+  ttnn 0.68.0 and tt-bio 0.15.2 were the same. Which of these were already in place when the
+  0.12.0-era numbers in the manifest were taken is unknown to me.
 - **Harness.** The brief names `tests/integration/test_new_targets_timing.py`, which folds
   each target once per invocation. The measurement here used an uncommitted scratchpad
   script that copies that harness's stamping exactly (an `emit` callback records the
@@ -88,7 +95,7 @@ Headlines:
   fkbp12, 2.1x on dhfr, 2.4x on trypsin and 3.2x on hsa. v1 runs 4 trunk cycles where v2 runs 10
   (docs/spike-protenix-v1.md).
 - v1 is less confident than v2 on every target: about 2 points on trpcage and dna, 7 on
-  trna, 9-20 on the three `msa: empty` proteins, 24 on albumin.
+  trna, 7-20 on the three `msa: empty` proteins (trypsin 7, FKBP12 11, DHFR 20), 24 on albumin.
 - The fastest warm fold is trpcage at 2.99 s. The slowest is albumin at 16.1 s.
 - All seven targets fold. FKBP12 with SB3 did not hit the 0.6.3 L1 clash on v1 or on v2.
   tt-metal logged a handled `TT_THROW` circular-buffer line (and tt-bio's own "retrying
@@ -141,8 +148,8 @@ defined as the angle between the helix axes (acceptor to T stem, and D stem to a
 stem), v1 gives 114.5 and 111.9 and v2 114.8. The earlier "about 124 degrees against a
 crystal 90" cannot be rechecked because its definition is not on file, and v1 and v2 agree
 with each other under both definitions here, so nothing distinguishes the models. The
-manifest's "wide, open elbow rather than the L" sentence is removed. "Compact hinged
-shape" stays: it rests on the radius of gyration. Per-residue B-factors on v1 are 57.7-89.7
+manifest's "wide, open elbow rather than the L" sentence is removed. The blurb
+now says "a compact shape": "hinged" was never measured and is dropped; "compact" rests on the radius of gyration. Per-residue B-factors on v1 are 57.7-89.7
 (mean 81.4; v2 mean 88.8), so the ribbon is pale blue with a yellow stretch, not the
 deep blue of v2.
 
