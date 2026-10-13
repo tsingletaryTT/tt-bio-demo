@@ -1927,6 +1927,114 @@ row and the diagnostics panel below it -- never the panel a visitor is actively 
 answer land in. `test_opening_the_tensix_panel_does_not_move_the_affinity_panel` pins the new
 order and was confirmed red against the old one before being restored.
 
+### tt-bio 0.15.2 and Protenix-v1: the booth's model changed (2026-10-13)
+
+Prompted with: "Let's create a branch to update to the newest tt-bio and use any
+new models, features, etc that make sense. tt-bio might have its own 'demo' UI
+now too; evaluate if so and determine if this project has become superfluous".
+
+**tt-bio has no demo UI, so the project stays.** What it has is a terminal live
+display, `predict --listen`, and `msa-server`. None of them is a booth: no
+gallery, no attract loop, no per-chip panels, no Q&A. The spec has the
+comparison.
+
+**The reason the model changed is a licence, and the pin bump exposed it.**
+tt-bio stopped downloading the Protenix-v2 weights in 0.13.0. Upstream says they
+may not be redistributed without the rights holder's consent, and the old
+Hugging Face source answered HTTP 401. A booth pinned past 0.12.0 could not
+install its own model. Protenix-v1 is upstream's Apache-2.0 v0.5.0 checkpoint,
+so the booth folds with that. The pin moved 0.12.0 -> 0.15.2.
+
+**Key decisions**
+
+- One constant, `runner/model.py:BOOTH_MODEL`, names the model. `ui.playlist`
+  raises `PlaylistError` for a manifest entry that names another one, so a
+  playlist cannot ask the daemon for a model the install did not fetch.
+- The v1 checkpoint lives at `<cache>/protenix/model_v0.5.0.pt`, in a
+  subdirectory. That changed `doctor.sh`'s filesystem check and the postinst's
+  checksum verification. The weights total is recomputed: 6.5 GB (3.3 fold,
+  3.2 Q&A).
+- Adopted nothing else from the release range. Not adopted, with the reasons in
+  the spec: `--write_pae`, the Boltz-2 trajectory hook, OpenDDE guidance, and
+  bf16 diffusion.
+- New `scripts/hw-run.sh` is the safe entry point for hardware runs, with or
+  without gozer. It refuses `scripts/test.sh --hw` unless every chip is granted,
+  because that suite opens all four cards.
+
+**Measured on v1** (all seven targets, same chip and host stack as the v2 runs,
+`docs/measurements-2026-10-13-protenix-v1.md`): warm 2.99-16.1 s, which is
+1.25-3.2x faster than v2. Mean pLDDT is lower than v2 on every target: about 2
+points on Trp-cage and the DNA duplex, 7 on tRNA, 7-20 on the msa-empty
+proteins, 24 on albumin. FKBP12 with SB3 folds on v1. Recorded streams were re-captured on v1. The site,
+README and handout carry the new numbers, and commit counts were re-measured
+(14,033 total, 13,396 carry his name as author).
+
+**Product findings that need the owner**
+
+- **Confidence trade-off.** The booth is faster and the colors come from
+  lower pLDDT. Whether a visitor notices, and whether the blurbs need to
+  say so, was not assessed.
+- **The dwell caps fell.** `first_frame_s` is earlier on v1, so the cap for DHFR
+  and trypsin drops from 7.0 s to about 2.0-2.3 s. That undoes part of the
+  2026-08-24 "linger longer" request. It was not changed. It needs a decision.
+- **The tRNA "wide open elbow" claim is gone.** The 124-degree corner measured
+  on v2 did not reproduce on v1, so the blurb no longer states it.
+- The visible-collapse floor in
+  `test_live_diffusion_is_visible_for_a_substantial_share_of_each_cycle` moved
+  0.40 -> 0.30, with the measured value recorded beside it.
+- README screenshots were not refreshed. They need the live booth on hardware
+  (`docs/followups.md` has the entry). The README still says they show the live
+  application, so that sentence is currently true of the older images only.
+
+**Two host freezes shaped the session, and neither is root-caused.** The machine
+hard-froze twice on 2026-10-13, at about 10:09 and 11:26 PDT, during
+Tenstorrent hardware runs.
+
+1. A `scripts/test.sh --hw` run under a one-board lease. That suite opens all
+   four cards, so it went outside its lease.
+2. A single-chip scratch measurement through `hw-run.sh` on chip 0 (board
+   924062). The first fold finished, the next never did, gozer showed the
+   board's serial as 0xFFFF, and the host froze about 2.5 minutes later.
+
+Both match the chip ARC/NOC wedge followed by workqueue starvation that
+`~/qb2-debug/` already documents (reports 2026-07-12 to 07-15).
+
+The host stack was then upgraded: kmd 2.10.0 -> 2.11.0, tt-smi 6.1.0 -> 6.7.0,
+tt-flash 3.10.0 -> 4.1.0, tt-umd 0.9.8 -> 0.9.12, pyluwen 0.8.5 -> 0.10.0
+(firmware 19.16.0.0 was already on the cards). The identical measurement run
+that had wedged then completed: 28 folds, then 28 and 21 more, with no stall.
+That is one observation on a stack where everything changed together. It does
+not show which part fixed anything, and it does not show that anything was
+fixed.
+
+**Notable moments in prompting and review**
+
+- The first diagnosis of the first freeze was incomplete. The all-chips test
+  run is a plausible contributor to that one, and the second freeze happened
+  on a one-chip run, so neither explanation covers both. Both stay recorded
+  above as unexplained.
+- The agreement test that pins the booth model to the commands printed in the
+  docs missed model names that appeared as literals in places it did not scan.
+  The review found them.
+- `hw-run.sh`'s first check for a busy chip used `fuser`, which only sees the
+  caller's own processes and says nothing about another user's. The script now
+  says what `fuser` cannot see and does not report a chip as free on its
+  say-so.
+
+**Lessons**
+
+- A pin bump can remove a model. Read what the release range did to the
+  weights before reading its speed numbers.
+- A suite named `--hw` that opens every card is not covered by a lease for fewer
+  cards. The refusal belongs in the launcher.
+- A measurement taken before and after a stack upgrade, with several parts
+  changed at once, supports "it completed" and nothing narrower.
+
+Suite state at this entry: the non-hardware suites are green apart from the
+environment-dependent failures this file already names. The full hardware suite
+and the live booth check (plan Task 7 Steps 2 and 3) were not run in this
+commit and are left for the owner.
+
 ## Conventions
 
 - **Keep the README's screenshots current.** The README claims every image on it is the
