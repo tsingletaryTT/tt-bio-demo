@@ -3,7 +3,7 @@
 `playlist/manifest.yaml` is a YAML list of targets. Each entry names an
 `input` fold spec (a tt-bio job YAML, e.g. `examples/trpcage_no_msa.yaml`),
 plus the copy the gallery card shows a visitor (`name`, `blurb`), and
-optionally `model` (defaults to `protenix-v2`, this project's default model
+optionally `model` (defaults to `protenix-v1`, this project's default model
 everywhere else), `thumbnail` (a picture of a real fold of this target,
 built by `scripts/make-thumbnails.py`; absent entries render a placeholder
 -- see `ui/gallery.py`), `tagline` (one short sentence for the caption under
@@ -88,7 +88,7 @@ import yaml
 # Matches runner/preflight.py's MODEL and this project's other
 # default-model references; kept as a module-level constant rather than a
 # literal so both stay in sync if it's ever repointed to protenix-v3.
-DEFAULT_MODEL = "protenix-v2"
+DEFAULT_MODEL = "protenix-v1"
 
 # Every field an entry must supply explicitly -- no sane cross-target
 # default exists for any of these (a made-up name or blurb would be worse

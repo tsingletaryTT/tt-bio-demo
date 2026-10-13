@@ -265,7 +265,7 @@ def _frame_event(job_id="j1", spread=10.0, n=8):
 
 def _job_start(job_id="j1", target_id="trpcage"):
     return {"type": "job_start", "job_id": job_id, "target_id": target_id,
-            "model": "protenix-v2", "card": 0, "n_residues": 20}
+            "model": "protenix-v1", "card": 0, "n_residues": 20}
 
 
 def _job_done(job_id="j1", cif_path="/tmp/fake.cif"):

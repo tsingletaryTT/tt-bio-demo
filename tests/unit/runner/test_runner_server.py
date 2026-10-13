@@ -8,7 +8,7 @@ from runner.server import EventServer
 
 def _hello():
     return {"type": "hello", "version": PROTOCOL_VERSION, "cards": [0],
-            "models": ["protenix-v2"], "preflight": "ok"}
+            "models": ["protenix-v1"], "preflight": "ok"}
 
 
 def _connect(path):

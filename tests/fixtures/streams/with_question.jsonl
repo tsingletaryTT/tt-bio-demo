@@ -1,5 +1,5 @@
-{"type":"hello","version":4,"cards":[0],"models":["protenix-v2"],"preflight":"ok","qa_capable":true,"_delay_ms":0}
-{"type":"job_start","job_id":"j1","target_id":"dhfr","model":"protenix-v2","card":0,"n_residues":20,"_delay_ms":200}
+{"type":"hello","version":4,"cards":[0],"models":["protenix-v1"],"preflight":"ok","qa_capable":true,"_delay_ms":0}
+{"type":"job_start","job_id":"j1","target_id":"dhfr","model":"protenix-v1","card":0,"n_residues":20,"_delay_ms":200}
 {"type":"stage","job_id":"j1","stage":"trunk","frac":0.12,"_delay_ms":200}
 {"type":"frame","job_id":"j1","step":1,"total":5,"n_atoms":20,"coords_b64":"2Ea5P9AOlkDJnbzAlPKIwdi/JcGP+Z/B5E/9P4jG0UHhuBrBKRM2wd57GEGGINVAAQ4kQN6imcHTPrm/mAJeQR9l2cHzLBjBUvMWwgAay8FHJhXCXEOOwIo4yMHNpoZAzyYpQNOeZcBj+k3CgyE2waRFH779VLw/Ywb4wcgfDsGEMZ3BTf2IwWwMsUFNAHzBZvQDwGK5lUEX8z3BrOBjwO6kIECp7lY/uTPTwaTLyz/shtlB94MBwvPrhUGsiS5A9qhdwXRgHkKx0oFB9/vBwelyjj/MBUdBs7FqwKPCSUEercO+DNJcQVgw3UELLD7B","_delay_ms":150}
 {"type":"frame","job_id":"j1","step":2,"total":5,"n_atoms":20,"coords_b64":"+k43QCx69D8l7J3At40/wWahFcGiPXPBEhUdQAqCl0GfH+HAYuvnwNQP2kCWvoxAVXIfQItbcsFHcQrAI+YlQXXypcETnPLArI7fwalLlMFIQOTBHOhAwNHzksGiKtE/ugCvP70mIMC5RyDC3sgUwSDFZj8ANOE90gW+wUJLusC5XW3BRWxgwdbqjUEN/TTB6N9TwAEkdUF/dRLBHYSKwMCLEEAASq09l2SxwTXxoz8WSqNBDaLQwQDvP0HuGx5AWrs6wXts6UFfY1ZBWByUwX7IuT6WXidBP1YnwEVbAkHeCGY/870uQVWsmkGOKNzA","_delay_ms":150}

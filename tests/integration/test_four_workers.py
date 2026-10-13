@@ -84,7 +84,7 @@ assert INPUT.is_file(), (
     f"vendored integration-test input is missing: {INPUT} -- this should be "
     "tracked in git; see tests/integration/test_real_fold.py's own note")
 
-# How long every worker gets to open its chip and load protenix-v2 before this
+# How long every worker gets to open its chip and load protenix-v1 before this
 # test gives up. The spike measured 3.1 s solo and 6.4-9.2 s under four-way
 # contention; this test measures ~4.8 s and Task 18's live booth reached its
 # first `hello` 6.0 s after the daemon started. 150 s is ~30x the worst of
@@ -381,7 +381,7 @@ def test_every_chip_on_this_box_folds_at_the_same_time(four_workers):
         assert path.stat().st_size > 1000
         assert "ATOM" in path.read_text()
         cif_paths.add(str(path))
-        # Trp-cage on protenix-v2 measures 93-96 on this box. The window is
+        # Trp-cage on protenix-v2 (retired) measured 93-96 on this box. The window is
         # wide because this is a confidence check, not a regression pin -- but
         # it is NOT `0 <= plddt <= 100`, which every possible number passes.
         assert 60.0 <= event["mean_plddt"] <= 100.0, (

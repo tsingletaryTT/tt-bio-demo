@@ -38,7 +38,7 @@ from runner.server import CLIENT_LINE_MAX_BYTES, EventServer
 
 def _hello():
     return {"type": "hello", "version": PROTOCOL_VERSION, "cards": [0, 1, 2, 3],
-            "models": ["protenix-v2"], "preflight": "ok"}
+            "models": ["protenix-v1"], "preflight": "ok"}
 
 
 def _job_done(job_id="j1"):

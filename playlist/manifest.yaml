@@ -341,7 +341,7 @@
 # anyone has folded it.
 #
 # `model` is omitted here on purpose so the Trp-cage entry exercises
-# ui/playlist.py's DEFAULT_MODEL fallback (protenix-v2, this project's
+# ui/playlist.py's DEFAULT_MODEL fallback (protenix-v1, this project's
 # default model everywhere else) for real, rather than only in a synthetic
 # unit test. `thumbnail` is omitted because Phase 4 owns the art; the
 # gallery (ui/gallery.py) renders a placeholder for any target without one.
@@ -665,7 +665,7 @@
     here come back mostly yellow and orange, with no evolutionary data to
     lean on -- DNA pairs by chemistry alone, and comes back blue.
   # The measured facts behind that last sentence, so nobody has to take the
-  # copy on trust. Six warm folds on card 0, 2026-08-13, protenix-v2:
+  # copy on trust. Six warm folds on card 0, 2026-08-13, on protenix-v2 (retired, not shipped):
   # mean pLDDT 95.7 every time (per-atom B-factors 84.2-97.3, i.e. the
   # ribbon is "very high" blue along the strands and "confident" pale blue
   # at the four ends). The `msa: empty` proteins on this same playlist come
@@ -739,7 +739,7 @@
   # an L the render does not deliver.
   #
   # Measured on this booth's own hardware, in the WARM state a visitor
-  # actually meets: 6 folds on card 0, 2026-08-14, protenix-v2. 57.68s cold
+  # actually meets: 6 folds on card 0, 2026-08-14, on protenix-v2 (retired, not shipped). 57.68s cold
   # (first fold after the model loads), then 8.66 / 8.59 / 8.57 / 8.57 /
   # 8.61s warm -- mean 8.60, and the tightest spread of any target here.
   # Mean pLDDT 88.6 on every one of the six, identical to three decimal

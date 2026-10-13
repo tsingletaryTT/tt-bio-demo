@@ -643,7 +643,7 @@ class Daemon:
                 # not vanish from the greeting just because it isn't free at
                 # this exact instant. See CardPool.all_indices()'s docstring.
                 "cards": self.cards.all_indices(),
-                "models": ["protenix-v2"], "preflight": "ok",
+                "models": ["protenix-v1"], "preflight": "ok",
                 # True once `_build_pool` has reserved a chip for Q&A
                 # (`split_for_qa`); permanently False on a one-chip box. Not
                 # gated on the qa worker itself having announced ready --

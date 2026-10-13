@@ -124,7 +124,7 @@ def _progress_frac(stage, step, total):
 class Folder:
     """Holds a device and a resident model, and folds one protein at a time."""
 
-    def __init__(self, device_id=0, model="protenix-v2"):
+    def __init__(self, device_id=0, model="protenix-v1"):
         self.device_id = device_id
         self.model = model
         self._loaded = False
@@ -163,9 +163,11 @@ class Folder:
         """
         if self._loaded:
             return
-        if self.model != "protenix-v2":
+        if self.model != "protenix-v1":
             raise ValueError(f"unsupported model {self.model!r}; only "
-                             "protenix-v2 is wired up")
+                             "protenix-v1 is wired up (protenix-v2 is retired: "
+                             "its weights are not redistributable and tt-bio "
+                             "no longer downloads them)")
         t0 = time.monotonic()
         # Imported here rather than at module scope: importing tt_bio pulls in
         # torch and ttnn, which the unit tests must not need.
@@ -224,7 +226,7 @@ class Folder:
             # reached preflight and nothing else, so a booth started with an
             # explicit --weights preflighted one directory and folded from
             # another.
-            ckpt_path = weights.fetch("protenix-v2", root=cache)
+            ckpt_path = weights.fetch("protenix-v1", root=cache)
             self._model_obj = Protenix.load_from_checkpoint(
                 str(ckpt_path), device=self._device)
             self._mol_dir = download_mols(cache)

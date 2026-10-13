@@ -29,7 +29,7 @@ from ui.client import OUTBOX_MAX, EventClient
 
 def _hello(version=PROTOCOL_VERSION):
     return {"type": "hello", "version": version, "cards": [0, 1, 2, 3],
-            "models": ["protenix-v2"], "preflight": "ok"}
+            "models": ["protenix-v1"], "preflight": "ok"}
 
 
 def _wait(predicate, timeout=5.0):

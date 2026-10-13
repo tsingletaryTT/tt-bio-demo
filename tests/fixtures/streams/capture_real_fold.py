@@ -1,4 +1,4 @@
-"""Spike script: run a REAL tt-bio protenix-v2 fold on hardware and capture the
+"""Spike script: run a REAL tt-bio protenix-v1 fold on hardware and capture the
 dump_fn trajectory, timing, and progress_fn events.
 
 This is deliberately NOT production code -- it is the instrument used by
@@ -42,8 +42,8 @@ EXAMPLE_YAML = TT_BOLTZ / "examples" / "trpcage_no_msa.yaml"
 OUT_RAW = pathlib.Path(__file__).with_name("real_fold_trpcage.raw.json")
 OUT_JSONL = pathlib.Path(__file__).with_name("real_fold_trpcage.jsonl")
 
-N_STEP = 200        # tt-bio's own default for protenix-v2 (--sampling_steps unset)
-N_CYCLES = 10       # tt-bio's own default for protenix-v2 (--recycling_steps unset)
+N_STEP = 200        # tt-bio's own default (--sampling_steps unset)
+N_CYCLES = 10       # tt-bio's own default (--recycling_steps unset)
 TARGET_FRAMES = 30  # design's stated subsample target
 
 
@@ -71,7 +71,7 @@ def main():
 
     # ---- Q1/Q5: weight resolution (downloads on first use if not cached) ----
     t0 = time.perf_counter()
-    ckpt_path = weights.fetch("protenix-v2", root=cache)
+    ckpt_path = weights.fetch("protenix-v1", root=cache)
     t_weights = time.perf_counter() - t0
     print(f"[timing] weight resolution: {t_weights:.2f}s (path={ckpt_path})",
           file=sys.stderr)
@@ -234,9 +234,9 @@ def write_fixture(traj, progress_events, wall_s, n_residues, n_atoms, conf, cif_
     t0 = traj[0]["t"]
     events = [
         {"type": "hello", "version": PROTOCOL_VERSION, "cards": [0, 1, 2, 3],
-         "models": ["protenix-v2"], "preflight": "ok", "_delay_ms": 0},
+         "models": ["protenix-v1"], "preflight": "ok", "_delay_ms": 0},
         {"type": "job_start", "job_id": "real1", "target_id": "trpcage_no_msa",
-         "model": "protenix-v2", "card": 0, "n_residues": n_residues, "_delay_ms": 50},
+         "model": "protenix-v1", "card": 0, "n_residues": n_residues, "_delay_ms": 50},
     ]
 
     # Stage events observed from the real progress_fn stream: tt-bio itself

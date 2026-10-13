@@ -558,7 +558,7 @@ class WorkerPool:
         `_busy` reservation under `_send`, freed by the same `worker.idle` --
         because this module has no idea (and does not need to know) that the
         worker on the other end of this particular card is running nesso1
-        rather than protenix-v2. `runner/daemon.py` is the only thing that
+        rather than protenix-v1. `runner/daemon.py` is the only thing that
         decides which card this is ever called for (its own reserved Q&A
         card, from `runner.workers.split_for_qa`), so this pool stays generic
         over "one command, one reservation, one reader thread" the same way

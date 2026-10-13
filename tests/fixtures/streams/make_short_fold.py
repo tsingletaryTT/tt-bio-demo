@@ -33,9 +33,9 @@ noise = rng.normal(scale=8.0, size=(N_ATOMS, 3)).astype(np.float32)
 
 events = [
     {"type": "hello", "version": PROTOCOL_VERSION, "cards": [0, 1, 2, 3],
-     "models": ["protenix-v2"], "preflight": "ok", "_delay_ms": 0},
+     "models": ["protenix-v1"], "preflight": "ok", "_delay_ms": 0},
     {"type": "job_start", "job_id": "j1", "target_id": "synthetic",
-     "model": "protenix-v2", "card": 0, "n_residues": N_ATOMS, "_delay_ms": 50},
+     "model": "protenix-v1", "card": 0, "n_residues": N_ATOMS, "_delay_ms": 50},
     {"type": "stage", "job_id": "j1", "stage": "trunk", "frac": 0.3, "_delay_ms": 50},
 ]
 

@@ -109,7 +109,7 @@ def test_job_start_carries_what_the_ui_needs_to_label_the_screen(monkeypatch):
     events = _fold(folder, target_id="trpcage", card=2, n_residues=20)
     start = events[0]
     assert start["target_id"] == "trpcage"
-    assert start["model"] == "protenix-v2"
+    assert start["model"] == "protenix-v1"
     assert start["card"] == 2
     assert start["n_residues"] == 20
 

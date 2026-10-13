@@ -98,7 +98,7 @@ def _deliver(app, event):
 
 def _target(target_id, name):
     return Target(id=target_id, input_path=pathlib.Path(f"{target_id}.yaml"),
-                  model="protenix-v2", name=name, blurb="")
+                  model="protenix-v1", name=name, blurb="")
 
 
 def _silent_phase(app, clock, *, job_id, seconds, stage="trunk",

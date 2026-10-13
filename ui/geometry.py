@@ -67,7 +67,7 @@ class BackboneTrace:
 #            for a 5'-TERMINAL residue: the 5' end of a strand often
 #            carries no phosphate group, and dropping that residue would
 #            silently shorten every strand by one. (Not the case in this
-#            booth's own output -- protenix-v2 writes a full 5'-phosphate,
+#            booth's own output -- protenix-v2 (retired) wrote a full 5'-phosphate,
 #            OP3 included, so all 24 residues of the duplex anchor on P --
 #            but it is the case for most experimental PDB entries, and the
 #            cost of the fallback is one residue's anchor sitting ~5.1 A

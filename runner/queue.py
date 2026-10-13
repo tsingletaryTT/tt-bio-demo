@@ -49,7 +49,7 @@ class Job:
     input_path: str
     priority: int = 0
     n_residues: int = 0
-    model: str = "protenix-v2"
+    model: str = "protenix-v1"
     meta: dict = field(default_factory=dict)
 
 

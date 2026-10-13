@@ -151,7 +151,7 @@ def test_protocol_events_reach_the_callback_with_their_card(tmp_path):
     p.start()
     try:
         made[1].emit({"type": "job_start", "job_id": "j1", "target_id": "t",
-                      "model": "protenix-v2", "card": 1, "n_residues": 20})
+                      "model": "protenix-v1", "card": 1, "n_residues": 20})
         assert _wait(lambda: len(seen) == 1)
         assert seen[0][0] == 1
         assert seen[0][1]["type"] == "job_start"
@@ -285,7 +285,7 @@ def test_a_parked_callback_on_one_card_does_not_stall_another(tmp_path):
 
         made[1].emit({"type": CONTROL_READY})
         made[1].emit({"type": "job_start", "job_id": "j1", "target_id": "t",
-                      "model": "protenix-v2", "card": 1, "n_residues": 20})
+                      "model": "protenix-v1", "card": 1, "n_residues": 20})
         assert _wait(lambda: (1, "job_start") in seen), \
             "card 1's event never arrived while card 0 was parked"
         assert _wait(lambda: p.ready_cards() == [1]), \

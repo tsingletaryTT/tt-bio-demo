@@ -71,7 +71,7 @@ JOBS = [
      "tests/fixtures/structures/real_fold_dna_duplex.cif", 95.7, 4.62),
 ]
 
-MODEL = "protenix-v2"
+MODEL = "protenix-v1"
 CARDS = [0, 1, 2, 3]
 
 # Per-action wire delays, in the units MockRunner divides by `speed`. Frames

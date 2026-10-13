@@ -39,10 +39,10 @@ from runner.dump_tap import TapUnavailable, check_tap_supported
 
 log = logging.getLogger(__name__)
 
-# The model the booth folds with. Everything protenix-v2 needs is derived
+# The model the booth folds with. Everything protenix-v1 needs is derived
 # from tt-bio's own registry (see required_weights below), so this is the only
 # hand-written name in the chain.
-MODEL = "protenix-v2"
+MODEL = "protenix-v1"
 
 # Used only when tt-bio's registry cannot be read at all -- a broken or
 # partial install, which preflight must still be able to REPORT rather than
@@ -50,7 +50,7 @@ MODEL = "protenix-v2"
 # EXTRACTED directory, not the mols.tar it came from: tt-bio discards the
 # archive once unpacked and `tt-bio weights --prune` removes it, so a fold
 # loads the directory and the tar's absence is not a fault.
-_FALLBACK_WEIGHTS = (("protenix-v2", "protenix-v2.pt"), ("mols", "mols"))
+_FALLBACK_WEIGHTS = (("protenix-v1", "protenix/model_v0.5.0.pt"), ("mols", "mols"))
 
 
 def required_weights(cache):
@@ -60,10 +60,10 @@ def required_weights(cache):
     counts as present if ANY of them exists.
 
     Derived from `tt_bio.weights` so that a release adding a third artifact to
-    protenix-v2 is picked up here instead of surfacing as a fold that dies on
+    protenix-v1 is picked up here instead of surfacing as a fold that dies on
     a machine preflight already called ready. That drift is exactly what this
-    function was written to end: the hand-written list said "protenix-v2.pt"
-    and nothing else, while protenix-v2 has needed the CCD molecule library
+    function was written to end: the hand-written list named the checkpoint
+    and nothing else, while the booth's model has needed the CCD molecule library
     the whole time -- so a cache with the checkpoint and no molecules printed
     `preflight: ok` and then died on the first fold.
 

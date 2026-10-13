@@ -81,7 +81,7 @@ class _FakeFolder:
              n_step=200):
         self.folds.append((job_id, target_id, card))
         emit({"type": "job_start", "job_id": job_id, "target_id": target_id,
-              "model": "protenix-v2", "card": card, "n_residues": n_residues})
+              "model": "protenix-v1", "card": card, "n_residues": n_residues})
         outcome = self.outcomes.pop(0) if self.outcomes else "ok"
         # BaseException, not Exception -- see departure #3 in the module
         # docstring. `isinstance(KeyboardInterrupt(), Exception)` is False,
@@ -243,7 +243,7 @@ def test_end_of_stdin_ends_the_worker_cleanly():
 class _RecordingFolder(_FakeFolder):
     """A _FakeFolder that records the device_id main constructed it with."""
 
-    def __init__(self, device_id=0, model="protenix-v2"):
+    def __init__(self, device_id=0, model="protenix-v1"):
         super().__init__()
         self.device_id = device_id
         self.model = model
@@ -256,7 +256,7 @@ def worker_main(monkeypatch):
     and every JSON line that came out of the event fd."""
     folders = []
 
-    def _factory(device_id=0, model="protenix-v2"):
+    def _factory(device_id=0, model="protenix-v1"):
         folder = _RecordingFolder(device_id=device_id, model=model)
         folders.append(folder)
         return folder
@@ -359,7 +359,7 @@ class _SignalTestFolder:
     Its only job is to make "a fold is in progress" and "close is in
     progress" observable from OUTSIDE this process, deterministically."""
 
-    def __init__(self, device_id=0, model="protenix-v2"):
+    def __init__(self, device_id=0, model="protenix-v1"):
         self.device_id = device_id
 
     def load(self):
@@ -377,7 +377,7 @@ class _SignalTestFolder:
     def fold(self, job_id, input_path, emit, *, target_id, n_residues, card=0,
              n_step=200):
         emit({"type": "job_start", "job_id": job_id, "target_id": target_id,
-              "model": "protenix-v2", "card": card, "n_residues": n_residues})
+              "model": "protenix-v1", "card": card, "n_residues": n_residues})
         with open(_FOLD_STARTED_MARKER, "w") as fh:
             fh.write("started")
         # A real fold spends nearly all of this time inside a ttnn/torch C
