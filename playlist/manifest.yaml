@@ -42,7 +42,8 @@
 #
 # MEASURED ON tt-bio 0.15.2 WITH protenix-v1, 2026-10-13. This is the pass every
 # number below comes from, and it is the first on the model the booth now folds
-# with. Host stack: tt-kmd 2.11.0, firmware bundle 19.16.0.0, tt-smi 6.7.0,
+# with. The booth now pins tt-bio 0.16.1; no number in this file has been
+# re-measured on it yet (see docs/spike-tt-bio-0.16.md). Host stack: tt-kmd 2.11.0, firmware bundle 19.16.0.0, tt-smi 6.7.0,
 # tt-flash 4.1.0, tt-umd 0.9.12, pyluwen 0.10.0, ttnn 0.68.0 (unchanged).
 # ONE chip (chip 0, BDF 01:00.0) under a gozer lease, one resident Folder per
 # arm, each target folded in a fixed order every pass, the same input YAMLs,

@@ -2052,6 +2052,38 @@ there is no earlier boot to compare against, since forwarding was off then. This
 clean run on a stack where the IOMMU mode, kmd, firmware and tools all changed together.
 The live booth check (plan Task 7 Step 3) was not run.
 
+### tt-bio 0.16.1: pinned, not yet measured (2026-10-14)
+
+Prompted with "newer version of tt-bio we should just upgrade to now. wait for hardware to
+become available and my say so, but do the work underlying first". 0.16.0 (2026-10-13) and
+0.16.1 (2026-10-14) were out the day after the 0.15.2 pin. Done with no device access:
+the pin moved to 0.16.1 on the open PR branch, and `.venvs/venv-runner` has it.
+
+**Findings, all from a static read of both wheels** (details in
+`docs/spike-tt-bio-0.16.md`):
+
+- Dependencies are identical, `ttnn==0.68.0` included, so no SFPI work.
+- All 30 `tt_bio` symbols the repo calls have unchanged signatures, `_read_bio_chains` still
+  returns the 5-tuple, and `edm_sample` still takes `dump_fn`. After the 0.8.0 break, the
+  contract check was a signature comparison with `ast` over both trees, not only an import.
+- Trace replay "on by default for Protenix on Blackhole" is a CLI default. The library's
+  `fold(trace=False)` and `get_device()` are unchanged and `folder.py` passes neither, so
+  the booth stays on the eager path with a per-step `dump_fn`. Not adopted: it is the
+  process shape 0.6.3 fixed a wrong-structure bug for, and the gain is about 1 s.
+- `NORMAL_LEVERS` gained `dit_sdpa`, `dit_chunk` and `conf_bins`. That is the one change
+  on the booth's own fold path, so times and pLDDT can move.
+- Commit counts at v0.16.1 are 14,568 total and 13,931 his. The site and changelog carry
+  them. The model-family count (fifteen) is unchanged.
+
+**Not measured.** Every timing, pLDDT band and `first_frame_s` in the manifest, README,
+site and handout is from 0.15.2. The manifest header and the changelog say so. The
+hardware pass (single-chip re-measure, a 30-frame fold through the tap, one Q&A question,
+the four-chip suite) waits for the owner's go-ahead.
+
+**Slip, recorded:** a `git add -A docs` committed the owner's untracked
+`docs/2026-09-22-test-plan.md` into the PR branch a second time. It was removed in the next
+commit and stays in the branch history (the owner said that is fine).
+
 ## Conventions
 
 - **Keep the README's screenshots current.** The README claims every image on it is the
