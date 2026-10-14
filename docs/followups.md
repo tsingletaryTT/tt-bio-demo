@@ -1174,3 +1174,8 @@ Two things that will bite:
 Also worth keeping: **one main category only.** Science, Education, Development, Utility and
 friends are each a section; listing two puts the app in the menu twice.
 `test_the_desktop_entry_files_under_exactly_one_main_category` holds that line now.
+
+- **Re-capture `tests/fixtures/streams/real_fold_trpcage.*` with 4 trunk cycles.**
+  `capture_real_fold.py` now asks for 4 (Protenix-v1's default, what the booth runs). The
+  checked-in capture was recorded with 10 and needs a chip to replace. No test reads the
+  cycle count from it.

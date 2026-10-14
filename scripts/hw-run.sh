@@ -107,8 +107,9 @@ fi
 # No gozer. Check every card (not just the N pinned ones: see the header on
 # board expansion), pin, and be plain about what is not protected.
 busy=0
-for (( i = 0; i < CARDS; i++ )); do
-  node="$DEV_ROOT/$i"
+# Walk the device nodes that exist; their numbers need not run 0..CARDS-1.
+for node in "$DEV_ROOT"/[0-9]*; do
+  [[ "${node##*/}" =~ ^[0-9]+$ ]] || continue
   [[ -e "$node" ]] || continue
   if command -v fuser >/dev/null 2>&1; then
     if fuser -s "$node" 2>/dev/null; then

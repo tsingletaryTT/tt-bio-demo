@@ -43,7 +43,9 @@ OUT_RAW = pathlib.Path(__file__).with_name("real_fold_trpcage.raw.json")
 OUT_JSONL = pathlib.Path(__file__).with_name("real_fold_trpcage.jsonl")
 
 N_STEP = 200        # tt-bio's own default (--sampling_steps unset)
-N_CYCLES = 10       # tt-bio's own default (--recycling_steps unset)
+N_CYCLES = 4        # Protenix-v1's own default, which Folder._run_fold leaves in place
+                    # (v2 used 10). The recorded real_fold_trpcage files predate this
+                    # value and were captured with 10; re-capture on a chip to refresh them.
 TARGET_FRAMES = 30  # design's stated subsample target
 
 

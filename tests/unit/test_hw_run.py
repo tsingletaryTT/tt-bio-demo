@@ -123,6 +123,20 @@ def test_a_busy_chip_other_than_the_pinned_one_still_stops_the_run(box):
     assert not box["marker"].exists()
 
 
+def test_a_busy_node_with_a_sparse_number_still_stops_the_run(box):
+    # Nodes 0 and 2 exist (two cards, sparse numbering). Node 2 is held. A loop over
+    # 0..CARDS-1 never looks at node 2.
+    for i in (1, 3):
+        (box["tmp"] / "dev" / str(i)).unlink()
+    _exe(box["bin"] / "fuser", 'case "$*" in *"/2") exit 0 ;; esac\nexit 1\n')
+    pci = box["env"]["TT_HW_PCI_ROOT"]
+    import shutil
+    shutil.rmtree(Path(pci) / BDFS[2]); shutil.rmtree(Path(pci) / BDFS[3])
+    r = _run(box, "--chips", "1", "--reason", "x", "--", str(box["cmd"]))
+    assert r.returncode == 11, r.stderr
+    assert not box["marker"].exists()
+
+
 def test_assume_idle_lets_a_run_proceed_with_no_fuser(box):
     (box["bin"] / "fuser").unlink()
     r = _run(box, "--chips", "1", "--reason", "x", "--", str(box["cmd"]),
