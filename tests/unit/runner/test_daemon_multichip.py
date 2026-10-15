@@ -202,7 +202,7 @@ def test_no_schedulable_cards_idles_rather_than_folding_onto_hot_hardware(tmp_pa
 
 def _start(card, job_id="j1", target_id="t"):
     return {"type": "job_start", "job_id": job_id, "target_id": target_id,
-            "model": "protenix-v2", "card": card, "n_residues": 20}
+            "model": "protenix-v1", "card": card, "n_residues": 20}
 
 
 def _done(job_id="j1", cif_path="/tmp/x.cif"):

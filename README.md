@@ -25,6 +25,12 @@ booth demonstrating its own instruments — it does that on its own when nobody 
 it. Cut from a 170-second master in which 58 folds completed across all four chips. Every
 image on this page is the real thing on real silicon — no mockups, no reconstructions.*
 
+*Dating note: the screenshots, the loop above and the CLI recordings were captured before the
+booth changed its fold model from Protenix-v2 to Protenix v1. The structures are real folds, but
+the confidence colors (and the pLDDT figures visible in them) are Protenix-v2's, which reports
+higher pLDDT than v1 on every playlist target. They have not been re-captured; see
+[`docs/followups.md`](docs/followups.md).*
+
 ---
 
 ## What it looks like
@@ -105,21 +111,15 @@ silicon keeps visibly breathing even if the daemon wedges.
 
 **Four chips on two boards.** A p300c carries two chips, so `tt-smi`'s four entries are four
 chips — not four boards. The panel says so, because a visitor reading "4 cards" would
-picture the wrong machine. Folds are timed on this hardware, warm, on tt-bio 0.12.0: Trp-cage **4.5 s**,
-FKBP12 **9.3 s**, DHFR **13.8 s**, trypsin **17.4 s**, albumin **84.4 s** — mean of two folds
-each on chip 0, after discarding one cold-JIT-cache fold per target (a version bump recompiles
-kernels for the new shapes; see `playlist/manifest.yaml`'s header). Albumin is the one real mover
-— 12% faster, a real pLDDT shift — and the cause is **not** isolated: an earlier draft of this
-page attributed it to `TT_BIO_SDPA_WIDE_K`, but upstream's own parity documentation says that
-kernel should leave albumin's exact padded length unchanged for this model, which contradicts
-real log evidence from this pass's own fold. See the manifest header for the corrected account
-and the open contradiction, rather than a guessed cause. Chip 1 was not re-measured
-this pass; the 0.5–1.4 s-slower drift measured on tt-bio 0.7.0 is a hardware/thermal property,
-not a software one, so it is carried forward rather than restated as fresh: chips 1 and 3 settle
-to a lower clock about fifteen minutes into a session (they idle 3–4 °C hotter than 0 and 2, so it is
-chassis position rather than workload), and chip 1 was measured second, about thirteen minutes
-in — its per-target *minima* match chip 0. A visitor's pick takes whichever chip is free, so a
-long session drifts slower than these fresh-chip numbers. See `playlist/manifest.yaml` for the
+picture the wrong machine. Folds are timed on this hardware, warm, on tt-bio 0.18.0 with Protenix v1, on chip 0: Trp-cage **3.0 s**,
+FKBP12 **4.3 s**, DHFR **5.2 s**, trypsin **5.8 s**, DNA duplex **3.0 s**, tRNA **3.4 s**, albumin **15.4 s**.
+Each number is the mean of three warm folds after discarding the first fold of each shape, which
+pays for kernel compilation (22.8–74.7 s on this card; see `docs/measurements-2026-10-13-protenix-v1.md`
+and `playlist/manifest.yaml`). The host stack changed since the earlier numbers: tt-kmd 2.11.0,
+tt-smi 6.7.0, tt-flash 4.1.0, tt-umd 0.9.12. Chip 1 was not re-measured.
+Earlier releases showed chips 1 and 3 settling to a lower clock about fifteen minutes into a
+session (they idle 3–4 °C hotter than 0 and 2, which points at chassis position). A visitor's
+pick takes whichever chip is free, so a long session drifts slower than these fresh-chip numbers. See `playlist/manifest.yaml` for the
 full table.
 
 **Four chips, four proteins — one protein per chip** (three, not four, when the
@@ -132,7 +132,7 @@ fold**, which is tt-bio's own documented limit and not something this demo works
 More chips buy the booth more proteins at once, and they buy a visitor's pick a chip to land
 on sooner — they do not make any one fold quicker.
 Measured on this box: four workers reach "model resident, chip open" in **4.8 s** from a cold
-start, and all four then fold Trp-cage concurrently to pLDDT 95.2–95.3.
+start. That figure was measured before the switch to Protenix v1 and has not been re-measured.
 
 ---
 
@@ -141,7 +141,7 @@ start, and all four then fold Trp-cage concurrently to pLDDT 95.2–95.3.
 Everything above is the GTK4 booth. Underneath it is `tt-bio` itself -- the upstream
 prediction CLI, no window manager involved -- and it is worth seeing on its own terms: a
 terminal folding six real targets (Trp-cage, a DNA duplex, a tRNA, each folded twice) with
-Protenix-v2 on Tenstorrent, one model load kept resident across the whole batch, spread
+Protenix-v2 on Tenstorrent (recorded before the booth moved to Protenix v1), one model load kept resident across the whole batch, spread
 across two chips. Recorded two ways: the plain terminal, and split alongside `tt-toplike`
 watching the same chips actually ramp in real time.
 
@@ -182,7 +182,7 @@ On a box with a Tenstorrent device, from a fresh clone:
 ./scripts/run-demo.sh              # start the daemon + UI, fold on real silicon
 ```
 
-`setup-venvs.sh` fetches the ~6.9 GB of model weights as its last step (protenix-v2 + CCD to
+`setup-venvs.sh` fetches the ~6.5 GB of model weights as its last step (Protenix v1 + CCD to
 fold, nesso1 + its own CCD dict + the ESM-2 encoder to answer affinity questions), so a fresh
 clone ends up able to fold and answer rather than able to start. Pass `--skip-weights` to opt
 out of all of it; the download is resumable and re-running the script is a cheap no-op once
@@ -193,7 +193,7 @@ they are there.
 the command to run if anything is missing:
 
 ```bash
-.venvs/venv-runner/bin/tt-bio weights --download protenix-v2
+.venvs/venv-runner/bin/tt-bio weights --download protenix-v1
 ```
 
 Ctrl-C tears the daemon down cleanly. Without hardware, the renderer still runs against a
@@ -201,7 +201,7 @@ recorded trajectory — see [Running without hardware](#running-without-hardware
 
 ```bash
 ./scripts/test.sh                  # full suite, software only
-./scripts/test.sh --hw             # also run the tests that open the chips
+./scripts/test.sh --hw             # also run the tests that open the chips; see "Running the hardware tests"
 ```
 
 ---
@@ -227,9 +227,9 @@ They are split because tt-bio needs a torch/ttnn stack and GTK needs apt's `pyth
 keeping them apart removes the conflict rather than managing it, and means the UI holds no
 device handles and cannot be taken down by a wedged chip.
 
-It then fetches the **model weights** — `protenix-v2.pt` (1.86 GB) and the CCD molecule
-library `mols` (1.85 GB unpacked) — by running venv-runner's own
-`tt-bio weights --download protenix-v2`. From this source checkout they land in
+It then fetches the **model weights** — Protenix v1's `model_v0.5.0.pt` (1.47 GB) and the CCD molecule
+library `mols` (1.86 GB unpacked) — by running venv-runner's own
+`tt-bio weights --download protenix-v1`. From this source checkout they land in
 `$TT_BIO_CACHE`, else `$BOLTZ_CACHE`, else `~/.boltz`, which is tt-bio's own order and the one
 thing in this repo that decides where weights live
 ([`scripts/weights-cache.sh`](scripts/weights-cache.sh) and [`runner/env.py`](runner/env.py),
@@ -243,7 +243,7 @@ molecule dict (413 MB) via `tt-bio weights --download nesso1` — one call fetch
 `tt_bio.weights.MODEL_ARTIFACTS["nesso1"]` lists both artifacts under that one model name —
 plus the ESM-2 protein-language-model encoder nesso1's featurizer runs (2.6 GB), pre-warmed
 straight through `huggingface_hub` because it has no `tt_bio.weights` row of its own. Unlike
-protenix-v2/mols, a failure fetching any of these three is reported but does not stop the
+the Protenix v1 checkpoint and `mols`, a failure fetching any of these three is reported but does not stop the
 script or fail anything: affinity Q&A is off by default (opt in with `--questions`), and a
 single-chip booth that never reserves a Q&A worker never needs them at all regardless.
 
@@ -252,7 +252,7 @@ Useful flags:
 - `--dev` — also install pytest into `venv-runner`, needed to run the runner-side tests.
   Off by default, because `venv-runner` is the same artifact a Debian build produces and
   test tooling should not ship to a booth machine.
-- `--skip-weights` — do not fetch the ~6.9 GB of model weights (folding and affinity Q&A
+- `--skip-weights` — do not fetch the ~6.5 GB of model weights (folding and affinity Q&A
   alike — one flag for all of it). They are fetched by
   default, because a booth without them cannot fold: `setup-venvs.sh` used to build both
   venvs and stop, which left a box that looked finished and wasn't. A failed download is
@@ -336,7 +336,7 @@ list done in passing.
 One command that answers "can this box run the booth, and if not, what is the
 exact command that fixes it?" — the application tree, both venvs and whether
 they can actually *import* their stacks, the tt-bio pin versus what is
-installed, the 3.7 GB of weights the booth cannot fold without (**by size,
+installed, the 3.3 GB of weights the booth cannot fold without (**by size,
 not existence** — a truncated download is the realistic failure and looks
 healthy to an existence check), nesso1/ESM-2's 3.2 GB for affinity Q&A (as a
 warning, not a failure — off by default, and a booth with one chip never
@@ -377,9 +377,9 @@ the authoritative list. The ones you are most likely to want:
 | `--structures-budget-gb` | 0.2 | Sweep budget for emitted `.cif` structures, per device |
 
 **The default is every target in the manifest** — the booth shows what it can do rather
-than the one safe thing. A full cycle is ~71 s on the fast pair of chips and ~79 s on the
-throttled pair, on tt-bio 0.6.2: Trp-cage 4.4 s, FKBP12 11.7–12.3 s, DHFR 20–25 s, trypsin 22–27 s,
-DNA 4.6 s, tRNA 8.6 s, all measured warm on this hardware. Use `--targets trpcage` to
+than the one safe thing. Warm, on chip 0, one pass through all seven targets takes about 40 s of fold time
+(3.0 + 4.3 + 5.2 + 5.8 + 3.0 + 3.4 + 15.4 s), summed from the per-target means on tt-bio 0.18.0
+with Protenix v1. It was not timed as one cycle, and the showcase holds between folds add to it. Use `--targets trpcage` to
 fold a single target while iterating, which is much faster.
 
 The four proteins ship because they need no MSA server; most curated tt-bio playlist
@@ -388,21 +388,15 @@ no alignment for a different reason — base-pairing is chemistry, not evolution
 inference: a **DNA duplex** (the Dickerson–Drew dodecamer) and a **transfer RNA** (yeast
 tRNA-Phe, the first RNA structure ever solved), which between them make the playlist a
 walk from a gene to a protein. The duplex is also the target that shows what the
-ribbon's colors are worth. It comes back at mean pLDDT 95.9 where the three larger
-MSA-less proteins come back at 51.7, 53.6 and 39.2, and the confidence legend under the
+ribbon's colors are worth. It comes back at mean pLDDT 94.5 where the three larger
+MSA-less proteins come back at 39–40 (FKBP12), 33 (DHFR) and 31–32 (trypsin), and the confidence legend under the
 render is what lets a visitor read that off the screen for themselves.
-
-> **`--all-targets` is not yet validated end to end.** The other three shipped targets
-> (FKBP12, DHFR, Trypsin — FKBP12 has since been removed) are measured 62–75 s folds, and their long callback-free windows —
-> host featurization, then the confidence head and mmCIF write — have never been run through
-> the socket into the UI, whose read timeout is 5 s. Watch a full cycle yourself before
-> leaving one of them running unattended in front of the public.
 
 ### 3. Run the tests
 
 ```bash
 ./scripts/test.sh            # both venvs, software only
-./scripts/test.sh --hw       # additionally run tests/integration, which opens the chips
+./scripts/test.sh --hw       # additionally run tests/integration, which opens the chips (use scripts/hw-run.sh, below)
 ```
 
 The suite spans both environments and `test.sh` runs each half under its own interpreter —
@@ -429,6 +423,26 @@ other hardware tests open a device in-process; this one spawns four workers. Det
 the measurement are in [`docs/followups.md`](docs/followups.md).
 
 Anything after the flag is passed through to pytest: `./scripts/test.sh -k telemetry -v`.
+
+**Running the hardware tests.** Use `scripts/hw-run.sh`. It is the entry point for any command
+that opens a chip, and it refuses `test.sh --hw`, `pytest tests/integration` and
+`test_four_workers.py` unless you ask for every chip on the box, because those open every card.
+
+```bash
+# The whole hardware suite. It opens every card and is the most expensive run.
+scripts/hw-run.sh --chips <all chips on the box> --reason "why" -- scripts/test.sh --hw
+
+# One hardware test file, on one chip.
+scripts/hw-run.sh --chips 1 --one-chip --reason "why" -- \
+    .venvs/venv-runner/bin/python3 -m pytest tests/integration/<file> -p no:cacheprovider
+```
+
+With tt-gozer installed, `hw-run.sh` takes a lease for the chips you ask for (`--one-chip` then
+narrows `TT_VISIBLE_DEVICES` to the first chip granted). Without gozer it checks every card and
+stops if any device node is held by a process, then pins `TT_VISIBLE_DEVICES` to the first N chips.
+That check sees only processes you own, nothing is leased, and nothing fences other users. The
+script never resets a chip. Do not run hardware commands in the foreground of an agent tool: a
+tool timeout that kills a fold mid-run can wedge a board.
 
 ### Running without hardware
 
@@ -584,7 +598,7 @@ within `POCKET_CUTOFF_ANGSTROM` (5.0 Å) of the ligand get an outline — additi
 pLDDT confidence ramp, not a replacement for it — computed client-side from the same `.cif`
 already parsed for the cartoon, and captioned as "the residues nearest the ligand," never
 "the binding site," which a distance cutoff alone cannot establish. Verified on real
-hardware twice, including once on trypsin — pLDDT ~38–39, a mostly-orange, low-confidence
+hardware twice, including once on trypsin — pLDDT ~38–39 on Protenix-v2 and 31–32 on Protenix v1, a mostly-orange, low-confidence
 target — where the highlight showed as a clear bright patch against the ribbon, legible at
 a glance rather than the subtle case a high-confidence target alone would have left
 untested.
@@ -634,7 +648,7 @@ cue all stay hidden — byte-for-byte the pre-Q&A booth.
 
 nesso1's weights (the affinity head, its own CCD molecule dict, and the ESM-2 encoder its
 featurizer runs) are fetched by both install paths now — `setup-venvs.sh` by default,
-alongside protenix-v2, and the `.deb`'s postinst behind the same debconf question — and
+alongside the Protenix v1 weights, and the `.deb`'s postinst behind the same debconf question — and
 checked by `scripts/doctor.sh`, as a warning rather than a failure: a booth not opted in to
 Q&A, or with only one chip, never needs any of it. See
 [Installing a booth machine](#installing-a-booth-machine).
@@ -697,7 +711,7 @@ package already advertises but does not do — see
 [`CLAUDE.md`](CLAUDE.md)'s "The weights were never a checked box", the same shape one layer
 up). `setup-venvs.sh`'s weight fetch and the `.deb`'s postinst both fetch nesso1's affinity
 head, its own CCD molecule dict, and the ESM-2 encoder its featurizer runs, alongside
-protenix-v2 and under the same opt-out (`--skip-weights`, or the packaged install's single
+the Protenix v1 weights and under the same opt-out (`--skip-weights`, or the packaged install's single
 debconf question); `doctor.sh` checks all three too, as a warning rather than a failure,
 since a booth not opted in to Q&A (the default), or with one chip, never needs any of it. The one
 command that fetches nesso1's own two artifacts by hand, if you skipped the default fetch:
@@ -785,15 +799,15 @@ On a QB2 that has just had `tt-installer` run on it, this brings the application
 curated content, the systemd `--user` unit and the desktop entry. Two things it deliberately
 does **not** do: build the Python environments (that downloads gigabytes and cannot run while
 apt holds the dpkg lock — the postinst prints the one command left to run), and fetch the
-~6.9 GB of model weights (3.7 GB to fold, 3.2 GB more for affinity Q&A), which is offered as
+~6.5 GB of model weights (3.3 GB to fold, 3.2 GB more for affinity Q&A), which is offered as
 a single debconf question defaulting to *no* because the venue is offline and an unattended
-install should not start a 6.9 GB download on its own.
+install should not start a 6.5 GB download on its own.
 
 It also does not pre-warm the tt-metal kernel cache. The `tt-bio-demo-weights` package
 description claims it does; its postinst only downloads and verifies weights. Warm the cache
 by folding each target once before the doors open — every fold time on this page is measured
-**warm**, and on an empty cache Trp-cage's first fold costs **94.5 s** against 9.4 s warm,
-about 83 s of it kernel compilation ([`docs/cold-start.md`](docs/cold-start.md)).
+**warm**, and on an empty cache the first fold of each shape costs 22.8–74.7 s on this card (measured on
+Protenix v1), against 3.0–15.4 s warm ([`docs/cold-start.md`](docs/cold-start.md)).
 
 Full steps — including what `tt-installer` has already provided, so no step re-installs it —
 are in [`INSTALL.md`](INSTALL.md).
@@ -824,8 +838,15 @@ people's work running on Tenstorrent hardware:
   pinned release, vendors four of its example inputs, and offers one patch back upstream.
 - **Boltz-2 / Boltz-1** — Wohlwend, Corso, Passaro et al., the MIT-licensed code tt-bio
   builds on.
-- **Protenix-v2** (ByteDance, Apache-2.0) — the model this booth folds with by default.
+- **Protenix v1** (ByteDance, Apache-2.0; the v0.5.0 checkpoint) — the model this booth folds with by default.
 - **OpenFold3** — the OpenFold Consortium.
+
+**Which Protenix, and why.** The booth folds with Protenix v1, upstream's Apache-2.0 v0.5.0
+checkpoint. tt-bio does not download Protenix v2, because its weights may not be redistributed
+without the rights holder's consent. On this card v1 is 1.25x to 3.2x faster than v2 on every
+playlist target and reports lower pLDDT on every one: about 1.5-2 points lower on Trp-cage and the
+DNA duplex, 7 on the tRNA and on trypsin, 11 on FKBP12, 20 on DHFR and 24 on albumin (means from
+`docs/measurements-2026-10-13-protenix-v1.md`; both models run on tt-bio 0.15.2 on the same chip).
 
 Sequences and reference structures come from the public literature and the Protein Data
 Bank. See [`NOTICE`](NOTICE) for the full list, what is vendored versus merely depended on,

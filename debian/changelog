@@ -1,3 +1,50 @@
+tt-bio-demo (0.8.1) noble; urgency=medium
+
+  * The booth folds with Protenix-v1 and tt-bio 0.18.0 (was Protenix-v2 on
+    0.12.0; same ttnn 0.68.0 pin; docs/spike-tt-bio-0.16.md). The manifest
+    timings were re-measured on 0.18.0 (warm 3.0-15.4 s, each 0.0-0.1 s
+    faster than on 0.15.2 and albumin 0.7 s faster). The v1 against v2
+    comparison below was measured on tt-bio 0.15.2. tt-bio stopped downloading the v2 weights in 0.13.0: upstream
+    says they may not be redistributed without the rights holder's consent,
+    and the old Hugging Face source answered HTTP 401. Protenix-v1 is
+    upstream's Apache-2.0 v0.5.0 checkpoint and downloads without a login.
+    One constant (runner/model.py BOOTH_MODEL) names the model; a playlist
+    entry that names any other model is rejected with a PlaylistError.
+  * Measured on the same chip and host stack, all seven targets fold
+    1.25-3.2x faster (warm 2.99-16.1 s on 0.15.2) and every mean pLDDT is lower than
+    it was on v2: about 1.5-2 points on Trp-cage and the DNA duplex, 7 on tRNA,
+    7-20 on the msa-empty proteins, 24 on albumin. The gallery blurbs, the
+    site, the README and the handout carry the new numbers
+    (docs/measurements-2026-10-13-protenix-v1.md). FKBP12 with its SB3
+    ligand folds. The tRNA blurb no longer claims a "wide open elbow",
+    because that measurement did not reproduce on v1.
+  * Weights: the v1 checkpoint lives at protenix/model_v0.5.0.pt under the
+    cache root (a subdirectory), so the doctor's filesystem check and the
+    postinst's checksum verification changed shape. The download total is
+    6.5 GB (3.3 GB for folding, 3.2 GB for Q&A). The doctor and the docs
+    print `tt-bio weights --download protenix-v1`. The cache root is still
+    resolved from $TT_BIO_CACHE / $BOLTZ_CACHE in the same two places as
+    before.
+  * New scripts/hw-run.sh is the entry point for hardware runs with or
+    without gozer, and it refuses `scripts/test.sh --hw` unless every chip
+    is granted. Recorded event streams were re-captured on v1. The
+    visible-collapse floor in the live-diffusion test moved from 0.40 to
+    0.30, with the measured value recorded next to it.
+  * Known: first_frame_s is earlier on v1, so the per-target showcase dwell
+    for DHFR and trypsin drops from 7.0 s to about 2.0-2.3 s. That undoes
+    part of the 2026-08-24 request to linger longer on finished
+    structures. It is not changed here and needs the owner's decision.
+    README screenshots were not refreshed (they need the live booth);
+    docs/followups.md has the entry.
+  * Live booth check on tt-bio 0.18.0: all four chips folding the whole
+    playlist for about four minutes, 93 folds, no errors or retries. README
+    images 01-04 and 06 were re-captured from that booth; 05, 07 and 08 and
+    the loop video are still from earlier runs (docs/followups.md).
+  * Commit counts on the docs site are re-measured at v0.18.0: 15,129
+    total, 14,492 carry Moritz's name as author.
+
+ -- Taylor Singletary <tsingletary@tenstorrent.com>  Thu, 15 Oct 2026 16:40:00 -0700
+
 tt-bio-demo (0.7.0) noble; urgency=medium
 
   * The browser companion (`webview/`, `scripts/run-webview.sh`) is real and

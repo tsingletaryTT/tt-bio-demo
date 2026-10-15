@@ -140,13 +140,13 @@ def _app(cards=(0, 1, 2, 3), clock=None, viewer_factory=_FakeViewer):
 
 def _hello(cards=(0, 1, 2, 3), qa_capable=False):
     return {"type": "hello", "version": 1, "cards": list(cards),
-            "models": ["protenix-v2"], "preflight": "ok",
+            "models": ["protenix-v1"], "preflight": "ok",
             "qa_capable": qa_capable}
 
 
 def _start(job_id, card, target_id="t"):
     return {"type": "job_start", "job_id": job_id, "target_id": target_id,
-            "model": "protenix-v2", "card": card, "n_residues": 20}
+            "model": "protenix-v1", "card": card, "n_residues": 20}
 
 
 def _done(job_id):

@@ -99,6 +99,7 @@ from pathlib import Path
 
 from protocol.events import PROTOCOL_VERSION
 from runner.affinity import _affinity_out_dir
+from runner.model import BOOTH_MODEL
 from runner.cards import CardPool, sample_tt_smi
 from runner.env import log_root_size, prune_log_root, runner_environ
 # NOT `Folder`. This process opens no device and holds no model, and a Folder
@@ -643,7 +644,7 @@ class Daemon:
                 # not vanish from the greeting just because it isn't free at
                 # this exact instant. See CardPool.all_indices()'s docstring.
                 "cards": self.cards.all_indices(),
-                "models": ["protenix-v2"], "preflight": "ok",
+                "models": [BOOTH_MODEL], "preflight": "ok",
                 # True once `_build_pool` has reserved a chip for Q&A
                 # (`split_for_qa`); permanently False on a one-chip box. Not
                 # gated on the qa worker itself having announced ready --

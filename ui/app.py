@@ -622,18 +622,20 @@ class _SlotView:
 # of what just finished.
 #
 #   incoming target   first_frame_s   dwell in front of it
-#   dna                    1.1s       2.0s  (floor)
-#   trpcage                1.9s       2.0s  (floor)
-#   trna                   2.8s       2.8s
-#   fkbp12                 5.3s       5.3s
-#   dhfr                  10.4s       7.0s  (max)
-#   trypsin               11.7s       7.0s  (max)
-#   hsa                   82.7s       7.0s  (max)
+#   (Protenix v1 values from playlist/manifest.yaml)
+#   dna                    0.4s       2.0s  (floor)
+#   trpcage                0.4s       2.0s  (floor)
+#   trna                   0.6s       2.0s  (floor)
+#   fkbp12                 1.0s       2.0s  (floor)
+#   dhfr                   1.7s       2.0s  (floor)
+#   trypsin                2.3s       2.3s
+#   hsa                   10.1s       7.0s  (max)
 #
-# So the requested linger lands in full on the four targets that can pay for
-# it, the three short ones keep exactly today's behaviour, and no guard is
-# weakened. A target with no measurement gets the MAXIMUM, not the floor --
-# see `_dwell_for` in ui/states.py for why that is the safe default.
+# With the v1 measurements the cap reaches the 7.0s maximum only for albumin.
+# (Under the measurements from the retired protenix-v2 model, dhfr and
+# trypsin also reached it.) No guard is weakened. A target with no measurement gets the FLOOR, not
+# the maximum -- see `_dwell_for` in ui/states.py for why that is the safe
+# default.
 _SHOWCASE_DWELL_MAX_S = 7.0
 
 # The floor a per-target cap may narrow the dwell to. This is the old

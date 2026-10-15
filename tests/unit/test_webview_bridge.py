@@ -225,7 +225,7 @@ def test_reconnect_against_mock_runner_replays_the_whole_fixture():
 
 def _hello(version):
     return {"type": "hello", "version": version, "cards": [0],
-            "models": ["protenix-v2"], "preflight": "ok", "qa_capable": False}
+            "models": ["protenix-v1"], "preflight": "ok", "qa_capable": False}
 
 
 def test_an_incompatible_hello_is_flagged_and_still_delivered():
@@ -391,7 +391,7 @@ def test_publish_drops_for_a_full_subscriber_only_never_raises():
 
 def test_a_malformed_line_from_the_daemon_is_dropped_not_fatal():
     hello = {"type": "hello", "version": 4, "cards": [0],
-             "models": ["protenix-v2"], "preflight": "ok",
+             "models": ["protenix-v1"], "preflight": "ok",
              "qa_capable": False}
     fake = _FakeSocket(incoming=[b"not json at all\n", encode(hello)])
     link = DaemonLink("/does/not/matter", connect=lambda: fake)

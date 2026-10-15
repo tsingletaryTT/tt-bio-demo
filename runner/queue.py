@@ -35,6 +35,8 @@ import itertools
 import threading
 from dataclasses import dataclass, field
 
+from runner.model import BOOTH_MODEL
+
 # The band a visitor's tap is submitted in, against the attract loop's 0.
 # Any value above 0 orders correctly; 10 is chosen so that a third band can
 # later be slotted *between* the playlist and a visitor (or above a visitor)
@@ -49,7 +51,7 @@ class Job:
     input_path: str
     priority: int = 0
     n_residues: int = 0
-    model: str = "protenix-v2"
+    model: str = BOOTH_MODEL
     meta: dict = field(default_factory=dict)
 
 

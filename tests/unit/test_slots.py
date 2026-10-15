@@ -12,7 +12,7 @@ from ui.states import showcase_ended
 
 def _start(job_id="j1", card=0, target_id="trpcage"):
     return {"type": "job_start", "job_id": job_id, "target_id": target_id,
-            "model": "protenix-v2", "card": card, "n_residues": 20}
+            "model": "protenix-v1", "card": card, "n_residues": 20}
 
 
 def _done(job_id="j1"):

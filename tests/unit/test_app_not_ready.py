@@ -29,7 +29,7 @@ def test_a_job_start_clears_preparing():
     app = _app()
     app._handle_event({"type": "not_ready", "missing": ["x"]})
     app._handle_event({"type": "job_start", "job_id": "j1", "target_id": "t",
-                       "model": "protenix-v2", "card": 0, "n_residues": 20})
+                       "model": "protenix-v1", "card": 0, "n_residues": 20})
     assert app.display_state != "preparing"
 
 

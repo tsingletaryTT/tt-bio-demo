@@ -59,10 +59,11 @@ at all.
 
 HARDWARE
 --------
-The fold stage opens card 0 and loads protenix-v2 once, then folds every
+The fold stage opens card 0 and loads protenix-v1 once, then folds every
 target warm. Budget roughly a minute for the model load plus the manifest's
-own `expected_s` per target (4.4 / 11.7 / 19.7 / 22.3 / 4.6 / 8.6s today,
-so about 71s of folding for the whole playlist). It always closes the
+own `expected_s` per target (Trp-cage 3.0, FKBP12 4.3, DHFR 5.2, trypsin 5.8,
+DNA 3.0, tRNA 3.4 s warm on protenix-v1, so about 24s for those six; albumin
+adds 15.4s; numbers from docs/measurements-2026-10-13-protenix-v1.md). It always closes the
 device, including on failure, so it never leaves a card held.
 """
 
@@ -167,7 +168,7 @@ def stage_fold(args):
         return 0
 
     folder = Folder(device_id=0)
-    log(f"loading protenix-v2 on card 0 for {len(to_fold)} fold(s)...")
+    log(f"loading protenix-v1 on card 0 for {len(to_fold)} fold(s)...")
     folder.load()
     try:
         for target in to_fold:

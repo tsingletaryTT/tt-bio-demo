@@ -616,7 +616,7 @@ def test_the_fold_keeps_running_behind_the_help_card():
 def test_protocol_events_reach_the_diagnostics_log():
     app = _app()
     app._handle_event({"type": "job_start", "job_id": "j1", "target_id": "trpcage",
-                       "model": "protenix-v2", "card": 2, "n_residues": 20})
+                       "model": "protenix-v1", "card": 2, "n_residues": 20})
     blob = "\n".join(text for _s, _k, text in app.diagnostics.tail(50))
     # The WIRE field is still `card` (a protocol contract), but the LINE says
     # chip -- one tt-smi/daemon device is one chip, not one board. See
@@ -2245,7 +2245,7 @@ def test_every_label_on_the_held_structure_caption_is_legible():
 def _target(target_id, name, tagline):
     """A playlist Target with only the fields this caption reads."""
     return Target(id=target_id, input_path=Path("/nonexistent.yaml"),
-                  model="protenix-v2", name=name, blurb=f"{name} blurb",
+                  model="protenix-v1", name=name, blurb=f"{name} blurb",
                   tagline=tagline)
 
 

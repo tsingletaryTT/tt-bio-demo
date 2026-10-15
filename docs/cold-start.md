@@ -2,6 +2,10 @@
 
 Measured 2026-08-17 on the p300c dev box, under a `gozer` lease, one chip.
 
+The tables below were measured with Protenix-v2 on tt-bio 0.6.x. The booth now folds with Protenix v1;
+its first-fold times are in [`measurements-2026-10-13-protenix-v1.md`](measurements-2026-10-13-protenix-v1.md)
+(22.8-74.7 s per target on a cold cache, 3.0-15.4 s warm).
+
 This closes the follow-up [`docs/spike-real-fold.md`](spike-real-fold.md) point 8 opened and
 called "the most important follow-up measurement before Phase 3 ships" — *"Cold-start timing
 is still unmeasured and should be budgeted, not assumed."*
@@ -62,7 +66,7 @@ measured it. Budget generously and measure it before it matters.
 
 **Anything about a freshly imaged machine.** This measured an empty *kernel cache* on a box
 that already had weights, a built `venv-runner`, and a warm page cache. A real first boot also
-pays the ~6.9 GB weight download (`scripts/setup-venvs.sh` fetches protenix-v2 + CCD, nesso1 +
+pays the ~6.5 GB weight download (`scripts/setup-venvs.sh` fetches Protenix v1 + CCD, nesso1 +
 its own CCD dict, and the ESM-2 encoder by default) and the venv build.
 
 ## Method, so it can be repeated
@@ -81,7 +85,7 @@ its own CCD dict, and the ESM-2 encoder by default) and the venv build.
 
 Warm the cache before the doors open, by folding each target you intend to show once. There is
 no supported one-shot command for this today: `tt-bio warmup` exists, but its help says
-*"Pre-compile all ttnn kernels for **Boltz-2** inference"* and the booth folds **protenix-v2**,
+*"Pre-compile all ttnn kernels for **Boltz-2** inference"* and the booth folds **protenix-v1**,
 so it does not warm the kernels this demo actually uses.
 
 The `tt-bio-demo-weights` package description claims it "pre-warms the tt-metal kernel cache".

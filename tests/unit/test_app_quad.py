@@ -737,7 +737,7 @@ def test_a_cell_in_trunk_says_which_protein_it_is_drawing():
 
     def _t(tid, name):
         return Target(id=tid, input_path=_pathlib.Path(f"{tid}.yaml"),
-                      model="protenix-v2", name=name, blurb="")
+                      model="protenix-v1", name=name, blurb="")
 
     app = _app()
     app.targets = [_t("trypsin", "Trypsin"), _t("dhfr", "Dihydrofolate Reductase")]
@@ -775,7 +775,7 @@ def test_an_empty_cell_does_not_claim_to_be_showing_a_structure():
 
     def _t(tid, name):
         return Target(id=tid, input_path=_pathlib.Path(f"{tid}.yaml"),
-                      model="protenix-v2", name=name, blurb="")
+                      model="protenix-v1", name=name, blurb="")
 
     app = _app()
     app.targets = [_t("trypsin", "Trypsin"), _t("dhfr", "Dihydrofolate Reductase")]

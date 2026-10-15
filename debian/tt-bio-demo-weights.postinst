@@ -4,11 +4,11 @@
 # Fetches the two artifacts the booth cannot fold without, and verifies them.
 #
 # WHY THERE IS NO curl AND NO URL HERE. tt-bio resolves its own weights
-# through huggingface_hub (`weights.fetch("protenix-v2")` and
+# through huggingface_hub (`weights.fetch("protenix-v1")` and
 # `weights.fetch("mols")`). Reimplementing that would mean
 # hardcoding a URL this project does not control, and would throw away the
 # hub client's resume-and-verify behaviour -- which matters when the thing
-# being fetched is 3.7 GB over a conference-hotel connection. So this asks
+# being fetched is 3.3 GB over a conference-hotel connection. So this asks
 # tt-bio to do the fetch, and then checks what landed.
 set -e
 
@@ -40,7 +40,7 @@ PREFIX="$(tt_bio_demo_prefix)"
 # ... path" section checks that none of these callers keep their own copy of
 # the literal value. This removes HOME
 # from the equation entirely for every weight this postinst fetches: not
-# just the flat protenix-v2.pt/mols.tar artifacts (whose `root=`/`--cache`
+# just the flat mols.tar artifact (whose `root=`/`--cache`
 # argument already redirects them per-call), but also nesso1/nesso1-ccd/the
 # ESM-2 encoder, which are "hf-repo" sources that SILENTLY IGNORE `root=`
 # (see the big comment on NESSO1_ARTIFACTS below) and fall back to whatever
@@ -66,7 +66,7 @@ tt_bio_demo_weights_cache_packaged >/dev/null
 # $BOLTZ_CACHE, then ~/.boltz -- tt-bio's own order). This used to read only
 # $BOLTZ_CACHE, and the python block below re-derived it a SECOND time from
 # the same incomplete rule, so on a host using $TT_BIO_CACHE this downloaded
-# 3.7 GB into a directory neither a fold nor the doctor would ever look in.
+# 3.3 GB into a directory neither a fold nor the doctor would ever look in.
 # The python half is now handed the answer rather than working it out again.
 CACHE="$(tt_bio_demo_weights_cache_packaged)" || exit 1
 
@@ -93,7 +93,8 @@ CACHE="$(tt_bio_demo_weights_cache_packaged)" || exit 1
 # against this box's real, pinned tt-bio: `weights.fetch("nesso1",
 # root=<anything>)` lands under the standard Hugging Face hub cache
 # regardless of `root`, never under `${CACHE}/model.safetensors` the way
-# protenix-v2.pt lands under `${CACHE}/protenix-v2.pt`. This table's
+# the protenix-v1 checkpoint lands under `${CACHE}/protenix/model_v0.5.0.pt`, a
+# subdirectory, and is verified in Python for the same reason. This table's
 # `tt_bio_demo_verify_sha256 "${CACHE}/${name}" ...` shape assumes a flat
 # path under `$CACHE` and would check a file that is never there, silently
 # reporting a present artifact as missing. nesso1/nesso1-ccd are fetched AND
@@ -101,7 +102,6 @@ CACHE="$(tt_bio_demo_weights_cache_packaged)" || exit 1
 # resolved path (whatever it turns out to be) is known.
 # ---------------------------------------------------------------------------
 ARTIFACTS="
-protenix-v2.pt 8f931f9774a396b67033d0e58628e1834f4a1448165e04254b40a780b0c0d599
 mols.tar 39e076d96dbec6b4e86982bbda16f3a53a2a60c9bdc17828d88f6f9a0c7d1fd7
 "
 
@@ -148,7 +148,7 @@ case "$1" in
             tt_bio_demo_log ""
             tt_bio_demo_log "    sudo dpkg-reconfigure tt-bio-demo-weights"
             tt_bio_demo_log ""
-            tt_bio_demo_log "That is ~6.9 GB (3.7 GB required to fold, 3.2 GB more for"
+            tt_bio_demo_log "That is ~6.5 GB (3.3 GB required to fold, 3.2 GB more for"
             tt_bio_demo_log "affinity Q&A) and must happen BEFORE the venue (it is offline)."
             exit 0
         fi
@@ -220,14 +220,14 @@ case "$1" in
         # that says yes here does not end up folding but unable to answer a
         # single question -- the exact gap docs/followups.md's
         # "affinity-questions feature" entry names. Their failure is
-        # DELIBERATELY NOT fatal to this install: unlike protenix-v2/mols,
+        # DELIBERATELY NOT fatal to this install: unlike protenix-v1/mols,
         # the booth runs fine without them (affinity Q&A is off by default,
         # opt in with `--questions`; a single-chip box never reserves a Q&A
         # worker at all regardless -- see runner/daemon.py's qa_capable
         # gate), so a dropped connection on
         # ~578 MB + 2.6 GB of optional weights must not fail a package
-        # configure step over the required 3.7 GB that already downloaded
-        # fine. A marker file (not piped output -- protenix-v2/mols's own
+        # configure step over the required 3.3 GB that already downloaded
+        # fine. A marker file (not piped output -- protenix-v1/mols's own
         # download progress needs to keep streaming live to the console, and
         # piping this script's output risks the exact SIGPIPE/pipefail trap
         # CLAUDE.md already records for `pip show | awk '{...; exit}'`)
@@ -265,7 +265,11 @@ except Exception as exc:                                  # noqa: BLE001
 cache = Path(sys.argv[1])
 cache.mkdir(parents=True, exist_ok=True)
 
-weights.fetch("protenix-v2", root=cache)
+# The v1 checkpoint is fetched into a subdirectory of the cache
+# (protenix/model_v0.5.0.pt), so the shell's flat ARTIFACTS table cannot verify
+# it. It is checked here against the real path fetch() returns. Unlike the
+# nesso1 checks below, a mismatch is fatal: the booth cannot fold without it.
+protenix_path = weights.fetch("protenix-v1", root=cache)
 # download_mols, not a bare weights.fetch("mols"): the booth needs the
 # EXTRACTED mols/ directory, and this fetches the tar and unpacks it in one
 # resumable step. (It is itself a thin wrapper over weights.fetch("mols").)
@@ -291,11 +295,20 @@ def _sha256(path):
     return h.hexdigest()
 
 
+PROTENIX_V1_SHA256 = "9ea20b0aba42f2256711da1d0cd081510a4b291e64375bff6b70ced70b87a5f1"
+_protenix_actual = _sha256(protenix_path)
+if _protenix_actual != PROTENIX_V1_SHA256:
+    print(f"protenix-v1 at {protenix_path} does not match its recorded sha256 "
+          f"(expected {PROTENIX_V1_SHA256}, got {_protenix_actual}) -- either a "
+          "corrupt download or a new upstream revision", file=sys.stderr)
+    raise SystemExit(1)
+print(f"verified protenix-v1 ({protenix_path})")
+
 # Two explicit calls with literal string keys, not a loop over a dict -- so
 # that `test_the_weights_postinst_uses_the_tt_bio_api_that_actually_exists`'s
 # regex, which looks for a quoted string as fetch's first argument, sees
 # both calls below and keeps checking them against the pinned tt-bio's real
-# registry rows, the same way it already checks protenix-v2 above. A
+# registry rows, the same way it already checks protenix-v1 above. A
 # variable in that position (e.g. from a dict/loop) would be invisible to
 # that regex and silently stop being checked.
 affinity_ok = True

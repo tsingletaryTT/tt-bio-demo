@@ -1,11 +1,11 @@
-"""Spike script: run a REAL tt-bio protenix-v2 fold on hardware and capture the
+"""Spike script: run a REAL tt-bio protenix-v1 fold on hardware and capture the
 dump_fn trajectory, timing, and progress_fn events.
 
 This is deliberately NOT production code -- it is the instrument used by
 docs/spike-real-fold.md to answer "what does dump_fn actually give you?"
 empirically, instead of from reading the signature. It:
 
-  1. Loads Protenix-v2 (downloads weights on first use), opens a real device.
+  1. Loads Protenix-v1 (downloads weights on first use), opens a real device.
   2. Builds features for examples/trpcage_no_msa.yaml (20 residues, no MSA).
   3. Monkeypatches tt_bio.protenix.edm_sample so a dump_fn is threaded through
      even though tt_bio.protenix.Protenix.fold's public signature does not
@@ -42,8 +42,10 @@ EXAMPLE_YAML = TT_BOLTZ / "examples" / "trpcage_no_msa.yaml"
 OUT_RAW = pathlib.Path(__file__).with_name("real_fold_trpcage.raw.json")
 OUT_JSONL = pathlib.Path(__file__).with_name("real_fold_trpcage.jsonl")
 
-N_STEP = 200        # tt-bio's own default for protenix-v2 (--sampling_steps unset)
-N_CYCLES = 10       # tt-bio's own default for protenix-v2 (--recycling_steps unset)
+N_STEP = 200        # tt-bio's own default (--sampling_steps unset)
+N_CYCLES = 4        # Protenix-v1's own default, which Folder._run_fold leaves in place
+                    # (v2 used 10). The recorded real_fold_trpcage files predate this
+                    # value and were captured with 10; re-capture on a chip to refresh them.
 TARGET_FRAMES = 30  # design's stated subsample target
 
 
@@ -71,7 +73,7 @@ def main():
 
     # ---- Q1/Q5: weight resolution (downloads on first use if not cached) ----
     t0 = time.perf_counter()
-    ckpt_path = weights.fetch("protenix-v2", root=cache)
+    ckpt_path = weights.fetch("protenix-v1", root=cache)
     t_weights = time.perf_counter() - t0
     print(f"[timing] weight resolution: {t_weights:.2f}s (path={ckpt_path})",
           file=sys.stderr)
@@ -123,7 +125,11 @@ def main():
         })
 
     def _edm_sample_patched(*args, **kwargs):
-        kwargs.setdefault("dump_fn", _dump_fn)
+        # OVERRIDE, never setdefault: tt-bio 0.15 Protenix.fold passes its own
+        # dump_fn=None explicitly (set only under TT_PROTENIX_DUMP), so
+        # setdefault silently recorded zero frames. Same rule as
+        # runner/dump_tap.py.
+        kwargs["dump_fn"] = _dump_fn
         return _orig_edm_sample(*args, **kwargs)
 
     ptx.edm_sample = _edm_sample_patched
@@ -234,9 +240,9 @@ def write_fixture(traj, progress_events, wall_s, n_residues, n_atoms, conf, cif_
     t0 = traj[0]["t"]
     events = [
         {"type": "hello", "version": PROTOCOL_VERSION, "cards": [0, 1, 2, 3],
-         "models": ["protenix-v2"], "preflight": "ok", "_delay_ms": 0},
+         "models": ["protenix-v1"], "preflight": "ok", "_delay_ms": 0},
         {"type": "job_start", "job_id": "real1", "target_id": "trpcage_no_msa",
-         "model": "protenix-v2", "card": 0, "n_residues": n_residues, "_delay_ms": 50},
+         "model": "protenix-v1", "card": 0, "n_residues": n_residues, "_delay_ms": 50},
     ]
 
     # Stage events observed from the real progress_fn stream: tt-bio itself

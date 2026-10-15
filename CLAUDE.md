@@ -1927,6 +1927,203 @@ row and the diagnostics panel below it -- never the panel a visitor is actively 
 answer land in. `test_opening_the_tensix_panel_does_not_move_the_affinity_panel` pins the new
 order and was confirmed red against the old one before being restored.
 
+### tt-bio 0.15.2 and Protenix-v1: the booth's model changed (2026-10-13)
+
+Prompted with: "Let's create a branch to update to the newest tt-bio and use any
+new models, features, etc that make sense. tt-bio might have its own 'demo' UI
+now too; evaluate if so and determine if this project has become superfluous".
+
+**tt-bio has no demo UI, so the project stays.** What it has is a terminal live
+display, `predict --listen`, and `msa-server`. None of them is a booth: no
+gallery, no attract loop, no per-chip panels, no Q&A. The spec has the
+comparison.
+
+**The reason the model changed is a licence, and the pin bump exposed it.**
+tt-bio stopped downloading the Protenix-v2 weights in 0.13.0. Upstream says they
+may not be redistributed without the rights holder's consent, and the old
+Hugging Face source answered HTTP 401. A booth pinned past 0.12.0 could not
+install its own model. Protenix-v1 is upstream's Apache-2.0 v0.5.0 checkpoint,
+so the booth folds with that. The pin moved 0.12.0 -> 0.15.2.
+
+**Key decisions**
+
+- One constant, `runner/model.py:BOOTH_MODEL`, names the model. `ui.playlist`
+  raises `PlaylistError` for a manifest entry that names another one, so a
+  playlist cannot ask the daemon for a model the install did not fetch.
+- The v1 checkpoint lives at `<cache>/protenix/model_v0.5.0.pt`, in a
+  subdirectory. That changed `doctor.sh`'s filesystem check and the postinst's
+  checksum verification. The weights total is recomputed: 6.5 GB (3.3 fold,
+  3.2 Q&A).
+- Adopted nothing else from the release range. Not adopted, with the reasons in
+  the spec: `--write_pae`, the Boltz-2 trajectory hook, OpenDDE guidance, and
+  bf16 diffusion.
+- New `scripts/hw-run.sh` is the safe entry point for hardware runs, with or
+  without gozer. It refuses `scripts/test.sh --hw` unless every chip is granted,
+  because that suite opens all four cards.
+
+**Measured on v1** (all seven targets, same chip and host stack as the v2 runs,
+`docs/measurements-2026-10-13-protenix-v1.md`): warm 2.99-16.1 s, which is
+1.25-3.2x faster than v2. Mean pLDDT is lower than v2 on every target: about 1.5-2
+points on Trp-cage and the DNA duplex, 7 on tRNA, 7-20 on the msa-empty
+proteins, 24 on albumin. FKBP12 with SB3 folds on v1. Recorded streams were re-captured on v1. The site,
+README and handout carry the new numbers, and commit counts were re-measured
+(14,033 total, 13,396 carry his name as author).
+
+**Product findings that need the owner**
+
+- **Confidence trade-off.** The booth is faster and the colors come from
+  lower pLDDT. Whether a visitor notices, and whether the blurbs need to
+  say so, was not assessed.
+- **The dwell caps fell.** `first_frame_s` is earlier on v1, so the cap for DHFR
+  and trypsin drops from 7.0 s to about 2.0-2.3 s. That undoes part of the
+  2026-08-24 "linger longer" request. It was not changed. It needs a decision.
+- **The tRNA "wide open elbow" claim is gone.** The 124-degree corner measured
+  on v2 did not reproduce on v1, so the blurb no longer states it.
+- The visible-collapse floor in
+  `test_live_diffusion_is_visible_for_a_substantial_share_of_each_cycle` moved
+  0.40 -> 0.30, with the measured value recorded beside it.
+- README screenshots were not refreshed. They need the live booth on hardware
+  (`docs/followups.md` has the entry). The README still says they show the live
+  application, so that sentence is currently true of the older images only.
+
+**Two host freezes shaped the session, and neither is root-caused.** The machine
+hard-froze twice on 2026-10-13, at about 10:09 and 11:26 PDT, during
+Tenstorrent hardware runs.
+
+1. A `scripts/test.sh --hw` run under a one-board lease. That suite opens all
+   four cards, so it went outside its lease.
+2. A single-chip scratch measurement through `hw-run.sh` on chip 0 (board
+   924062). The first fold finished, the next never did, gozer showed the
+   board's serial as 0xFFFF, and the host froze about 2.5 minutes later.
+
+Both match the chip ARC/NOC wedge followed by workqueue starvation that
+`~/qb2-debug/` already documents (reports 2026-07-12 to 07-15).
+
+Host stack history, from the kernel log and `/var/log/dpkg.log`. The first
+freeze ran on tt-kmd 2.11.0 (the boot that ended 10:10:57). At 10:45 dpkg moved
+tenstorrent-dkms 2.11.0 -> 2.10.0, together with sfpi 7.83.0 -> 7.67.0; who ran
+that is not recorded. The second freeze (11:26) ran on kmd 2.10.0. At 12:11 dpkg
+moved dkms 2.10.0 -> 2.11.0 again and the box was rebooted. The userspace tools
+were upgraded around 12:10 in the same step: tt-smi 6.1.0 -> 6.7.0, tt-flash
+3.10.0 -> 4.1.0, tt-umd 0.9.8 -> 0.9.12, pyluwen 0.8.5 -> 0.10.0. Firmware
+19.16.0.0 was on the cards at both times as far as known. The identical
+measurement run that had wedged then completed: 28 folds, then 28 and 21 more,
+with no stall.
+
+So the clean run used the same kmd that had frozen the box once. It is one
+observation on a stack where several parts changed together. Which of the
+changes, if any, mattered is unknown, and one clean run does not rule out that
+the wedge was a chance event.
+
+**Notable moments in prompting and review**
+
+- The first diagnosis of the first freeze was incomplete. The all-chips test
+  run is a plausible contributor to that one, and the second freeze happened
+  on a one-chip run, so neither explanation covers both. Both stay recorded
+  above as unexplained.
+- The agreement test that pins the booth model to the commands printed in the
+  docs missed model names that appeared as literals in places it did not scan.
+  The review found them.
+- `hw-run.sh`'s first check for a busy chip used `fuser`, which only sees the
+  caller's own processes and says nothing about another user's. The script now
+  says what `fuser` cannot see and does not report a chip as free on its
+  say-so.
+
+**Lessons**
+
+- A pin bump can remove a model. Read what the release range did to the
+  weights before reading its speed numbers.
+- A suite named `--hw` that opens every card is not covered by a lease for fewer
+  cards. The refusal belongs in the launcher.
+- A measurement taken before and after a stack change, with several parts
+  changed at once, supports only that the run completed.
+
+Suite state at this entry: the non-hardware suites are green apart from the
+environment-dependent failures this file already names.
+
+Added later the same day (15:19-15:30 PDT). After removing `iommu=pt` from the kernel
+command line (IOMMU translation on, so tt-kmd's firmware log forwarding turns on) and a
+reboot, the full four-chip suite ran through `scripts/hw-run.sh --chips 4`: 537 runner
+tests (unit and integration) and the four-worker pool test passed, the JS tests passed,
+and the UI half had 1,614 passed and 2 failed (the two `test_packaging` pin tests that
+read the old `/opt/tt-bio-demo` install). No stall and no kernel-log faults during the
+run. Three SMC regulator warnings (chips 0, 1 and 3) appeared at boot, before the run;
+there is no earlier boot to compare against, since forwarding was off then. This is one
+clean run on a stack where the IOMMU mode, kmd, firmware and tools all changed together.
+The live booth check (plan Task 7 Step 3) was not run.
+
+### tt-bio 0.16.1: pinned, not yet measured (2026-10-14)
+
+Prompted with "newer version of tt-bio we should just upgrade to now. wait for hardware to
+become available and my say so, but do the work underlying first". 0.16.0 (2026-10-13) and
+0.16.1 (2026-10-14) were out the day after the 0.15.2 pin. Done with no device access:
+the pin moved to 0.16.1 on the open PR branch, and `.venvs/venv-runner` has it.
+
+**Findings, all from a static read of both wheels** (details in
+`docs/spike-tt-bio-0.16.md`):
+
+- Dependencies are identical, `ttnn==0.68.0` included, so no SFPI work.
+- All 30 `tt_bio` symbols the repo calls have unchanged signatures, `_read_bio_chains` still
+  returns the 5-tuple, and `edm_sample` still takes `dump_fn`. After the 0.8.0 break, the
+  contract check was a signature comparison with `ast` over both trees, not only an import.
+- Trace replay "on by default for Protenix on Blackhole" is a CLI default. The library's
+  `fold(trace=False)` and `get_device()` are unchanged and `folder.py` passes neither, so
+  the booth stays on the eager path with a per-step `dump_fn`. Not adopted: it is the
+  process shape 0.6.3 fixed a wrong-structure bug for, and the gain is about 1 s.
+- `NORMAL_LEVERS` gained `dit_sdpa`, `dit_chunk` and `conf_bins`. That is the one change
+  on the booth's own fold path, so times and pLDDT can move.
+- Commit counts at v0.16.1 are 14,568 total and 13,931 his. The site and changelog carry
+  them. The model-family count (fifteen) is unchanged.
+
+**Not measured.** Every timing, pLDDT band and `first_frame_s` in the manifest, README,
+site and handout is from 0.15.2. The manifest header and the changelog say so. The
+hardware pass (single-chip re-measure, a 30-frame fold through the tap, one Q&A question,
+the four-chip suite) waits for the owner's go-ahead.
+
+**Slip, recorded:** a `git add -A docs` committed the owner's untracked
+`docs/2026-09-22-test-plan.md` into the PR branch a second time. It was removed in the next
+commit and stays in the branch history (the owner said that is fine).
+
+### tt-bio 0.18.0: pinned and measured (2026-10-15)
+
+Prompted with "let's go ahead and do the native testing before we kick out a release. There's
+another tt-bio update too and we may as well update to it too". By then PyPI had 0.17.0 and
+0.18.0 (both 2026-10-15), so the 0.16.1 pin moved straight to 0.18.0 and the hardware pass
+ran on that.
+
+- Static read of 0.18.0 against 0.16.1 (details in `docs/spike-tt-bio-0.16.md`): same
+  `ttnn==0.68.0`, same signatures for every symbol the repo calls, `weights.py`,
+  `protenix_data.py`, `capabilities.py` and `main.py` byte-identical. Changes on the fold path:
+  Protenix gets its own lever set (`transition_ws`, `ws_l1acc`), the shared set gains `opm_jd`,
+  and the diffusion pair-conditioning matmuls no longer force a core grid (a multicast deadlock
+  first seen on Protenix-v1 at 512+ tokens; upstream tt-metal#58653).
+- Hardware, all through `scripts/hw-run.sh`: one chip, one resident `Folder`, four passes over
+  the seven targets, pass 1 excluded. Every target is 0.0-0.1 s faster than on 0.15.2, albumin
+  0.7 s faster; pLDDT bands overlap, so thumbnails stay. All 28 folds returned 30 frames and no
+  error. tt-bio prints `TT_THROW` L1-clash lines during a handled "retrying narrower" retry
+  in the trimul kernel; those are not failures.
+- Four-chip suite (`scripts/hw-run.sh --chips 4 -- scripts/test.sh --hw -q`): runner half 540
+  passed (including the on-device nesso1 Q&A test), four-worker pool test passed, JS tests
+  passed, UI half 1,624 passed and 2 failed (the two `/opt` pin tests, 7/7 with
+  `TT_BIO_DEMO_PREFIX=/nonexistent`). No stall.
+- Refreshed to the 0.18.0 numbers: manifest `expected_s` and `first_frame_s`, README, INSTALL,
+  `docs/cold-start.md`, the site cards and commit counts (15,129 total, 14,492 his), the
+  one-pager (rebuilt and looked at), the changelog. The v1 against v2 comparison and the cold
+  first-fold range (22.8-74.7 s) are still the 0.15.2 measurements and are labelled so.
+- The site test `test_the_docs_site_cards_say_what_the_manifest_says` formats whole numbers with
+  `:g`, so a 3.0 s fold must read "3 s" on its card (Trp-cage and DNA both do now).
+- Live booth check, later the same day: `scripts/run-demo.sh` through `hw-run.sh --chips 4`, quad
+  by default, about four minutes, 93 folds across all seven targets with no errors, retries or
+  degraded states, then SIGINT to the process group for a clean stop. `refresh-screenshots.sh`
+  re-captured README images 01-04; 06 is a Spectacle frame from the booth run. 05, 07, 08 and the
+  loop video were not re-captured. The UI still spells "Colour" in the confidence legend (the US
+  English pass covered literature only). Version bumped to 0.8.1 (0.8.0 was never tagged; main
+  is 0.7.0). `tests/fixtures/streams/capture_real_fold.py` now asks for 4 trunk cycles
+  and the checked-in capture still has 10 (`docs/followups.md`).
+- Instrument lesson: a Monitor whose loop ends on `pgrep -f measure.py` never ends, because the
+  monitor's own command line contains that string. It kept re-emitting its last events for the
+  rest of the session. Match a PID file or use a one-shot `until` waiter.
+
 ## Conventions
 
 - **Keep the README's screenshots current.** The README claims every image on it is the

@@ -509,7 +509,7 @@ def test_pinning_the_weights_dir_makes_the_resolver_agree_with_it(tmp_path):
     never put there -- so `run-demo.sh --weights /mnt/weights` on a box whose
     ~/.boltz is empty passed preflight against /mnt/weights, started, and then
     had the first fold resolve ~/.boltz, find nothing, and try to download
-    3.7 GB. At an offline venue it simply fails.
+    3.3 GB. At an offline venue it simply fails.
 
     (The disagreement predates the resolver: folder.py hardcoded
     `Path.home()/".boltz"` and ignored the flag just as completely. What is

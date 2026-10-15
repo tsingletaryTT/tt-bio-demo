@@ -609,7 +609,7 @@ def test_the_weights_postinst_is_posix_sh():
 
 
 def test_a_noninteractive_install_downloads_nothing(container):
-    """3.7 GB must never start on its own. Behavioural, in a container."""
+    """3.3 GB must never start on its own. Behavioural, in a container."""
     result = container.install("tt-bio-demo-weights",
                                env={"DEBIAN_FRONTEND": "noninteractive"})
     assert result.installed, result.log
@@ -633,7 +633,7 @@ def test_the_weights_postinst_uses_the_tt_bio_api_that_actually_exists():
     existed. What it checks now is the replacement contract:
     `weights.fetch(key, root=...)` plus the surviving `download_mols`.
 
-    The KEY is checked too, not just the function. `fetch("protenix-v2")`
+    The KEY is checked too, not just the function. `fetch("protenix-v1")`
     fails at install time and only there if that row is ever renamed, and a
     key is a string the type system cannot help with -- which makes it
     exactly the sort of thing this test exists to catch.
@@ -689,6 +689,27 @@ def test_the_weights_postinst_uses_the_tt_bio_api_that_actually_exists():
                 for n in [call.args[0]] if isinstance(n, ast.Constant)}
     assert declared, "could not find any Artifact(...) rows in tt_bio/weights.py"
     import re
+    assert 'weights.fetch("protenix-v1"' in postinst, \
+        "the postinst must fetch the booth model under its real registry key"
+    # The v1 checkpoint lives at ${CACHE}/protenix/model_v0.5.0.pt, so the flat
+    # `${CACHE}/<name>` table cannot verify it. It is verified in Python.
+    flat = postinst.split('ARTIFACTS="', 1)[1].split('"', 1)[0]
+    assert "protenix" not in flat and "9ea20b0a" not in flat, (
+        "the checkpoint is back in the flat ARTIFACTS table, which would look "
+        f"for it at ${{CACHE}}/<name>:\n{flat}")
+    assert "9ea20b0aba42f2256711da1d0cd081510a4b291e64375bff6b70ced70b87a5f1" in postinst, \
+        "the checkpoint's sha256 is no longer checked anywhere in the postinst"
+    # The comparison has to be wired to the right file and has to fail the install.
+    # Asserting only that the sha string appears would pass with the check removed.
+    assert re.search(r'^protenix_path = weights\.fetch\("protenix-v1"', postinst, re.M), \
+        "the postinst no longer binds the fetched checkpoint path to protenix_path"
+    assert re.search(r"_protenix_actual = _sha256\(protenix_path\)", postinst), \
+        "the postinst no longer hashes the path weights.fetch returned"
+    mismatch = re.search(
+        r"if _protenix_actual != PROTENIX_V1_SHA256:\n(?P<body>(?:[ ]+.*\n)+)", postinst)
+    assert mismatch, "the postinst no longer compares the checkpoint hash to its recorded value"
+    assert "raise SystemExit(1)" in mismatch.group("body"), \
+        "a checkpoint hash mismatch no longer exits nonzero in the postinst"
     for key in re.findall(r'weights\.fetch\(\s*"([^"]+)"', postinst):
         assert key in declared, (
             f'postinst fetches artifact "{key}", which is not a row in '
@@ -763,7 +784,7 @@ def test_the_postinst_esm2_prewarm_restricts_the_download_to_the_files_it_needs(
     model.safetensors (2.6 GB) AND pytorch_model.bin (2.6 GB) AND
     tf_model.h5 (2.6 GB), ~7.3 GB total, when the featurizer only ever
     reads model.safetensors plus the small json/txt config/tokenizer
-    files. Every "~2.6 GB"/"~3.2 GB"/"~6.9 GB" figure this project states
+    files. Every "~2.6 GB"/"~3.2 GB"/"~6.5 GB" figure this project states
     (the debconf prompt, README, INSTALL.md, scripts/setup-venvs.sh) was
     off by the ~4.7 GB the two unwanted formats cost without this.
 
@@ -867,9 +888,14 @@ def test_the_affinity_weights_python_block_never_raises_for_nesso1_or_esm2():
 def test_the_prompt_states_the_new_total_size():
     """The SAME debconf question now triggers protenix-v2 + mols + nesso1 +
     nesso1-ccd + the ESM-2 encoder, so its stated size must be the real
-    total a "yes" answer downloads, not just protenix-v2/mols's 3.7 GB."""
+    total a "yes" answer downloads, not just protenix-v2/mols's 3.3 GB."""
     t = _weights("templates")
-    assert "6.9 GB" in t, f"the prompt still states the old, incomplete size:\n{t}"
+    # 6.5 GB derivation (tt_bio.weights approx_bytes, tt-bio 0.15.2, decimal GB):
+    #   protenix-v1 1,474,265,486 + mols 1,855,662,080          = 3.33 GB (fold)
+    #   nesso1 165,426,752 + nesso1-ccd 412,923,533             = 0.58 GB
+    #   ESM-2 encoder, no registry row, ~2.6 GB (stated approximation)
+    #   3.33 + 0.58 + 2.6 = 6.51 GB, printed as 6.5; fold 3.3, Q&A extra 3.2.
+    assert "6.5 GB" in t, f"the prompt still states the old, incomplete size:\n{t}"
     assert "nesso1" in t.lower() or "affinity" in t.lower(), (
         "the prompt does not mention what the extra download is for")
 
@@ -1328,7 +1354,7 @@ def test_helpers_resolves_the_weights_cache_through_the_shared_resolver(tmp_path
 
     $TT_BIO_CACHE specifically, because the postinst used to read only
     $BOLTZ_CACHE -- so on a host using the variable tt-bio actually prefers it
-    downloaded 3.7 GB into a directory neither a fold nor the doctor would
+    downloaded 3.3 GB into a directory neither a fold nor the doctor would
     ever look in."""
     prefix = tmp_path / "opt"
     (prefix / "scripts").mkdir(parents=True)

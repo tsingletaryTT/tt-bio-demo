@@ -455,7 +455,7 @@ def test_every_diagnostics_label_is_legible_in_every_line_kind():
     panel = DiagnosticsPanel(visible_lines=8)
     diag_log = DiagnosticsLog(clock=lambda: 1_754_000_000.25)   # banner: teach
     diag_log.note_event({"type": "job_start", "target_id": "trpcage", "card": 0,
-                         "n_residues": 20, "model": "protenix-v2", "job_id": "j"})
+                         "n_residues": 20, "model": "protenix-v1", "job_id": "j"})
     diag_log.note_event({"type": "stage", "stage": "diffusion", "frac": 0.55})
     panel.refresh(diag_log)
     _assert_every_label_is_legible(panel, context="event + mark + teach")

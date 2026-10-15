@@ -3,7 +3,7 @@
 `playlist/manifest.yaml` is a YAML list of targets. Each entry names an
 `input` fold spec (a tt-bio job YAML, e.g. `examples/trpcage_no_msa.yaml`),
 plus the copy the gallery card shows a visitor (`name`, `blurb`), and
-optionally `model` (defaults to `protenix-v2`, this project's default model
+optionally `model` (defaults to `protenix-v1`, this project's default model
 everywhere else), `thumbnail` (a picture of a real fold of this target,
 built by `scripts/make-thumbnails.py`; absent entries render a placeholder
 -- see `ui/gallery.py`), `tagline` (one short sentence for the caption under
@@ -88,7 +88,7 @@ import yaml
 # Matches runner/preflight.py's MODEL and this project's other
 # default-model references; kept as a module-level constant rather than a
 # literal so both stay in sync if it's ever repointed to protenix-v3.
-DEFAULT_MODEL = "protenix-v2"
+DEFAULT_MODEL = "protenix-v1"
 
 # Every field an entry must supply explicitly -- no sane cross-target
 # default exists for any of these (a made-up name or blurb would be worse
@@ -389,6 +389,17 @@ def load_playlist(path):
                     f"below 'expected_s' ({expected_s}); the slow end of a "
                     f"range cannot be faster than the fast end")
 
+        # The booth folds with exactly one model and nothing downstream reads
+        # `model`, so an entry naming another one would silently fold on
+        # DEFAULT_MODEL while its own data claimed otherwise. Refuse it here.
+        # Absent, null and "" mean "unspecified". Anything else, including
+        # falsy values such as false, 0 or [], must be exactly DEFAULT_MODEL.
+        entry_model = entry.get("model")
+        if entry_model not in (None, "") and entry_model != DEFAULT_MODEL:
+            raise PlaylistError(
+                f"{entry_id}: model {entry_model!r} is not available -- this "
+                f"booth folds with {DEFAULT_MODEL}")
+
         thumbnail = entry.get("thumbnail")
         thumbnail_path = (manifest_dir / thumbnail).resolve() if thumbnail else None
 
@@ -403,7 +414,7 @@ def load_playlist(path):
         targets.append(Target(
             id=entry_id,
             input_path=(manifest_dir / entry["input"]).resolve(),
-            model=entry.get("model") or DEFAULT_MODEL,
+            model=DEFAULT_MODEL,
             name=entry["name"],
             blurb=entry["blurb"],
             expected_s=expected_s,

@@ -57,7 +57,7 @@ def _target(id="t", name="Trp-cage", blurb="A small fast-folding protein.",
     return Target(
         id=id,
         input_path=input_path or Path("/nonexistent/input.yaml"),
-        model="protenix-v2",
+        model="protenix-v1",
         name=name,
         blurb=blurb,
         expected_s=expected_s,

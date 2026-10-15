@@ -41,7 +41,7 @@ work around it.
 - The GTK4 / OpenGL system libraries the UI needs (`python3-gi`, `gir1.2-gtk-4.0`, `libgl1`, …)
 - tt-bio itself, or the torch/ttnn stack it sits on
 - The SFPI RISC-V cross-toolchain tt-bio's kernels compile against
-- The model weights (~6.9 GB: protenix-v2 + CCD for folding, nesso1 + its own
+- The model weights (~6.5 GB: Protenix v1 + CCD for folding, nesso1 + its own
   CCD dict + the ESM-2 encoder for affinity Q&A)
 - The application
 
@@ -101,7 +101,7 @@ the opposite of what this packaging is for.
 | Prompt | Default | What to answer on a post-`tt-installer` box |
 |---|---|---|
 | `Run "tt-bio install-deps" now?` | No | **No.** `tt-installer` has already installed the Tenstorrent system packages and kernel modules this would fetch. Saying yes re-runs a kernel-module installer you do not need. |
-| `Download the model weights now (6.9 GB)?` | No | **No here, yes in step 3.** The download is better run deliberately, where you can watch it, than under the dpkg lock. (A *source* install has no such lock, so `scripts/setup-venvs.sh` fetches them by default; `--skip-weights` opts out.) The 6.9 GB is protenix-v2 + CCD (3.7 GB, required to fold) plus nesso1 + its own CCD dict + the ESM-2 encoder (3.2 GB, only needed for affinity Q&A — off by default, and a single-chip booth never touches them regardless, and a failure fetching them does not fail the install). |
+| `Download the model weights now (6.5 GB)?` | No | **No here, yes in step 3.** The download is better run deliberately, where you can watch it, than under the dpkg lock. (A *source* install has no such lock, so `scripts/setup-venvs.sh` fetches them by default; `--skip-weights` opts out.) The 6.5 GB is Protenix v1 + CCD (3.3 GB, required to fold) plus nesso1 + its own CCD dict + the ESM-2 encoder (3.2 GB, only needed for affinity Q&A — off by default, and a single-chip booth never touches them regardless, and a failure fetching them does not fail the install). |
 
 The install finishes by printing `ONE STEP LEFT` and the exact command for step 2. That is
 expected — the postinst deliberately does not build the Python environments while apt holds
@@ -145,7 +145,7 @@ sharing a `site-packages`:
 | venv | Built how | Holds |
 |---|---|---|
 | `venv-ui` | system `python3` **with** `--system-site-packages` | PyGObject (GTK4), gemmi, PyOpenGL, numpy |
-| `venv-runner` | isolated, no system packages | torch, ttnn, tt-bio **0.8.0** (pinned release), vendored SFPI |
+| `venv-runner` | isolated, no system packages | torch, ttnn, tt-bio **0.18.0** (pinned release), vendored SFPI |
 
 Note `--dev` is **not** passed. That flag adds pytest to `venv-runner`, and test tooling is
 dead weight and extra supply-chain surface on a booth machine.
@@ -170,16 +170,20 @@ A second run without `--force` is a ~0.3–0.5 s no-op, so re-running to confirm
 sudo dpkg-reconfigure tt-bio-demo-weights      # answer Yes this time
 ```
 
-That pulls five artifacts totalling ~6.9 GB through tt-bio's own Hugging Face client (or,
+That pulls five artifacts totalling ~6.5 GB (1.47 + 1.86 + 0.165 + 0.413 + about 2.6 GB; the first four
+are tt-bio's registry sizes, the ESM-2 figure is an approximation from the Hugging Face repo) through tt-bio's own Hugging Face client (or,
 for the last three, straight through `huggingface_hub` — see below):
 
-- `protenix-v2.pt` — 1.86 GB — **required to fold**
-- `mols` — the CCD molecule library, 1.85 GB, unpacked into a directory beside it —
+- `model_v0.5.0.pt` (Protenix v1) — 1.47 GB — **required to fold**
+- `mols` — the CCD molecule library, 1.86 GB, unpacked into a directory beside it —
   **required to fold**
 - nesso1's affinity head — 165 MB — needed to answer affinity questions
 - nesso1's own CCD molecule dict — 413 MB — needed to answer affinity questions
 - the ESM-2 protein-language-model encoder nesso1's featurizer runs — 2.6 GB — needed to
   answer affinity questions
+
+The booth folds with Protenix v1. tt-bio does not download Protenix v2, because its weights may
+not be redistributed without the rights holder's consent.
 
 The download is **resumable**: an interrupted attempt continues rather than restarting. The
 postinst verifies what landed and prints `weights present and verified. The booth can fold
@@ -202,7 +206,7 @@ which is what to reach for when debconf is wedged, when you are installing **fro
 rather than from the .deb, or when you just want to watch the transfer:
 
 ```bash
-/opt/tt-bio-demo/.venvs/venv-runner/bin/tt-bio weights --download protenix-v2
+/opt/tt-bio-demo/.venvs/venv-runner/bin/tt-bio weights --download protenix-v1
 ```
 
 From a source checkout the path is `.venvs/venv-runner/bin/tt-bio` instead — and
@@ -211,7 +215,7 @@ normally needs no separate weights step at all. See the README's
 [Quick start](README.md#quick-start).
 
 To see what is on the machine without downloading anything, drop the flag:
-`tt-bio weights protenix-v2` prints one line per artifact with `present` / `missing` /
+`tt-bio weights protenix-v1` prints one line per artifact with `present` / `missing` /
 `corrupt` and the path it checked.
 
 **Where they land**: for a **packaged** install (this document), a fixed, non-home-relative
@@ -250,7 +254,7 @@ re-run `sudo dpkg-reconfigure tt-bio-demo-weights` so the postinst fetches to th
 /opt/tt-bio-demo/scripts/doctor.sh --fix    # also perform the safe repairs
 ```
 
-Then prove it end to end with the cheapest real fold — Trp-cage, 20 residues, ~4.4 s warm:
+Then prove it end to end with the cheapest real fold — Trp-cage, 20 residues, ~3.0 s warm on Protenix v1:
 
 ```bash
 /opt/tt-bio-demo/scripts/run-demo.sh --targets trpcage
@@ -259,10 +263,11 @@ Then prove it end to end with the cheapest real fold — Trp-cage, 20 residues, 
 A structure condensing out of a point cloud on real silicon is the only acceptance test
 that counts. `Ctrl-C` in the terminal tears the daemon down cleanly.
 
-> **Budget real time for the first fold — about a minute and a half per target.** Every fold
-> time quoted in this project is measured **warm**. Measured 2026-08-17 on an empty kernel
-> cache: Trp-cage's first fold takes **94.5 s** (of which ~83 s is kernel compilation) against
-> **9.4 s** warm. Full numbers and method in [`docs/cold-start.md`](docs/cold-start.md).
+> **Budget real time for the first fold — up to about 75 s per target.** Every fold
+> time quoted in this project is measured **warm**. Measured 2026-10-13 with Protenix v1: the
+> first fold of each target took **22.8–74.7 s** against **3.0–15.4 s** warm. Full numbers in
+> [`docs/measurements-2026-10-13-protenix-v1.md`](docs/measurements-2026-10-13-protenix-v1.md);
+> the older empty-cache method is in [`docs/cold-start.md`](docs/cold-start.md).
 >
 > That is per *target*, and the seven playlist targets share kernels unevenly, so the cost of
 > warming the whole playlist is not simply seven times it — and has not been measured. Do not do
@@ -272,6 +277,28 @@ that counts. `Ctrl-C` in the terminal tears the daemon down cleanly.
 > cache." **It does not** — the postinst contains no pre-warm code, only weight download and
 > verification. Until that is implemented, warming the cache means running step 4's fold
 > once per target you intend to show.
+
+### Running the hardware tests
+
+On a checkout, the hardware tests open Tenstorrent chips. Run them through `scripts/hw-run.sh`,
+which refuses `test.sh --hw`, `pytest tests/integration` and `test_four_workers.py` unless you ask
+for every chip on the box, because those open every card.
+
+```bash
+# The whole hardware suite. It opens every card and is the most expensive run.
+scripts/hw-run.sh --chips <all chips on the box> --reason "why" -- scripts/test.sh --hw
+
+# One hardware test file, on one chip.
+scripts/hw-run.sh --chips 1 --one-chip --reason "why" -- \
+    .venvs/venv-runner/bin/python3 -m pytest tests/integration/<file> -p no:cacheprovider
+```
+
+With tt-gozer installed, `hw-run.sh` takes a lease for the chips you ask for (`--one-chip` then
+narrows `TT_VISIBLE_DEVICES` to the first chip granted). Without gozer it checks every card and
+stops if any device node is held by a process, then pins `TT_VISIBLE_DEVICES` to the first N chips.
+That check sees only processes you own, nothing is leased, and nothing fences other users. The
+script never resets a chip. Do not run hardware commands in the foreground of an agent tool: a
+tool timeout that kills a fold mid-run can wedge a board.
 
 ---
 
@@ -371,8 +398,8 @@ published unless it passes.
 and script flags were read from source and are individually tested, but **no full
 clean-machine install has been run against a freshly imaged QB2** — CI has no Tenstorrent
 hardware and never will. Expect step 2 (the venv build, which needs network and the SFPI
-toolchain) and step 3 (6.9 GB of weights) to be where a real first run finds something.
+toolchain) and step 3 (6.5 GB of weights) to be where a real first run finds something.
 
 **Budget the first fold.** Step 4's fold on a machine that has never folded that target costs
-~94.5 s rather than the warm ~9 s — see [`docs/cold-start.md`](docs/cold-start.md). That is
-measured, not estimated.
+22.8–74.7 s rather than the warm 3.0–15.4 s — see
+[`docs/measurements-2026-10-13-protenix-v1.md`](docs/measurements-2026-10-13-protenix-v1.md).

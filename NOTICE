@@ -60,9 +60,12 @@ pip at setup time; this repository ships none of their code.
     Pinned to a release tag, never `main`. The pin lives in one variable at
     the top of scripts/setup-venvs.sh.
 
-  * Protenix-v2 model weights — Apache-2.0, downloaded from ByteDance's
-    Hugging Face mirror on first use. Not shipped here; the venue is offline
-    at show time, not at install time.
+  * Protenix v1 model weights (ByteDance's Protenix v0.5.0 checkpoint) —
+    Apache-2.0. tt-bio fetches them on first use, trying the moritztng/
+    protenix-v0.5.0 Hugging Face mirror first and ByteDance's own release URL
+    after it. Not shipped here; the venue is offline at show time, so they are
+    fetched at install time. tt-bio does not download Protenix v2, because its
+    weights may not be redistributed without the rights holder's consent.
 
 tt-bio bundles further third-party code of its own (ESMFold2 host-side
 reference, the OpenFold3 data pipeline, BoltzGen) — see that project's NOTICE
@@ -77,7 +80,8 @@ hardware. The structure prediction is not ours:
 
   * Boltz-2 / Boltz-1 — Wohlwend, Corso, Passaro et al. The code tt-bio is
     built on.
-  * Protenix-v2 — ByteDance. The model this booth folds with by default.
+  * Protenix v1 (the v0.5.0 checkpoint) — ByteDance. The model this booth folds
+    with by default.
   * OpenFold3 — the OpenFold Consortium.
   * tt-bio — Moritz Thüning (github.com/moritztng/tt-bio), which is what makes
     any of it run on Tenstorrent silicon.

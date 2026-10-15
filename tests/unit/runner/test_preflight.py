@@ -13,7 +13,9 @@ def _rmtree(path):
 def _ready(tmp_path):
     weights = tmp_path / "weights"
     weights.mkdir()
-    (weights / "protenix-v2.pt").write_bytes(b"x")
+    # The v1 checkpoint lives in a subdirectory of the cache, not at its top.
+    (weights / "protenix").mkdir()
+    (weights / "protenix" / "model_v0.5.0.pt").write_bytes(b"x")
     # The EXTRACTED molecule library, which is what a fold loads. A healthy
     # cache has this directory; the mols.tar it came from may or may not still
     # be there (tt-bio discards it, and `tt-bio weights --prune` removes it).
@@ -34,10 +36,19 @@ def test_a_complete_installation_passes(tmp_path):
 
 def test_missing_weights_are_reported_specifically(tmp_path):
     weights, playlist = _ready(tmp_path)
-    (weights / "protenix-v2.pt").unlink()
+    (weights / "protenix" / "model_v0.5.0.pt").unlink()
     result = run_preflight(weights, playlist, check_tap=False, card_count=4)
     assert not result.ok
-    assert any("protenix-v2.pt" in m for m in result.missing)
+    assert any("protenix-v1" in m for m in result.missing)
+
+
+def test_a_cache_with_only_the_retired_v2_checkpoint_is_reported_missing(tmp_path):
+    weights, playlist = _ready(tmp_path)           # _ready writes the v1 file
+    (weights / "protenix" / "model_v0.5.0.pt").unlink()
+    (weights / "protenix-v2.pt").write_bytes(b"x")  # only the retired model's file is present
+    result = run_preflight(weights, playlist, check_tap=False, card_count=4)
+    assert not result.ok
+    assert any("protenix-v1" in m for m in result.missing)
 
 
 def test_an_empty_playlist_is_reported(tmp_path):
@@ -57,7 +68,7 @@ def test_no_cards_is_reported(tmp_path):
 
 def test_every_problem_is_reported_at_once_not_just_the_first(tmp_path):
     weights, playlist = _ready(tmp_path)
-    (weights / "protenix-v2.pt").unlink()
+    (weights / "protenix" / "model_v0.5.0.pt").unlink()
     (playlist / "trpcage.yaml").unlink()
     result = run_preflight(weights, playlist, check_tap=False, card_count=0)
     assert len(result.missing) >= 3, "an operator should see the whole list in one run"
@@ -112,7 +123,7 @@ def test_a_tap_check_error_other_than_tapunavailable_is_reported_not_raised(tmp_
 
     monkeypatch.setattr(mod, "check_tap_supported", broken)
     weights, playlist = _ready(tmp_path)
-    (weights / "protenix-v2.pt").unlink()
+    (weights / "protenix" / "model_v0.5.0.pt").unlink()
     result = run_preflight(weights, playlist, check_tap=True, card_count=0)
     assert not result.ok
     assert any("trajectory" in m.lower() for m in result.missing)
@@ -135,7 +146,7 @@ def test_default_card_count_samples_tt_smi(tmp_path, monkeypatch):
 
 def test_not_ready_event_carries_the_full_missing_list(tmp_path):
     weights, playlist = _ready(tmp_path)
-    (weights / "protenix-v2.pt").unlink()
+    (weights / "protenix" / "model_v0.5.0.pt").unlink()
     result = run_preflight(weights, playlist, check_tap=False, card_count=0)
     event = not_ready_event(result)
     assert event["type"] == "not_ready"
@@ -145,8 +156,8 @@ def test_not_ready_event_carries_the_full_missing_list(tmp_path):
 # ---------------------------------------------------------------------------
 # The molecule library.
 #
-# REQUIRED_WEIGHTS was ("protenix-v2.pt",) -- the checkpoint only. But
-# protenix-v2 loads the CCD molecule library too (tt-bio's registry lists
+# REQUIRED_WEIGHTS was a checkpoint-only tuple -- the checkpoint only. But
+# the booth's model loads the CCD molecule library too (tt-bio's registry lists
 # `mols` under that model, and runner/folder.py calls download_mols
 # alongside the checkpoint fetch), so a cache holding the checkpoint and no
 # molecules passed preflight, printed "preflight: ok", and then died on the
@@ -197,7 +208,7 @@ def test_the_extracted_directory_satisfies_it_not_the_tar(tmp_path):
 
 def test_what_preflight_requires_is_what_the_pinned_tt_bio_says_it_needs():
     """Derived from tt-bio's registry, not hand-listed, so a release that adds
-    a third artifact to protenix-v2 is picked up here instead of surfacing as
+    a third artifact to the booth's model is picked up here instead of surfacing as
     a fold that dies on a machine preflight called ready.
 
     Hand-listing is what caused the bug this section exists for: `mols` was
@@ -205,11 +216,11 @@ def test_what_preflight_requires_is_what_the_pinned_tt_bio_says_it_needs():
     moved with it."""
     from tt_bio import weights as tt_weights
 
-    from runner.preflight import required_weights
+    from runner.preflight import MODEL, required_weights
 
-    want = {a.key for a in tt_weights.artifacts_for("protenix-v2")}
+    want = {a.key for a in tt_weights.artifacts_for(MODEL)}
     got = {label for label, _path in required_weights("/nonexistent")}
-    assert got == want, f"preflight requires {got}, tt-bio says protenix-v2 needs {want}"
+    assert got == want, f"preflight requires {got}, tt-bio says {MODEL} needs {want}"
 
 
 def test_a_missing_weight_reads_as_english_not_as_a_traceback(tmp_path):
@@ -230,7 +241,7 @@ def test_a_missing_weight_reads_as_english_not_as_a_traceback(tmp_path):
 
 def test_a_relocated_artifact_is_found_where_it_actually_lives(tmp_path, monkeypatch):
     """tt-bio lets an operator point ONE artifact somewhere else --
-    $PROTENIX_CKPT / $TT_BIO_PROTENIX_V2 for the checkpoint, $TT_BIO_MOLS for
+    $PROTENIX_V1_CKPT / $TT_BIO_PROTENIX_V1 for the checkpoint, $TT_BIO_MOLS for
     the molecule library -- and `weights.resolve()` honours that while
     `Artifact.dest()` does not.
 
@@ -242,10 +253,10 @@ def test_a_relocated_artifact_is_found_where_it_actually_lives(tmp_path, monkeyp
     weights, playlist = _ready(tmp_path)
     elsewhere = tmp_path / "big-disk"
     elsewhere.mkdir()
-    moved = elsewhere / "protenix-v2.pt"
+    moved = elsewhere / "model_v0.5.0.pt"
     moved.write_bytes(b"x")
-    (weights / "protenix-v2.pt").unlink()          # not in the cache any more
-    monkeypatch.setenv("TT_BIO_PROTENIX_V2", str(moved))
+    (weights / "protenix" / "model_v0.5.0.pt").unlink()   # not in the cache any more
+    monkeypatch.setenv("PROTENIX_V1_CKPT", str(moved))
 
     result = run_preflight(weights, playlist, check_tap=False, card_count=4)
     assert result.ok, result.missing

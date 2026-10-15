@@ -49,6 +49,29 @@ def _tt_bdfs(root="/sys/bus/pci/devices"):
     return out
 
 
+def pool_visibility_problem(visible_devices, card_count):
+    """Why a pool test that opens EVERY card must not run with this visibility,
+    or None when it may.
+
+    Pure: takes the TT_VISIBLE_DEVICES value (None when unset) and the number of
+    Tenstorrent cards on the box, and touches no device. A value that is unset
+    or names at least `card_count` DISTINCT PCI addresses is fine. A value naming
+    fewer means the run holds a lease on fewer chips than the test will open.
+    Entries are compared case-insensitively and repeats count once, so
+    `a,a,a,a` is one device, not four.
+    """
+    if visible_devices is None or not visible_devices.strip():
+        return None
+    named = {part.strip().lower() for part in visible_devices.split(",")
+             if part.strip()}
+    if len(named) >= card_count:
+        return None
+    return (f"TT_VISIBLE_DEVICES names {len(named)} of this box's {card_count} "
+            "Tenstorrent cards. The four-worker pool test opens every card and "
+            "needs a lease on every chip. Run it through "
+            f"`scripts/hw-run.sh --chips {card_count} --reason ... -- ...`.")
+
+
 @pytest.fixture(scope="session")
 def tt_cards_present():
     """Skip unless this box has Tenstorrent cards. Says nothing about how many

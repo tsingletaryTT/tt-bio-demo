@@ -134,7 +134,8 @@ def test_weights_are_checked_by_size_not_merely_existence(tmp_path):
     existence check calls that healthy."""
     cache = tmp_path / ".boltz"
     cache.mkdir()
-    (cache / "protenix-v2.pt").write_bytes(b"")
+    (cache / "protenix").mkdir()
+    (cache / "protenix" / "model_v0.5.0.pt").write_bytes(b"")
     (cache / "mols.tar").write_bytes(b"")
     r = _sh("doctor_check_weights", BOLTZ_CACHE=str(cache))
     assert r.returncode != 0, "zero-byte weights reported as present"
@@ -204,7 +205,7 @@ def test_an_unpacked_molecule_library_is_healthy_even_with_no_tar(tmp_path):
     cache = tmp_path / ".boltz"
     (cache / "mols").mkdir(parents=True)
     (cache / "mols" / "ALA.pkl").write_bytes(b"x")
-    _sized(cache / "protenix-v2.pt", 1_100_000_000)
+    _sized(cache / "protenix" / "model_v0.5.0.pt", 1_100_000_000)
     r = _sh("doctor_check_weights", BOLTZ_CACHE=str(cache), TT_BIO_CACHE="",
             TT_BIO_DEMO_PREFIX=str(_prefix_without_a_runner_venv(tmp_path)))
     assert r.returncode == 0, f"healthy booth reported broken:\n{r.stdout}{r.stderr}"
@@ -215,7 +216,7 @@ def test_a_tar_with_no_unpacked_library_is_not_ready(tmp_path):
     The tar is present, the directory is not, and a fold cannot run."""
     cache = tmp_path / ".boltz"
     cache.mkdir(parents=True)
-    _sized(cache / "protenix-v2.pt", 1_100_000_000)
+    _sized(cache / "protenix" / "model_v0.5.0.pt", 1_100_000_000)
     _sized(cache / "mols.tar", 1_900_000_000)
     r = _sh("doctor_check_weights", BOLTZ_CACHE=str(cache), TT_BIO_CACHE="",
             TT_BIO_DEMO_PREFIX=str(_prefix_without_a_runner_venv(tmp_path)))
@@ -228,7 +229,7 @@ def test_an_empty_molecule_directory_is_not_a_library(tmp_path):
     test, or this fix would just move the false-healthy report."""
     cache = tmp_path / ".boltz"
     (cache / "mols").mkdir(parents=True)
-    _sized(cache / "protenix-v2.pt", 1_100_000_000)
+    _sized(cache / "protenix" / "model_v0.5.0.pt", 1_100_000_000)
     r = _sh("doctor_check_weights", BOLTZ_CACHE=str(cache), TT_BIO_CACHE="",
             TT_BIO_DEMO_PREFIX=str(_prefix_without_a_runner_venv(tmp_path)))
     assert r.returncode != 0, f"empty mols/ called ready:\n{r.stdout}"
@@ -252,7 +253,7 @@ def test_it_names_a_command_that_actually_downloads_the_weights(tmp_path, mode):
             TT_BIO_DEMO_PREFIX=str(_prefix_without_a_runner_venv(tmp_path, mode)))
     out = r.stdout + r.stderr
     assert "tt-bio weights --download" in out, f"no download command offered:\n{out}"
-    assert "protenix-v2" in out, f"command does not name the model:\n{out}"
+    assert "tt-bio weights --download protenix-v1" in out, f"command does not name the model:\n{out}"
 
 
 def test_the_packaged_install_still_leads_with_dpkg_reconfigure(tmp_path):
@@ -283,7 +284,7 @@ def test_tt_bios_own_verdict_is_preferred_when_venv_runner_exists(tmp_path):
     stub.mkdir(parents=True)
     py = stub / "python3"
     py.write_text("#!/bin/sh\n"
-                  "echo 'protenix-v2 corrupt'\n"
+                  "echo 'protenix-v1 corrupt'\n"
                   "echo 'mols present'\n")
     py.chmod(0o755)
 
@@ -291,7 +292,7 @@ def test_tt_bios_own_verdict_is_preferred_when_venv_runner_exists(tmp_path):
     (cache / "mols").mkdir(parents=True)
     (cache / "mols" / "ALA.pkl").write_bytes(b"x")
     # Big enough to sail through the size floor: only tt-bio can catch this.
-    _sized(cache / "protenix-v2.pt", 1_100_000_000)
+    _sized(cache / "protenix" / "model_v0.5.0.pt", 1_100_000_000)
 
     r = _sh("doctor_check_weights", BOLTZ_CACHE=str(cache), TT_BIO_CACHE="",
             TT_BIO_DEMO_PREFIX=str(prefix))
@@ -324,10 +325,10 @@ def test_tt_bios_present_verdict_clears_a_path_the_doctor_cannot_see(tmp_path):
     nothing cleared one, so the comment claiming "its verdict wins where it
     has one" was false in the direction that matters.
 
-    tt-bio lets an operator relocate a SINGLE artifact -- $PROTENIX_CKPT /
-    $TT_BIO_PROTENIX_V2 for the checkpoint, $TT_BIO_MOLS for the molecule
-    library -- and then `tt-bio weights` prints `present [$PROTENIX_CKPT]` and
-    every fold works. The doctor, looking only at `<cache>/protenix-v2.pt`,
+    tt-bio lets an operator relocate a SINGLE artifact -- $PROTENIX_V1_CKPT /
+    $TT_BIO_PROTENIX_V1 for the checkpoint, $TT_BIO_MOLS for the molecule
+    library -- and then `tt-bio weights` prints `present [$PROTENIX_V1_CKPT]` and
+    every fold works. The doctor, looking only at `<cache>/protenix/model_v0.5.0.pt`,
     reported it missing and exited 1. That is the same false alarm as the
     mols.tar one this change set out to remove, one layer up.
     """
@@ -338,7 +339,7 @@ def test_tt_bios_present_verdict_clears_a_path_the_doctor_cannot_see(tmp_path):
     stub.mkdir(parents=True)
     py = stub / "python3"
     py.write_text("#!/bin/sh\n"
-                  "echo 'protenix-v2 present /big-disk/protenix-v2.pt'\n"
+                  "echo 'protenix-v1 present /big-disk/model_v0.5.0.pt'\n"
                   "echo 'mols present /big-disk/mols'\n")
     py.chmod(0o755)
 
@@ -348,7 +349,7 @@ def test_tt_bios_present_verdict_clears_a_path_the_doctor_cannot_see(tmp_path):
             TT_BIO_DEMO_PREFIX=str(prefix))
     out = r.stdout + r.stderr
     assert r.returncode == 0, f"a relocated but present artifact failed:\n{out}"
-    assert "/big-disk/protenix-v2.pt" in out, \
+    assert "/big-disk/model_v0.5.0.pt" in out, \
         f"the doctor should report where tt-bio actually found it:\n{out}"
 
 
@@ -763,3 +764,41 @@ def test_fix_reports_a_permission_failure_instead_of_a_raw_mkdir_error(tmp_path)
         assert "->" in r.stdout, "expected a hint() line naming what to do"
     finally:
         locked.chmod(0o755)
+
+
+# ---------------------------------------------------------------------------
+# protenix-v1: the checkpoint lives in a SUBDIRECTORY of the cache.
+# ---------------------------------------------------------------------------
+
+def _v1_cache(tmp_path, ckpt_size):
+    cache = tmp_path / ".boltz"
+    (cache / "mols").mkdir(parents=True)
+    (cache / "mols" / "ALA.pkl").write_bytes(b"x")
+    if ckpt_size is not None:
+        _sized(cache / "protenix" / "model_v0.5.0.pt", ckpt_size)
+    return cache
+
+
+def _doctor(tmp_path, cache):
+    return _sh("doctor_check_weights", BOLTZ_CACHE=str(cache), TT_BIO_CACHE="",
+               TT_BIO_DEMO_PREFIX=str(_prefix_without_a_runner_venv(tmp_path)))
+
+
+def test_doctor_finds_the_v1_checkpoint_in_its_subdirectory(tmp_path):
+    r = _doctor(tmp_path, _v1_cache(tmp_path, 1_474_265_486))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "model_v0.5.0.pt" in r.stdout
+
+
+def test_doctor_calls_a_cache_with_only_v2_not_ready_and_names_the_v1_command(tmp_path):
+    cache = _v1_cache(tmp_path, None)
+    _sized(cache / "protenix-v2.pt", 1_859_785_497)
+    r = _doctor(tmp_path, cache)
+    assert r.returncode != 0
+    assert "tt-bio weights --download protenix-v1" in r.stdout + r.stderr
+
+
+def test_doctor_reports_a_truncated_v1_checkpoint_as_truncated(tmp_path):
+    r = _doctor(tmp_path, _v1_cache(tmp_path, 5_000))
+    assert r.returncode != 0
+    assert "truncated" in r.stdout + r.stderr

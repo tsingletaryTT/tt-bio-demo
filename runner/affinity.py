@@ -1,5 +1,5 @@
 """Answers affinity questions on a dedicated chip, resident, the same
-model-residency pattern runner/folder.py's Folder uses for protenix-v2 --
+model-residency pattern runner/folder.py's Folder uses for protenix-v1 --
 see docs/superpowers/specs/2026-09-15-affinity-qa-design.md section 5 for
 why this chip is never shared with folding.
 
@@ -21,7 +21,7 @@ Weights (nesso1, nesso1-ccd, and the ESM-2 encoder the featurizer needs) are
 NOT bundled with tt-bio and are not fetched by this module itself -- see
 load()'s docstring. Provisioning now exists (scripts/setup-venvs.sh,
 scripts/doctor.sh, and the Debian tt-bio-demo-weights postinst all fetch/
-check them alongside protenix-v2's), so `load()` failing here means a
+check them alongside protenix-v1's), so `load()` failing here means a
 missing or broken weight set on THIS install, not an absent provisioning
 step -- see docs/followups.md for a real, separate gap in that provisioning
 (a root-vs-desktop-user cache-location mismatch) that is still open.
@@ -76,7 +76,7 @@ class AffinityScorer:
         cache in the spike (docs/spike-nesso1-affinity.md section 2.1). This
         call does not fetch them -- provisioning (postinst / doctor.sh) is
         where `tt_bio.weights.fetch("nesso1")` and `.fetch("nesso1-ccd")`
-        belong, the same place protenix-v2's weights are fetched. Calling
+        belong, the same place protenix-v1's weights are fetched. Calling
         this before those exist raises whatever tt-bio itself raises for a
         missing checkpoint; that is deliberately not swallowed here.
         """
