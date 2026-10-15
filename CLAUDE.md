@@ -2112,8 +2112,13 @@ ran on that.
   first-fold range (22.8-74.7 s) are still the 0.15.2 measurements and are labelled so.
 - The site test `test_the_docs_site_cards_say_what_the_manifest_says` formats whole numbers with
   `:g`, so a 3.0 s fold must read "3 s" on its card (Trp-cage and DNA both do now).
-- Not run: the live booth check (`scripts/run-demo.sh`, plan Task 7 Step 3) and the README
-  screenshot refresh. `tests/fixtures/streams/capture_real_fold.py` now asks for 4 trunk cycles
+- Live booth check, later the same day: `scripts/run-demo.sh` through `hw-run.sh --chips 4`, quad
+  by default, about four minutes, 93 folds across all seven targets with no errors, retries or
+  degraded states, then SIGINT to the process group for a clean stop. `refresh-screenshots.sh`
+  re-captured README images 01-04; 06 is a Spectacle frame from the booth run. 05, 07, 08 and the
+  loop video were not re-captured. The UI still spells "Colour" in the confidence legend (the US
+  English pass covered literature only). Version bumped to 0.8.1 (0.8.0 was never tagged; main
+  is 0.7.0). `tests/fixtures/streams/capture_real_fold.py` now asks for 4 trunk cycles
   and the checked-in capture still has 10 (`docs/followups.md`).
 - Instrument lesson: a Monitor whose loop ends on `pgrep -f measure.py` never ends, because the
   monitor's own command line contains that string. It kept re-emitting its last events for the

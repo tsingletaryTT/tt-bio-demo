@@ -1,4 +1,4 @@
-tt-bio-demo (0.8.0) noble; urgency=medium
+tt-bio-demo (0.8.1) noble; urgency=medium
 
   * The booth folds with Protenix-v1 and tt-bio 0.18.0 (was Protenix-v2 on
     0.12.0; same ttnn 0.68.0 pin; docs/spike-tt-bio-0.16.md). The manifest
@@ -36,10 +36,14 @@ tt-bio-demo (0.8.0) noble; urgency=medium
     structures. It is not changed here and needs the owner's decision.
     README screenshots were not refreshed (they need the live booth);
     docs/followups.md has the entry.
+  * Live booth check on tt-bio 0.18.0: all four chips folding the whole
+    playlist for about four minutes, 93 folds, no errors or retries. README
+    images 01-04 and 06 were re-captured from that booth; 05, 07 and 08 and
+    the loop video are still from earlier runs (docs/followups.md).
   * Commit counts on the docs site are re-measured at v0.18.0: 15,129
     total, 14,492 carry Moritz's name as author.
 
- -- Taylor Singletary <tsingletary@tenstorrent.com>  Tue, 13 Oct 2026 13:21:52 -0700
+ -- Taylor Singletary <tsingletary@tenstorrent.com>  Thu, 15 Oct 2026 16:40:00 -0700
 
 tt-bio-demo (0.7.0) noble; urgency=medium
 
