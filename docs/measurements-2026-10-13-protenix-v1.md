@@ -267,3 +267,69 @@ the visibility guard for live diffusion.
 | v1B | 3 | dna | 3.08 | 0.39 | 0.09 | 30 | 94.469 | 12:35:13 |
 | v1B | 3 | trna | 3.51 | 0.56 | 0.15 | 30 | 81.672 | 12:35:17 |
 | v1B | 3 | hsa | 16.08 | 10.07 | 2.95 | 30 | 50.45 | 12:35:33 |
+
+
+## Re-measure on tt-bio 0.18.0 (2026-10-15)
+
+The numbers above are from tt-bio 0.15.2. The booth now pins 0.18.0, and every
+`expected_s` and `first_frame_s` in the manifest, the README, the site and the handout
+come from this second pass.
+
+- **Stack.** tt-bio 0.18.0, ttnn 0.68.0 (unchanged), the same host stack as the 0.15.2 pass.
+  Model protenix-v1, `n_step=200`, no explicit seed, same input YAMLs.
+- **Chip.** Chip 0 only, through `scripts/hw-run.sh --chips 1 --one-chip`, in the background.
+- **Harness.** An uncommitted scratch script with the same stamping as
+  `tests/integration/test_new_targets_timing.py`: one resident `Folder`, four passes over the
+  seven targets in manifest order, one JSON line per fold. Pass 1 is excluded from the means.
+  The warm numbers are the means of passes 2-4 (three folds per target).
+- **Cold pass.** The JIT kernel cache carried over from the earlier runs, so pass 1 was only
+  1.1-3.4x slower than a warm fold (trpcage 10.2 s, albumin 19.1 s). Handled retries of a
+  trimul L1 clash are logged by tt-bio as `TT_THROW` lines with "retrying narrower"; every
+  fold returned no error and 30 frames.
+- **Result.** Every target is 0.0-0.1 s faster than on 0.15.2, and albumin is 0.7 s faster. The
+  pLDDT bands overlap the 0.15.2 bands, so the thumbnails were not regenerated.
+
+| target | warm s (0.15.2) | warm s (0.18.0) | first frame (0.15.2 / 0.18.0) | max silence | mean pLDDT range (0.18.0) |
+|---|---|---|---|---|---|
+| trpcage | 2.99 | 2.98 | 0.37 / 0.34 | 0.09 | 93.42-93.55 |
+| fkbp12 + SB3 | 4.43 | 4.35 | 0.97 / 0.94 | 0.29 | 38.15-40.95 |
+| dhfr + MTX | 5.28 | 5.18 | 1.67 / 1.59 | 0.47 | 32.95-34.13 |
+| trypsin | 5.88 | 5.76 | 2.26 / 2.15 | 0.61 | 30.89-30.95 |
+| dna (24 nt) | 3.06 | 3.01 | 0.39 / 0.37 | 0.09 | 94.49-94.50 |
+| trna | 3.47 | 3.44 | 0.56 / 0.53 | 0.14 | 81.22-81.86 |
+| hsa | 16.11 | 15.35 | 10.10 / 9.34 | 2.81 | 49.27-49.66 |
+
+Dwells from the new `first_frame_s` values (clamped to [2.0, 7.0]): trypsin 2.2 s, albumin 7.0 s, the other five 2.0 s.
+
+### Raw per-fold numbers, tt-bio 0.18.0
+
+| pass | target | elapsed_s | first_frame_s | max_silence_s | frames | mean pLDDT |
+|---|---|---|---|---|---|---|
+| 1 | trpcage | 10.23 | 6.91 | 4.06 | 30 | 93.53 |
+| 1 | fkbp12 | 7.53 | 3.82 | 2.03 | 30 | 41.07 |
+| 1 | dhfr | 7.88 | 4.08 | 2.34 | 30 | 33.82 |
+| 1 | trypsin | 8.32 | 4.59 | 2.12 | 30 | 30.92 |
+| 1 | dna | 3.27 | 0.50 | 0.14 | 30 | 94.48 |
+| 1 | trna | 5.39 | 2.35 | 1.49 | 30 | 82.03 |
+| 1 | hsa | 19.14 | 12.91 | 4.54 | 30 | 49.91 |
+| 2 | trpcage | 3.00 | 0.36 | 0.09 | 30 | 93.47 |
+| 2 | fkbp12 | 4.38 | 0.94 | 0.28 | 30 | 40.95 |
+| 2 | dhfr | 5.20 | 1.59 | 0.47 | 30 | 34.09 |
+| 2 | trypsin | 5.81 | 2.16 | 0.61 | 30 | 30.89 |
+| 2 | dna | 2.97 | 0.39 | 0.09 | 30 | 94.50 |
+| 2 | trna | 3.42 | 0.53 | 0.14 | 30 | 81.22 |
+| 2 | hsa | 15.37 | 9.34 | 2.81 | 30 | 49.56 |
+| 3 | trpcage | 2.95 | 0.34 | 0.08 | 30 | 93.42 |
+| 3 | fkbp12 | 4.27 | 0.94 | 0.29 | 30 | 40.83 |
+| 3 | dhfr | 5.12 | 1.59 | 0.47 | 30 | 32.95 |
+| 3 | trypsin | 5.75 | 2.15 | 0.61 | 30 | 30.95 |
+| 3 | dna | 3.07 | 0.37 | 0.08 | 30 | 94.50 |
+| 3 | trna | 3.47 | 0.53 | 0.14 | 30 | 81.86 |
+| 3 | hsa | 15.33 | 9.33 | 2.81 | 30 | 49.27 |
+| 4 | trpcage | 2.99 | 0.33 | 0.08 | 30 | 93.55 |
+| 4 | fkbp12 | 4.39 | 0.94 | 0.29 | 30 | 38.15 |
+| 4 | dhfr | 5.22 | 1.59 | 0.47 | 30 | 34.13 |
+| 4 | trypsin | 5.72 | 2.15 | 0.61 | 30 | 30.93 |
+| 4 | dna | 2.99 | 0.35 | 0.08 | 30 | 94.49 |
+| 4 | trna | 3.44 | 0.53 | 0.14 | 30 | 81.70 |
+| 4 | hsa | 15.35 | 9.34 | 2.81 | 30 | 49.66 |

@@ -2084,6 +2084,41 @@ the four-chip suite) waits for the owner's go-ahead.
 `docs/2026-09-22-test-plan.md` into the PR branch a second time. It was removed in the next
 commit and stays in the branch history (the owner said that is fine).
 
+### tt-bio 0.18.0: pinned and measured (2026-10-15)
+
+Prompted with "let's go ahead and do the native testing before we kick out a release. There's
+another tt-bio update too and we may as well update to it too". By then PyPI had 0.17.0 and
+0.18.0 (both 2026-10-15), so the 0.16.1 pin moved straight to 0.18.0 and the hardware pass
+ran on that.
+
+- Static read of 0.18.0 against 0.16.1 (details in `docs/spike-tt-bio-0.16.md`): same
+  `ttnn==0.68.0`, same signatures for every symbol the repo calls, `weights.py`,
+  `protenix_data.py`, `capabilities.py` and `main.py` byte-identical. Changes on the fold path:
+  Protenix gets its own lever set (`transition_ws`, `ws_l1acc`), the shared set gains `opm_jd`,
+  and the diffusion pair-conditioning matmuls no longer force a core grid (a multicast deadlock
+  first seen on Protenix-v1 at 512+ tokens; upstream tt-metal#58653).
+- Hardware, all through `scripts/hw-run.sh`: one chip, one resident `Folder`, four passes over
+  the seven targets, pass 1 excluded. Every target is 0.0-0.1 s faster than on 0.15.2, albumin
+  0.7 s faster; pLDDT bands overlap, so thumbnails stay. All 28 folds returned 30 frames and no
+  error. tt-bio prints `TT_THROW` L1-clash lines during a handled "retrying narrower" retry
+  in the trimul kernel; those are not failures.
+- Four-chip suite (`scripts/hw-run.sh --chips 4 -- scripts/test.sh --hw -q`): runner half 540
+  passed (including the on-device nesso1 Q&A test), four-worker pool test passed, JS tests
+  passed, UI half 1,624 passed and 2 failed (the two `/opt` pin tests, 7/7 with
+  `TT_BIO_DEMO_PREFIX=/nonexistent`). No stall.
+- Refreshed to the 0.18.0 numbers: manifest `expected_s` and `first_frame_s`, README, INSTALL,
+  `docs/cold-start.md`, the site cards and commit counts (15,129 total, 14,492 his), the
+  one-pager (rebuilt and looked at), the changelog. The v1 against v2 comparison and the cold
+  first-fold range (22.8-74.7 s) are still the 0.15.2 measurements and are labelled so.
+- The site test `test_the_docs_site_cards_say_what_the_manifest_says` formats whole numbers with
+  `:g`, so a 3.0 s fold must read "3 s" on its card (Trp-cage and DNA both do now).
+- Not run: the live booth check (`scripts/run-demo.sh`, plan Task 7 Step 3) and the README
+  screenshot refresh. `tests/fixtures/streams/capture_real_fold.py` now asks for 4 trunk cycles
+  and the checked-in capture still has 10 (`docs/followups.md`).
+- Instrument lesson: a Monitor whose loop ends on `pgrep -f measure.py` never ends, because the
+  monitor's own command line contains that string. It kept re-emitting its last events for the
+  rest of the session. Match a PID file or use a one-shot `until` waiter.
+
 ## Conventions
 
 - **Keep the README's screenshots current.** The README claims every image on it is the

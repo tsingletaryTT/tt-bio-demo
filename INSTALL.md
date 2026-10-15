@@ -265,7 +265,7 @@ that counts. `Ctrl-C` in the terminal tears the daemon down cleanly.
 
 > **Budget real time for the first fold — up to about 75 s per target.** Every fold
 > time quoted in this project is measured **warm**. Measured 2026-10-13 with Protenix v1: the
-> first fold of each target took **22.8–74.7 s** against **3.0–16.1 s** warm. Full numbers in
+> first fold of each target took **22.8–74.7 s** against **3.0–15.4 s** warm. Full numbers in
 > [`docs/measurements-2026-10-13-protenix-v1.md`](docs/measurements-2026-10-13-protenix-v1.md);
 > the older empty-cache method is in [`docs/cold-start.md`](docs/cold-start.md).
 >
@@ -401,5 +401,5 @@ hardware and never will. Expect step 2 (the venv build, which needs network and 
 toolchain) and step 3 (6.5 GB of weights) to be where a real first run finds something.
 
 **Budget the first fold.** Step 4's fold on a machine that has never folded that target costs
-22.8–74.7 s rather than the warm 3.0–16.1 s — see
+22.8–74.7 s rather than the warm 3.0–15.4 s — see
 [`docs/measurements-2026-10-13-protenix-v1.md`](docs/measurements-2026-10-13-protenix-v1.md).

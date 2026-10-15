@@ -56,10 +56,10 @@ his name as author. All 537 commits since v0.15.2 are under his identity. v0.15.
 an ancestor of v0.16.1 (two commits on it are absent from 0.16.1), so the new totals are
 not the old totals plus 537.
 
-## Not yet measured
+## Hardware pass (done on 0.18.0)
 
-Every timing, pLDDT band and `first_frame_s` in the manifest, README, site and handout was
-measured on 0.15.2 and has not been re-measured on 0.16.1. The hardware pass:
+This section was written before the pin moved to 0.18.0. The hardware pass below was run on
+0.18.0 instead of 0.16.1 (see the update at the end). The plan was:
 
 1. One chip under a lease through `scripts/hw-run.sh`, in the background: one resident
    `Folder`, three folds per target, first fold of each shape discarded, same method as
@@ -68,3 +68,28 @@ measured on 0.15.2 and has not been re-measured on 0.16.1. The hardware pass:
 3. One affinity question through the Q&A worker (nesso1 changed by about 85 lines).
 4. The four-chip suite.
 5. If numbers moved, refresh the manifest, thumbnails, README, site cards and the handout.
+
+
+## Update: 0.17.0 and 0.18.0 (2026-10-15)
+
+PyPI had 0.17.0 (2026-10-15 02:01 UTC) and 0.18.0 (2026-10-15 16:21 UTC) by the next day, and
+the pin moved straight to 0.18.0. The same static method as above, against the 0.16.1 tree.
+
+- Dependencies identical to 0.16.1 (`ttnn==0.68.0`, same Python range). No SFPI work.
+- The same 30 symbols the repo calls have unchanged signatures. `weights.py`,
+  `protenix_data.py`, `capabilities.py` and `main.py` are byte-identical to 0.16.1, so the model
+  list and "Fifteen model families" hold. `_device_init_lock` is absent in both, as before.
+- **Fold-path changes.** `protenix.py` now has its own `NORMAL_LEVERS`: the shared set plus
+  `transition_ws`, `ws_l1acc`, `trimul_t1_c256` and `trimul_t1_c384` (the last two do not apply to
+  Protenix-v1's pair width of 128). The shared set gained `opm_jd`. The diffusion pair-conditioning
+  matmuls no longer force a core grid, which removes a multicast deadlock that was first seen on
+  Protenix-v1 at 512 tokens or more (upstream tt-metal#58653). `TT_BIO_LEVERS` still overrides.
+- Trace capture moved into a `_T.capture_trace` helper. The booth does not use trace.
+- nesso1's normal lever set grew (`trimul_t1`, `trimul_t2`, `triatt_tail`, `transition_bw`,
+  `trimul_t1_dram`), so the Q&A path also runs different kernels. `test_affinity_real.py` passed on a chip.
+- Commit counts at v0.18.0 (the spec's `-i` method, full clone): 15,129 total, 14,492 with his
+  name. The same method gives 13,931 at v0.16.1, which matches the figure printed before.
+  All 561 commits in v0.16.1..v0.18.0 are under his identity.
+
+Measured on 0.18.0: see the 0.18.0 section of
+`docs/measurements-2026-10-13-protenix-v1.md`. Times and pLDDT bands barely moved.

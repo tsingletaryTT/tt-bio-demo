@@ -111,9 +111,9 @@ silicon keeps visibly breathing even if the daemon wedges.
 
 **Four chips on two boards.** A p300c carries two chips, so `tt-smi`'s four entries are four
 chips — not four boards. The panel says so, because a visitor reading "4 cards" would
-picture the wrong machine. Folds are timed on this hardware, warm, on tt-bio 0.15.2 with Protenix v1, on chip 0: Trp-cage **3.0 s**,
-FKBP12 **4.4 s**, DHFR **5.3 s**, trypsin **5.9 s**, DNA duplex **3.1 s**, tRNA **3.5 s**, albumin **16.1 s**.
-Each number is the mean of five warm folds after discarding the first fold of each shape, which
+picture the wrong machine. Folds are timed on this hardware, warm, on tt-bio 0.18.0 with Protenix v1, on chip 0: Trp-cage **3.0 s**,
+FKBP12 **4.3 s**, DHFR **5.2 s**, trypsin **5.8 s**, DNA duplex **3.0 s**, tRNA **3.4 s**, albumin **15.4 s**.
+Each number is the mean of three warm folds after discarding the first fold of each shape, which
 pays for kernel compilation (22.8–74.7 s on this card; see `docs/measurements-2026-10-13-protenix-v1.md`
 and `playlist/manifest.yaml`). The host stack changed since the earlier numbers: tt-kmd 2.11.0,
 tt-smi 6.7.0, tt-flash 4.1.0, tt-umd 0.9.12. Chip 1 was not re-measured.
@@ -377,8 +377,8 @@ the authoritative list. The ones you are most likely to want:
 | `--structures-budget-gb` | 0.2 | Sweep budget for emitted `.cif` structures, per device |
 
 **The default is every target in the manifest** — the booth shows what it can do rather
-than the one safe thing. Warm, on chip 0, one pass through all seven targets takes about 41 s of fold time
-(3.0 + 4.4 + 5.3 + 5.9 + 3.1 + 3.5 + 16.1 s), summed from the per-target means on tt-bio 0.15.2
+than the one safe thing. Warm, on chip 0, one pass through all seven targets takes about 40 s of fold time
+(3.0 + 4.3 + 5.2 + 5.8 + 3.0 + 3.4 + 15.4 s), summed from the per-target means on tt-bio 0.18.0
 with Protenix v1. It was not timed as one cycle, and the showcase holds between folds add to it. Use `--targets trpcage` to
 fold a single target while iterating, which is much faster.
 
@@ -807,7 +807,7 @@ It also does not pre-warm the tt-metal kernel cache. The `tt-bio-demo-weights` p
 description claims it does; its postinst only downloads and verifies weights. Warm the cache
 by folding each target once before the doors open — every fold time on this page is measured
 **warm**, and on an empty cache the first fold of each shape costs 22.8–74.7 s on this card (measured on
-Protenix v1), against 3.0–16.1 s warm ([`docs/cold-start.md`](docs/cold-start.md)).
+Protenix v1), against 3.0–15.4 s warm ([`docs/cold-start.md`](docs/cold-start.md)).
 
 Full steps — including what `tt-installer` has already provided, so no step re-installs it —
 are in [`INSTALL.md`](INSTALL.md).

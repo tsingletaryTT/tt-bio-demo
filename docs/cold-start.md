@@ -4,7 +4,7 @@ Measured 2026-08-17 on the p300c dev box, under a `gozer` lease, one chip.
 
 The tables below were measured with Protenix-v2 on tt-bio 0.6.x. The booth now folds with Protenix v1;
 its first-fold times are in [`measurements-2026-10-13-protenix-v1.md`](measurements-2026-10-13-protenix-v1.md)
-(22.8-74.7 s per target on a cold cache, 3.0-16.1 s warm).
+(22.8-74.7 s per target on a cold cache, 3.0-15.4 s warm).
 
 This closes the follow-up [`docs/spike-real-fold.md`](spike-real-fold.md) point 8 opened and
 called "the most important follow-up measurement before Phase 3 ships" — *"Cold-start timing
