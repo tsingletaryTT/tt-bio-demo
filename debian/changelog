@@ -1,3 +1,25 @@
+tt-bio-demo (0.8.2) noble; urgency=medium
+
+  * Pins tt-bio 0.21.0 (was 0.18.0). It ships the same ttnn 0.68.0, so the
+    vendored SFPI toolchain is unchanged. A signature comparison of both wheels
+    found every tt_bio symbol this project calls unchanged. The manifest
+    timings and pLDDT bands are still the 0.18.0 measurements and were not
+    re-measured.
+  * Makes the question panel appear reliably. The UI client treated 5 s of
+    silence as a lost connection and reconnected, and that reconnect hello was
+    how it learned the booth could take questions, which worked only because a
+    warm model load takes about 5 s. After a
+    tt-bio upgrade the kernel cache is empty, so each chip's first fold is
+    silent for minutes, and the UI reconnected every ~6 s and lost its state.
+    The client now keeps the connection through quiet periods. The daemon now
+    broadcasts hello when the first worker becomes ready, because a UI that
+    connects during model load is greeted with not_ready and had no other way
+    to learn it.
+  * Verified on four chips with the real daemon and the UI's own client: three
+    questions answered with real nesso1 scores and no reconnect.
+
+ -- Taylor Singletary <tsingletary@tenstorrent.com>  Wed, 21 Oct 2026 13:20:17 -0700
+
 tt-bio-demo (0.8.1) noble; urgency=medium
 
   * The booth folds with Protenix-v1 and tt-bio 0.18.0 (was Protenix-v2 on
