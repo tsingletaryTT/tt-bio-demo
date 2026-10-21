@@ -702,3 +702,59 @@ def test_omitting_the_questions_flag_leaves_questions_disabled(tmp_path, monkeyp
     ])
     assert code == 0
     assert built["config"].questions_enabled is False
+
+
+# --- telling a UI that connected too early that the booth is ready now ------
+
+def test_a_ui_that_connected_before_the_workers_were_ready_gets_a_hello_when_they_are(
+        tmp_path):
+    """The daemon greets only at accept time, and a UI that connects during
+    the model-load window is greeted with `not_ready`. That greeting carries
+    no chip list and no `qa_capable`, so unless something tells the UI later,
+    a booth launched the normal way (daemon and UI started together) never
+    learns it has a Q&A chip and never shows the question panel.
+
+    This used to work by accident: the UI client dropped and reconnected after
+    5 s of silence, which was about how long the load took, and the reconnect
+    got a real hello. That reconnect is gone (a quiet daemon is no longer
+    treated as a lost one), so the daemon says it once, to everyone connected,
+    when the first worker becomes ready.
+
+    Mutation: delete the `_announce_ready_once()` call from `run()`'s loop, or
+    make it a no-op. Red on the first assertion after readiness.
+    """
+    pool = _FakePool(ready=[])
+    daemon = _daemon(tmp_path, pool)
+    sent = []
+    daemon._emit = sent.append
+
+    daemon._announce_ready_once()
+    assert sent == [], "announced a booth that cannot fold yet"
+
+    pool._ready = [0]
+    daemon._announce_ready_once()
+    assert [e["type"] for e in sent] == ["hello"], \
+        "no hello went out when the first worker became ready"
+    assert "qa_capable" in sent[0] and "cards" in sent[0]
+
+    daemon._announce_ready_once()
+    daemon._announce_ready_once()
+    assert len(sent) == 1, "the hello is repeated on every pass of the loop"
+
+
+def test_the_hello_is_sent_again_after_the_booth_stops_and_resumes_folding(tmp_path):
+    """A booth whose every worker is lost answers `not_ready` and the UI shows
+    its preparing screen; when a worker comes back, that UI needs the hello
+    again for the same reason it did the first time.
+    """
+    pool = _FakePool(ready=[0])
+    daemon = _daemon(tmp_path, pool)
+    sent = []
+    daemon._emit = sent.append
+
+    daemon._announce_ready_once()
+    pool._ready = []
+    daemon._announce_ready_once()
+    pool._ready = [1]
+    daemon._announce_ready_once()
+    assert [e["type"] for e in sent] == ["hello", "hello"]

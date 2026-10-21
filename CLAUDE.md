@@ -2147,11 +2147,28 @@ still ends the session, and the timeout still bounds how long `stop()` waits.
 `test_a_silence_longer_than_the_socket_timeout_does_not_drop_the_connection` was red before the
 change and green after.
 
-**Not proven.** The one-chip nesso1 test (`tests/integration/test_affinity_real.py`) passes on
-0.21.0, so the model path works. No question has been asked through the UI on 0.21.0: the caches
-are warm now, so the storm cannot be reproduced, and nobody asked a question during the failing
-run. The next `--questions` booth run on a cold cache is the real check. Nothing was re-measured,
-so the manifest, README and site still carry the 0.18.0 timings.
+**The fix exposed a second gap, found by running the question loop for real.** The daemon greets a
+client only at accept time, and a UI that connects during model load gets `not_ready`, which carries
+no chip list and no `qa_capable`. The UI only ever learned `qa_capable` because the 5 s timeout
+reconnected it at about the moment loading finished. With the timeout no longer dropping the
+connection, a client that connected early never learned it. `Daemon._announce_ready_once()` now
+broadcasts `hello` when the first worker becomes ready, and again after any not-ready stretch.
+Two tests; both were red before the method existed.
+
+**Proven on hardware** (four chips under one lease, real daemon with `--questions`, real UI
+window, and a driver using the UI's own `EventClient` over the socket): the driver connected
+before the pools existed, received a `hello` with `qa_capable: true` and `qa_card: 3` once they
+were ready, and asked the three shipped questions. All three came back as `answer_done` with
+real nesso1 scores: dhfr_mtx 0.977 (7.0 s), trypsin_bam 0.935 (20.5 s), fkbp12_sb3 0.922 (10.5 s).
+The client reconnected zero times. The driver is not checked in. Cold-cache behavior was not
+re-tested: the cache was warm for this run. Nothing was re-measured for the manifest, so it,
+the README and the site still carry the 0.18.0 timings.
+
+Instrument slips in this session, for the next person: `pkill -f` killed its own shell twice;
+a background job in a non-interactive shell ignores SIGINT (use SIGTERM to its own pid);
+`kill -TERM -<pgid>` of a script started under `hw-run.sh` also hits gozer and leaves the lease
+stale; and `--hw` is a `scripts/test.sh` flag, while a direct pytest run needs
+`TT_BIO_DEMO_HW_TESTS=1`.
 
 ## Conventions
 
