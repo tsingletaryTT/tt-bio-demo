@@ -380,3 +380,170 @@ def test_the_client_uses_those_constants_rather_than_its_own_numbers():
         "a join timeout is hardcoded again instead of derived"
     assert "settimeout(5.0)" not in source, \
         "the socket timeout is hardcoded again instead of named"
+
+
+# ── a quiet daemon keeps its connection ─────────────────────────────────────
+
+def test_a_silence_longer_than_the_socket_timeout_does_not_drop_the_connection(
+        tmp_path, monkeypatch):
+    """A daemon with nothing to say for several socket timeouts must keep its
+    connection, and the event that ends the silence must arrive on it.
+
+    Seen on the real booth after a tt-bio bump: the persistent kernel cache
+    was empty, so each chip's first fold compiled for minutes and the daemon
+    emitted nothing. The client read with a 5 s socket timeout and treated
+    the resulting timeout as a lost connection, so the UI dropped and
+    reconnected every ~6 s for the first three minutes (25 drops), and each
+    reconnect threw away what the UI had learned from the hello -- chips
+    named, Q&A capability, the question panel.
+
+    A real dead daemon closes its end of the socket and the client sees EOF;
+    it does not need a timeout to find out.
+
+    Mutation: let the timeout end `_read_events` again (read the stream with
+    `for line in conn.makefile(...)`). The second hello never arrives on the
+    first connection and `accepts` reaches 2. Red.
+    """
+    import ui.client as client_module
+    monkeypatch.setattr(client_module, "SOCKET_TIMEOUT_S", 0.2)
+
+    sock_path = str(tmp_path / "runner.sock")
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(sock_path)
+    server.listen(4)
+    server.settimeout(0.2)
+
+    accepts = []
+    stop_server = threading.Event()
+
+    def serve():
+        hello = {"type": "hello", "version": PROTOCOL_VERSION,
+                 "cards": [], "models": [], "preflight": "ok"}
+        conns = []
+        while not stop_server.is_set():
+            try:
+                conn, _ = server.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+            accepts.append(time.monotonic())
+            conns.append(conn)
+            conn.sendall(encode(hello))
+            if len(accepts) == 1:
+                # Silent for ~5 socket timeouts, then speak on the SAME
+                # connection.
+                time.sleep(1.0)
+                conn.sendall(encode(dict(hello, models=["after-silence"])))
+        for c in conns:
+            c.close()
+
+    server_thread = threading.Thread(target=serve, daemon=True)
+    server_thread.start()
+
+    seen = []
+    client = EventClient(sock_path, seen.append)
+    client.start()
+    try:
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and not any(
+                e.get("models") == ["after-silence"] for e in seen):
+            time.sleep(0.05)
+        assert any(e.get("models") == ["after-silence"] for e in seen), \
+            "the event after the silence never arrived"
+        assert len(accepts) == 1, (
+            f"the client reconnected {len(accepts) - 1} time(s) during a "
+            "silence; a quiet daemon was treated as a lost one")
+    finally:
+        client.stop()
+        stop_server.set()
+        server_thread.join(timeout=2.0)
+        server.close()
+
+
+def test_a_daemon_silent_past_the_limit_is_treated_as_hung_and_reconnected(
+        tmp_path, monkeypatch):
+    """Keeping the connection through quiet periods must not mean keeping it
+    forever. A daemon wedged with its socket open never closes it, so without
+    MAX_SILENCE_S the UI would sit on "connected" showing the last structure.
+
+    Mutation: remove the MAX_SILENCE_S check in `_lines`. `accepts` stays 1.
+    """
+    import ui.client as client_module
+    monkeypatch.setattr(client_module, "SOCKET_TIMEOUT_S", 0.1)
+    monkeypatch.setattr(client_module, "MAX_SILENCE_S", 0.4)
+
+    sock_path = str(tmp_path / "runner.sock")
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(sock_path)
+    server.listen(4)
+    server.settimeout(0.1)
+    accepts, held = [], []
+    stop_server = threading.Event()
+
+    def serve():
+        while not stop_server.is_set():
+            try:
+                conn, _ = server.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+            accepts.append(1)
+            held.append(conn)      # accept and say nothing, ever
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    client = EventClient(sock_path, lambda e: None)
+    client.reconnect_delay = 0.05
+    client.start()
+    try:
+        deadline = time.monotonic() + 4.0
+        while time.monotonic() < deadline and len(accepts) < 2:
+            time.sleep(0.05)
+        assert len(accepts) >= 2, "a daemon silent past the limit was never given up on"
+    finally:
+        client.stop()
+        stop_server.set()
+        thread.join(timeout=2.0)
+        for c in held:
+            c.close()
+        server.close()
+
+
+def test_an_unterminated_fragment_at_eof_is_not_delivered_as_an_event(tmp_path):
+    """The daemon ends every line with a newline, so bytes after the last one
+    are a write cut short. A fragment that happens to be valid JSON must not
+    reach `on_event` as if it were a complete event.
+    """
+    sock_path = str(tmp_path / "runner.sock")
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(sock_path)
+    server.listen(1)
+    hello = {"type": "hello", "version": PROTOCOL_VERSION,
+             "cards": [], "models": [], "preflight": "ok"}
+
+    def serve():
+        conn, _ = server.accept()
+        # A complete, valid event with only its newline missing: it must decode
+        # if it is delivered, so delivering it is observable.
+        conn.sendall(encode(hello) + encode(dict(hello, models=["fragment"])).rstrip(b"\n"))
+        conn.close()
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    seen = []
+    client = EventClient(sock_path, seen.append)
+    client.start()
+    try:
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and not seen:
+            time.sleep(0.05)
+        time.sleep(0.5)
+        assert [e["type"] for e in seen][:1] == ["hello"]
+        assert not any(e.get("models") == ["fragment"] for e in seen), \
+            "an unterminated fragment was delivered as an event"
+    finally:
+        client.stop()
+        thread.join(timeout=2.0)
+        server.close()

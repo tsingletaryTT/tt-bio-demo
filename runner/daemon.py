@@ -489,6 +489,9 @@ class Daemon:
         # cannot block for any meaningful time and removes the need for a
         # separate identity check when the dispatched question is popped.
         self._qa_lock = threading.Lock()
+        # Whether the last `_announce_ready_once` pass found the booth able to
+        # fold. See that method.
+        self._announced_ready = False
         self._qa_spec = None
         self._qa_pool = None
         self._qa_queue = []
@@ -669,6 +672,32 @@ class Daemon:
                 # False.
                 "qa_card": (self._qa_spec.card
                            if self._qa_spec is not None else None)}
+
+    def _announce_ready_once(self):
+        """Broadcast `hello` the first time the booth can fold, and again after
+        every stretch in which it could not.
+
+        `_hello` answers a UI at accept time only. A UI that connects while
+        the models are still loading gets `not_ready`, which carries no chip
+        list and no `qa_capable`, and nothing afterwards told it otherwise:
+        the quad had to learn its chips from `job_start`, and the question
+        panel, which waits for `qa_capable`, never appeared. It used to work
+        only because the UI client reconnected after 5 s of silence, which was
+        about how long a warm load takes. That reconnect is gone on purpose (a
+        quiet daemon is not a lost one), so the daemon says it itself.
+
+        Called once per pass of `run()`'s loop. It sends nothing while the
+        booth is not ready, one `hello` on the transition to ready, and
+        nothing again until the booth has been not-ready and recovered.
+        """
+        hello = self._hello()
+        if hello["type"] != "hello":
+            self._announced_ready = False
+            return
+        if self._announced_ready:
+            return
+        self._announced_ready = True
+        self._emit(hello)
 
     def _emit(self, event):
         self.server.broadcast(event)
@@ -1637,6 +1666,7 @@ class Daemon:
                         # directory. Nothing here will change without a human.
                         log.error("no playlist targets available; idling")
                         idle = True
+                self._announce_ready_once()
                 self.dispatch_once()
                 self._dispatch_qa_once()
                 if time.monotonic() >= next_prune:

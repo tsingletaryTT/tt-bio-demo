@@ -2124,6 +2124,62 @@ ran on that.
   monitor's own command line contains that string. It kept re-emitting its last events for the
   rest of the session. Match a PID file or use a one-shot `until` waiter.
 
+### tt-bio 0.21.0 pinned; the "Q&A does not work" report was a reconnect storm (2026-10-21)
+
+Prompted with "upgrade to latest tt-bio". PyPI had 0.21.0 (0.19.0, 0.20.0, 0.20.1 in between).
+Same `ttnn==0.68.0` and requires-python as 0.18.0, so no SFPI work. A signature comparison with
+`ast` over both wheels found every symbol the repo calls unchanged. `weights.py`,
+`protenix_data.py`, `device_lease.py`, `nesso1.py`, `nesso1_input.py` and `runtime.py` are
+byte-identical, and `edm_sample` still takes `dump_fn`. `_read_bio_chains` now rejects duplicate
+chain ids and still returns the same tuple shape.
+
+A second session ran the booth on all four chips right after the pin. A plain quad run was healthy
+(165 folds, no errors). A `--questions` run showed no question or score, and the UI dropped and
+reconnected 25 times in about the first three minutes.
+
+**Cause of the reconnects.** `EventClient` read through `conn.makefile()` with a 5 s socket timeout,
+and a timeout there ends the read and counts as a lost connection. The daemon was silent that long
+because a tt-bio upgrade empties the persistent kernel cache, so each chip's first fold compiled
+for minutes with no events (the third time this file records that cold-cache layer). Each
+reconnect discarded what the UI learned from the hello: chips, `qa_capable`, the question panel.
+Fixed in `ui/client.py`: `_lines()` reads with `recv` and treats a timeout as "nothing yet". EOF
+still ends the session, and the timeout still bounds how long `stop()` waits.
+`test_a_silence_longer_than_the_socket_timeout_does_not_drop_the_connection` was red before the
+change and green after.
+
+**The fix exposed a second gap, found by running the question loop for real.** The daemon greets a
+client only at accept time, and a UI that connects during model load gets `not_ready`, which carries
+no chip list and no `qa_capable`. The UI only ever learned `qa_capable` because the 5 s timeout
+reconnected it at about the moment loading finished. With the timeout no longer dropping the
+connection, a client that connected early never learned it. `Daemon._announce_ready_once()` now
+broadcasts `hello` when the first worker becomes ready, and again after any not-ready stretch.
+Two tests; both were red before the method existed.
+
+**Proven on hardware** (four chips under one lease, real daemon with `--questions`, real UI
+window, and a driver using the UI's own `EventClient` over the socket): the driver connected
+before the pools existed, received a `hello` with `qa_capable: true` and `qa_card: 3` once they
+were ready, and asked the three shipped questions. All three came back as `answer_done` with
+real nesso1 scores: dhfr_mtx 0.977 (7.0 s), trypsin_bam 0.935 (20.5 s), fkbp12_sb3 0.922 (10.5 s).
+The client reconnected zero times. The driver is not checked in. Cold-cache behavior was not
+re-tested: the cache was warm for this run. Nothing was re-measured for the manifest, so it,
+the README and the site still carry the 0.18.0 timings.
+
+**Review round (PR 10).** A review of the branch found that keeping the connection through quiet
+periods also hides a wedged daemon whose socket stays open. `MAX_SILENCE_S` (600 s, longer than any
+cold compile measured) now ends such a session so the UI reconnects and shows the preparing screen.
+The same review led to a 16 MB cap on an unterminated line, dropping an unterminated fragment at
+EOF, and a test that drives `run()` to check the ready-hello call is wired in. One of my new tests
+survived its mutation: it used an event that does not decode, so delivering it was invisible. It
+uses a valid event now. Left as they are: a second hello can reach a client that connected just
+after readiness (the UI already handles repeated hellos, as every reconnect sent one), and a
+not-ready stretch shorter than `DISPATCH_POLL_S` (0.25 s) is not noticed.
+
+Instrument slips in this session, for the next person: `pkill -f` killed its own shell twice;
+a background job in a non-interactive shell ignores SIGINT (use SIGTERM to its own pid);
+`kill -TERM -<pgid>` of a script started under `hw-run.sh` also hits gozer and leaves the lease
+stale; and `--hw` is a `scripts/test.sh` flag, while a direct pytest run needs
+`TT_BIO_DEMO_HW_TESTS=1`.
+
 ## Conventions
 
 - **Keep the README's screenshots current.** The README claims every image on it is the
