@@ -189,7 +189,7 @@ class LatestFrameByJob:
 # be edited apart.
 SOCKET_TIMEOUT_S = 5.0
 
-# The reader: blocked in `for line in stream`, released one socket timeout
+# The reader: blocked in `conn.recv` (see `_lines`), released one socket timeout
 # after `_stop` at the latest.
 READER_JOIN_TIMEOUT_S = SOCKET_TIMEOUT_S + 1.0
 
@@ -407,37 +407,71 @@ class EventClient:
             finally:
                 self._close_outbox(conn)
 
+    def _lines(self, conn):
+        """Yield each newline-terminated line the daemon sends, until it closes.
+
+        A read timeout means "nothing to say yet", not "connection lost", and
+        this loop keeps the connection through it. The daemon really is quiet
+        for minutes at a time: after a tt-bio upgrade or a board reset the
+        persistent kernel cache is empty and each chip's first fold compiles
+        without emitting an event. Reading through `conn.makefile()` cannot
+        survive that, because a timeout inside a buffered stream raises and
+        leaves the stream unusable. A quiet daemon used to cost a reconnect
+        every ~6 s, and every reconnect discarded what the UI had learned from
+        the hello (chips, Q&A capability, the question panel).
+
+        A daemon that is gone closes its end and `recv` returns b"", which ends
+        the loop. The timeout only sets how often `_stop` is checked, which
+        `stop()` relies on (see READER_JOIN_TIMEOUT_S).
+        """
+        buffer = b""
+        while not self._stop.is_set():
+            try:
+                chunk = conn.recv(65536)
+            except socket.timeout:
+                continue
+            if not chunk:
+                break
+            buffer += chunk
+            while True:
+                line, newline, buffer_rest = buffer.partition(b"\n")
+                if not newline:
+                    break
+                buffer = buffer_rest
+                yield line + newline
+        if buffer:
+            yield buffer      # a last line with no newline, as file iteration gave
+
     def _read_events(self, conn):
-        with conn.makefile("rb") as stream:
-            for line in stream:
-                if self._stop.is_set():
+        for line in self._lines(conn):
+            if self._stop.is_set():
+                return
+            try:
+                event = decode(line)
+            except ProtocolError as exc:
+                log.warning("dropping undecodable line: %s", exc)
+                continue
+            if event["type"] == "hello":
+                if event.get("version") != PROTOCOL_VERSION:
+                    log.error(
+                        "runner speaks protocol v%s, UI speaks v%s; "
+                        "refusing to interpret its messages",
+                        event.get("version"), PROTOCOL_VERSION,
+                    )
+                    self._set_state("incompatible")
                     return
-                try:
-                    event = decode(line)
-                except ProtocolError as exc:
-                    log.warning("dropping undecodable line: %s", exc)
-                    continue
-                if event["type"] == "hello":
-                    if event.get("version") != PROTOCOL_VERSION:
-                        log.error(
-                            "runner speaks protocol v%s, UI speaks v%s; "
-                            "refusing to interpret its messages",
-                            event.get("version"), PROTOCOL_VERSION,
-                        )
-                        self._set_state("incompatible")
-                        return
-                try:
-                    self.on_event(event)
-                except Exception:
-                    # A raising callback (e.g. a bug in a later GTK
-                    # marshaling wrapper) must not be mistaken for a
-                    # connection failure and must not cost the rest of the
-                    # stream: one bad event should neither end the
-                    # reconnect loop nor leave `state` wedged at
-                    # "connected" with no further callbacks. Catch
-                    # Exception, not BaseException, so KeyboardInterrupt/
-                    # SystemExit still propagate and can stop the thread.
-                    log.exception("on_event callback raised; continuing")
+            try:
+                self.on_event(event)
+            except Exception:
+                # A raising callback (e.g. a bug in a later GTK
+                # marshaling wrapper) must not be mistaken for a
+                # connection failure and must not cost the rest of the
+                # stream: one bad event should neither end the
+                # reconnect loop nor leave `state` wedged at
+                # "connected" with no further callbacks. Catch
+                # Exception, not BaseException, so KeyboardInterrupt/
+                # SystemExit still propagate and can stop the thread.
+                log.exception("on_event callback raised; continuing")
 
     # --- the send direction ------------------------------------------------
 

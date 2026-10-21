@@ -380,3 +380,82 @@ def test_the_client_uses_those_constants_rather_than_its_own_numbers():
         "a join timeout is hardcoded again instead of derived"
     assert "settimeout(5.0)" not in source, \
         "the socket timeout is hardcoded again instead of named"
+
+
+# ── a quiet daemon is not a dead daemon ─────────────────────────────────────
+
+def test_a_silence_longer_than_the_socket_timeout_does_not_drop_the_connection(
+        tmp_path, monkeypatch):
+    """A daemon with nothing to say for several socket timeouts must keep its
+    connection, and the event that ends the silence must arrive on it.
+
+    Seen on the real booth after a tt-bio bump: the persistent kernel cache
+    was empty, so each chip's first fold compiled for minutes and the daemon
+    emitted nothing. The client read with a 5 s socket timeout and treated
+    the resulting timeout as a lost connection, so the UI dropped and
+    reconnected every ~6 s for the first three minutes (25 drops), and each
+    reconnect threw away what the UI had learned from the hello -- chips
+    named, Q&A capability, the question panel.
+
+    A real dead daemon closes its end of the socket and the client sees EOF;
+    it does not need a timeout to find out.
+
+    Mutation: let the timeout end `_read_events` again (read the stream with
+    `for line in conn.makefile(...)`). The second hello never arrives on the
+    first connection and `accepts` reaches 2. Red.
+    """
+    import ui.client as client_module
+    monkeypatch.setattr(client_module, "SOCKET_TIMEOUT_S", 0.2)
+
+    sock_path = str(tmp_path / "runner.sock")
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(sock_path)
+    server.listen(4)
+    server.settimeout(0.2)
+
+    accepts = []
+    stop_server = threading.Event()
+
+    def serve():
+        hello = {"type": "hello", "version": PROTOCOL_VERSION,
+                 "cards": [], "models": [], "preflight": "ok"}
+        conns = []
+        while not stop_server.is_set():
+            try:
+                conn, _ = server.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+            accepts.append(time.monotonic())
+            conns.append(conn)
+            conn.sendall(encode(hello))
+            if len(accepts) == 1:
+                # Silent for ~5 socket timeouts, then speak on the SAME
+                # connection.
+                time.sleep(1.0)
+                conn.sendall(encode(dict(hello, models=["after-silence"])))
+        for c in conns:
+            c.close()
+
+    server_thread = threading.Thread(target=serve, daemon=True)
+    server_thread.start()
+
+    seen = []
+    client = EventClient(sock_path, seen.append)
+    client.start()
+    try:
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and not any(
+                e.get("models") == ["after-silence"] for e in seen):
+            time.sleep(0.05)
+        assert any(e.get("models") == ["after-silence"] for e in seen), \
+            "the event after the silence never arrived"
+        assert len(accepts) == 1, (
+            f"the client reconnected {len(accepts) - 1} time(s) during a "
+            "silence; a quiet daemon was treated as a lost one")
+    finally:
+        client.stop()
+        stop_server.set()
+        server_thread.join(timeout=2.0)
+        server.close()

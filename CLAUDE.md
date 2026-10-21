@@ -2124,6 +2124,35 @@ ran on that.
   monitor's own command line contains that string. It kept re-emitting its last events for the
   rest of the session. Match a PID file or use a one-shot `until` waiter.
 
+### tt-bio 0.21.0 pinned; the "Q&A does not work" report was a reconnect storm (2026-10-21)
+
+Prompted with "upgrade to latest tt-bio". PyPI had 0.21.0 (0.19.0, 0.20.0, 0.20.1 in between).
+Same `ttnn==0.68.0` and requires-python as 0.18.0, so no SFPI work. A signature comparison with
+`ast` over both wheels found every symbol the repo calls unchanged. `weights.py`,
+`protenix_data.py`, `device_lease.py`, `nesso1.py`, `nesso1_input.py` and `runtime.py` are
+byte-identical, and `edm_sample` still takes `dump_fn`. `_read_bio_chains` now rejects duplicate
+chain ids and still returns the same tuple shape.
+
+A second session ran the booth on all four chips right after the pin. A plain quad run was healthy
+(165 folds, no errors). A `--questions` run showed no question or score, and the UI dropped and
+reconnected 25 times in about the first three minutes.
+
+**Cause of the reconnects.** `EventClient` read through `conn.makefile()` with a 5 s socket timeout,
+and a timeout there ends the read and counts as a lost connection. The daemon was silent that long
+because a tt-bio upgrade empties the persistent kernel cache, so each chip's first fold compiled
+for minutes with no events (the third time this file records that cold-cache layer). Each
+reconnect discarded what the UI learned from the hello: chips, `qa_capable`, the question panel.
+Fixed in `ui/client.py`: `_lines()` reads with `recv` and treats a timeout as "nothing yet". EOF
+still ends the session, and the timeout still bounds how long `stop()` waits.
+`test_a_silence_longer_than_the_socket_timeout_does_not_drop_the_connection` was red before the
+change and green after.
+
+**Not proven.** The one-chip nesso1 test (`tests/integration/test_affinity_real.py`) passes on
+0.21.0, so the model path works. No question has been asked through the UI on 0.21.0: the caches
+are warm now, so the storm cannot be reproduced, and nobody asked a question during the failing
+run. The next `--questions` booth run on a cold cache is the real check. Nothing was re-measured,
+so the manifest, README and site still carry the 0.18.0 timings.
+
 ## Conventions
 
 - **Keep the README's screenshots current.** The README claims every image on it is the
