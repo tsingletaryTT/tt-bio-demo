@@ -24,6 +24,7 @@ import collections
 import itertools
 import logging
 import socket
+import time
 import threading
 
 from protocol.events import (PROTOCOL_VERSION, ProtocolError, decode,
@@ -188,6 +189,21 @@ class LatestFrameByJob:
 # fix (docs/followups.md). Derived here instead, so the relationship cannot
 # be edited apart.
 SOCKET_TIMEOUT_S = 5.0
+
+# How long the daemon may send nothing before the client calls it hung.
+#
+# A read timeout alone is not a lost connection: a chip compiling its first
+# fold after an upgrade is silent for minutes (measured 130 s for one fold,
+# and every chip compiles at once). But a daemon that has wedged with its
+# socket still open is silent forever, and without a limit the UI would keep
+# showing the last structure as "connected". Ten minutes outlasts any cold
+# compile seen so far and still ends in a reconnect and the preparing screen.
+# The daemon sends no heartbeat, so silence is the only signal there is.
+MAX_SILENCE_S = 600.0
+
+# A line longer than this is not a protocol event (the largest, a `frame`, is
+# tens of KB); it is a peer that never sends a newline.
+MAX_LINE_BYTES = 16 * 1024 * 1024
 
 # The reader: blocked in `conn.recv` (see `_lines`), released one socket timeout
 # after `_stop` at the latest.
@@ -359,8 +375,8 @@ class EventClient:
             self._sender_thread.join(timeout=SENDER_JOIN_TIMEOUT_S)
         if self._thread is not None:
             # READER_JOIN_TIMEOUT_S exceeds the socket read timeout by
-            # construction: when the thread is blocked in `for line in
-            # stream` with no data pending, it cannot notice `_stop` until
+            # construction: when the thread is blocked in `conn.recv`
+            # (see `_lines`) with no data pending, it cannot notice `_stop` until
             # that read call returns -- either because data arrives or
             # because the socket timeout fires. A shorter join timeout here
             # would let stop() return before the thread has actually
@@ -421,26 +437,39 @@ class EventClient:
         the hello (chips, Q&A capability, the question panel).
 
         A daemon that is gone closes its end and `recv` returns b"", which ends
-        the loop. The timeout only sets how often `_stop` is checked, which
-        `stop()` relies on (see READER_JOIN_TIMEOUT_S).
+        the loop. A daemon that is wedged with its socket open is caught by
+        MAX_SILENCE_S. The timeout itself only sets how often `_stop` and that
+        limit are checked; `stop()` relies on it (see READER_JOIN_TIMEOUT_S).
         """
         buffer = b""
+        last_heard = time.monotonic()
         while not self._stop.is_set():
             try:
                 chunk = conn.recv(65536)
             except socket.timeout:
+                if time.monotonic() - last_heard > MAX_SILENCE_S:
+                    log.warning("runner silent for %.0f s; treating it as hung "
+                                "and reconnecting", MAX_SILENCE_S)
+                    return
                 continue
             if not chunk:
-                break
+                return
+            last_heard = time.monotonic()
             buffer += chunk
+            start = 0
             while True:
-                line, newline, buffer_rest = buffer.partition(b"\n")
-                if not newline:
+                end = buffer.find(b"\n", start)
+                if end < 0:
                     break
-                buffer = buffer_rest
-                yield line + newline
-        if buffer:
-            yield buffer      # a last line with no newline, as file iteration gave
+                yield buffer[start:end + 1]
+                start = end + 1
+            buffer = buffer[start:]
+            if len(buffer) > MAX_LINE_BYTES:
+                log.warning("runner sent %d bytes with no newline; dropping "
+                            "the connection", len(buffer))
+                return
+        # An unterminated tail is dropped: the daemon ends every line with a
+        # newline, so a fragment is a write cut short, not an event.
 
     def _read_events(self, conn):
         for line in self._lines(conn):

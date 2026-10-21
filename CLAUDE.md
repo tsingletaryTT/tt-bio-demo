@@ -2164,6 +2164,16 @@ The client reconnected zero times. The driver is not checked in. Cold-cache beha
 re-tested: the cache was warm for this run. Nothing was re-measured for the manifest, so it,
 the README and the site still carry the 0.18.0 timings.
 
+**Review round (PR 10).** A review of the branch found that keeping the connection through quiet
+periods also hides a wedged daemon whose socket stays open. `MAX_SILENCE_S` (600 s, longer than any
+cold compile measured) now ends such a session so the UI reconnects and shows the preparing screen.
+The same review led to a 16 MB cap on an unterminated line, dropping an unterminated fragment at
+EOF, and a test that drives `run()` to check the ready-hello call is wired in. One of my new tests
+survived its mutation: it used an event that does not decode, so delivering it was invisible. It
+uses a valid event now. Left as they are: a second hello can reach a client that connected just
+after readiness (the UI already handles repeated hellos, as every reconnect sent one), and a
+not-ready stretch shorter than `DISPATCH_POLL_S` (0.25 s) is not noticed.
+
 Instrument slips in this session, for the next person: `pkill -f` killed its own shell twice;
 a background job in a non-interactive shell ignores SIGINT (use SIGTERM to its own pid);
 `kill -TERM -<pgid>` of a script started under `hw-run.sh` also hits gozer and leaves the lease

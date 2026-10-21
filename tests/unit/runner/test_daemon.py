@@ -758,3 +758,28 @@ def test_the_hello_is_sent_again_after_the_booth_stops_and_resumes_folding(tmp_p
     pool._ready = [1]
     daemon._announce_ready_once()
     assert [e["type"] for e in sent] == ["hello", "hello"]
+
+
+def test_run_itself_announces_hello_when_the_booth_is_ready(tmp_path):
+    """The wiring, not the method: `run()` must call `_announce_ready_once`.
+    The unit tests above call it directly, so deleting the call from the loop
+    would leave them green while a UI that connected during model load never
+    learned it can take questions.
+
+    Mutation: delete `self._announce_ready_once()` from `run()`. Red.
+    """
+    holder = {}
+
+    class _OnePass(_FakePool):
+        def ready_cards(self):
+            holder["daemon"].stop()
+            return super().ready_cards()
+
+    daemon = _daemon(tmp_path, _OnePass())
+    holder["daemon"] = daemon
+    sent = []
+    daemon._emit = sent.append
+    _run(daemon)
+
+    assert [e["type"] for e in sent if e["type"] == "hello"] == ["hello"], \
+        "run() never announced the booth as ready"
