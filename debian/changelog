@@ -1,3 +1,24 @@
+tt-bio-demo (0.8.3) noble; urgency=medium
+
+  * Pins tt-bio 0.27.0 (was 0.21.0). It ships the same ttnn 0.68.0 and
+    requires-python, so the vendored SFPI toolchain is unchanged. A signature
+    comparison of both wheels found every tt_bio symbol this project calls
+    unchanged; the only differences are new optional keyword arguments added
+    at the end (draws=, return_logits=, size_levers=, conformer_table=,
+    esm_on_device=). edm_sample still takes dump_fn, so the live trajectory tap
+    still applies. Protenix.fold still has no public dump_fn.
+  * Checked on one board (chips 2 and 3): the new-target timing harness passed
+    all 49 assertions in three passes, every fold returned 240 events, and no
+    target went silent for longer than the 30 s budget.
+  * Not re-measured. The manifest timings, first_frame_s caps and pLDDT bands
+    are still the 0.18.0 measurements. Each pass folded each target once in a
+    fresh process, so the warm numbers are not comparable to the manifest's
+    resident-model medians, and times to first coordinates ran 0.2-2.4 s over
+    the manifest values. The four-chip suite, the 30-frame tap check and a
+    nesso1 question were not run on 0.27.0.
+
+ -- Taylor Singletary <tsingletary@tenstorrent.com>  Fri, 06 Nov 2026 16:37:36 -0800
+
 tt-bio-demo (0.8.2) noble; urgency=medium
 
   * Pins tt-bio 0.21.0 (was 0.18.0). It ships the same ttnn 0.68.0, so the
