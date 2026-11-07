@@ -2180,6 +2180,32 @@ a background job in a non-interactive shell ignores SIGINT (use SIGTERM to its o
 stale; and `--hw` is a `scripts/test.sh` flag, while a direct pytest run needs
 `TT_BIO_DEMO_HW_TESTS=1`.
 
+### tt-bio 0.27.0 pinned, lightly checked, released as 0.8.3 (2026-11-06)
+
+Prompted with "Update to the latest version of tt-bio. Don't use hardware yet. Investigate what
+we should upgrade in the project too or new models or viz to include", then "good enough to
+ship for now ... no need to lease HW". PyPI had 0.27.0 (0.22.0 to 0.26.1 in between).
+
+- Same `ttnn==0.68.0` and requires-python as 0.21.0, so no SFPI work. An `ast` signature
+  comparison over both wheels found every `tt_bio` symbol this repo calls unchanged except for
+  optional keyword arguments added at the end. `edm_sample` still takes `dump_fn`, so the tap
+  still applies. `Protenix.fold` still has no public `dump_fn`. 0.27's `fold` now passes its own
+  `dump_fn` to `edm_sample` (only when `TT_PROTENIX_DUMP` is set), and the tap overrides it.
+- Hardware, one board (chips 2 and 3) after a gozer queue wait: `test_new_targets_timing.py`
+  passed 49 of 49 in three passes, 240 events per fold, no silence over the 30 s budget. Each
+  pass is one fold per target in a fresh process, so it is not comparable to the manifest's
+  resident-model medians. Warm passes ran slower than the manifest (for example DHFR 8.6 s
+  against 5.2 s) and time to first coordinates ran 0.2-2.4 s over `first_frame_s`. **Nothing in
+  the manifest, README or site was re-measured.** The four-chip suite, the 30-frame tap check
+  and a Q&A question were not run on 0.27.0.
+- Candidates found and not built: RFD4 design (BSD-3, about 1.7 GB, `save_trajectory_every`
+  writes CA-only CIFs, no live callback) for spec section 8; `--write_pae`. Not adopted: Mol-1
+  (no stated weights licence, mirror download). The site still says "Fifteen model families";
+  0.27 added rows, so it needs re-counting from `weights.py`.
+- Instrument slips: a first run used `venv-ui` for the runner-side tests and failed at import
+  in 0.2 s (the runner half needs `venv-runner`). Running `scripts/test.sh` with
+  `TT_BIO_DEMO_PREFIX=/nonexistent` fails because it also locates the venvs there.
+
 ## Conventions
 
 - **Keep the README's screenshots current.** The README claims every image on it is the
